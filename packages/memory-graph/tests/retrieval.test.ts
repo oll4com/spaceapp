@@ -19,6 +19,7 @@ describe("shared operational recall", () => {
     expect(searchMemoryDocuments([record], "memory external backup")).toEqual([record]);
     expect(record.body).toBe(body);
     expect(memoryQueryTerms("Ποιο είναι το προεπιλεγμένο μοντέλο στην καθαρή εγκατάσταση;")).toEqual(["default", "model", "clean", "setup"]);
+    expect(memoryQueryTerms("[backup] (host207) {vault}")).toEqual(["backup", "host207", "vault"]);
   });
   it.each([
     ["258000", "25800"], ["125800", "25800"], ["host2070", "host207"], ["xhost207", "host207"],

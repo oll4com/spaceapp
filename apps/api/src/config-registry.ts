@@ -21,7 +21,7 @@ function field(sources: readonly string[], exposure: Exposure, validation: Valid
 // is marked deprecated without an established migration policy.
 export const apiConfigRegistry = {
   instance: field(["SPACE_INSTANCE"], "public", "parser"),
-  instanceJobs: field(["SPACE_INSTANCE", "SPACE_INSTANCE_ENABLED_JOBS"], "public", "derived"),
+  instanceJobs: field(["SPACE_INSTANCE", "SPACE_INSTANCE_ENABLED_JOBS", "SPACE_INSTANCE_DISABLED_JOBS"], "public", "derived"),
   host: field(["SPACE_API_HOST"], "sensitive", "parser"),
   port: field(["SPACE_API_PORT"], "public", "positive-integer"),
   version: field(["npm_package_version"], "public", "parser"),
@@ -89,6 +89,7 @@ export const apiConfigRegistry = {
   memoryEmbeddingBaseUrl: field(["SPACE_MEMORY_EMBEDDING_BASE_URL"], "sensitive", "parser"),
   memoryEmbeddingKeyFile: field(["SPACE_MEMORY_EMBEDDING_KEY_FILE"], "sensitive", "parser"),
   designGatewayKeyFile: field(["SPACE_DESIGN_GATEWAY_KEY_FILE"], "sensitive", "parser"),
+  nousLiveGatewayKeyFile: field(["SPACE_NOUS_LIVE_GATEWAY_KEY_FILE", "SPACE_GATEWAY_KEY_FILE", "SPACE_CODEX_LB_KEY_FILE"], "sensitive", "parser"),
   metricsTokenFile: field(["SPACE_METRICS_TOKEN_FILE"], "sensitive", "parser"),
   videoWorkRoot: field(["SPACE_VIDEO_WORK_ROOT"], "sensitive", "parser"),
   videoToolsDir: field(["SPACE_VIDEO_TOOLS_DIR"], "sensitive", "parser"),
@@ -181,6 +182,7 @@ export const apiConfigRegistry = {
   roomPaneCommandsEnabled: field(["SPACE_ROOM_PANE_COMMANDS_ENABLED"], "public", "boolean"),
   harnessEnabled: field(["SPACE_HARNESS_ENABLED"], "public", "boolean"),
   harnessOrigin: field(["SPACE_HARNESS_ORIGIN"], "sensitive", "parser"),
+  vpnSocksProxies: field(["SPACE_VPN_SOCKS_PROXIES"], "sensitive", "parser"),
   vncPresets: field(["SPACE_VNC_PRESETS"], "sensitive", "parser"),
   monitoringCollector: field(["SPACE_MONITORING_COLLECTOR_NETWORK", "SPACE_MONITORING_COLLECTOR_HOST"], "sensitive", "parser"),
   loadHostSelector: field(["SPACE_LOAD_HOST_SELECTOR"], "sensitive", "parser"),

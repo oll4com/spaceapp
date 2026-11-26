@@ -414,6 +414,21 @@ describe("Stage 8: Dot settings from SpaceApp and one conversation per Dot", () 
     await missing.adapter.sendMessage({ pane: missing.pane, content: "Hello", operatorUserId: "user:owner", clientRequestId: "request:runtime-2", traceId: "trace:runtime-2" });
     expect(missing.starter.started[0]).toMatchObject({ permissionMode: "full_access" });
   });
+  it("moves a Dot off Codex when its Gateway pool has no tokens, to the next provider Chat can serve (operator 22/11)", async () => {
+    const store = new InMemorySpaceStore(); useVerifiedDefaultProvider(store);
+    const room = store.createRoom({ name: "Dot quota", initialPaneCount: 1 });
+    const pane = store.listPanes(room.id)[0]!;
+    const starter = new FakeCodexTurnStarter();
+    let quota: string | null = null;
+    const claude = cliRuntimeModelsChatProviderAdapter({ runtimeId: "cli:claude", executeModels: async () => "sonnet\tSonnet\thigh\thigh",
+      resolveState: async () => ({ enabled: true, reason: null }) });
+    const adapter = createSpaceAgentAdapter({ store, config: enabledConfig(), codexTurnStarter: starter, codexAgentControl: new FakeCodexAgentControl(),
+      validateDot: async () => undefined, cliChatProviderAdapters: [claude], codexQuotaReason: async () => quota });
+    expect((await adapter.createOrRestoreSession({ pane, dotId: orbit })).selectedProviderId ?? null).toBeNull();
+    quota = "Codex has no tokens until 2026-11-22 10:00 UTC.";
+    await adapter.sendMessage({ pane, content: "Hello", operatorUserId: "user:owner", clientRequestId: "request:quota-1", traceId: "trace:quota-1" });
+    expect(starter.started[0]).toMatchObject({ providerId: "cli:claude" });
+  });
   it("gives the turn what was said in the Dot's other conversations without storing it as the user's message", async () => {
     const f = fixture({ context: "Context from Space, not written by the user in this message:\n- Notice: new sign-in" });
     const session = await f.adapter.createOrRestoreSession({ pane: f.pane, dotId: orbit });

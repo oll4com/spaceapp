@@ -89,7 +89,7 @@ async function pickModel(command: string): Promise<string | null> {
     const catalog = await nativeOpenCodeModelCatalog(command);
     const models = catalog.providers.find((p) => p.id === "opencode")?.models ?? {};
     const isFree = (key: string) => {
-      const m = (models as Record<string, any>)[key] as any;
+      const m = models[key] as { cost?: { input?: unknown; output?: unknown } } | null | undefined;
       return m && m.cost?.input === 0 && m.cost?.output === 0 && !key.includes("contributor");
     };
     if (isFree(preferred)) return preferred;

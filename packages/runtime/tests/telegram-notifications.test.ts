@@ -78,14 +78,14 @@ class FakeOutbox implements TelegramOutboxPersistence {
   retries: Array<{ availableAt: string; safeErrorCode: string }> = [];
   retryAttemptCounts: Array<boolean | undefined> = [];
   failures: string[] = [];
-  progress: Array<{ nextPartIndex: number; delivered: boolean }> = [];
+  progress: Array<{ nextPartIndex: number; delivered: boolean; messageId?: string }> = [];
   markedErrors: string[] = [];
 
   constructor(public currentIntegration: TelegramIntegrationRecord, public queued: TelegramOutboxRecord[]) {}
   async getIntegration() { return this.currentIntegration; }
   async claimDeliveries() { return this.queued.splice(0); }
-  async recordDeliveryProgress(input: { nextPartIndex: number; delivered: boolean }) {
-    this.progress.push({ nextPartIndex: input.nextPartIndex, delivered: input.delivered });
+  async recordDeliveryProgress(input: { nextPartIndex: number; delivered: boolean; messageId?: string }) {
+    this.progress.push({ nextPartIndex: input.nextPartIndex, delivered: input.delivered, ...(input.messageId ? { messageId: input.messageId } : {}) });
   }
   async retryDelivery(input: { availableAt: string; safeErrorCode: string; countAttempt?: boolean }) {
     this.retries.push({ availableAt: input.availableAt, safeErrorCode: input.safeErrorCode });
@@ -146,14 +146,16 @@ describe("Telegram notification formatting and delivery", () => {
       persistence,
       secrets,
       workerId: "worker:test",
-      clientFactory: () => ({ async sendMessage(_chatId, text) { sent.push(text); return { messageId: "1" }; } })
+      clientFactory: () => ({ async sendMessage(_chatId, text) { sent.push(text); return { messageId: String(sent.length) }; } })
     });
 
     const result = await worker.runOnce();
     const totalParts = formatTelegramCompletionParts(record).length;
     expect(result).toMatchObject({ delivered: 1, retried: 0, failed: 0 });
     expect(sent).toHaveLength(totalParts - 1);
-    expect(persistence.progress.at(-1)).toEqual({ nextPartIndex: totalParts, delivered: true });
+    // Spec v2 §7 (step 4b): the last part's chat message is kept, so its Thread can mark it answered.
+    expect(persistence.progress.at(-1)).toEqual({ nextPartIndex: totalParts, delivered: true, messageId: String(totalParts - 1) });
+    expect(persistence.progress.slice(0, -1).every((step) => !("messageId" in step))).toBe(true);
   });
 
   it("honors retry_after and turns permanent Telegram failures into visible integration errors", async () => {
@@ -327,7 +329,7 @@ describe("Telegram notification formatting and delivery", () => {
     await expect(run(recovered)).resolves.toMatchObject({ delivered: 1, retried: 0 });
     expect(sent).toHaveLength(1);
     expect(sleeps).toEqual([250, 500]);
-    expect(recovered.progress).toEqual([{ nextPartIndex: 1, delivered: true }]);
+    expect(recovered.progress).toEqual([{ nextPartIndex: 1, delivered: true, messageId: "1" }]);
 
     sent.length = 0;
     const unrecorded = new FlakyProgressOutbox(integration(version), [delivery({ finalResponse: "Δ".repeat(6_000) })]);

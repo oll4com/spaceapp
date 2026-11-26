@@ -48,8 +48,8 @@ export function useSnipTool(): SnipTool {
       return (
         event.key === "PrintScreen" ||
         event.code === "PrintScreen" ||
-        (event as any).key === "Snapshot" ||
-        (event as any).key === "Print" ||
+        event.key === "Snapshot" ||
+        event.key === "Print" ||
         event.keyCode === 44 ||
         event.which === 44
       );
@@ -77,7 +77,7 @@ export function useSnipTool(): SnipTool {
         if (navigator?.clipboard?.writeText) {
           void navigator.clipboard.writeText("").catch(() => {});
         }
-      } catch {}
+      } catch { /* Clipboard unavailable: nothing to clear. */ }
 
       triggerSnipShortcut();
     };
@@ -85,7 +85,7 @@ export function useSnipTool(): SnipTool {
     window.addEventListener("keydown", handlePrintScreenKey, true);
     window.addEventListener("keyup", handlePrintScreenKey, true);
 
-    const desktopBridge = (window as any).spaceDesktop;
+    const desktopBridge = (window as unknown as { spaceDesktop?: { onPrintScreen?: (listener: () => void) => (() => void) | undefined } }).spaceDesktop;
     let unsubscribePrintScreen: (() => void) | undefined;
     if (typeof desktopBridge?.onPrintScreen === "function") {
       const unsub = desktopBridge.onPrintScreen(() => {

@@ -68,6 +68,7 @@ export function RecommendedMaintenance({ client, onBusyChange }: { client: Recom
     document.addEventListener("visibilitychange", visibility);
     void load();
     return () => { disposed = true; clearTimeout(timer); document.removeEventListener("visibilitychange", visibility); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the run id on purpose: the poll itself calls setRun, so depending on run would restart polling on every status update
   }, [client, run?.id]);
   async function check() {
     requestGeneration.current += 1;

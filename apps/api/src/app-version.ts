@@ -107,7 +107,7 @@ interface CachedLatest {
   checkedAt: string;
 }
 
-async function runGit(args: string[], cwd: string): Promise<string | null> {
+export async function runGit(args: string[], cwd: string): Promise<string | null> {
   const gitConfig = ["-c", `safe.directory=${cwd}`];
   try {
     const result = await execFileAsync("git", [...gitConfig, ...args], { cwd });

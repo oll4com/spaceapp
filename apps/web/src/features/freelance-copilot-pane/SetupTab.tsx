@@ -193,8 +193,8 @@ export function SetupTab({ pane, settings, runtimeOptions, switching, accountRev
                         onChange={(event) => patchChannel(id, { autonomyCap: event.target.value as FreelanceCopilotAutonomy })}>
                         {FREELANCE_COPILOT_AUTONOMY_LEVELS.map((level) => <option key={level} value={level}>{t(AUTONOMY_TEXT[level].label)}</option>)}
                       </select></label>
-                    <label className="jc-field"><span>{t("Sends a day")}</span>
-                      <input type="number" min={0} max={100} value={channel.dailyCap} disabled={busy || fixed || !channel.enabled} aria-label={t("{platform} sends a day", { platform: label })}
+                    <label className="jc-field"><span>{t("Applications a day")}</span>
+                      <input type="number" min={0} max={100} value={channel.dailyCap} disabled={busy || fixed || !channel.enabled} aria-label={t("{platform} applications a day", { platform: label })}
                         onChange={(event) => patchChannel(id, { dailyCap: clamp(event.target.value, 0, 100, 0) })} /></label>
                   </div>
                 </li>
@@ -223,7 +223,7 @@ export function SetupTab({ pane, settings, runtimeOptions, switching, accountRev
             <label className="jc-field"><span>{t("Connects in 30 days (0: no limit)")}</span>
               <input type="number" min={0} max={20000} value={connectsBudget.perMonth} disabled={busy} onChange={(event) => patch("Connects budget", { connectsBudget: { ...connectsBudget, perMonth: clamp(event.target.value, 0, 20000, 0) } })} /></label>
             <label className="jc-field"><span>{t("Lowest hourly rate (USD)")}</span>
-              <input type="number" min={0} max={1000} value={settings.settings.rateFloorHourly} disabled={busy} onChange={(event) => patch("Hourly floor", { rateFloorHourly: clamp(event.target.value, 0, 1000, 35) })} /></label>
+              <input type="number" min={0} max={1000} value={settings.settings.rateFloorHourly} disabled={busy} onChange={(event) => patch("Hourly floor", { rateFloorHourly: clamp(event.target.value, 0, 1000, 20) })} /></label>
             <label className="jc-field"><span>{t("Other sites leave from")}</span>
               <select value={settings.settings.browserEgress} disabled={busy} aria-label={t("Pane route")} onChange={(event) => patch("Pane route", { browserEgress: event.target.value as FreelanceEgressRoute })}>
                 {FREELANCE_EGRESS_ROUTES.map((route) => <option key={route} value={route}>{routeLabel(route, egress, t)}</option>)}

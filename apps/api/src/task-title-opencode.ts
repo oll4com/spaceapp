@@ -32,6 +32,13 @@ export class OpenCodeTitleModelRetired extends Error {
     this.name = "OpenCodeTitleModelRetired";
   }
 }
+/** Thrown when OpenCode Zen refuses for quota (free limit, HTTP 429): every free model shares it, so the provider rests. */
+export class OpenCodeTitleRateLimited extends Error {
+  constructor(readonly retryAfterSeconds: number) {
+    super("Native title provider is rate limited.");
+    this.name = "OpenCodeTitleRateLimited";
+  }
+}
 /** OpenCode's system prompt and tool definitions alone are about 7-13k tokens. */
 export const openCodeTitleMaxInputTokens = 32_000;
 export const openCodeTitleMaxImageInputTokens = 96_000;
@@ -82,7 +89,9 @@ function readRunHelp(command: string, root: string): Promise<string> {
       try {
         if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
         else child.kill("SIGKILL");
-      } catch {}
+      } catch {
+        // process already exited
+      }
     };
     const timeout = setTimeout(stop, 5000);
     const collect = (chunk: Buffer) => {
@@ -151,7 +160,9 @@ export async function resolveNativeOpenCodeRuntime(
         // The permission/step/output-limit controls depend on this native
         // behavior. An unknown runtime must not silently weaken the limits.
         if ((await probeOpenCodeVersion(resolved, scratchRoot)).rejectsPermissionRequests) return resolved;
-      } catch {}
+      } catch {
+        // missing, not executable or too old: try the next path
+      }
     }
     return null;
   } finally {
@@ -161,7 +172,7 @@ export async function resolveNativeOpenCodeRuntime(
 /** OpenCode 2's /api/model as the catalog entries readers use: id, name, status and the highest tier's cost. */
 export function parseOpenCode2Models(output: string): Record<string, unknown> {
   let data: unknown = [];
-  try { data = (JSON.parse(output) as { data?: unknown }).data ?? []; } catch {}
+  try { data = (JSON.parse(output) as { data?: unknown }).data ?? []; } catch { /* not JSON: no models */ }
   const models: Record<string, unknown> = {};
   for (const model of Array.isArray(data) ? data : []) {
     if (model?.providerID !== "opencode" || model.enabled === false || !/^[A-Za-z0-9._-]{1,200}$/.test(model.id ?? "")) continue;
@@ -296,7 +307,9 @@ export async function generateNativeOpenCodeTitle(input: {
           if (process.platform !== "win32" && child.pid)
             process.kill(-child.pid, "SIGKILL");
           else child.kill("SIGKILL");
-        } catch {}
+        } catch {
+          // process already exited
+        }
       };
       const stop = () => { failure ??= new Error("Title generation cancelled."); kill(); };
       input.signal.addEventListener("abort", stop, { once: true });
@@ -315,6 +328,10 @@ export async function generateNativeOpenCodeTitle(input: {
           let event; try { event = JSON.parse(line); } catch { continue; }
           if (event.type === "error" && /deprecated|retired/i.test(String(event.error?.data?.message ?? ""))) {
             failure = new OpenCodeTitleModelRetired(); kill(); return;
+          }
+          if (event.type === "error" && event.error?.status === 429) {
+            const ms = Number(event.error.retryAfterMs);
+            failure = new OpenCodeTitleRateLimited(ms > 0 ? Math.ceil(ms / 1000) : 300); kill(); return;
           }
           if (event.type === "tool_use" || event.type === "error" || (event.type === "step_start" && ++starts > 1)) {
             failure = new Error("Native title request did not complete as text."); kill(); return;
@@ -357,7 +374,7 @@ async function withOpenCode2StepFinish(stdout: string, root: string): Promise<st
     .catch(() => []);
   if (rows.length !== 1) return stdout;
   let tokens: unknown = null;
-  try { tokens = JSON.parse(String(rows[0]!.tokens)); } catch {}
+  try { tokens = JSON.parse(String(rows[0]!.tokens)); } catch { /* unparseable tokens stay null */ }
   return `${stdout.trimEnd()}\n${JSON.stringify({ type: "step_finish", part: { cost: rows[0]!.cost, tokens } })}\n`;
 }
 export function parseNativeTitleOutput(stdout: string, maxInputTokens = openCodeTitleMaxInputTokens): string {
@@ -366,7 +383,8 @@ export function parseNativeTitleOutput(stdout: string, maxInputTokens = openCode
     finishes = 0;
   for (const line of stdout.split("\n")) {
     if (!line.trim()) continue;
-    let event: any;
+    // Counts are numbers only once validCount below has checked them.
+    let event: { type?: unknown; part?: { text?: unknown; cost?: unknown; tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } } } };
     try {
       event = JSON.parse(line);
     } catch {
@@ -380,7 +398,7 @@ export function parseNativeTitleOutput(stdout: string, maxInputTokens = openCode
       text += event.part.text;
     if (event.type === "step_finish") {
       const tokens = event.part?.tokens;
-      const validCount = (value: unknown) =>
+      const validCount = (value: unknown): value is number =>
         typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
       if (
         ++finishes > 1 ||

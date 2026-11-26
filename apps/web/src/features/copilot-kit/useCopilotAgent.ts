@@ -4,11 +4,11 @@ import { api } from "../../api.js";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { loadDefaultAccountProfileId } from "./AgentAccountField.js";
 import type { CopilotKind } from "./copilot-kind.js";
-import { copilotAccountFor, copilotAgentLabel, loadPaneAccountProfileId, saveCopilotLaunch, type CopilotRuntimeOption } from "./copilot-runtimes.js";
+import { copilotAccountFor, copilotAgentLabel, loadPaneAccountProfileId, paneRunsRuntime, restartPaneCli, saveCopilotLaunch, type CopilotRuntimeOption } from "./copilot-runtimes.js";
 
 /**
  * Switching a copilot pane's agent (CLI, account or both) and saving it as the kind's default.
- * Switch: PATCH the runtime, restart the CLI on that account (the session keeps it), then bump `terminalKey`
+ * Switch: PATCH the runtime, restart the CLI on that account (the session keeps it; a failed restart reverts the PATCH), then bump `terminalKey`
  * so the terminal element remounts on the new session. Without an account the CLI starts on the user's default
  * account for it, else on that CLI's default pane account. The pane's current account is its CLI session's.
  */
@@ -28,9 +28,14 @@ export function useCopilotAgent({ kind, pane, runtimeOptions, onSwitched, onNoti
   // Setup → Agent reloads the pane's account after every switch.
   useEffect(() => { if (!switching) setAccountRevision((revision) => revision + 1); }, [switching]);
 
+  // Set before the first await: `switching` is false while paneRunsRuntime reads the live session, so a quick second pick restarted the CLI twice.
+  const busy = useRef(false);
   const switchAgent = useCallback(async (runtimeId: string, accountProfileId?: string) => {
-    const sameRuntime = runtimeId === pane.terminalRuntimeId;
-    if (switching || (sameRuntime && accountProfileId === undefined)) return;
+    if (busy.current) return;
+    busy.current = true;
+    try {
+    const sameRuntime = await paneRunsRuntime(pane, runtimeId);
+    if (sameRuntime && accountProfileId === undefined) return;
     if (sameRuntime && accountProfileId === await loadPaneAccountProfileId(pane.id, runtimeId)) return;
     setSwitching(true);
     onNotice(null);
@@ -38,8 +43,7 @@ export function useCopilotAgent({ kind, pane, runtimeOptions, onSwitched, onNoti
       const remembered = accountProfileId === undefined ? kind.remembered((await api.userSettings().catch(() => null)) ?? {}) : null;
       const account = copilotAccountFor(runtimeId, accountProfileId
         ?? (remembered?.runtimeId === runtimeId && remembered.accountProfileId ? remembered.accountProfileId : await loadDefaultAccountProfileId(runtimeId)));
-      if (!sameRuntime) await api.updatePane(pane.id, { terminalRuntimeId: runtimeId });
-      await api.createCliSession(pane.id, { runtimeId, forceRestart: true, includeTranscript: false, ...(account ? { accountProfileId: account } : {}) });
+      await restartPaneCli(pane, runtimeId, account);
       setTerminalKey((key) => key + 1);
       onSwitched?.();
     } catch (error) {
@@ -47,7 +51,10 @@ export function useCopilotAgent({ kind, pane, runtimeOptions, onSwitched, onNoti
     } finally {
       setSwitching(false);
     }
-  }, [kind, onNotice, onSwitched, pane.id, pane.terminalRuntimeId, switching]);
+    } finally {
+      busy.current = false;
+    }
+  }, [kind, onNotice, onSwitched, pane]);
 
   /** New panes of this copilot open with this pane's agent and the account its CLI runs on, without asking. */
   const setAsDefault = useCallback(async () => {

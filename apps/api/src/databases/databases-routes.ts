@@ -3,7 +3,6 @@ import {
   createDatabaseConnectionSchema,
   updateDatabaseConnectionSchema,
   databaseTableDataQuerySchema,
-  databaseRowMutationSchema,
   databaseExecuteSqlRequestSchema
 } from "@space/contracts";
 import { databasesService } from "./databases-service.js";

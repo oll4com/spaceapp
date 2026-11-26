@@ -5,7 +5,6 @@ import { agentRunLedgerSchema, agentRunEvaluationSchema, agentRunMeasuredUsageSc
 import { autoRouteShadowSchema } from "./auto-routing.js";
 import { taskAcceptanceSchema } from "./task-acceptance.js";
 import { cliAdapterContractSchema } from "./cli-adapter.js";
-import { controlToolSchemas } from "./space-control.js";
 import { z } from "zod";
 import { planParkedSchema, planWaitsOnSchema } from "./plan-map.js";
 import { roomMiniRouteSchema } from "./pane-catalog.js";
@@ -29,6 +28,7 @@ import { securityCopilotPaneMetadataSchema } from "./security-copilot.js";
 import { monitoringCopilotPaneMetadataSchema } from "./monitoring-copilot.js";
 import { videoPaneMetadataSchema } from "./video.js";
 import { notificationSettingsSchema } from "./notifications.js";
+import { appointmentHoursOf, appointmentHoursSchema, type AppointmentHours } from "./appointment-content.js";
 import { traceparentSchema } from "./observability.js";
 import { demoProjectIdSchema, demoVariantIdSchema } from "./demo-projects.js";
 import { atLeastOneField, atLeastOneOf } from "./update-rules.js";
@@ -153,7 +153,7 @@ export const paneSplitSchema = z.object({
   size: z.number().min(5).max(95).nullable()
 });
 export const reasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
-export const cliModelIdentifierSchema = z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9@~][A-Za-z0-9._:\/@+~-]*$/);
+export const cliModelIdentifierSchema = z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9@~][A-Za-z0-9._:/@+~-]*$/);
 export const cliReasoningEffortSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
 const agentModelConfigIdSchema = z.string().trim().min(1).max(260);
 export const workflowStatusSchema = z.enum(["PENDING", "RUNNING", "PAUSED", "CANCELLED", "FAILED", "COMPLETED"]);
@@ -211,7 +211,9 @@ export const eventTypeSchema = z.enum([
   "MONITORING_COPILOT_UPDATED",
   "NOTIFICATION_CREATED",
   "NOTIFICATION_UPDATED",
-  "NOUS_PANE_BOARD_UPDATED"
+  "NOUS_PANE_BOARD_UPDATED",
+  // «Εισερχόμενα» v2: ids only ({threadId, ownerUserId}); the stream is shared, so clients read the Thread and the badge from /api/inbox.
+  "INBOX_UPDATED"
 ]);
 
 export const roomKindSchema = z.enum(["WORKSPACE", "AGENT_PROOF", "CLI_RECOVERY"]);
@@ -233,6 +235,8 @@ export const roomSchema = z.object({
   paneCap: z.number().int().min(1).max(16),
   traceId: requestIdSchema,
   ownerUserId: idSchema.nullable().optional(),
+  /** The operator keeps Nous out of this room: Nous neither reads nor acts in it. */
+  nousExcluded: z.boolean().optional(),
   /** Only on a room shared with the caller (MU-007: the web hides write controls of a VIEW share). */
   sharePermission: roomSharePermissionSchema.optional()
 });
@@ -414,7 +418,9 @@ export const roomCliActivitySchema = z
     roomId: idSchema,
     runningCliCount: z.number().int().min(0),
     paneCount: z.number().int().min(0).optional(),
-    runtimeIds: z.array(z.string().trim().min(1).max(160)).optional()
+    runtimeIds: z.array(z.string().trim().min(1).max(160)).optional(),
+    /** Distinct modes of the room's open panes, for the Rooms dock's pane-type icons. */
+    paneModes: z.array(paneModeSchema).optional()
   })
   .strict();
 
@@ -428,7 +434,8 @@ export const roomCliActivityResponseSchema = z
 export const updateRoomInputSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(1000).optional(),
-  projectPath: z.string().trim().max(500).nullable().optional()
+  projectPath: z.string().trim().max(500).nullable().optional(),
+  nousExcluded: z.boolean().optional()
 });
 
 export const updatePaneLayoutInputSchema = z
@@ -1587,11 +1594,13 @@ const roomAgentCliCommandActionRequestSchema = z.object({
   toolId: z.literal("room:cli_command"),
   action: z.object({
     type: z.literal("cli_command"), paneId: idSchema, expectedSessionId: idSchema,
+    // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
     command: z.string().trim().min(2).max(2000).regex(/^\/[a-zA-Z][a-zA-Z0-9_-]*(?: [^\x00-\x1f\x7f]*)?$/).optional(),
     key: z.enum(["UP", "DOWN", "LEFT", "RIGHT", "ENTER", "ESCAPE", "TAB", "SHIFT_TAB"]).optional(),
     when: z.enum(["AFTER_TURN", "NOW"]).default("AFTER_TURN"),
     selection: z.string().trim().min(1).max(500).optional(),
     /** Text typed into the CLI's open question or approval prompt, e.g. "1", "y" or a short reply. */
+    // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
     answer: z.string().max(2000).regex(/^[^\x00-\x08\x0b-\x1f\x7f]*$/).optional(),
     /** Press Enter after the answer (default); numbered menus usually select on the digit alone, so pass false. */
     submit: z.boolean().optional(),
@@ -3986,9 +3995,16 @@ export const spaceSliderCaptchaCommandSchema = z.object({
   pageId: z.string().min(1).max(200).optional()
 }).strict();
 
+// One fixed NetEase Yidun audio CAPTCHA operation (operator 16/11); no selectors, URLs, transcripts or page content in or out.
+export const spaceAudioCaptchaCommandSchema = z.object({
+  type: z.literal("AUDIO_CAPTCHA"),
+  pageId: z.string().min(1).max(200).optional()
+}).strict();
+
 export const spaceCliBrowserCommandSchema = z.discriminatedUnion("type", [
   spaceTextCaptchaCommandSchema,
   spaceSliderCaptchaCommandSchema,
+  spaceAudioCaptchaCommandSchema,
   z.object({
     type: z.literal("DEVTOOLS"),
     includeNetwork: z.boolean().default(true),
@@ -4044,7 +4060,9 @@ export const spaceCliBrowserCommandSchema = z.discriminatedUnion("type", [
     index: z.number().int().min(0).max(99).optional()
   }).strict(),
   // A masked readout of the active tab (7/11 Oracle): path, title and visible messages, never a field; fenced pages too (browser-page-readout.ts).
-  z.object({ type: z.literal("PAGE_READOUT") }).strict()
+  z.object({ type: z.literal("PAGE_READOUT") }).strict(),
+  // The visible form controls of the active tab instead of a whole-page snapshot (browser-page-readout.ts pageForms); refused on fenced pages.
+  z.object({ type: z.literal("PAGE_FORMS") }).strict()
 ]);
 
 export const spaceCliBrowserCommandRequestSchema = z.object({
@@ -4934,7 +4952,9 @@ export const claudeGatewayPoolAccountSchema = z
     fiveHourRemainingPercent: nullableToolbarPercentSchema,
     fiveHourResetAt: isoDateTimeSchema.nullable(),
     weeklyRemainingPercent: nullableToolbarPercentSchema,
-    weeklyResetAt: isoDateTimeSchema.nullable()
+    weeklyResetAt: isoDateTimeSchema.nullable(),
+    /** Reset credits that give a fresh week (`gatewayWeekResetCredits`). */
+    resetCredits: z.number().int().min(0).optional()
   })
   .strict();
 
@@ -4955,6 +4975,10 @@ export const claudeUsageAccountSchema = z
     sampledAt: isoDateTimeSchema.nullable(),
     // GATEWAY only: the accounts the gateway routes to (paused and deactivated ones excluded); absent when unknown.
     pool: z.array(claudeGatewayPoolAccountSchema).max(50).optional(),
+    // The Space Gateway account holding this profile's e-mail (the Resources "Resets N" button spends on it) and its
+    // reset credits that give a fresh week (`gatewayWeekResetCredits`, operator nous_msg:2cdc2f9a); absent when the gateway holds none.
+    gatewayAccountId: z.string().nullable().optional(),
+    resetCredits: z.number().int().min(0).nullable().optional(),
     // API_KEY only: whether the key answered Anthropic's free model list (null: not reachable), and whether Space Gateway
     // holds a Claude API key as its fallback for when every pooled account is out of quota; absent when unknown.
     apiKeyVerified: z.boolean().nullable().optional(),
@@ -5020,7 +5044,9 @@ export const apiProviderAccountListSchema = z
 export const codexResetCreditAvailabilityAccountSchema = z
   .object({
     accountId: z.string().min(1).max(160),
-    availableCreditCount: z.number().int().min(0).max(100).nullable()
+    /** Week resets (Claude: weekly and full grants only); `grants` names every Claude grant by kind. */
+    availableCreditCount: z.number().int().min(0).max(100).nullable(),
+    grants: z.array(z.object({ kind: z.enum(["session", "weekly", "fable", "full"]), left: z.number().int().min(0) }).strict()).optional()
   })
   .strict();
 
@@ -5051,7 +5077,9 @@ export const codexResetCreditRedemptionResponseSchema = z
   .object({
     accountId: z.string().min(1).max(160),
     outcome: codexResetCreditRedemptionOutcomeSchema,
-    completedAt: isoDateTimeSchema
+    completedAt: isoDateTimeSchema,
+    /** The windows the provider says it cleared (Claude: "five_hour", "seven_day", ...); absent when it names none. */
+    windowsReset: z.array(z.string().min(1).max(60)).optional()
   })
   .strict();
 
@@ -5954,7 +5982,7 @@ export const cliMaintenanceRollbackSchema = z
 export const cliMaintenanceDiagnosticsSchema = z
   .record(z.string().trim().min(1).max(80), z.unknown())
   .superRefine((value, context) => {
-    let serialized = "";
+    let serialized: string;
     try {
       serialized = JSON.stringify(value);
     } catch {
@@ -6138,6 +6166,8 @@ export const cliUpdateAllResultSchema = z
       .array(
         cliMaintenanceRuntimeResultSchema
           .extend({
+            // DeepSeek Harness (update key "harness", b77fa171da) is updated by update-all but is no CLI toggle; without it every all-CLI result failed to parse.
+            runtimeId: z.union([cliToggleRuntimeIdSchema, z.literal("cli:harness")]),
             customPreserved: z.boolean(),
             customReinstalled: z.boolean().optional(),
             reinstallResults: z.array(cliUpdateAllReinstallResultSchema).max(64).optional(),
@@ -6177,9 +6207,10 @@ export const cliUpdateAllRequestSchema = z
         "deepseek",
         "cursor",
         "copilot",
-        "hermes"
+        "hermes",
+        "harness"
       ]))
-      .max(12)
+      .max(13)
       .optional(),
     reinstall: z.boolean().optional()
   })
@@ -6225,6 +6256,7 @@ export const releaseNotesSchema = z
   .trim()
   .min(1)
   .max(20_000)
+  // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
   .refine((value) => !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(value), "Release notes contain control characters.");
 export const gitCommitShaSchema = z.string().regex(/^[0-9a-f]{40}$/);
 export const releasePreviewSchema = z
@@ -8851,6 +8883,11 @@ export const YOUTUBE_SUMMARY_MODELS = [
   { id: "gemini-3-flash", label: "Gemini 3 Flash" },
   { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite, fastest" }
 ] as const;
+/**
+ * The longest prompt Space Gateway's `/gemini/v1/generate` takes (chars): a summary reads the video's captions as text when its prompt fits
+ * (about four hours of speech), and longer videos are watched instead (plan clipboard:nsWKwUFhUFWA slice 7).
+ */
+export const YOUTUBE_SUMMARY_PROMPT_CHARS = 200_000;
 const youtubeSummaryModelSchema = z.enum(YOUTUBE_SUMMARY_MODELS.map((model) => model.id) as [string, ...string[]]);
 /** The YouTube pane's Download: the tallest video it saves (0: the best YouTube has, the full resolution). */
 export const YOUTUBE_DOWNLOAD_RESOLUTIONS = [
@@ -8858,6 +8895,7 @@ export const YOUTUBE_DOWNLOAD_RESOLUTIONS = [
   { maxHeight: 1080, label: "1080p" }, { maxHeight: 720, label: "720p" }, { maxHeight: 480, label: "480p" }
 ] as const;
 /** An Agent Files folder path: segments joined by "/", no empty, "." or ".." segment. */
+// eslint-disable-next-line no-control-regex -- rejects control characters on purpose
 export const agentFilesFolderSchema = z.string().trim().min(1).max(200).regex(/^[^/\\\u0000-\u001f]+(\/[^/\\\u0000-\u001f]+)*$/)
   .refine((folder) => folder.split("/").every((segment) => segment.trim() && segment !== "." && segment !== ".."), "Invalid folder.");
 /** "MEDIA/YouTube" as Agent Files names it: "Media / YouTube" (its built-in folders by name). */
@@ -8895,7 +8933,7 @@ export const userSettingsSchema = z.object({
   showSessionDebugIds: z.boolean().default(false),
   cliDebugModeEnabled: z.boolean().default(false),
   cliFloatsHidden: z.boolean().default(false),
-  sensitiveDataMasked: z.boolean().default(true),
+  sensitiveDataMasked: z.boolean().default(false),
   roomToolbarHidden: z.boolean().default(false),
   roomFocusMode: z.boolean().default(false),
   railOrder: z.array(z.string()).optional(),
@@ -8945,6 +8983,8 @@ export const userSettingsSchema = z.object({
   youtubeDownload: youtubeDownloadSettingsSchema.optional().catch(undefined),
   /** How far back every history reaches (history-period.ts, at most 90 days); unset reads as 90. */
   history: historySettingsSchema.optional().catch(undefined),
+  /** When appointments may be (Settings → Notifications, operator 17/11): unset or invalid reads as 11:00-20:00 in the working zone. */
+  appointmentHours: appointmentHoursSchema.optional().catch(undefined),
   /** Idle minutes before a CLI pane sleeps (pane-hibernate.ts); unset reads as 30, 0 = never. */
   paneHibernate: paneHibernateSettingsSchema.optional().catch(undefined),
   /** The interface language (ui-language.ts); unset follows Voice input's Greek, else English. */
@@ -9031,6 +9071,7 @@ export const updateUserSettingsInputSchema = z.object({
   youtubeDownload: youtubeDownloadSettingsSchema.optional(),
   /** A period over 90 days, or not one of HISTORY_PERIOD_DAYS, is refused. */
   history: historySettingsSchema.optional(),
+  appointmentHours: appointmentHoursSchema.optional(),
   paneHibernate: paneHibernateSettingsSchema.optional(),
   uiLanguage: uiLanguageSchema.optional(),
   agentLanguage: uiLanguageSchema.optional()
@@ -9521,6 +9562,10 @@ export const listClipboardItemsQuerySchema = z
     parked: z.union([z.boolean(), z.enum(["true", "false"])]).optional().transform((value) =>
       value === undefined ? undefined : value === true || value === "true"
     ).optional(),
+    /** Open items, and closed ones with work left: under 100% or parked now (nous_msg:8076f33e). */
+    unfinished: z.union([z.boolean(), z.enum(["true", "false"])]).optional().transform((value) =>
+      value === undefined ? undefined : value === true || value === "true"
+    ).optional(),
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(1).max(100).default(25)
   })
@@ -9562,7 +9607,10 @@ export const updatePlanProgressRequestSchema = z
     parked: planParkedSchema.nullable().optional(),
     /** The plan's own title and text, edited in place (Nous daily upgrade 2026-10-27): the record keeps its id. */
     title: z.string().trim().min(1).max(clipboardPlanTitleMaxCharacters).optional(),
-    text: nonBlankExactText(clipboardTextMaxCharacters).optional()
+    text: nonBlankExactText(clipboardTextMaxCharacters).optional(),
+    /** The weakest model and effort that may run the plan, re-set when its work turns out lighter or heavier (20/11, plan clipboard:VypZ4sl7NR04). */
+    minimumModel: z.string().trim().min(1).max(clipboardPlanMinimumModelMaxCharacters).optional(),
+    minimumReasoning: clipboardPlanReasoningSchema.optional()
   })
   .strict();
 
@@ -9594,6 +9642,9 @@ export function ownerWorkingTimeZone(settings: { dateTime?: { timeZone?: string 
   const zone = settings?.dateTime?.timeZone;
   return zone && zone !== "system" && isValidTimeZone(zone) ? zone : "UTC";
 }
+/** The owner's appointment hours with their zone resolved (the working zone when the setting names none). */
+export const ownerAppointmentHours = (settings: { dateTime?: { timeZone?: string }; appointmentHours?: unknown } | null | undefined): AppointmentHours =>
+  appointmentHoursOf(settings?.appointmentHours, ownerWorkingTimeZone(settings));
 /** The schedule with its zone: a schedule given without one takes the owner's working time zone; null and undefined pass. */
 export function resolveTaskScheduleZone(schedule: TaskScheduleInput | null | undefined, ownerZone: string): StoredTaskSchedule | null | undefined {
   return schedule ? { recurrence: schedule.recurrence, timeZone: schedule.timeZone ?? ownerZone } : schedule;

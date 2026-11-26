@@ -96,7 +96,7 @@ export function registerSystemAnalyticsRoutes(app: FastifyInstance, options: {
         range: systemAnalyticsRangeSchema.default("7d"),
         refresh: z.enum(["true", "false"]).default("false")
       }).strict().parse(request.query);
-      const data = await opencodeModelBenchService.get(range as any, refresh === "true");
+      const data = await opencodeModelBenchService.get(range, refresh === "true");
       return opencodeBenchResponseSchema.parse(data);
     }
   );
@@ -107,9 +107,9 @@ export function registerSystemAnalyticsRoutes(app: FastifyInstance, options: {
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "System analytics require the ADMIN role.");
       }
-      const { provider, model } = z.object({ provider: z.enum(["opencode", "opencode-go", "openrouter"]), model: z.string().min(1).max(160) }).parse((request as any).params);
+      const { provider, model } = z.object({ provider: z.enum(["opencode", "opencode-go", "openrouter"]), model: z.string().min(1).max(160) }).parse(request.params);
       const data = await opencodeModelBenchService.probeSingle(provider, model);
-      return data as any;
+      return data;
     }
   );
 }

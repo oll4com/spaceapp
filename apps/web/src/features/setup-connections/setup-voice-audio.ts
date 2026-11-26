@@ -85,7 +85,7 @@ export async function runSetupVoiceAudioCheck(client: SetupVoiceAudioClient, dra
   } finally {
     clearTimeout(timer); if (onAbort) options.signal?.removeEventListener("abort", onAbort);
     if (processor) processor.onaudioprocess = null;
-    for (const node of playing) { node.onended = null; try { node.stop(); } catch {} } playing.clear();
+    for (const node of playing) { node.onended = null; try { node.stop(); } catch { /* already stopped */ } } playing.clear();
     processor?.disconnect(); source?.disconnect(); gain?.disconnect();
     if (socket) { socket.onmessage = null; socket.onerror = null; socket.onclose = null; if (socket.readyState < WebSocket.CLOSING) socket.close(); }
     stream?.getTracks().forEach(track => track.stop());

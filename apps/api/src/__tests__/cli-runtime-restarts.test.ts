@@ -62,7 +62,7 @@ function restartContext(store: InMemorySpaceStore): CliRuntimeRestartContext {
   return {
     store,
     traceId: "trace:test",
-    restarter: vi.fn(async (session: PaneCliSession, _runtime: AgentRuntime, _traceId: string) => {
+    restarter: vi.fn(async (session: PaneCliSession) => {
       return store.createPaneCliSession({
         paneId: session.paneId,
         roomId: session.roomId,

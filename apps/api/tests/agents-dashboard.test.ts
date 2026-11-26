@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { PANE_HIBERNATED_REASON } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
 import { geminiTurnRunning } from "../src/gemini-native-turns.js";
 import { roomTerminalState } from "../src/room-terminal-screen.js";
-import { claudeDashboardActivity, cliUsageLimited, createCliDashboardActivityReader, createDashboardAgentsReader, DASHBOARD_SCREEN_SETTLE_MS, dashboardScreenState, openCodeDashboardActivity, readDashboardActivity, type CliDashboardActivityReaders } from "../src/agents-dashboard.js";
+import { claudeDashboardActivity, cliUsageLimited, createCliDashboardActivityReader, createDashboardAgentsReader, DASHBOARD_SCREEN_SETTLE_MS, dashboardScreenState, openCodeDashboardActivity, readDashboardActivity, waitsForQuota, type CliDashboardActivityReaders } from "../src/agents-dashboard.js";
 
 describe("dashboard native activity", () => {
   it("shares one read per room among its callers, keeps it 2.5 s, and keeps no answer an invalidation overtook (API audit 4/11 F2)", async () => {
@@ -57,6 +58,19 @@ describe("dashboard native activity", () => {
     expect(read).not.toHaveBeenCalled();
     expect(await store.getActivePaneCliSession(idle.id)).toBeNull();
   });
+  it("labels a slept pane Sleeping, not Not running, so it is not mistaken for a dead one (15/11)", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Dashboard", initialPaneCount: 0 });
+    const [slept, dead] = ["Slept", "Dead"].map((title) => {
+      const pane = store.createPane({ roomId: room.id, title, mode: "TERMINAL", terminalRuntimeId: "cli:gemini" });
+      const session = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:gemini", providerId: "gemini", agentId: "gemini", purpose: "NORMAL", status: "RUNNING" });
+      store.updatePaneCliSession(session.sessionId, { status: "EXITED", isActive: false, statusReason: title === "Slept" ? PANE_HIBERNATED_REASON : "CLI exited." }, "trace:test");
+      return pane;
+    });
+    const result = await readDashboardActivity([slept!, dead!], store, vi.fn());
+    expect(result.details[slept!.id]).toMatchObject({ status: "idle", reason: "Sleeping" });
+    expect(result.details[dead!.id]).toMatchObject({ status: "idle", reason: "Not running" });
+  });
   it("reads the CLI of copilot, Design, App Studio and Video panes, whose terminal is a rail tab", async () => {
     const store = new InMemorySpaceStore();
     const room = store.createRoom({ name: "Dashboard", initialPaneCount: 0 });
@@ -74,7 +88,7 @@ describe("dashboard native activity", () => {
     const room = store.createRoom({ name: "Dashboard", initialPaneCount: 0 });
     const pane = store.createPane({ roomId: room.id, title: "OpenCode", mode: "TERMINAL", terminalRuntimeId: "cli:opencode" });
     store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:opencode", providerId: "opencode", agentId: "opencode", purpose: "NORMAL", status: "RUNNING", cwd: "/etc" });
-    const read = vi.fn(async (session: any) => session.runtimeId === "cli:opencode" ? "working" as const : "idle" as const);
+    const read = vi.fn(async (session: { runtimeId: string }) => session.runtimeId === "cli:opencode" ? "working" as const : "idle" as const);
     const result = await readDashboardActivity([pane], store, read);
     expect(result.activity[pane.id]).toBe("working");
     expect(read).toHaveBeenCalledTimes(1);
@@ -84,7 +98,7 @@ describe("dashboard native activity", () => {
     const room = store.createRoom({ name: "Dashboard", initialPaneCount: 0 });
     const pane = store.createPane({ roomId: room.id, title: "Gemini CLI", mode: "TERMINAL", terminalRuntimeId: "cli:gemini" });
     store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:gemini", providerId: "gemini", agentId: "gemini", purpose: "NORMAL", status: "RUNNING", cwd: "/etc" });
-    const read = vi.fn(async (session: any) => session.runtimeId === "cli:gemini" ? "working" as const : "idle" as const);
+    const read = vi.fn(async (session: { runtimeId: string }) => session.runtimeId === "cli:gemini" ? "working" as const : "idle" as const);
     const result = await readDashboardActivity([pane], store, read);
     expect(result.activity[pane.id]).toBe("working");
     expect(read).toHaveBeenCalledTimes(1);
@@ -126,6 +140,15 @@ describe("dashboard native activity", () => {
       tasks: [{ status: "WAITING_FOR_INPUT", timing: { startedAt: "2026-11-06T04:13:20.000Z", completedAt: "2026-11-06T04:14:58.000Z" } }] };
     expect(claudeDashboardActivity(held)).toMatchObject({ status: "waiting", reason: "Pace cap until 21:00 UTC", since: "2026-11-06T04:14:58.000Z" });
     expect(claudeDashboardActivity({ ...held, busy: true }).status).toBe("working");
+    // Operator 14/11 (Gina/Cody): a turn whose answer is its provider's 429 waits for the reset; it is not done, so nothing closes it.
+    const limited = { busy: false, status: "idle", rateLimit: { at: "2026-11-14T11:22:01.000Z", resetsAt: "2026-11-14T14:00:00.000Z" },
+      tasks: [{ status: "COMPLETED", timing: { startedAt: "2026-11-14T11:20:00.000Z", completedAt: "2026-11-14T11:22:01.000Z" } }] };
+    const waiting = claudeDashboardActivity(limited);
+    expect(waiting).toMatchObject({ status: "waiting", reason: "Usage limit", since: "2026-11-14T11:22:01.000Z", resetsAt: "2026-11-14T14:00:00.000Z" });
+    expect(waitsForQuota(waiting)).toBe(true);
+    expect(claudeDashboardActivity({ ...limited, busy: true }).status).toBe("working");
+    expect(claudeDashboardActivity({ ...limited, rateLimit: { ...limited.rateLimit, paceHold: true } }).status).toBe("done");
+    expect(waitsForQuota(claudeDashboardActivity({ ...limited, rateLimit: null }))).toBe(false);
   });
   it("keeps the rest of the room when one CLI cannot be read", async () => {
     const store = new InMemorySpaceStore();
@@ -137,6 +160,17 @@ describe("dashboard native activity", () => {
       return "working" as const;
     });
     expect((await readDashboardActivity(panes, store, read)).activity).toEqual({ [panes[1]!.id]: "working" });
+  });
+  it("reports the model a Codex pane runs, and the one it was asked for while they differ", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Dashboard", initialPaneCount: 0 });
+    const panes = ["switching", "settled"].map(title => store.createPane({ roomId: room.id, title, mode: "TERMINAL", terminalRuntimeId: "cli:codex" }));
+    panes.forEach(pane => store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:codex", providerId: "codex", agentId: "codex", purpose: "NORMAL", status: "RUNNING", modelId: "gpt-6-astra" }));
+    const running: Record<string, string> = { [panes[0]!.id]: "gpt-6.1-sol", [panes[1]!.id]: "gpt-6-astra" };
+    const { details } = await readDashboardActivity(panes, store, async session => ({ status: "done" as const, since: null, source: "native" as const, modelId: running[session.paneId] }));
+    expect(details[panes[0]!.id]).toMatchObject({ modelId: "gpt-6.1-sol", requestedModelId: "gpt-6-astra" });
+    expect(details[panes[1]!.id]).toMatchObject({ modelId: "gpt-6-astra" });
+    expect(details[panes[1]!.id]).not.toHaveProperty("requestedModelId");
   });
   it("resolves Codex, Gemini, OpenCode and screen-only CLIs with native state first", async () => {
     const session = (runtimeId: string) => ({ sessionId: `cli_session:${runtimeId.slice(4)}`, runtimeId, paneId: "pane:x" }) as never;
@@ -150,9 +184,13 @@ describe("dashboard native activity", () => {
       openCode: async () => openCode, claude: async () => null
     });
     expect(await read(session("cli:codex"))).toMatchObject({ status: "done", since: "2026-10-11T06:00:00.000Z", source: "native" });
+    codex = { status: "COMPLETED", lastActivityAtMs: Date.parse("2026-10-11T06:00:00.000Z"), modelId: "gpt-6-astra" };
+    expect(await read(session("cli:codex"))).toMatchObject({ status: "done", modelId: "gpt-6-astra" });
     // R9-7: a turn cut off by "model at capacity" waits on an API error (the monitor's STUCK, the Room Agent's continue).
     codex = { status: "COMPLETED", lastActivityAtMs: Date.parse("2026-10-28T07:55:48.722Z"), apiError: true };
     expect(await read(session("cli:codex"))).toMatchObject({ status: "waiting", reason: "API error", since: "2026-10-28T07:55:48.722Z", source: "native" });
+    codex = { status: "COMPLETED", lastActivityAtMs: Date.parse("2026-11-14T12:20:00.000Z"), usageLimit: true };
+    expect(await read(session("cli:codex"))).toMatchObject({ status: "waiting", reason: "Usage limit", since: "2026-11-14T12:20:00.000Z", source: "native" });
     codex = { status: "ABORTED" };
     expect(await read(session("cli:codex"))).toMatchObject({ status: "waiting", reason: "Interrupted" });
     codex = { status: "PENDING" }; screen = "WAITING_FOR_INPUT";
@@ -296,12 +334,19 @@ describe("dashboard native activity", () => {
       // Transcript prose above the composer cannot hold an agent in Working.
       ["prose", "- working tree clean\n- Press Esc to cancel a running turn, as documented.\n" + "\n".repeat(2) + Array.from({ length: 18 }, (_, i) => `line ${i}`).join("\n") + "\n› Ask anything", "IDLE"],
       ["finished background job", "Waiting for background terminal (esc to interrupt)\n› Ask Codex to do anything", "IDLE"],
+      // 14/11 22:37Z Emma (1128): a finished report quoting "waiting for approval" above an empty composer read as a 13-minute wait.
+      ["report above composer", "  • Program B6-8 (Dreame) remains on hold waiting for approval/login. (Also filed on CJ: EU &\n  US).\n"
+        + Array.from({ length: 14 }, (_, i) => `  report line ${i}`).join("\n") + `\n  Risk: None; no credentials accessed.\n${"─".repeat(99)}\n>\n${"─".repeat(99)}\n? for shortcuts   accept-edits · Gemini 3.8 Flash · high`, "IDLE"],
+      // 22/11 06:07Z Leo (goal 401b115b): Antigravity's login chooser read as a 7-minute "Needs input" wait.
+      ["antigravity sign-in", "     ▄▀▀▄\n    ▀▀▀▀▀▀\n   ▀▀▀▀▀▀▀▀\n  ▄▀▀    ▀▀▄\n ▄▀▀      ▀▀▄\n Welcome to the Antigravity CLI. You are currently not signed in.\n Select login method:\n > 1. Google OAuth\n   2. Use a Google Cloud project\n   ↑/↓ Navigate · enter Select", "WAITING_FOR_INPUT"],
+      ["dialog below an old composer", `>\n${"─".repeat(99)}\n Do you want to proceed?\n ❯ 1. Yes\n   2. No`, "WAITING_FOR_INPUT"],
     ];
     expect(Object.fromEntries(expectations.map(([name, screen]) => [name, dashboardScreenState(screen).state])))
       .toEqual(Object.fromEntries(expectations.map(([name, , state]) => [name, state])));
     expect(dashboardScreenState(expectations.find(([name]) => name === "grok usage limit")![1])).toMatchObject({ rule: "choice", reason: "Usage limit" });
     expect(dashboardScreenState(expectations.find(([name]) => name === "deepseek out of balance")![1])).toMatchObject({ rule: "usage-limit", reason: "Usage limit" });
     expect(dashboardScreenState(expectations.find(([name]) => name === "muse sign-in")![1])).toMatchObject({ rule: "approval", reason: "Sign-in required" });
+    expect(dashboardScreenState(expectations.find(([name]) => name === "antigravity sign-in")![1])).toMatchObject({ reason: "Sign-in required" });
     // A new turn after the failure reads as working even while the old error is still on screen.
     expect(dashboardScreenState(reasonix("  Insufficient Balance (request_id: <token>)\n  ⣽ working · 1s")).state).toBe("RUNNING");
   });
@@ -335,6 +380,19 @@ describe("dashboard native activity", () => {
     expect(dashboardScreenState(screen)).toMatchObject({ state: "WAITING_FOR_INPUT", reason: "Usage limit" });
     expect(cliUsageLimited(screen, undefined, null)).toBe(true);
   });
+  it("reads a 429 the CLI gave up on as a usage limit, but not the same words quoted in a diff (14/11 pane:Ur6ztEdXvpFH read IDLE, Nous closed it)", () => {
+    const codex = (said: string) => ["• Working on step 3 of the plan.", said, "", "› Ask Codex to do anything", "", "  gpt-6 high · 62% context left"].join("\n");
+    for (const said of ["■ exceeded retry limit, last status: 429 Too Many Requests", "■ stream error: exceeded retry limit, last status: 429 Too Many Requests; retry in 1s",
+      "  ⎿  API Error: Request rejected (429) · All 5 Claude accounts in Space Gateway reached their usage limit.",
+      "  ⎿  API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Too many requests\"}}",
+      "✕ [API Error: {\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\"}}]", "✕ [API Error: You have exhausted your capacity on this model.]"]) {
+      expect(dashboardScreenState(codex(said))).toMatchObject({ state: "WAITING_FOR_INPUT", reason: "Usage limit" });
+      expect(cliUsageLimited(codex(said), undefined, null)).toBe(true);
+    }
+    for (const quoted of ["+      error: { message: \"exceeded retry limit, last status: 429 Too Many Requests\" } });", "  ⎿  API Error: 500 Internal server error"]) {
+      expect(cliUsageLimited(codex(quoted), undefined, null)).toBe(false);
+    }
+  });
   it("reads an idle Antigravity composer as idle over a native turn an interrupt left RUNNING (6/11 Bruno/Kate, Dino/Paul)", async () => {
     // Real agy 1.5.1 screens (~/agent-workspace/active/20261106-gemini-idle/): Esc and ctrl+c write no native step, so the turn stays RUNNING.
     const border = "─".repeat(60), model = "accept-edits · Gemini 3.8 Flash · high";
@@ -357,6 +415,17 @@ describe("dashboard native activity", () => {
     expect(roomTerminalState(screen)).toBe("RUNNING");
     expect(geminiTurnRunning({ status: "RUNNING" }, false)).toBe(true);
     expect(await read(gemini)).toMatchObject({ status: "working", since: "2026-11-06T10:00:00.000Z", source: "native" });
+  });
+  it("reads Gemini's \"Individual quota reached ... Resets in 153h22m\" as a usage-limit wait with its reset, never working beside a RUNNING turn (Work/Emma 22/11)", async () => {
+    const now = Date.parse("2026-11-22T03:00:00.000Z");
+    const read = createCliDashboardActivityReader({
+      screenText: async () => "✦ Reading the startup list.\n⚠ Individual quota reached for gemini-3.8-flash. Resets in 153h22m. (Error ID 06ea6569)\n > Type your message",
+      codexTurn: vi.fn(), openCode: vi.fn(), claude: vi.fn(),
+      geminiTurns: async () => [{ status: "RUNNING", timing: { startedAt: "2026-11-19T03:00:00.000Z", completedAt: null } }]
+    }, () => now);
+    const detail = await read({ sessionId: "cli_session:gemini", runtimeId: "cli:gemini", paneId: "pane:emma" } as never);
+    expect(detail).toMatchObject({ status: "waiting", reason: "Usage limit", resetsAt: new Date(now + (153 * 60 + 22) * 60_000).toISOString() });
+    expect(waitsForQuota(detail)).toBe(true);
   });
   it("shows Done for screen-only CLIs once a watched turn goes quiet, and when each state began", async () => {
     let clock = Date.parse("2026-10-12T08:00:00.000Z");

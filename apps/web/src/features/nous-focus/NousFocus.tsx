@@ -12,6 +12,7 @@ import { NeedsYouFiles } from "../needs-you/NeedsYouFiles.js";
 import type { SideSurface } from "../docks/dock-types.js";
 import { useCoreApiOutage } from "../../core-api-availability.js";
 import { getCoreApiOutage } from "../../core-api-state.js";
+import { NousFloat, type NousFloatTarget } from "./NousFloat.js";
 import { announceNousFocusPhase, NOUS_FOCUS_CHECK_EVENT, NOUS_FOCUS_EVENT, readNousFocusEnabled, requestNousFocus, type NousFocusDetail } from "./nous-focus-events.js";
 
 export { forwardNousPaneBoardEvents, nousFocusHold } from "./nous-focus-events.js";
@@ -97,6 +98,20 @@ async function revealNeed(paneId: string, target: string, live: () => boolean): 
     if (pageId && (await api.revealBrowserNeed(paneId, pageId).catch(() => null))?.revealed) return;
   }
 }
+/** Going there is seeing it: an open record would be offered again on every other tab and after each reload (only OPEN: the read route
+ * would turn a resolved record back into READ). R27-2: going to a card that offers "Go now" is that answer, scored once (the server keeps
+ * the record READ for the visit). */
+function markWent(record: SpaceNotification | undefined): void {
+  const current = record ? peekNotificationStore().items.find((item) => item.id === record.id) ?? record : null;
+  if (record) dropNeedsYouPeek(record.id);
+  if (current && (current.status === "OPEN" || current.status === "READ") && needsYouAsk(current).options?.includes(NEEDS_YOU_GO_NOW)
+    && (current.payload.answer as { text?: unknown } | undefined)?.text !== NEEDS_YOU_GO_NOW) {
+    void api.answerNotification(current.id, { option: NEEDS_YOU_GO_NOW }).catch(() => current.status === "OPEN" ? markNotificationRead(current.id) : undefined);
+  } else if (current?.status === "OPEN") void markNotificationRead(current.id);
+}
+/** Nous's fullscreen is on this screen (its dock renders `is-fullscreen` only then). */
+const nousFullscreenShown = () => [...document.querySelectorAll<HTMLElement>(".dock-panel.nous-dock.is-fullscreen")]
+  .some((element) => typeof element.checkVisibility !== "function" || element.checkVisibility({ visibilityProperty: true }));
 const settled = (status: string | undefined) => status === "RESOLVED" || status === "ACKED";
 /** An open needs-you record this screen can show now: not held for the operator's morning. */
 const openNeedsYou = (item: SpaceNotification) => item.status === "OPEN" && needsYou(item) && !heldForNous(item)
@@ -125,7 +140,11 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
   const shown = useRef(new Set<string>());
   const paneOf = (id: string | null) => (id ? latest.current.panes.find((pane) => pane.id === id) ?? null : null);
 
-  const go = useCallback(async (asked: NousFocusDetail) => {
+  /** A Go while Nous is fullscreen: the pane in a floating window over it (operator nous_msg:8596b29a). */
+  const [float, setFloat] = useState<{ target: NousFloatTarget; detail: NousFocusDetail; record: SpaceNotification | null } | null>(null);
+
+  /** `leave`: the float's "Open the pane", his click to leave fullscreen for the pane itself. */
+  const go = useCallback(async (asked: NousFocusDetail, leave = false) => {
     if (navigating.current) return;
     navigating.current = true;
     const run = ++focusRun.current;
@@ -137,10 +156,24 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
     if (found?.page && !found.place) { navigating.current = false; setError(PAGE_GONE); return; }
     const detail = found?.place && asked.notification ? { ...asked, roomId: found.place.roomId, paneId: found.place.paneId,
       notification: { ...asked.notification, payload: { ...asked.notification.payload, browserPage: found.place } } } : asked;
-    // Going there is seeing it: an open record would be offered again on every other tab and after each reload (only OPEN: the read
-    // route would turn a resolved record back into READ).
     const record = detail.notification;
     const shell = latest.current;
+    // Operator nous_msg:8596b29a (14/11): in Nous fullscreen he stays there for good; the pane opens in a floating window over it.
+    if (!leave && !visitRef.current && nousFullscreenShown()) {
+      try {
+        const pane = paneOf(detail.paneId) ?? (await api.panes(detail.roomId)).data.find((entry) => entry.id === detail.paneId);
+        if (!pane || pane.isClosed) throw new Error("This pane is no longer available. Open Needs you to check the request.");
+        markWent(record);
+        const page = record ? needsYouBrowserPage(record) : null;
+        const tab = page?.paneId === detail.paneId ? /^tab:(\S+)$/.exec(page.target ?? "")?.[1] : undefined;
+        setFloat({ detail, record: record ?? null, target: { roomId: detail.roomId, paneId: detail.paneId, title: pane.title, browser: HANDOFF_MODES.has(pane.mode), ...(tab ? { pageId: tab } : {}) } });
+      } catch (failure) {
+        setError(failure instanceof Error ? failure.message : "The pane could not be opened. Please try again.");
+      } finally {
+        navigating.current = false;
+      }
+      return;
+    }
     const origin: Origin = visitRef.current?.origin ?? {
       roomId: shell.selectedRoomId, paneId: shell.selectedPaneId,
       maximizedPaneId: shell.panes.find((pane) => pane.roomId === shell.selectedRoomId && pane.isMaximized && !pane.isClosed)?.id ?? null,
@@ -171,13 +204,7 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
         notificationId: record?.id ?? null, terminal: (pane.mode ?? "TERMINAL") === "TERMINAL", record: record ?? null };
       visitRef.current = nextVisit;
       setVisit(nextVisit);
-      const current = record ? peekNotificationStore().items.find((item) => item.id === record.id) ?? record : null;
-      if (record) dropNeedsYouPeek(record.id);
-      // R27-2: going to a card that offers "Go now" is that answer, scored once (the server keeps the record READ for the visit).
-      if (current && (current.status === "OPEN" || current.status === "READ") && needsYouAsk(current).options?.includes(NEEDS_YOU_GO_NOW)
-        && (current.payload.answer as { text?: unknown } | undefined)?.text !== NEEDS_YOU_GO_NOW) {
-        void api.answerNotification(current.id, { option: NEEDS_YOU_GO_NOW }).catch(() => current.status === "OPEN" ? markNotificationRead(current.id) : undefined);
-      } else if (current?.status === "OPEN") void markNotificationRead(current.id);
+      markWent(record);
       // Every browser handoff uses the pane action; no focus path depends on a copilot strip being mounted.
       if (handoff && HANDOFF_MODES.has(pane.mode) && await api.browserHandoff(detail.paneId).then((result) => result.handoff?.status === "REQUESTED").catch(() => false)) {
         dispatchBrowserPaneActionEvent({ paneId: detail.paneId, action: "handoff", roomId: detail.roomId });
@@ -341,6 +368,7 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
     return () => document.removeEventListener("keydown", onKey, true);
   }, [visit]);
 
+  const floatRecord = float?.record ? stored.find((item) => item.id === float.record!.id) ?? float.record : null;
   const room = (id: string | null) => latest.current.rooms.find((entry) => entry.id === id)?.name ?? t("the room");
   return (
     <>
@@ -350,6 +378,12 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
           record={visit.notificationId ? stored.find((item) => item.id === visit.notificationId) ?? visit.record : null}
           backLabel={t("Back to {where}", { where: visit.origin.surfaceOpen && visit.origin.surface === "nous" ? "Nous" : room(visit.origin.roomId) })}
           onBack={() => void back()} onStay={() => { ++focusRun.current; setVisit(null); announceNousFocusPhase("stay"); }} />
+      ) : null}
+      {float ? (
+        <NousFloat key={float.target.paneId} target={float.target} language={language} onClose={() => setFloat(null)}
+          onOpen={() => { const { detail } = float; setFloat(null); void go(detail, true); }}>
+          {floatRecord && !settled(floatRecord.status) ? <CardAsk record={floatRecord} language={language} agents={agents} /> : null}
+        </NousFloat>
       ) : null}
     </>
   );
@@ -379,7 +413,7 @@ function FocusBar({ record, closed, language, agents, backLabel, onBack, onStay 
         <button type="button" className={done || closed ? "nous-focus-go" : undefined} data-nous-focus="back" onClick={onBack}><ArrowLeft aria-hidden="true" /><span>{backLabel}</span></button>
         {closed ? <span className="nous-focus-title">{t("The pane closed")}</span>
           : done ? <span className="nous-focus-title nous-focus-done"><Check aria-hidden="true" />{t("Done")}</span>
-          : record ? <span className="nous-focus-title" data-sensitive-masked="manual">{translated?.title ?? record.title}</span> : null}
+          : record ? <span className="nous-focus-title">{translated?.title ?? record.title}</span> : null}
         {card ? <button type="button" className="nous-focus-details" data-nous-focus="card" aria-expanded={open} aria-label={t(open ? "Less" : "Details")} title={t(open ? "Less" : "Details")}
           onClick={() => setOpen(!open)}><ChevronDown aria-hidden="true" /></button> : null}
         <button type="button" data-nous-focus="stay" aria-label={t("Stay here")} title={t("Stay here")} onClick={onStay}><X aria-hidden="true" /></button>
@@ -428,12 +462,12 @@ function CardAsk({ record, language, agents }: { record: SpaceNotification; lang
   const details = Boolean(body) && body !== question;
   return (
     <div className="nous-focus-card">
-      {question ? <p className="nous-focus-question" data-sensitive-masked="manual">{question}</p> : null}
+      {question ? <p className="nous-focus-question">{question}</p> : null}
       <NeedsYouFiles item={record} />
-      {sent ? <p role="status" data-sensitive-masked="manual">{sent}</p> : (
+      {sent ? <p role="status">{sent}</p> : (
         <div className="nous-focus-answers">
           {answers.map(({ key, label, input, primary }) => (
-            <button key={key} type="button" className={primary ? "nous-focus-go" : undefined} disabled={busy} onClick={() => void answer(input)} data-sensitive-masked="manual">{label}</button>
+            <button key={key} type="button" className={primary ? "nous-focus-go" : undefined} disabled={busy} onClick={() => void answer(input)}>{label}</button>
           ))}
           {details ? (
             <button type="button" className="nous-focus-details" data-nous-focus="details" aria-expanded={open} onClick={() => setOpen(!open)}>
@@ -444,11 +478,11 @@ function CardAsk({ record, language, agents }: { record: SpaceNotification; lang
       )}
       {open ? (
         <div className="nous-focus-reason" aria-label={t("Details")}>
-          <p data-sensitive-masked="manual">{lines.filter((entry) => entry.step <= shownSteps).map((entry) => entry.line).join("\n")}</p>
+          <p>{lines.filter((entry) => entry.step <= shownSteps).map((entry) => entry.line).join("\n")}</p>
           {step > STEPS_SHOWN ? <button type="button" className="nous-focus-more" onClick={() => setAllSteps(!allSteps)}>{allSteps ? t("Fewer steps") : t("{count} more steps", { count: step - STEPS_SHOWN })}</button> : null}
         </div>
       ) : null}
-      {error ? <p role="alert" data-sensitive-masked="manual">{error}</p> : null}
+      {error ? <p role="alert">{error}</p> : null}
     </div>
   );
 }

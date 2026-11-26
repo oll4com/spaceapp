@@ -163,6 +163,24 @@ describe("agents dashboard", () => {
     const reopenedFilters = screen.getByRole("group", { name: "Filter agents by status" });
     expect(within(reopenedFilters).getByRole("button", { name: /Working/ }).getAttribute("aria-pressed")).toBe("true");
   });
+  it("opens on a Nous Live tile's filter, never the remembered one, also when already open (operator nous_msg:ad2b3a6a)", async () => {
+    panes.mockResolvedValue({ data: [pane("Active", { status: "RUNNING" }), pane("Waiting", { status: "BLOCKED" })] });
+    const props = { rooms: [room], completions: {}, onOpenPane: vi.fn(), onClose: vi.fn(), userId: "user-123", currentRoomId: room.id };
+    const view = render(<AgentsDashboard {...props} open />);
+    await screen.findByRole("button", { name: "Open Active in Dashboard test" });
+    const pressed = (group: string) => within(screen.getByRole("group", { name: group })).getAllByRole("button")
+      .filter((button) => button.getAttribute("aria-pressed") === "true").map((button) => button.textContent?.replace(/\s*\d+$/, ""));
+    fireEvent.click(within(screen.getByRole("group", { name: "Filter agents by status" })).getByRole("button", { name: /Waiting/ }));
+    view.rerender(<AgentsDashboard {...props} open={false} />);
+    view.rerender(<AgentsDashboard {...props} open preset={{ filter: "idle", roomFilter: "all" }} />);
+    expect(pressed("Filter agents by status")).toEqual(["Idle"]);
+    expect(pressed("Show agents from")).toEqual(["All rooms"]);
+    view.rerender(<AgentsDashboard {...props} open preset={{ filter: "working", roomFilter: "all" }} />);
+    expect(pressed("Filter agents by status")).toEqual(["Working"]);
+    view.rerender(<AgentsDashboard {...props} open preset={{ filter: "all", roomFilter: "all", groupBy: "room" }} />);
+    expect(pressed("Filter agents by status")).toEqual(["All"]);
+    expect(pressed("Group agents by")).toEqual(["Room"]);
+  });
   it("scopes agents with one This room / All rooms control and keeps room grouping for All rooms only", async () => {
     const roomA = room;
     const roomB = { ...room, id: "room:secondary", name: "Secondary Room" };

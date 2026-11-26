@@ -89,6 +89,7 @@ export class SourceControlService {
     this.available(provider);
     return this.exclusive(owner, provider, async () => {
       const token = credentials.token?.trim();
+      // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
       if (!token || /[\x00-\x1f\x7f]/.test(token)) throw new GitControlError("INVALID_TOKEN", "Enter a valid Personal Access Token.");
       const email = credentials.email?.trim();
       if (provider === "bitbucket" && (!email || !/^[^\s:@]+@[^\s:@]+\.[^\s:@]+$/.test(email))) throw new GitControlError("INVALID_ACCOUNT", "Enter your Atlassian account email.");

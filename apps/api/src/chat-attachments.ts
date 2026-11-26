@@ -33,6 +33,7 @@ export function chatAttachmentReceipts(artifacts: Artifact[]): NonNullable<Agent
   return artifacts.map(artifact => ({
     artifactId: artifact.id,
     name: (typeof artifact.metadata.originalFilename === "string"
+      // eslint-disable-next-line no-control-regex -- stripping control characters is the point
       ? artifact.metadata.originalFilename.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 512) : "") || "Attached file",
     mimeType: artifact.mimeType,
     byteSize: artifact.byteSize,

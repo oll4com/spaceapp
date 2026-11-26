@@ -1,4 +1,4 @@
-import { ArrowUp, Bot, Camera, File, FileVideo, Hash, Keyboard, Monitor, Paperclip, Plus, Sparkles, Square, Trash2, X } from "../ui-theme/app-icons.js";
+import { ArrowUp, Bot, Camera, File, FileVideo, Keyboard, Monitor, Paperclip, Plus, Sparkles, Square, Trash2, X } from "../ui-theme/app-icons.js";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { AgentPaneModelProvider, PaneCliModelSettings, PromptVariable } from "@space/contracts";
 import { PromptVariableAutocomplete } from "../prompt-variables/PromptVariableAutocomplete.js";
@@ -169,7 +169,6 @@ export function CodexComposer({
   const { settings: autocorrectSettings } = useKeyboardAutocorrectSettings();
   const prevLayoutSuggestionRef = useRef(false);
   const [typingLayoutMode, setTypingLayoutMode] = useState<"el" | "en" | null>(null);
-  const greekTypingMode = typingLayoutMode === "el";
   const greekInputStateRef = useRef(createGreekInputState(false));
 
   const setTypingMode = useCallback((mode: "el" | "en" | null) => {
@@ -177,11 +176,11 @@ export function CodexComposer({
     greekInputStateRef.current.enabled = mode === "el";
     if (mode) {
       try {
-        const desktop = (window as any).spaceDesktop;
+        const desktop = (window as unknown as { spaceDesktop?: { switchKeyboardLayout?: (mode: "el" | "en") => Promise<unknown> } }).spaceDesktop;
         if (typeof desktop?.switchKeyboardLayout === "function") {
           desktop.switchKeyboardLayout(mode).catch(() => {});
         }
-      } catch {}
+      } catch { /* desktop bridge failed: the in-app layout still switches */ }
     }
   }, []);
 

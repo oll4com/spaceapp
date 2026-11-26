@@ -78,14 +78,14 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
   // Callbacks outlive the render that made them, so `t` reads the language through a ref.
   const t = (text: string, vars?: Record<string, string | number>) => uiText(languageRef.current, text, vars);
   const reconnectMessage = () => t("Live stream disconnected; reconnecting.");
-  const [status, setStatus] = useState<BrowserStatusPayload | null>(null);
+  const [, setStatus] = useState<BrowserStatusPayload | null>(null);
   const [response, setResponse] = useState<PaneBrowserSessionResponse | null>(null);
   const [receivedLiveFrame, setReceivedLiveFrame] = useState(false);
   const [frame, setFrame] = useState<BrowserFrame | null>(null);
-  const [handoff, setHandoff] = useState(false);
+  const [, setHandoff] = useState(false);
   const [controlLease, setControlLease] = useState<BrowserControlLeasePayload | null>(null);
-  const [streamState, setStreamState] = useState<YouTubeStreamState>("idle");
-  const [streamFps, setStreamFps] = useState<number | null>(null);
+  const [, setStreamState] = useState<YouTubeStreamState>("idle");
+  const [, setStreamFps] = useState<number | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [transportPaused, setTransportPaused] = useState(false);
@@ -362,7 +362,6 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
       window.removeEventListener(BROWSER_PANE_ACTION_EVENT, handleBrowserPaneAction);
       unregister();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id]);
 
   // Live only while the operator has this pane in front of them (operator 2/11), no frames otherwise.
@@ -376,7 +375,6 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
     updatePaused();
     document.addEventListener("visibilitychange", updatePaused);
     return () => document.removeEventListener("visibilitychange", updatePaused);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id, pane.isMinimized, facing, observerOnly]);
 
   useEffect(() => {

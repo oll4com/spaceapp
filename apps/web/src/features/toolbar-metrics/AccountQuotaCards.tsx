@@ -237,6 +237,10 @@ export function ApiProviderCard({ account, atReset }: { account: ApiProviderAcco
       {remaining != null ? (
         <QuotaCell label={`Of ${limit}`} remaining={remaining} resetAt={null} threshold={ACCOUNT_LOW_CREDIT_PERCENT} clock={0} />
       ) : null}
+      {/* Operator 17/11 (nous_msg:35d3e36f8d414784bde8e43f): the Claude API budget is typed by hand; Anthropic reports no balance. */}
+      {account.providerId === "anthropic" && limit ? (
+        <small className="api-provider-note">Budget set by you in Space Gateway › Settings › Anthropic billing; Anthropic does not report top-ups</small>
+      ) : null}
       {facts.length ? <div className="api-provider-facts">{facts.map((fact) => <span key={fact}>{fact}</span>)}</div> : null}
       {/* Make's monthly reset date is already one of its facts. */}
       {account.providerId === "make" ? null : atReset?.([], account.status === "UNCONFIGURED" ? "not set up" : account.status === "ERROR" ? "the balance could not be read" : "paid per token, the provider reports no reset")}

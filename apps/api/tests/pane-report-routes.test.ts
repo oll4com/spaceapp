@@ -1,11 +1,13 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import Fastify from "fastify";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { getApiConfig } from "../src/config.js";
+import { registerPaneReportRoutes } from "../src/pane-report-routes.js";
 
 // A pane CLI's own progress report to Nous (plan clipboard:ot6-jLKOWDNC, slice 2): POST /api/cli/progress.
 const roots: string[] = [];
@@ -65,6 +67,25 @@ describe("CLI progress bridge", () => {
       expect((await post(bob.headers, { status: "started", summary: "Bob starts" })).statusCode).toBe(201);
       store.updatePaneCliSession(bob.cliSession.sessionId, { status: "EXITED", isActive: false });
       expect((await post(bob.headers, { status: "done", summary: "after exit" })).statusCode).toBe(409);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("a done or failed report releases the pane's own CLI browsers (plan clipboard:nLYbDf3TqBPm step 3)", () => {
+  it("calls workEnded with the token's pane for done and failed only", async () => {
+    const app = Fastify();
+    const workEnded = vi.fn(async () => undefined);
+    registerPaneReportRoutes(app, { store: { getRoom: async () => ({ id: "room:a" }), getPane: async () => ({ id: "pane:kate" }) } as never, routeOptions: {},
+      requireBridge: async () => ({ claims: { roomId: "room:a", paneId: "pane:kate", cliSessionId: "cli_session:k" } }) as never, parseBody: (schema, body) => schema.parse(body),
+      reports: () => ({ report: async (_room: unknown, _pane: unknown, input: { status: string }) => ({ id: "r", at: "now", status: input.status, summary: "s" }) }) as never, workEnded });
+    try {
+      for (const status of ["started", "progress", "needs-you", "waiting", "done", "failed"]) {
+        const payload = status === "needs-you" ? { status, summary: "s", checked: ["memory: nothing"] } : { status, summary: "s" };
+        expect((await app.inject({ method: "POST", url: "/api/cli/progress", payload })).statusCode, status).toBe(201);
+      }
+      expect(workEnded.mock.calls).toEqual([["pane:kate"], ["pane:kate"]]);
     } finally {
       await app.close();
     }

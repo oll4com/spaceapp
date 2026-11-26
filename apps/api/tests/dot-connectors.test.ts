@@ -193,6 +193,10 @@ describe("connector crypto and messages", () => {
     expect(calls[0]!.url).toContain("/calendars/primary/events?iCalUID=abc%40google.com");
     expect(calls[1]).toMatchObject({ method: "PATCH", url: expect.stringMatching(/\/events\/g1\?sendUpdates=all$/),
       body: { attendees: [guests[0], { email: "me@gmail.com", self: true, responseStatus: "accepted" }] } });
+    // check (15/11): finds the event and its self guest, answers nothing.
+    calls.length = 0;
+    expect(await google.respondEvent("t", { iCalUID: "abc@google.com", response: "accepted", check: true })).toMatchObject({ eventId: "g1" });
+    expect(calls.map((call) => call.method)).toEqual(["GET"]);
     googleEvents = [{ id: "g2", attendees: [guests[0]] }];
     await expect(google.respondEvent("t", { iCalUID: "x", response: "declined" })).rejects.toMatchObject({ status: 409, code: "CONNECTOR_NOT_INVITED" });
     googleEvents = [];

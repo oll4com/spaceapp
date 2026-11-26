@@ -49,5 +49,5 @@ export function workerLog(level: WorkerLogLevel, event: string, fields: Readonly
     record[key] = value;
   }
   // Logging must never change an activity's outcome.
-  try { sink(JSON.stringify(record), level); } catch {}
+  try { sink(JSON.stringify(record), level); } catch { /* a failed sink drops this line only */ }
 }

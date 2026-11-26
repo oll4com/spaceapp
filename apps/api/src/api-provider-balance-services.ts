@@ -68,7 +68,7 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
       else if ((key === "GEMINI_API_KEY" || key === "GOOGLE_API_KEY") && !keys.google) keys.google = val;
       else if ((key === "SPACE_JEV_API_KEY" || key === "JEV_API_KEY") && !keys.jev) keys.jev = val;
     }
-  } catch {}
+  } catch { /* no Reasonix .env: the key sources below still apply */ }
 
   // 3. Fallback DeepSeek credential file
   if (!keys.deepseek) {
@@ -87,7 +87,7 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
           keys.deepseek = val;
           break;
         }
-      } catch {}
+      } catch { /* missing or unreadable key file: try the next one */ }
     }
   }
 
@@ -107,7 +107,7 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
           keys.openrouter = val;
           break;
         }
-      } catch {}
+      } catch { /* missing or unreadable key file: try the next one */ }
     }
   }
 
@@ -127,7 +127,7 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
           keys.google = val;
           break;
         }
-      } catch {}
+      } catch { /* missing or unreadable key file: try the next one */ }
     }
   }
 
@@ -137,7 +137,7 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
       const raw = await readFile(`${SPACE_INSTALL_ROOT}/secrets/space-openai-voice.key`, "utf8");
       const val = raw.trim();
       if (val) keys.openai = val;
-    } catch {}
+    } catch { /* no OpenAI voice key file */ }
   }
 
   // 6. Fallback Vercel secret key
@@ -146,7 +146,7 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
       const raw = await readFile(`${SPACE_INSTALL_ROOT}/secrets/space-vercel-voice.key`, "utf8");
       const val = raw.trim();
       if (val) keys.vercel = val;
-    } catch {}
+    } catch { /* no Vercel voice key file */ }
   }
 
   // 7. Google Cloud Service Account JSON
@@ -162,7 +162,7 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
         token_uri: parsed.token_uri
       };
     }
-  } catch {}
+  } catch { /* no or unreadable service-account JSON: Google Cloud usage stays off */ }
 
   // 8. Fallback Jev TypeSafe secret key
   if (!keys.jev) {
@@ -180,7 +180,7 @@ export async function discoverApiProviderKeys(): Promise<ProviderKeys> {
           keys.jev = val;
           break;
         }
-      } catch {}
+      } catch { /* missing or unreadable key file: try the next one */ }
     }
   }
 
@@ -253,7 +253,7 @@ async function queryDeepSeek(apiKey: string): Promise<ApiProviderAccount> {
       models: ["deepseek-chat", "deepseek-reasoner"],
       sampledAt
     };
-  } catch (err: any) {
+  } catch (err) {
     return {
       id: "deepseek",
       providerId: "deepseek",
@@ -261,7 +261,7 @@ async function queryDeepSeek(apiKey: string): Promise<ApiProviderAccount> {
       status: "ERROR",
       balance: null,
       currency: null,
-      detail: err?.message || "Failed to reach DeepSeek API",
+      detail: (err as Error | undefined)?.message || "Failed to reach DeepSeek API",
       sampledAt
     };
   }
@@ -310,7 +310,7 @@ async function queryOpenRouter(apiKey: string): Promise<ApiProviderAccount> {
         if (keyJson.data?.free_model_daily_requests) {
           freeReqs = keyJson.data.free_model_daily_requests;
         }
-      } catch {}
+      } catch { /* unreadable key body: free-request counts stay unknown */ }
     }
 
     const totalCredits = creditsJson.data?.total_credits ?? 0;
@@ -338,7 +338,7 @@ async function queryOpenRouter(apiKey: string): Promise<ApiProviderAccount> {
       detail,
       sampledAt
     };
-  } catch (err: any) {
+  } catch (err) {
     return {
       id: "openrouter",
       providerId: "openrouter",
@@ -346,7 +346,7 @@ async function queryOpenRouter(apiKey: string): Promise<ApiProviderAccount> {
       status: "ERROR",
       balance: null,
       currency: null,
-      detail: err?.message || "Failed to reach OpenRouter API",
+      detail: (err as Error | undefined)?.message || "Failed to reach OpenRouter API",
       sampledAt
     };
   }
@@ -373,7 +373,7 @@ async function queryVercelGateway(apiKey: string): Promise<ApiProviderAccount> {
         };
         email = userJson.user?.email || userJson.user?.username || email;
         isLimited = userJson.user?.limited ?? false;
-      } catch {}
+      } catch { /* unreadable user body: keep the default email and limited=false */ }
     }
 
     if (creditsRes.ok) {
@@ -438,7 +438,7 @@ async function queryVercelGateway(apiKey: string): Promise<ApiProviderAccount> {
       detail: `HTTP error ${creditsRes.status}: ${creditsRes.statusText}`,
       sampledAt
     };
-  } catch (err: any) {
+  } catch (err) {
     return {
       id: "vercel-gateway",
       providerId: "vercel-gateway",
@@ -446,7 +446,7 @@ async function queryVercelGateway(apiKey: string): Promise<ApiProviderAccount> {
       status: "ERROR",
       balance: null,
       currency: null,
-      detail: err?.message || "Failed to reach Vercel API",
+      detail: (err as Error | undefined)?.message || "Failed to reach Vercel API",
       sampledAt
     };
   }
@@ -719,7 +719,7 @@ async function fetchGoogleCloudTelemetry(sa: GoogleServiceAccountKey): Promise<G
           estimatedCostUsd = Math.round((outputTokensMonth / 1_000_000) * 0.40 * 10000) / 10000;
         }
       }
-    } catch {}
+    } catch { /* Monitoring API unreachable or unreadable: monthly counts stay 0, cost unknown */ }
 
     return {
       projectId: sa.project_id,
@@ -789,7 +789,6 @@ async function queryGoogleGemini(
     if (cloudTelemetry) {
       const r24 = cloudTelemetry.requests24h ?? 0;
       const r7d = cloudTelemetry.requests7d ?? 0;
-      const rMonth = cloudTelemetry.requestsMonth ?? 0;
       const now = new Date();
       const monthName = now.toLocaleString("en-US", { month: "long" });
 
@@ -867,7 +866,7 @@ async function queryGoogleGemini(
       models: selectedModels,
       sampledAt
     };
-  } catch (err: any) {
+  } catch (err) {
     return {
       id: "google-gemini",
       providerId: "google",
@@ -875,7 +874,7 @@ async function queryGoogleGemini(
       status: "ERROR",
       balance: null,
       currency: null,
-      detail: err?.message || "Failed to reach Google Gemini API",
+      detail: (err as Error | undefined)?.message || "Failed to reach Google Gemini API",
       sampledAt
     };
   }
@@ -904,7 +903,7 @@ async function queryOpenAiKey(apiKey: string): Promise<ApiProviderAccount> {
         sampledAt
       };
     }
-  } catch {}
+  } catch { /* models list unreachable: the key still reads as configured */ }
 
   return {
     id: "openai",
@@ -926,7 +925,7 @@ export function recordJevCredits(credits: number) {
   lastKnownJevSampledAt = new Date().toISOString();
 }
 
-async function queryJevTypeSafe(apiKey: string): Promise<ApiProviderAccount> {
+async function queryJevTypeSafe(): Promise<ApiProviderAccount> {
   const sampledAt = new Date().toISOString();
   const credits = lastKnownJevBalance ?? getLastKnownJevCredits();
   if (credits !== null) {
@@ -1195,7 +1194,7 @@ export function createApiProviderAccountProvider(
         }
 
         if (keys.jev) {
-          queries.push(queryJevTypeSafe(keys.jev));
+          queries.push(queryJevTypeSafe());
         }
 
         // A Gateway read that fails lists no pools this time (the gateway's own pages show why); the other rows stay.
@@ -1228,7 +1227,7 @@ export function createApiProviderAccountProvider(
 
         cached = { value: list, collectedAtMs: currentMs };
         return list;
-      } catch (err: any) {
+      } catch (err) {
         if (cached) {
           return { ...cached.value, isStale: true };
         }
@@ -1237,7 +1236,7 @@ export function createApiProviderAccountProvider(
           pagination: { page: 1, pageSize: 1, totalItems: 0, totalPages: 1 },
           source: "api-credentials-and-balance-services",
           isStale: true,
-          error: err?.message || "Failed to query API providers",
+          error: (err as Error | undefined)?.message || "Failed to query API providers",
           checkedAt: now().toISOString()
         };
       } finally {

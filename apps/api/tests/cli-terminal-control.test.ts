@@ -7,6 +7,7 @@ import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession, signSessionWithTtl } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
+import { claudeNativeSessionId } from "../src/qoder-native-session.js";
 import { ownedSystemAnalytics } from "./owned-system-analytics.js";
 
 const sessionSecret = "terminal-control-test-secret";
@@ -67,7 +68,7 @@ function httpControlHeaders(
 
 function deferred() {
   let resolve = () => undefined;
-  let reject = (_error: Error) => undefined;
+  let reject: (error: Error) => void = () => undefined;
   const promise = new Promise<void>((onResolve, onReject) => {
     resolve = onResolve;
     reject = onReject;
@@ -95,6 +96,7 @@ async function createHarness(roomKind?: "AGENT_PROOF", options: { beforeCodexDef
   const commandPath = join(commandDir, "codex-vscode-parity");
   await writeFile(commandPath, "#!/bin/sh\nexit 0\n", "utf8");
   await chmod(commandPath, 0o755);
+  await writeFile(join(commandDir, "claude-vscode-parity"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 
   const store = new InMemorySpaceStore();
   const room = store.createRoom({ name: "CLI terminal control", initialPaneCount: 0, ...(roomKind ? { kind: roomKind } : {}) });
@@ -155,6 +157,7 @@ async function createHarness(roomKind?: "AGENT_PROOF", options: { beforeCodexDef
       SPACE_CLI_ENABLED: "true",
       SPACE_CLI_COMMAND_PATH: commandDir,
       SPACE_CLI_CODEX_CREDENTIAL_SMOKE: "true",
+      SPACE_CLI_CLAUDE_CREDENTIAL_SMOKE: "true",
       SPACE_CLI_WORKSPACE_ROOT: workspaceRoot
     }),
     auth: {
@@ -222,7 +225,8 @@ async function createHarness(roomKind?: "AGENT_PROOF", options: { beforeCodexDef
 async function issueSession(
   harness: Awaited<ReturnType<typeof createHarness>>,
   auth: ReturnType<typeof authFor>,
-  method: "GET" | "POST" = "POST"
+  method: "GET" | "POST" = "POST",
+  runtimeId = "cli:codex"
 ) {
   const response = await harness.app.inject({
     method,
@@ -231,7 +235,7 @@ async function issueSession(
       cookie: auth.cookie,
       ...(method === "POST" ? { [csrfHeaderName]: auth.csrfToken } : {})
     },
-    ...(method === "POST" ? { payload: { runtimeId: "cli:codex" } } : {})
+    ...(method === "POST" ? { payload: { runtimeId } } : {})
   });
   expect(response.statusCode).toBe(200);
   const body = response.json() as {
@@ -692,6 +696,24 @@ describe("CLI terminal protocol-v2 control", () => {
       expect(harness.host.attach).toHaveBeenCalledTimes(1);
       first.socket.terminate();
       reconnect.socket.terminate();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("starts a Claude pane on its own session id and keeps that id on the task revision (Dana 14/11)", async () => {
+    const harness = await createHarness();
+    const auth = authFor("user:claude-session-id");
+    try {
+      const session = await issueSession(harness, auth, "POST", "cli:claude");
+      const socket = await connect(harness, session, auth, { tabLineageId: firstTabLineageId, pageClientId: firstPageClientId });
+      await waitForFrame(socket.frames, (frame) => frame.type === "ready");
+      const id = claudeNativeSessionId(session.session.sessionId);
+      expect(harness.host.attach.mock.calls[0]?.[0].spawn?.env.SPACE_CLAUDE_SESSION_ID).toBe(id);
+      // A reopen resumes it by this id even when no poll recorded the session.
+      const revisionId = harness.store.getPaneCliSession(session.session.sessionId)?.cliTaskRevisionId;
+      expect(harness.store.getCliTaskRevision(revisionId!)?.nativeTaskRef).toBe(id);
+      socket.socket.terminate();
     } finally {
       await harness.cleanup();
     }

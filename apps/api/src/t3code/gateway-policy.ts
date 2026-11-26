@@ -20,6 +20,7 @@ export class T3GatewayError extends Error {
 }
 
 export function parseT3GatewayPath(rawUrl: string) {
+  // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
   if (rawUrl.length > 8192 || /[\\\x00-\x20\x7f#]/.test(rawUrl)) throw new T3GatewayError(400, "T3_PATH_INVALID");
   const match = /^\/api\/t3code\/panes\/([^/]+)\/app\/(.*)$/.exec(rawUrl);
   if (!match) throw new T3GatewayError(404, "T3_NOT_FOUND");
@@ -28,11 +29,13 @@ export function parseT3GatewayPath(rawUrl: string) {
   const pathname = suffix.split("?", 1)[0]!;
   try { paneId = decodeURIComponent(match[1]!); decoded = decodeURIComponent(pathname); }
   catch { throw new T3GatewayError(400, "T3_PATH_INVALID"); }
+  // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
   if (!PANE.test(paneId) || /%(?:2f|5c)/i.test(pathname) || /[%\\\x00-\x1f\x7f]/.test(decoded) ||
       decoded.startsWith("/") || decoded.split("/").some(part => part === "." || part === "..")) {
     throw new T3GatewayError(400, "T3_PATH_INVALID");
   }
   const query = new URLSearchParams(suffix.includes("?") ? suffix.slice(suffix.indexOf("?") + 1) : "");
+  // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
   if ([...query].length > 32 || [...query].some(([key, value]) => PRIVATE_QUERY.test(key) || key.length > 80 || value.length > 2048 || /[\x00-\x1f\x7f]/.test(key + value))) {
     throw new T3GatewayError(400, "T3_QUERY_INVALID");
   }
@@ -58,6 +61,7 @@ export function isAllowedT3Http(method: string, rawPath: string): boolean {
 
 export function t3RedirectLocation(location: string, basePath: string, fromPath = "/"): string {
   if (/^[a-z][a-z0-9+.-]*:/i.test(location) && !location.startsWith("http://127.0.0.1:3773/")) throw new T3GatewayError(502, "T3_REDIRECT_REJECTED");
+  // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
   if (location.startsWith("//") || /[\\\x00-\x20\x7f]/.test(location)) throw new T3GatewayError(502, "T3_REDIRECT_REJECTED");
   const target = new URL(location, "http://127.0.0.1:3773" + fromPath);
   if (target.origin !== "http://127.0.0.1:3773" || target.hash) throw new T3GatewayError(502, "T3_REDIRECT_REJECTED");

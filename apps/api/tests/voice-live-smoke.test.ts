@@ -13,7 +13,7 @@ describe("Voice Live Smoke & Credential Verification", () => {
       let key = "";
       try {
         key = (await readFile(keyPath, "utf8")).trim();
-      } catch {}
+      } catch { /* Unreadable key: the smoke check below is skipped. */ }
 
       if (key) {
         const config = getApiConfig({
@@ -86,7 +86,7 @@ describe("Voice Live Smoke & Credential Verification", () => {
       let key = "";
       try {
         key = (await readFile(vercelKeyFile, "utf8")).trim();
-      } catch {}
+      } catch { /* Unreadable key: the smoke check below is skipped. */ }
 
       if (key) {
         const config = getApiConfig({

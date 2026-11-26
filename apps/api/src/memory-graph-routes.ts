@@ -439,7 +439,7 @@ function resolveRecordCalendarDate(record: MemoryGraphRecord): { dateKey: string
   return null;
 }
 
-  app.get("/api/admin/memory/calendar", async (request, reply) => {
+  app.get("/api/admin/memory/calendar", async (request) => {
     requireMemoryGraph(options.config);
     const query = memoryCalendarQuerySchema.parse(request.query);
     const archiveSnapshot = await options.service.getArchiveSnapshot();

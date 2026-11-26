@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { noRepeatedValues } from "./array-rules.js";
 
-const identifier = z.string().min(1).max(160).regex(/^[A-Za-z0-9_.:*\/-]+$/);
+const identifier = z.string().min(1).max(160).regex(/^[A-Za-z0-9_.:*/-]+$/);
 export const capabilityNameSchema = z.enum(["vision", "shell", "filesystem", "browser", "web", "summary", "capture"]);
 export const capabilityEvidenceSchema = z.object({
   state: z.enum(["AVAILABLE", "UNAVAILABLE", "UNKNOWN"]),

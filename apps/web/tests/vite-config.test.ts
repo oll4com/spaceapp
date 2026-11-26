@@ -12,6 +12,9 @@ describe("web bundle chunk policy", () => {
     expect(manualChunkForModule("/workspace/node_modules/@xterm/addon-fit/lib/addon-fit.js")).toBe("vendor-xterm");
     expect(manualChunkForModule("/workspace/node_modules/lucide-react/dist/esm/icons/terminal.js")).toBe("vendor-icons");
     expect(manualChunkForModule("/workspace/node_modules/zod/v4/core/index.js")).toBe("vendor-validation");
+    expect(manualChunkForModule("/workspace/node_modules/motion-dom/dist/es/index.mjs")).toBeUndefined();
+    expect(manualChunkForModule("/workspace/node_modules/tldts/dist/es6/src/data/trie.js")).toBe("vendor-shell");
+    expect(manualChunkForModule("/workspace/node_modules/micromark-core-commonmark/lib/list.js")).toBe("vendor-shell");
     expect(manualChunkForModule("/workspace/node_modules/graphology/dist/graphology.js")).toBeUndefined();
     expect(manualChunkForModule("/workspace/src/features/browser-pane/BrowserPane.tsx")).toBeUndefined();
   });

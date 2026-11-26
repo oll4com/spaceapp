@@ -1,4 +1,4 @@
-import type { NousDecision, NousDecisionAction } from "@space/contracts";
+import { zonedWallTimeToUtc, type NousDecision, type NousDecisionAction } from "@space/contracts";
 import type { FreelanceCopilotService } from "../freelance-copilot/service.js";
 import type { JobApplyService } from "../job-apply/service.js";
 import type { MailCampaignsService } from "../mail-campaigns/service.js";
@@ -11,14 +11,15 @@ import { SETTLED_DECISION_OUTCOME } from "./workbench.js";
  * a COPILOT decision by its item's final state, a mail decision by our logged send to its recipients in any thread or its thread.
  */
 export interface ApprovalStores {
-  mail?: Pick<MailCopilotService, "threadSend" | "sentTo" | "listEvents" | "listRules">;
-  marketing?: Pick<MarketingCopilotService, "getPost" | "listPosts" | "listCampaigns" | "listRules">;
+  mail?: Pick<MailCopilotService, "sendsReader" | "listEvents" | "listRules">;
+  marketing?: Pick<MarketingCopilotService, "listPosts" | "listCampaigns" | "listRules">;
   freelance?: Pick<FreelanceCopilotService, "getMessage" | "getLead" | "listRules">;
   job?: Pick<JobApplyService, "listEvents" | "getApplication">;
   mailCampaigns?: Pick<MailCampaignsService, "campaigns">;
 }
 export type ApprovalSettlement = { state: "DONE" | "VOID"; proof: string };
 type CopilotAction = Extract<NousDecisionAction, { type: "COPILOT" }>;
+type MailSends = Awaited<ReturnType<MailCopilotService["sendsReader"]>>;
 
 // By item kind and the decision taken: the statuses that complete it. Any other final status of the item voids it (declined, cancelled, superseded).
 const DONE: Record<CopilotAction["item"], Record<string, string[]>> = {
@@ -43,33 +44,37 @@ const quiet = <T>(promise: Promise<T> | undefined) => promise ? promise.catch(()
 
 /** The copilot item's status as the copilots keep it, and its evidence (a published URL, a sent message id); null: not found or not readable. */
 type MarketingPost = NonNullable<Awaited<ReturnType<MarketingCopilotService["getPost"]>>>;
-const postById = async (owner: string, id: string, stores: ApprovalStores) =>
+/** What one compute reads once for every decision: the mail store's sends and decided reviews, and the marketing posts by id. */
+type StoreReads = { mailSends: () => Promise<MailSends> | undefined; posts: () => Promise<Map<string, MarketingPost> | null> };
+const postById = async (id: string, reads: StoreReads) => {
+  const posts = await reads.posts();
   // 5/11: an itemId without its "mktpost:" prefix read as "not found" (decision 153387ed).
-  await quiet(stores.marketing?.getPost(owner, id)) ?? (id.includes(":") ? null : await quiet(stores.marketing?.getPost(owner, `mktpost:${id}`)));
+  return posts?.get(id) ?? (id.includes(":") ? null : posts?.get(`mktpost:${id}`)) ?? null;
+};
 
 /**
  * Audit 6/11 (operator «μπορεί να μην έφυγε το αρχικό αλλά έφυγε στο τέλος»): the post that took a post's place. The one its title names
  * ("[REPLACED by X]"), else for a failed or superseded post a later post of the same channel and target, a published one first.
  */
-async function replacementOf(owner: string, post: MarketingPost, seen: Set<string>, stores: ApprovalStores): Promise<MarketingPost | null> {
+async function replacementOf(post: MarketingPost, seen: Set<string>, reads: StoreReads): Promise<MarketingPost | null> {
   const named = /replaced by (?:mktpost:)?([\w-]+)/i.exec(post.title ?? "")?.[1];
-  if (named) return postById(owner, named, stores);
+  if (named) return postById(named, reads);
   if (post.status !== "FAILED" && post.status !== "SUPERSEDED") return null;
   // shortcut: a target as broad as a subreddit ("r/hetzner") takes any later post there as the replacement; name it in the title when that is wrong.
-  const later = ((await quiet(stores.marketing?.listPosts(owner, { channel: post.channel }))) ?? [])
+  const later = [...(await reads.posts())?.values() ?? []].filter((other) => other.channel === post.channel)
     // Goal 84ba917a 6/11: a FAILED post re-filed under the same title on the channel is its replacement too.
     .filter((other) => (other.target === post.target || (!!post.title && other.title === post.title)) && other.createdAt > post.createdAt && !seen.has(other.id)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   return later.find((other) => other.status === "PUBLISHED" && other.publishedUrl) ?? later[0] ?? null;
 }
 
-export async function copilotItemState(owner: string, action: CopilotAction, since: string, stores: ApprovalStores): Promise<{ status: string; proof: string; scheduledAt?: string | null } | null> {
+export async function copilotItemState(owner: string, action: CopilotAction, since: string, stores: ApprovalStores, reads: StoreReads): Promise<{ status: string; proof: string; scheduledAt?: string | null } | null> {
   const id = action.itemId;
   switch (`${action.copilot}:${action.item}`) {
     case "MARKETING:REVIEW": {
-      let post = await postById(owner, id, stores);
+      let post = await postById(id, reads);
       for (const seen = new Set<string>(); post && !seen.has(post.id) && post.status !== "PUBLISHED";) {
         seen.add(post.id);
-        post = await replacementOf(owner, post, seen, stores) ?? post;
+        post = await replacementOf(post, seen, reads) ?? post;
       }
       // Published only with its URL: the evidence.
       return post && { status: post.status === "PUBLISHED" && !post.publishedUrl ? "PUBLISHED_NO_URL" : post.status, proof: post.publishedUrl ?? post.id, scheduledAt: post.scheduledAt };
@@ -84,7 +89,7 @@ export async function copilotItemState(owner: string, action: CopilotAction, sin
     case "FREELANCE:REVIEW": { const message = await quiet(stores.freelance?.getMessage(owner, id)); return message && { status: message.status, proof: message.id }; }
     case "FREELANCE:LEAD": { const lead = await quiet(stores.freelance?.getLead(owner, id)); return lead && { status: lead.status, proof: lead.url ?? lead.id }; }
     case "MAIL:REVIEW": {
-      const decided = (await quiet(stores.mail?.listEvents(owner, { types: ["REVIEW_DECIDED"], since })))?.find((event) => event.payload.reviewId === id);
+      const decided = (await quiet(reads.mailSends()))?.decided(id, since);
       if (!decided) return null;
       const sent = decided.payload.sent as { messageId?: string } | null | undefined;
       return { status: decided.payload.decision === "reject" ? "REJECTED" : sent?.messageId ? "SENT" : "DECIDED", proof: sent?.messageId ?? decided.id };
@@ -120,13 +125,22 @@ export function copilotItemOf(decision: Pick<NousDecision, "title" | "body" | "r
 
 // shortcut: a D/M date (the operator's day/month, this year) after a word like from/on/for/από/για in the title; a title naming a later
 // date for another reason waits until that date. Upgrade to a structured send date on the ask if that misreads.
-const SEND_DATE = /(?:\b(?:from|on|for|starting|scheduled)|(?:^|\s)(?:από|για|στις|ξεκινά\S*))\s+(?!24\/7(?![\d/]))(?:[^\s\d/]{1,12}\.?\s+)?(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?(?![\d/])/gi;
+const SEND_DATE = /(?:\b(?:from|on|for|starting|scheduled)|(?:^|\s)(?:από|για|στις|ξεκινά\S*))\s+(?!24\/7(?![\d/]))(?:[^\s\d/]{1,12}\.?\s+)?(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?(?![\d/])(?:,?\s+(?:at\s+|στις\s+)?(\d{1,2}):(\d{2})(?!\d)(\s*(?:Z|UTC|GMT)(?![A-Za-z\d]))?)?/gi;
 /** Nous 6/11 (a7a0a672 «… 20 mails για Δευτ. 9/11 και Τρ. 10/11», 8fe06919 «… από 12/11»): the first day after the approval day a send's title dates it to. */
-export function titleSendDate(title: string, approvedAt: string): string | null {
+export function titleSendDate(title: string, approvedAt: string, timeZone = "UTC"): string | null {
   const approved = new Date(approvedAt);
   const approvalDay = Date.UTC(approved.getUTCFullYear(), approved.getUTCMonth(), approved.getUTCDate());
-  const days = [...title.matchAll(SEND_DATE)].map(([, day, month, year]) => Number(day) <= 31 && Number(month) <= 12
-    ? Date.UTC(year ? Number(year) : approved.getUTCFullYear(), Number(month) - 1, Number(day)) : Number.NaN).filter((day) => day > approvalDay);
+  const days = [...title.matchAll(SEND_DATE)].map(([, day, month, year, hour, minute, utc]) => {
+    if (Number(day) > 31 || Number(month) > 12) return Number.NaN;
+    const [y, m, d] = [year ? Number(year) : approved.getUTCFullYear(), Number(month) - 1, Number(day)];
+    // 14/11 (c218d9d9 «… στις 14/11 07:44Z»): a time after the date is the send's moment (UTC when marked, else the operator's zone), not 00:00Z.
+    if (hour !== undefined && Number(hour) <= 23 && Number(minute) <= 59) {
+      const at = utc ? Date.UTC(y, m, d, Number(hour), Number(minute)) : zonedWallTimeToUtc(y, m, d, Number(hour), Number(minute), timeZone);
+      return at > approved.getTime() ? at : Number.NaN;
+    }
+    const date = Date.UTC(y, m, d);
+    return date > approvalDay ? date : Number.NaN;
+  }).filter((at) => !Number.isNaN(at));
   return days.length ? new Date(Math.min(...days)).toISOString() : null;
 }
 
@@ -142,22 +156,32 @@ const askOf = (decision: NousDecision, item = copilotItemOf(decision)) => item ?
  * of any account; SENT wins over a bounced one), `scheduled` an approved post's future date or the day its title dates the send to (not late before it), and one decision done
  * settles the others that asked for the same item, recipients or thread (audit 6/11).
  */
-export async function approvalStates(owner: string, decisions: NousDecision[], since: number, stores: ApprovalStores) {
+export async function approvalStates(owner: string, decisions: NousDecision[], since: number, stores: ApprovalStores, timeZone = "UTC") {
   const sends: Record<string, "SENT" | "BOUNCED"> = {};
   const settled: Record<string, ApprovalSettlement> = {};
   const scheduled: Record<string, string> = {};
   const window = decisions.filter((decision) => decision.status === "APPROVED" && decision.category === "EXTERNAL"
     && Date.parse(decision.answeredAt ?? decision.createdAt) >= since);
+  // The mail store's sends and decided reviews are read once per compute, from the window's start or the earliest ask created before it;
+  // each decision filters them by its own time. The marketing posts too, all of them (stable 14/11: 260; a getPost per decision and a
+  // channel's posts per failed or superseded one were 450 statements and 19,000 rows per compute).
+  const from = new Date(Math.min(since, ...window.map((decision) => Date.parse(decision.createdAt)))).toISOString();
+  let mailRead: Promise<MailSends> | undefined;
+  let postsRead: Promise<Map<string, MarketingPost> | null> | undefined;
+  const reads: StoreReads = {
+    mailSends: () => stores.mail && (mailRead ??= stores.mail.sendsReader(owner, null, from)),
+    posts: () => postsRead ??= quiet(stores.marketing?.listPosts(owner, {})).then((posts) => posts && new Map(posts.map((post) => [post.id, post])))
+  };
   await Promise.all(window.map(async (decision) => {
     const approvedAt = decision.answeredAt ?? decision.createdAt;
     const action = copilotItemOf(decision);
     if (action) {
-      const item = await copilotItemState(owner, action, decision.createdAt, stores);
+      const item = await copilotItemState(owner, action, decision.createdAt, stores, reads);
       const settlement = copilotSettlement(action, item);
       if (settlement) { settled[decision.id] = settlement; return; }
       if (item?.status === "APPROVED" && item.scheduledAt) scheduled[decision.id] = item.scheduledAt;
     }
-    const dated = scheduled[decision.id] ? null : titleSendDate(decision.title, approvedAt);
+    const dated = scheduled[decision.id] ? null : titleSendDate(decision.title, approvedAt, timeZone);
     if (dated) scheduled[decision.id] = dated;
     const thread = decision.refs.mailThread;
     const recipients = decision.refs.recipients ?? [];
@@ -170,8 +194,9 @@ export async function approvalStates(owner: string, decisions: NousDecision[], s
         && /invitation|confirm|booked|scheduled|upcoming/i.test(String(event.payload.subject ?? "")));
       if (confirmation) { settled[decision.id] = { state: "DONE", proof: `${thread.account} message ${confirmation.messageId ?? confirmation.id}: ${String(confirmation.payload.subject)}` }; return; }
     }
-    const [inThread, toRecipients] = await Promise.all([thread ? quiet(stores.mail.threadSend(owner, thread.account, thread.threadId, approvedAt, recipients)) : null,
-      recipients.length ? quiet(stores.mail.sentTo(owner, null, recipients, approvedAt)) : null]);
+    const mail = await quiet(reads.mailSends());
+    const inThread = thread ? mail?.threadSend(thread.account, thread.threadId, approvedAt, recipients) : null;
+    const toRecipients = recipients.length ? mail?.sentTo(recipients, approvedAt) : null;
     const state = inThread === "SENT" || toRecipients?.state === "SENT" ? "SENT" : inThread ?? toRecipients?.state;
     if (state) sends[decision.id] = state;
   }));

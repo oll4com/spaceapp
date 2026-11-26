@@ -1,7 +1,9 @@
 import { abortOpenCodeSession, openCodeSpaceChatStateRoot, parseOpenCodeCompositeModelId, readOpenCodeServerControl } from "@space/opencode-control";
 import { nowIso, SpaceConflictError, type SpaceStore } from "@space/runtime";
+import type { Pane } from "@space/contracts";
 import { unlink } from "node:fs/promises";
 import { discoverAntigravityProfiles } from "./antigravity-usage-services.js";
+import { gatewayCliAccountProfiles } from "./gateway/gateway-cli-accounts.js";
 import { switchClaudePaneAccount, type ClaudeAccountSwitchDeps } from "./claude-account-switch.js";
 import { findNativeCliModel } from "./cli-native-model-picker.js";
 import { hasExactNativeTaskResume } from "./cli-native-task-resume.js";
@@ -76,14 +78,14 @@ export function createRoomPaneCliController(deps: RoomPaneCliControllerDeps) {
       if (action.modelId || action.reasoningEffort) {
         await assertNoManagedModelMutation(pane.id);
         if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
-          const control = await resolveOpenCodeServerControl(session);
+          await resolveOpenCodeServerControl(session);
           const before = await readPaneOpenCodeModelSettings(pane, session, traceId);
           const modelId = action.modelId ?? before.settings.current?.modelId;
           const model = before.settings.models.find((entry) => entry.id === modelId);
           const ref = modelId ? parseOpenCodeCompositeModelId(modelId) : null;
           if (!model || !ref) throw new SpaceConflictError("The model is not advertised by this CLI.");
           const reasoning = action.reasoningEffort ?? model.defaultReasoningEffort;
-          await applyOpenCodePaneSelection(pane, session, model, reasoning, traceId, undefined, before.settings.models);
+          await applyOpenCodePaneSelection(pane, session, model, reasoning, traceId);
           const after = await readPaneOpenCodeModelSettings(pane, session, traceId);
           if (after.settings.current?.modelId !== model.id) throw new SpaceConflictError("OpenCode model readback did not confirm the requested model.");
           await store.updatePaneCliSession(session.sessionId, { modelId: model.id, reasoningEffort: reasoning }, traceId);
@@ -150,6 +152,16 @@ export function createRoomPaneCliController(deps: RoomPaneCliControllerDeps) {
               // R74 (2026-11-05 REVIEW: 6 of 14 failed switches on 4/11 answered only this list): name what was asked.
               : `${!model ? `"${requested ?? ""}" is no Claude model` : `${model.id} has no effort ${reasoning ? `"${reasoning}"` : "set"}`}: `
                 + `Claude offers ${before.models.map((entry) => `${entry.id} (${entry.supportedReasoningEfforts.join("/")})`).join(", ")}.`);
+          } else if (before && before.models.length > 0 && action.modelId) {
+            // 22/11 06:06Z (pane:sh994CSitcEw cli:gemini asked for claude-opus-5-5): when the native catalog loaded,
+            // never fall back to a blind /model menu search for an unadvertised id or over a running turn.
+            throw new SpaceConflictError(before.isTurnActive ? "Wait for this CLI turn to finish before changing models."
+              : `${!model ? `"${requested ?? ""}" is not available in the CLI's current model menu`
+                : `${model.id} has no effort ${reasoning ? `"${reasoning}"` : "set"} in the CLI's current model menu`}: `
+                + `this CLI offers ${before.models.map((entry) => `${entry.id} (${entry.supportedReasoningEfforts.join("/")})`).join(", ")}.`);
+          } else if (session.runtimeId === "cli:gemini" && action.modelId) {
+            // Antigravity's /model menu lists display names, never raw model ids, so a blind /model search always fails.
+            throw new SpaceConflictError("The Gemini model catalog is unavailable; try again shortly.");
           } else await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId,
             command: "/model", selection: action.modelId ?? action.reasoningEffort, when: action.when }, traceId);
         }
@@ -220,7 +232,8 @@ export function createRoomPaneCliController(deps: RoomPaneCliControllerDeps) {
       if (action.accountProfileId !== undefined) {
         if (session.runtimeId === "cli:gemini") {
           const targetProfile = action.accountProfileId;
-          if (targetProfile && targetProfile !== "main") {
+          // 18/11 (×12): the gateway profile lives in no profile folder; the Gemini wrapper runs it on the main sign-in (deploy/gemini-vscode-parity).
+          if (targetProfile && targetProfile !== "main" && targetProfile !== gatewayCliAccountProfiles["cli:gemini"]?.profileId) {
             const profiles = await discoverAntigravityProfiles();
             if (!profiles.some((p) => p.profileId === targetProfile)) {
               throw new SpaceConflictError(`Antigravity account profile "${targetProfile}" is not found.`);
@@ -245,7 +258,7 @@ export function createRoomPaneCliController(deps: RoomPaneCliControllerDeps) {
               const pids = await cliTerminalManager.activeSessionPids([session]).catch(() => null);
               const rootPid = pids?.get(session.sessionId) ?? null;
               if (rootPid) {
-                try { process.kill(rootPid, "SIGTERM"); } catch {}
+                try { process.kill(rootPid, "SIGTERM"); } catch { /* The CLI already exited; the session is closed below either way. */ }
               }
               await store.updatePaneCliSession(
                 session.sessionId,
@@ -307,41 +320,52 @@ export function createRoomPaneCliController(deps: RoomPaneCliControllerDeps) {
     async interruptCli(pane, traceId) {
       const active = await store.getActivePaneCliSession(pane.id);
       if (!active || active.status === "EXITED" || pane.isClosed) return { interrupted: false, state: "EXITED" };
-      const session = await roomCliSession(pane);
-      let interrupted = false;
-      if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
-        const control = await resolveOpenCodeServerControl(session);
-        await abortOpenCodeSession(control, control.nativeSessionId);
-        interrupted = true;
-      } else if (isCodexDirectParityRuntime(session.runtimeId)) {
-        const before = await readPaneCliModelSettings(pane, session, traceId).catch(() => null);
-        if (before?.settings.threadId && before.activity?.turnId && before.settings.isTurnActive) {
-          try {
-            await before.directControl.interruptTurn({ threadId: before.settings.threadId, turnId: before.activity.turnId });
-            interrupted = true;
-          } catch {}
-        }
-        if (!interrupted) {
-          await cliTerminalManager.sendInput(session.sessionId, "\u001b", traceId, null, `${traceId}:interrupt:esc`);
-          interrupted = true;
-        }
-      } else {
-        const key = roomTerminalInterruptKey(session.runtimeId);
-        await cliTerminalManager.sendInput(session.sessionId, key, traceId, null, `${traceId}:interrupt:1`);
-        // Oh My Pi 18 runs a pty:true command in an overlay whose Escape kills only that command; the model then runs it again and
-        // the next prompt lands in the new command (plan clipboard:NtzEOzE3Ew00 step 9, 3/11). An Escape after the overlay closes stops
-        // the turn. At an idle empty composer an Escape more than 500 ms after the last one only records the time (two within 500 ms
-        // open its rewind selector) and a draft is kept, so the follow-ups are harmless once the turn has ended.
-        if (session.runtimeId === "cli:omp") {
-          for (const [index, atMs] of OMP_FOLLOW_UP_ESCAPES_MS.entries()) {
-            await new Promise((resolve) => setTimeout(resolve, atMs - (OMP_FOLLOW_UP_ESCAPES_MS[index - 1] ?? 0)));
-            await cliTerminalManager.sendInput(session.sessionId, key, traceId, null, `${traceId}:interrupt:${index + 2}`);
-          }
-        }
-        interrupted = true;
-      }
-      return { sessionId: session.sessionId, interrupted, observation: await inspectRoomCli(pane) };
+      // Slice 23 (Nous space_stop_pane ×2, 14-15/11): the row was still active but the host session had ended; the attach records it
+      // closed and throws "CLI host session … is EXITED." Nothing runs there, so the stop is done, as in the line above.
+      return interruptActiveCli(pane, traceId).catch((error) => {
+        const ended = error instanceof SpaceConflictError && /^CLI host session \S+ is ([A-Z_]+)\.$/.exec(error.message)?.[1];
+        if (!ended || ended === "RUNNING") throw error;
+        return { sessionId: active.sessionId, interrupted: false, state: ended };
+      });
     }
   });
+  async function interruptActiveCli(pane: Pane, traceId: string) {
+    const session = await roomCliSession(pane);
+    let interrupted = false;
+    if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
+      const control = await resolveOpenCodeServerControl(session);
+      await abortOpenCodeSession(control, control.nativeSessionId);
+      interrupted = true;
+    } else if (isCodexDirectParityRuntime(session.runtimeId)) {
+      const before = await readPaneCliModelSettings(pane, session, traceId).catch(() => null);
+      if (before?.settings.threadId && before.activity?.turnId && before.settings.isTurnActive) {
+        try {
+          await before.directControl.interruptTurn({ threadId: before.settings.threadId, turnId: before.activity.turnId });
+          interrupted = true;
+        } catch {
+          // The direct interrupt failed; Esc below interrupts through the terminal instead.
+        }
+      }
+      if (!interrupted) {
+        await cliTerminalManager.sendInput(session.sessionId, "\u001b", traceId, null, `${traceId}:interrupt:esc`);
+        interrupted = true;
+      }
+    } else {
+      const key = roomTerminalInterruptKey(session.runtimeId);
+      await cliTerminalManager.sendInput(session.sessionId, key, traceId, null, `${traceId}:interrupt:1`);
+      // Oh My Pi 18 runs a pty:true command in an overlay whose Escape kills only that command; the model then runs it again and
+      // the next prompt lands in the new command (plan clipboard:NtzEOzE3Ew00 step 9, 3/11). An Escape after the overlay closes stops
+      // the turn. At an idle empty composer an Escape more than 500 ms after the last one only records the time (two within 500 ms
+      // open its rewind selector) and a draft is kept, so the follow-ups are harmless once the turn has ended.
+      if (session.runtimeId === "cli:omp") {
+        for (const [index, atMs] of OMP_FOLLOW_UP_ESCAPES_MS.entries()) {
+          await new Promise((resolve) => setTimeout(resolve, atMs - (OMP_FOLLOW_UP_ESCAPES_MS[index - 1] ?? 0)));
+          await cliTerminalManager.sendInput(session.sessionId, key, traceId, null, `${traceId}:interrupt:${index + 2}`);
+        }
+      }
+      interrupted = true;
+    }
+    return { sessionId: session.sessionId, interrupted, observation: await inspectRoomCli(pane) };
+  }
   return roomPaneController;
 }

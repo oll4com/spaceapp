@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { childProcessEnv } from "./child-process-env.js";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, appendFile, mkdir, open, readFile, rm, stat } from "node:fs/promises";
+import { access, appendFile, chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -21,7 +21,6 @@ import { monthOfMemoryFile, spaceMemoryIndexPath, spaceMemoryMonthlyPath } from 
 import { nowIso, redactMemoryText } from "./store.js";
 
 const execFileAsync = promisify(execFile);
-const canonicalMemoryListLimit = 1000;
 
 export interface CanonicalSpaceMemoryPaths {
   indexPath: string;
@@ -183,6 +182,65 @@ function findSavedBlock(existing: string, title: string, body: string): { id: st
   return null;
 }
 
+/**
+ * Two users write the memory files: the API (`space`, in the agent user's group) and agents' `space-memory-save` (the agent user). The umask makes a
+ * new month's file 0644, and the other writer then fails with EACCES (11/11 16:56 UTC, queue 2026-11-12 REVIEW). The writer that owns a
+ * file that is not 0660 (no group write, or readable by others under a 0002 umask) gives it 0660 (rw for the group of the setgid folder, none for others, as on 11/11); best effort: a file another user owns is left as it is.
+ */
+async function keepGroupWritable(path: string): Promise<void> {
+  try {
+    const info = await stat(path);
+    if ((info.mode & 0o777) === 0o660 || (typeof process.getuid === "function" && info.uid !== process.getuid())) return;
+    await chmod(path, 0o660);
+  } catch {
+    // Only the next writer's access depends on it; the save itself is done.
+  }
+}
+
+/** Appends to a month file read in full under its lock (existing: null when it did not exist). */
+async function appendRead(path: string, existing: string | null, text: string): Promise<void> {
+  await appendFile(path, text, "utf8").catch(async (error: NodeJS.ErrnoException) => {
+    // 11/11 16:56 (Nous space_memory_save EACCES): the other writer's file without group write cannot be chmodded by this one. The month was
+    // read in full under the shared lock, so it is written again as this writer's own file and renamed over in the group-writable folder.
+    if (error.code !== "EACCES" || existing === null) throw error;
+    const temp = `${path}.${process.pid}.tmp`;
+    await writeFile(temp, `${existing}${text}`, { encoding: "utf8", flag: "w", mode: 0o660 });
+    await rename(temp, path).catch(async (renameError) => { await rm(temp, { force: true }); throw renameError; });
+  });
+  await keepGroupWritable(path);
+}
+
+const BLOCK_ID = /^<!-- space-memory:id=([A-Za-z0-9:_-]{3,200}) -->/;
+/** The id-marked blocks of a memory file, first of each id; text before the first marker (a heading, older unmarked notes) is not a block. */
+export function canonicalMemoryBlocks(content: string): Map<string, string> {
+  const blocks = new Map<string, string>();
+  for (const block of content.split(/(?=<!-- space-memory:id=)/)) {
+    const id = BLOCK_ID.exec(block)?.[1];
+    if (id && !blocks.has(id)) blocks.set(id, block.endsWith("\n") ? block : `${block}\n`);
+  }
+  return blocks;
+}
+
+/**
+ * Space Memory from a linked SpaceApp (plan clipboard:TcX66vjNuZDv step 3): appends each whole block whose id this month's file lacks,
+ * under the same lock as every save. Never rewrites or removes a block; a block that is not exactly one id-marked block is refused.
+ */
+export async function appendCanonicalMemoryBlocks(monthlyPath: string, blocks: readonly string[]): Promise<{ added: number }> {
+  const parsed = blocks.map((block) => [...canonicalMemoryBlocks(block)]);
+  if (parsed.some((found, index) => found.length !== 1 || found[0]![1].trimEnd() !== blocks[index]!.trimEnd())) throw new Error("Not one Space Memory block each.");
+  await mkdir(dirname(monthlyPath), { recursive: true });
+  return withFileLock(`${monthlyPath}.lock`, async () => {
+    const existing = await readCanonicalFile(monthlyPath);
+    const have = canonicalMemoryBlocks(existing ?? "");
+    const missing = new Map(parsed.map((found) => found[0]!).filter(([id]) => !have.has(id)));
+    if (!missing.size) return { added: 0 };
+    const month = monthOfMemoryFile(monthlyPath);
+    const prefix = existing === null ? `# Space Memory ${month ?? ""}\n` : existing.endsWith("\n") ? "" : "\n";
+    await appendRead(monthlyPath, existing, prefix + [...missing.values()].join(""));
+    return { added: missing.size };
+  });
+}
+
 async function appendCanonicalSpaceMemory(
   paths: CanonicalSpaceMemoryPaths,
   input: CreateMemoryEntryInput,
@@ -198,8 +256,7 @@ async function appendCanonicalSpaceMemory(
     const existing = await readCanonicalFile(paths.monthlyPath);
     const duplicate = existing ? findSavedBlock(existing, title, body) : null;
     if (duplicate) return duplicate;
-    const separator = existing && !existing.endsWith("\n") ? "\n" : "";
-    await appendFile(paths.monthlyPath, `${prefix}${separator}${block}`, "utf8");
+    await appendRead(paths.monthlyPath, existing, `${prefix}${existing && !existing.endsWith("\n") ? "\n" : ""}${block}`);
     return { id, createdAt };
   });
   return memoryEntrySchema.parse({

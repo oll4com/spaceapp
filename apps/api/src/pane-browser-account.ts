@@ -166,7 +166,8 @@ export function createPaneBrowserAccounts(options: {
   }
   // Gemini account emails for the account menus (they merge a Gemini account with the
   // linked Google account of the same email). An email rarely changes, so a menu waits
-  // only briefly for the native probe and otherwise keeps the last known email.
+  // only briefly for the native probe and otherwise keeps the last known email. A profile with no email is asked again
+  // after 5 minutes (asked each minute, the census held one native probe a minute per signed-out profile; Slice 8 21/11).
   const geminiBrowserEmails = new Map<string, { email: string | null; expiresAt: number }>();
   async function geminiAccountEmails(profileIds: string[]): Promise<Map<string, string | null>> {
     const stale = profileIds.filter(profileId => (geminiBrowserEmails.get(profileId)?.expiresAt ?? 0) <= Date.now());
@@ -177,7 +178,7 @@ export function createPaneBrowserAccounts(options: {
           const profileId = stale[next++]!;
           const { email } = await readCachedCliAccountIdentity("cli:gemini", profileId);
           const known = geminiBrowserEmails.get(profileId)?.email ?? null;
-          geminiBrowserEmails.set(profileId, { email: email ?? known, expiresAt: Date.now() + (email ? 10 * 60_000 : 60_000) });
+          geminiBrowserEmails.set(profileId, { email: email ?? known, expiresAt: Date.now() + (email ? 10 * 60_000 : 5 * 60_000) });
         }
       }));
       let timer: NodeJS.Timeout | undefined;

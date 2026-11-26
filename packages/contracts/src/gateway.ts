@@ -57,12 +57,37 @@ export const gatewayAccountStatusSchema = z.enum(["ACTIVE", "RATE_LIMITED", "QUO
 /**
  * Free plans never serve gateway traffic (operator rule 2026-10-13): an account whose plan is or becomes free is
  * paused with this reason, and resuming it is refused until a sign-in on a paid plan replaces the free one.
+ * Antigravity is the exception (operator rule 2026-11-17): its free-plan accounts are used, and one this rule paused
+ * before is resumed.
  */
 export const GATEWAY_FREE_PLAN_PAUSE_REASON = "Free plan: paused automatically and never used. Sign in again on a paid plan, then resume.";
 
 export function isGatewayFreePlan(planType: string | null | undefined): boolean {
   const plan = (planType ?? "").trim().toLowerCase().replace(/[-\s]+/g, "_");
   return plan === "free" || plan === "free_workspace";
+}
+
+/** Providers whose free-plan accounts serve traffic (operator rule 2026-11-17: Antigravity); the pause rule above still holds for the rest. */
+export const GATEWAY_FREE_PLAN_SERVED_PROVIDERS: readonly string[] = ["ANTIGRAVITY"];
+
+/** True when the free-plan pause rule applies: the plan is free and the provider is not one that serves free plans. */
+export function gatewayFreePlanPaused(provider: string, planType: string | null | undefined): boolean {
+  return isGatewayFreePlan(planType) && !GATEWAY_FREE_PLAN_SERVED_PROVIDERS.includes(provider);
+}
+
+/**
+ * Models that Code Assist offers only on paid Antigravity plans (Google AI Pro / Ultra), never on Free / Starter Quota
+ * (which lists them as `-disabled` or omits them in `fetchAvailableModels` and answers 404 NOT_FOUND on model calls;
+ * Neon answers 429 "Individual quota reached", as Starter's Gemini group holds Gemini 3.8 Flash only).
+ */
+export function antigravityModelRequiresPaidPlan(model: string | null | undefined): boolean {
+  const name = (model ?? "").trim().toLowerCase();
+  if (!name) return false;
+  if (name.startsWith("gemini-4-argon") || name.startsWith("gemini-4-carbon") || name.startsWith("gemini-4-neon")) return true;
+  if (name.startsWith("gemini-4-hydrogen") && name !== "gemini-4-hydrogen-sonar") return true;
+  if (name.startsWith("gemini-pro") || name.startsWith("gemini-3-pro") || name.startsWith("gemini-3.1-pro") || name.startsWith("nano-banana-pro")) return true;
+  if (/^claude-(?:opus|sonnet|haiku|fable|mythos)-5\b/.test(name)) return true;
+  return false;
 }
 
 export const gatewayRoutingStrategySchema = z.enum([
@@ -98,14 +123,14 @@ export const gatewayCompressionProvidersSchema = z.object({
 /**
  * The provider routes Nous's "Space" provider tries, first to last (operator 3/11 15:03 BKK and 8/11): each route is a
  * Space Gateway pool and the runtime that drives it. CLAUDE_OPENCODE is the Claude API-key account run by OpenCode, never by Claude Code
- * (operator rule 27/10: the API budget is only for use outside Claude Code). ANTIGRAVITY is Gemini Argon, ANTIGRAVITY_FLASH Gemini 3.8 Flash and ANTIGRAVITY_CLAUDE the Claude models of Antigravity (8/11).
+ * (operator rule 27/10: the API budget is only for use outside Claude Code). ANTIGRAVITY is Gemini 4 Neon (Argon only as fallback, operator 22/11 c74c7453), ANTIGRAVITY_FLASH Gemini 3.8 Flash and ANTIGRAVITY_CLAUDE the Claude models of Antigravity (8/11).
  * Inside a route the pool's own account routing (fill-first) still picks the account; this order only says which route a turn tries next when one has no room.
  */
-export const GATEWAY_PROVIDER_ROUTES = ["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_FLASH", "ANTIGRAVITY_CLAUDE", "BEDROCK", "VERTEX"] as const;
+export const GATEWAY_PROVIDER_ROUTES = ["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_CLAUDE", "ANTIGRAVITY_FLASH", "BEDROCK", "VERTEX"] as const;
 export const gatewayProviderRouteSchema = z.enum(GATEWAY_PROVIDER_ROUTES);
 export type GatewayProviderRoute = z.infer<typeof gatewayProviderRouteSchema>;
 /** The subscription routes. */
-const SUBSCRIPTION_ROUTES: ReadonlySet<GatewayProviderRoute> = new Set(["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_FLASH", "ANTIGRAVITY_CLAUDE"]);
+const SUBSCRIPTION_ROUTES: ReadonlySet<GatewayProviderRoute> = new Set(["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_CLAUDE", "ANTIGRAVITY_FLASH"]);
 export const GATEWAY_FREE_ROUTES: ReadonlySet<GatewayProviderRoute> = new Set([]);
 /**
  * The free models of a pool whose catalog mixes free and paid and whose account has no card (new-signups.md 7/11, each provider's pricing page):
@@ -122,9 +147,7 @@ export const gatewayPoolModelFree = (provider: GatewayProvider, id: string): boo
 export const GATEWAY_KEYLESS_KEY = "keyless-anonymous-access";
 /** Claude on cloud credits (plan clipboard:qIOxhbvXfHyT step 3): right after the subscriptions, off until a person turns one on, never for Claude Code. */
 export const CLOUD_CREDIT_ROUTES: ReadonlySet<GatewayProviderRoute> = new Set(["BEDROCK", "VERTEX"]);
-/** Free routes of unvetted third parties that see prompts: a stored order takes them in after its last free route, not before the others. */
-const GATEWAY_RELAY_ROUTES: ReadonlySet<GatewayProviderRoute> = new Set([]);
-/** The default provider order: Claude, Codex, Claude via OpenCode, Gemini Argon, Gemini 3.8 Flash and Claude (Antigravity); cloud credits off. */
+/** The default provider order: Claude, Codex, Claude via OpenCode, Gemini Neon, Gemini 3.8 Flash and Claude (Antigravity); cloud credits off. */
 export const GATEWAY_DEFAULT_PROVIDER_ORDER: Array<{ route: GatewayProviderRoute; enabled: boolean }> = GATEWAY_PROVIDER_ROUTES
   .map((route) => ({ route, enabled: !CLOUD_CREDIT_ROUTES.has(route) }));
 export const gatewayProviderOrderSchema = z.array(z.object({ route: gatewayProviderRouteSchema, enabled: z.boolean() }).strict())
@@ -168,6 +191,11 @@ export const gatewayUsageWindowSchema = z.object({
   windowMinutes: z.number().int().min(1).max(60 * 24 * 31).nullable()
 }).strict();
 
+/** A Claude limit-reset grant: `session` clears the 5-hour window, `weekly` the week, `full` both, `fable` gives back what Fable used of the week. */
+export const gatewayResetGrantSchema = z.object({
+  kind: z.enum(["session", "weekly", "fable", "full"]), left: z.number().int().min(0), endsAt: isoSchema.nullable()
+}).strict();
+export type GatewayResetGrant = z.infer<typeof gatewayResetGrantSchema>;
 export const gatewayAccountSchema = z.object({
   id: gatewayIdSchema,
   provider: gatewayProviderSchema,
@@ -181,6 +209,8 @@ export const gatewayAccountSchema = z.object({
   priority: z.number().int().min(0).max(1000),
   warmupEnabled: z.boolean(),
   resetCreditsAvailable: z.number().int().min(0).nullable(),
+  /** Claude's limit-reset grants (kind, resets left, expiry), the earliest to expire first; Codex reports a count only. */
+  resetCreditGrants: z.array(gatewayResetGrantSchema).nullable().optional(),
   primaryWindow: gatewayUsageWindowSchema,
   secondaryWindow: gatewayUsageWindowSchema,
   /** Separate quotas inside one account (Antigravity: Gemini models and Claude/GPT models). */
@@ -983,7 +1013,8 @@ export type GatewayPoolModels = z.infer<typeof gatewayPoolModelsSchema>;
  */
 export const GATEWAY_PROGRAM_PROVIDERS: Readonly<Record<string, GatewayProvider>> = {
   "nvidia-nim": "NVIDIA", "amd-ventures-startups": "AMD_TOKEN_LAB", "inception-labs-free-tokens": "INCEPTION", "jina-ai-free-tokens": "JINA",
-  "mixedbread-starter-credits": "MIXEDBREAD", "agentrouter-free-credits": "AGENTROUTER", "freeai-startup": "FREEAI"
+  "mixedbread-starter-credits": "MIXEDBREAD", "agentrouter-free-credits": "AGENTROUTER", "freeai-startup": "FREEAI",
+  "make-startups": "MAKE", "nvidia-partner-aws-10k": "BEDROCK", "aws-activate-nousapp": "BEDROCK"
 };
 export const gatewayApiKeyListSchema = z.object({ data: z.array(gatewayApiKeySchema).max(1000) }).strict();
 
@@ -1005,7 +1036,9 @@ export const GATEWAY_FREE_GRANTS: Partial<Record<GatewayProvider, GatewayFreeGra
   AZURE_OPENAI: { amount: 200, unit: "usd", since: "2026-11-07", validUntil: "2027-08-04", note: "Azure credit; a card is behind it, the pool stops on 4 Aug 2027 at 04:44 UTC",
     // Its one deployment, gpt-5-mini, at Azure's list price (Global Standard, 7/11).
     pricePerMillion: { input: 0.25, output: 2 } },
-  AMD_TOKEN_LAB: { amount: null, unit: "usd", since: "2026-11-06", program: "amd-ventures-startups", note: "granted points (amount not stated)" }
+  AMD_TOKEN_LAB: { amount: null, unit: "usd", since: "2026-11-06", program: "amd-ventures-startups", note: "granted points (amount not stated)" },
+  BEDROCK: { amount: 10_000, unit: "usd", since: "2026-11-18", validUntil: "2028-11-18", program: "nvidia-partner-aws-10k",
+    note: "AWS Activate $10,000 credit (valid 24 months, account 009688440186); stops at 90% so card is never charged" }
 };
 /** The free tiers without a balance: what limits them instead. */
 export const GATEWAY_FREE_TIERS: Partial<Record<GatewayProvider, string>> = {
@@ -1137,12 +1170,50 @@ export interface GatewayPaceDay { dayStartAt: number; daysLeft: number; allowanc
  * is never capped. `dayStart` is the used % read when the day began; one read for another day (it just turned, the reset moved) or none
  * starts the day at the use seen now. A spent week (100%) is the usage limit's, never held. Times in ms; null without a live week.
  */
-export function gatewayPaceDay(week: { usedPercent: number | null | undefined; resetAt: number | null | undefined }, dayStart: { at: number; usedPercent: number } | null | undefined, at: number): GatewayPaceDay | null {
+/**
+ * The reset credits that give an account a fresh week: a Claude session reset clears only the 5-hour window (operator 14/11 11:06 BKK), a
+ * Fable reset gives back only what Fable used this week (dev@ 14/11: a used-up week came back at 93%).
+ */
+export function gatewayWeekResetCredits(account: { resetCreditsAvailable?: number | null; resetCreditGrants?: GatewayResetGrant[] | null }): number {
+  return account.resetCreditGrants ? account.resetCreditGrants.reduce((sum, grant) => sum + (grant.kind === "weekly" || grant.kind === "full" ? grant.left : 0), 0) : account.resetCreditsAvailable ?? 0;
+}
+
+const RESET_WINDOW_NAMES: Record<string, string> = { five_hour: "5-hour window", seven_day: "week", seven_day_overage_included: "Fable's weekly allowance" };
+
+/** What a Claude limit reset cleared, in words: the windows Anthropic names, and that the week stayed when it is not one of them. */
+export function gatewayResetClearedText(windowsReset: string[]): string {
+  const names = windowsReset.map((window) => RESET_WINDOW_NAMES[window] ?? window.replaceAll("_", " "));
+  return `${names.length ? `Cleared: ${names.join(", ")}.` : "The provider named no window it cleared."}${windowsReset.includes("seven_day") ? "" : " The week was not reset."}`;
+}
+
+const RESET_GRANT_WORDS: Record<GatewayResetGrant["kind"], [string, string]> = { full: ["full reset", "5-hour window and a fresh week"],
+  weekly: ["week reset", "a fresh week"], session: ["session reset", "5-hour window only"], fable: ["Fable reset", "Fable usage only, never a week"] };
+type ResetGrantCount = { kind: GatewayResetGrant["kind"]; left: number };
+const grantsLeft = (grants: ReadonlyArray<ResetGrantCount> | null | undefined, kind: GatewayResetGrant["kind"]) =>
+  (grants ?? []).reduce((sum, grant) => sum + (grant.kind === kind ? grant.left : 0), 0);
+
+/** "1 Fable reset (Fable usage only, never a week)": a Claude account's grants by kind, for the reset buttons' tooltips and Nous's lines. */
+export function gatewayResetGrantsText(grants: ReadonlyArray<ResetGrantCount>): string {
+  return (["full", "weekly", "session", "fable"] as const).flatMap((kind) => {
+    const left = grantsLeft(grants, kind);
+    return left ? [`${left} ${RESET_GRANT_WORDS[kind][0]}${left === 1 ? "" : "s"} (${RESET_GRANT_WORDS[kind][1]})`] : [];
+  }).join(", ");
+}
+
+/** The Resources reset button: "Resets N" counts week resets only; an account with none names what its other grants do (dev@ 14/11). */
+export function gatewayResetButtonLabel(weekResets: number, grants?: ReadonlyArray<ResetGrantCount> | null): string {
+  const session = grantsLeft(grants, "session"), fable = grantsLeft(grants, "fable");
+  if (weekResets > 0 || (!session && !fable)) return `Resets ${weekResets}`;
+  return !session ? "Fable usage only" : !fable ? `5-hour resets ${session}` : `5-hour/Fable resets ${session + fable}`;
+}
+
+/** `week.credits`: reset credits the account still has, each one more fresh week to spread over the days left. */
+export function gatewayPaceDay(week: { usedPercent: number | null | undefined; resetAt: number | null | undefined; credits?: number | null }, dayStart: { at: number; usedPercent: number } | null | undefined, at: number): GatewayPaceDay | null {
   if (week.usedPercent == null || week.resetAt == null || !(week.resetAt > at)) return null;
   const daysLeft = Math.ceil((week.resetAt - at) / PACE_DAY_MS);
   const dayStartAt = week.resetAt - daysLeft * PACE_DAY_MS;
   const start = dayStart && Math.abs(dayStart.at - dayStartAt) < PACE_DAY_MS / 24 ? Math.min(dayStart.usedPercent, week.usedPercent) : week.usedPercent;
-  const allowancePercent = (100 - start) / daysLeft;
+  const allowancePercent = (100 * (1 + Math.max(0, week.credits ?? 0)) - start) / daysLeft;
   const usedTodayPercent = week.usedPercent - start;
   return { dayStartAt, daysLeft, allowancePercent, usedTodayPercent, capped: daysLeft > 1 && week.usedPercent < 100 && usedTodayPercent >= allowancePercent };
 }
@@ -1173,9 +1244,9 @@ export function neededReservePercent(windows: ReadonlyArray<{ used: number | nul
  * so a pool of `accounts` holds `weekPercent` more of its week than its windows show. Null when no account has a credit.
  */
 export interface QuotaResetCredits { credits: number; accounts: number; weekPercent: number }
-export function quotaResetCredits(accounts: ReadonlyArray<{ resetCredits?: number | null }>): QuotaResetCredits | null {
+export function quotaResetCredits(accounts: ReadonlyArray<{ resetCredits?: number | null }>, counted = accounts.length): QuotaResetCredits | null {
   const credits = accounts.reduce((sum, account) => sum + Math.max(0, account.resetCredits ?? 0), 0);
-  return credits > 0 ? { credits, accounts: accounts.length, weekPercent: Math.round((100 * credits) / accounts.length) } : null;
+  return credits > 0 ? { credits, accounts: counted, weekPercent: Math.round((100 * credits) / counted) } : null;
 }
 /** "+4 resets (≈ +200% of a week)": the pickers, the Quotas cards, Accounts & quotas and Nous's lines say it alike. */
 export const quotaResetCreditsText = (credits: QuotaResetCredits): string =>
@@ -1200,7 +1271,7 @@ export function antigravityAccountGroup<T extends WeeklyQuotaSample>(
   return group === "gemini" ? account.gemini : group === "claude" ? account.claude : undefined;
 }
 
-type ClaudePoolSample = WeeklyQuotaSample & { label: string; signInRequired?: boolean };
+type ClaudePoolSample = WeeklyQuotaSample & { label: string; signInRequired?: boolean; resetCredits?: number | null };
 /**
  * The Claude subscription accounts with their windows, each once: the signed-in profiles, then Space Gateway's pool, which lists those
  * profiles' accounts again by alias or e-mail's local part and also the accounts only the gateway still holds (a profile signed out).
@@ -1240,8 +1311,10 @@ export function subscriptionQuotaAtReset(
   const scopes: Array<[(account: (typeof accounts)[number]) => WeeklyQuotaSample | undefined, string | null]> = provider !== "antigravity"
     ? [[(account) => account, null]]
     : group ? [[(account) => antigravityAccountGroup(account, group), null]] : [[(account) => account.gemini, "Gemini"], [(account) => account.claude, "Claude · GPT"]];
-  // Codex reset credits ride on the figure: each is one more fresh week the pool can still spend (operator 2/11 15:38 BKK).
-  const credits = provider === "codex" ? quotaResetCredits(counted) : null;
+  // Reset credits ride on the figure: each is one more fresh week the pool can still spend (Codex operator 2/11 15:38 BKK, Claude 14/11 11:06 BKK).
+  // Claude's sit on Space Gateway's pool members, each account once, whether or not a profile counted it first.
+  const claudePool = provider === "claude" ? [...new Map(accounts.flatMap((account) => account.pool ?? []).map((member) => [member.label.toLowerCase(), member])).values()] : [];
+  const credits = provider === "codex" ? quotaResetCredits(counted) : provider === "claude" && counted.length ? quotaResetCredits(claudePool, counted.length) : null;
   return scopes.flatMap(([week, scope]) => {
     const left = quotaLeftAtReset(counted.map((account) => {
       const sample = week(account);

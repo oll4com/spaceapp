@@ -20,6 +20,8 @@
   .notification-source-chips { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
   .notification-source-chips > .dock-kit-chip { flex: 0 0 auto; }
 }
+/* A title breaks inside a word only when that word alone is wider than the text column. Keep `anywhere` and the 0 minimum: with
+   break-word/min-content one long alert name, mail address or URL widened every row past the dock and hid the mark-read buttons. */
 .notification-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 0.4rem; padding: 0.6rem 0.5rem 0.6rem 0.65rem;
   border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-raised); color: var(--dock-text); transition: border-color 120ms ease; }
 .notification-item:hover { border-color: var(--dock-border-strong); }
@@ -52,6 +54,9 @@
 .notification-center .notification-pane-more.notification-pane-more:hover, .notification-center .notification-pane-more.notification-pane-more:focus-visible { background: color-mix(in srgb, var(--room-accent, #6db7aa) 12%, transparent); }
 .notification-pane-children { grid-column: 1 / -1; margin: 0; padding: 0 0 0 12px; list-style: none; border-left: 2px solid color-mix(in srgb, var(--room-accent, #6db7aa) 35%, transparent); }
 .notification-pane-children .notification-item { padding: 0.45rem 0 0.2rem; border: 0; border-radius: 0; background: transparent; }
+.notification-item-report { grid-column: 1 / -1; min-width: 0; font-size: 0.85rem; line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; }
+.notification-item-report > p { margin: 0 0 0.4rem; }
+.notification-item-report .nous-done-entry { padding: 0; border: 0; white-space: normal; }
 .notification-item-files { grid-column: 1 / -1; margin: 0; font-size: 0.8rem; display: flex; flex-wrap: wrap; gap: 0.2rem 0.8rem; }
 /* An appointment reminder's join link (operator 13/11 16:00 BKK): a button, under the text the row or toast opens the pane with. */
 .notification-join { display: inline-flex; align-items: center; gap: 0.3rem; justify-self: start; padding: 0.15rem 0.6rem; border-radius: 7px; font-size: 0.78rem; font-weight: 600;

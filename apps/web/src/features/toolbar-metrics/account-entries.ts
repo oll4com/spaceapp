@@ -183,8 +183,13 @@ function claudeGatewayEntry(account: ClaudeUsageAccount, pool: NonNullable<Claud
   };
 }
 
-/** `bill`: anthropicBillLines for API-key cards. */
-export function claudeAccountEntries(accounts: ClaudeUsageAccount[], clock: number, bill: string[] = []): AccountQuotaEntry[] {
+/** `bill`: anthropicBillLines for API-key cards; `action`: the reset button, on an account Space Gateway holds. */
+export function claudeAccountEntries(
+  accounts: ClaudeUsageAccount[],
+  clock: number,
+  bill: string[] = [],
+  action?: (account: ClaudeUsageAccount) => ReactNode,
+): AccountQuotaEntry[] {
   return accounts.map((account) => {
     if (account.status === "GATEWAY" && account.pool) return claudeGatewayEntry(account, account.pool, clock);
     // NOT_CONNECTED with figures: Space Gateway's sample of the account the profile names; the profile has no sign-in of its own.
@@ -204,6 +209,7 @@ export function claudeAccountEntries(accounts: ClaudeUsageAccount[], clock: numb
         ? [{ key: "claude", label: null, quota: account, threshold: ACCOUNT_AVAILABLE_THRESHOLD_PERCENT, weeklyScope: account.weeklyScope }]
         : [],
       capacity: quotaCapacity([account]),
+      action: account.gatewayAccountId ? action?.(account) : undefined,
     };
   });
 }

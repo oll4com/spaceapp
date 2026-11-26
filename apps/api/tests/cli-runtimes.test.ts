@@ -4,11 +4,12 @@ import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { agentRuntimeSchema, agentRuntimeRegistrySchema, cliTaskHistoryResponseSchema, paneCliSessionResponseSchema, paneCliTurnActivityResponseSchema, paneCliUploadResponseSchema, resumePaneCliSessionResponseSchema, type PaneCliTranscriptChunk, type PaneCliWebSocketServerMessage } from "@space/contracts";
+import { agentRuntimeSchema, PANE_HIBERNATED_REASON, agentRuntimeRegistrySchema, cliTaskHistoryResponseSchema, paneCliSessionResponseSchema, paneCliTurnActivityResponseSchema, paneCliUploadResponseSchema, resumePaneCliSessionResponseSchema, type Pane, type PaneCliTranscriptChunk, type PaneCliWebSocketServerMessage } from "@space/contracts";
 import { InMemorySpaceStore, redactMemoryText } from "@space/runtime";
 import { CliHostClient, CliHostError, CliHostSessionRegistry, createCliHostServer, spawnNodePty, type CliHostAttachInput, type CliHostEventListener } from "@space/cli-host";
 import { buildSharedCliTaskContext, type CreateAppOptions } from "../src/app.js";
 import { buildCodexCliPreThreadModelNavigation, buildCliEnvironment, buildCliSpawnArgs, CliTerminalManager, codexControlMenuHasTarget, codexControlMenuHighlightsTarget, codexInputReady, findAvailableCodexThreadId, findSafeCodexThreadResumeSettings, findLatestCodexCliTranscriptModelSettings, findSafeCodexThreadId, resolveCodexCliLaunchSettings, resolveCodexThreadRuntimeSettings } from "../src/cli-terminal.js";
+import { claudeNativeSessionId } from "../src/qoder-native-session.js";
 import { getApiConfig } from "../src/config.js";
 import { discoverAgentRuntimes } from "../src/cli-runtimes.js";
 import { CodexParityNotFoundError } from "../src/codex-parity.js";
@@ -548,7 +549,7 @@ describe("Space API CLI runtimes", () => {
       const discoverRuntimes = vi.fn(async () => {
         throw new Error("READ_ONLY observer must not discover the launcher catalog.");
       });
-      const attach = vi.fn(async (input: CliHostAttachInput) => ({
+      const attach = vi.fn(async () => ({
         attachmentId: `attachment:readonly-observer-${suffix}`,
         session: hostSession,
         replay: []
@@ -811,7 +812,7 @@ describe("Space API CLI runtimes", () => {
     // A failed owner lookup refuses the call and is retried; it never falls back to the default host (2026-10-17).
     bobHost.attach.mockClear();
     defaultHost.attach.mockClear();
-    const lookup = vi.fn(async (_paneId: string): Promise<string | null> => "user:bob").mockRejectedValueOnce(new Error("database unavailable"));
+    const lookup = vi.fn<(paneId: string) => Promise<string | null>>(async () => "user:bob").mockRejectedValueOnce(new Error("database unavailable"));
     const flaky = new CliTerminalManager({
       store, config, discoverRuntimes: vi.fn(async () => { throw new Error("Observers do not discover the catalog."); }),
       hostClient: defaultHost, userHostSockets: { "user:bob": "/run/spaceapp-cli/user-bob/host.sock" }, userHostClient: () => bobHost,
@@ -1461,7 +1462,7 @@ describe("Space API CLI runtimes", () => {
     expect(frames.map((message) => (message.type === "output" ? message.data : "")).join("")).toBe(output);
   });
 
-  it("coalesces CLI host output for 20 ms or 32 KiB before persistence and writes the task preview at most every 2 s", async () => {
+  it("coalesces CLI host output for 1 s or 32 KiB before persistence and writes the task preview at most every 2 s", async () => {
     vi.useFakeTimers();
     try {
       type HostOutput = { outputSequence: number; content: string };
@@ -1506,7 +1507,7 @@ describe("Space API CLI runtimes", () => {
 
       internals.handleHostEvent(managed, { type: "output", generationId, sequence: 0, stream: "stdout", data: "first-" });
       internals.handleHostEvent(managed, { type: "output", generationId, sequence: 1, stream: "stdout", data: "second" });
-      await vi.advanceTimersByTimeAsync(19);
+      await vi.advanceTimersByTimeAsync(999);
       expect(appendPaneCliHostOutputChunks).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       await managed.persistQueue;
@@ -1536,7 +1537,7 @@ describe("Space API CLI runtimes", () => {
 
       // Blank output never becomes the preview; the owed one lands 2 s after the last, then a closing session's at once.
       internals.handleHostEvent(managed, { type: "output", generationId, sequence: 6, stream: "stdout", data: " \r\n" });
-      await vi.advanceTimersByTimeAsync(20);
+      await vi.advanceTimersByTimeAsync(1_000);
       await managed.persistQueue;
       await vi.advanceTimersByTimeAsync(2_000);
       await managed.persistQueue;
@@ -1560,7 +1561,7 @@ describe("Space API CLI runtimes", () => {
         owedTaskPreview: null, taskPreviewAtMs: Date.now(), taskPreviewTimer: null, waitingHostOutputWrite: null
       };
       internals.handleHostEvent(replaced, { type: "output", generationId, sequence: 8, stream: "stdout", data: "older" });
-      await vi.advanceTimersByTimeAsync(20);
+      await vi.advanceTimersByTimeAsync(1_000);
       await replaced.persistQueue;
       (manager as unknown as { sessions: Map<string, unknown> }).sessions.set(replaced.sessionId, { ...replaced });
       await vi.advanceTimersByTimeAsync(2_000);
@@ -2178,6 +2179,30 @@ describe("Space API CLI runtimes", () => {
       "Interrupt requested by operator.",
       "CLI process exited."
     ]);
+  });
+
+  it("keeps the API's stop reason when the host exit event lands after interrupt (a slept pane must not read as dead)", async () => {
+    const updatePaneCliSession = vi.fn(async (_sessionId: string, input: unknown) => input);
+    const manager = new CliTerminalManager({
+      store: { appendPaneCliTranscriptChunk: vi.fn(async (input: unknown) => input), updatePaneCliSession } as never,
+      config: {} as never,
+      discoverRuntimes: async () => agentRuntimeRegistrySchema.parse({ data: [] }),
+      hostClient: { terminate: vi.fn(async () => true) } as never
+    });
+    const identity = { cliSessionId: "cli_session:stop-reason", paneId: "pane:stop-reason", roomId: "room:stop-reason",
+      runtimeId: "cli:claude", codexThreadId: null, modelId: null, reasoningEffort: null };
+    const managed = { identity, sessionId: identity.cliSessionId, paneId: identity.paneId, roomId: identity.roomId, runtimeId: identity.runtimeId,
+      sockets: new Set(), socketReplayBuffers: new Map(), closed: false, pendingHostOutput: null, hostOutputQueue: [], hostOutputFlushTimer: null,
+      nextTranscriptSequence: 1, persistQueue: Promise.resolve() };
+    const internals = manager as unknown as { sessions: Map<string, unknown>; handleHostEvent(session: unknown, event: unknown): void };
+    internals.sessions.set(identity.cliSessionId, managed);
+
+    await manager.interrupt(identity.cliSessionId, { content: PANE_HIBERNATED_REASON, traceId: "trace:sleep" }, "trace:sleep", PANE_HIBERNATED_REASON);
+    internals.handleHostEvent(managed, { type: "status", status: "EXITED", statusReason: "CLI process exited by signal 9.", exitCode: null, signal: 9 });
+    await managed.persistQueue;
+
+    expect(updatePaneCliSession).toHaveBeenLastCalledWith(identity.cliSessionId,
+      expect.objectContaining({ status: "EXITED", statusReason: PANE_HIBERNATED_REASON }), "req:cli-host-status");
   });
 
   it("waits for the host exit event when termination was already requested", async () => {
@@ -3156,12 +3181,33 @@ describe("Space API CLI runtimes", () => {
       expect(claudeLaunch("claude:fable", "high")).toMatchObject({ SPACE_CLAUDE_MODEL: "fable", SPACE_CLAUDE_EFFORT: "high" });
       expect(claudeLaunch("claude:haiku", "unknown")).toMatchObject({ SPACE_CLAUDE_MODEL: "haiku" });
       expect(claudeLaunch("claude:haiku", "unknown").SPACE_CLAUDE_EFFORT).toBeUndefined();
-      for (const [modelId, reasoningEffort] of [["sonnet", "medium"], [null, "high"], ["claude:mythos", "high"], ["claude:opus; rm", "high"]] as const) {
+      // A full Claude id (Nous's space_set_pane_model, an older pane record) pins its family too (plan clipboard:VypZ4sl7NR04).
+      expect(claudeLaunch("claude-sonnet-5-5", "high")).toMatchObject({ SPACE_CLAUDE_MODEL: "sonnet", SPACE_CLAUDE_EFFORT: "high" });
+      expect(claudeLaunch("claude-opus-5-5", "xhigh")).toMatchObject({ SPACE_CLAUDE_MODEL: "opus", SPACE_CLAUDE_EFFORT: "xhigh" });
+      for (const [modelId, reasoningEffort] of [["sonnet", "medium"], [null, "high"], ["claude:mythos", "high"], ["claude:opus; rm", "high"], ["claude-mythos-1", "high"], ["claude-opus-5 rm", "high"], ["gemini-3.8-flash", "high"]] as const) {
         expect(claudeLaunch(modelId, reasoningEffort).SPACE_CLAUDE_MODEL).toBeUndefined();
         expect(claudeLaunch(modelId, reasoningEffort).SPACE_CLAUDE_EFFORT).toBeUndefined();
       }
       expect(buildCliEnvironment(getApiConfig({ SPACE_CLI_COMMAND_PATH: "/opt/spaceapp/bin" }),
         { runtimeId: "cli:gemini", modelId: "claude:fable", reasoningEffort: "high" }).SPACE_CLAUDE_MODEL).toBeUndefined();
+      // Light copilot panes (plan clipboard:VypZ4sl7NR04 M5) compact at 120k; TERMINAL (operator 21/11), app, security and other panes keep 160k.
+      const compactWindow = (runtimeId: string, paneMode: Pane["mode"] | null) => buildCliEnvironment(
+        getApiConfig({ SPACE_CLI_COMMAND_PATH: "/opt/spaceapp/bin" }), { runtimeId, paneMode }).SPACE_CLAUDE_COMPACT_WINDOW;
+      expect(compactWindow("cli:claude", "MAIL_COPILOT")).toBe("120000");
+      expect(compactWindow("cli:claude", "JOB_APPLY")).toBe("120000");
+      expect(compactWindow("cli:claude", "DESIGN")).toBe("120000");
+      expect(compactWindow("cli:claude", "VIDEO")).toBe("120000");
+      for (const [runtimeId, paneMode] of [["cli:claude", "TERMINAL"], ["cli:gemini", "TERMINAL"], ["cli:claude", "APP_STUDIO"], ["cli:claude", null], ["cli:gemini", "MAIL_COPILOT"]] as const) {
+        expect(compactWindow(runtimeId, paneMode)).toBeUndefined();
+      }
+      // The pane's own Claude session id: its recorded one on a resume, else the Space-named one; never for a login.
+      const claudeSession = (nativeTaskRef: string | null, purpose: "LOGIN" | null = null) => buildCliEnvironment(
+        getApiConfig({ SPACE_CLI_COMMAND_PATH: "/opt/spaceapp/bin" }),
+        { runtimeId: "cli:claude", cliSessionId: "cli_session:s1", nativeTaskRef, purpose }).SPACE_CLAUDE_SESSION_ID;
+      expect(claudeSession(null)).toBe(claudeNativeSessionId("cli_session:s1"));
+      expect(claudeSession("9da2048a-59b7-478b-9843-9a2f07c130ef")).toBe("9da2048a-59b7-478b-9843-9a2f07c130ef");
+      expect(claudeSession("--evil")).toBe(claudeNativeSessionId("cli_session:s1"));
+      expect(claudeSession(null, "LOGIN")).toBeUndefined();
       // 12/11: a Claude pane in /opt/spaceapp got no session AGENTS.md, so it never read the bootstrap's space-capability browser route.
       const bootstrapConfig = getApiConfig({ SPACE_CLI_COMMAND_PATH: "/opt/spaceapp/bin" });
       const bootstrap = (cwd: string, runtimeId = "cli:claude", purpose: "LOGIN" | null = null) => buildCliEnvironment(bootstrapConfig,
@@ -6500,7 +6546,7 @@ describe("Space API CLI runtimes", () => {
 
     expect(created.statusCode).toBe(200);
     const cwd = paneCliSessionResponseSchema.parse(created.json()).session.cwd;
-    expect(cwd).toBe(join(workspaceRoot, room.id.replace(/[^A-Za-z0-9_-]+/g, "-")));
+    expect(cwd).toBe(join(workspaceRoot, room.id.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "")));
     expect((await stat(cwd!)).isDirectory()).toBe(true);
     await app.close();
   });

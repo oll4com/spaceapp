@@ -1,9 +1,7 @@
 import type {
   DatabaseCatalog,
-  DatabaseColumnMeta,
   DatabaseEngine,
-  DatabaseTableDataResponse,
-  DatabaseTableMeta
+  DatabaseTableDataResponse
 } from "@space/contracts";
 
 export interface DatabaseCapabilities {

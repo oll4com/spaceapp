@@ -12,7 +12,7 @@ import "./nous-requests.css";
  * Requests (operator 31/10 09:55 BKK, plan clipboard:2NOOFNJDUIMO): every message the operator sent Nous, newest first, one under the
  * other, each with whether Nous completed it. The server derives the status from exact links (GET /api/nous/requests); Clear hides none.
  */
-const STATUS_LABELS: Record<NousRequestStatus, string> = { DONE: "Done", ANSWERED: "Answered", IN_PROGRESS: "In progress", WAITS_FOR_YOU: "Waits for you", NOT_DONE: "Not done", NOT_ANSWERED: "Not answered yet" };
+export const STATUS_LABELS: Record<NousRequestStatus, string> = { DONE: "Done", ANSWERED: "Answered", IN_PROGRESS: "In progress", WAITS_FOR_YOU: "Waits for you", NOT_DONE: "Not done", NOT_ANSWERED: "Not answered yet" };
 const STATUSES = Object.keys(STATUS_LABELS) as NousRequestStatus[];
 type Filter = NousRequestStatus | "ALL";
 const isFilter = (value: unknown): value is Filter => value === "ALL" || (typeof value === "string" && Object.hasOwn(STATUS_LABELS, value));
@@ -28,19 +28,6 @@ const isText = (value: unknown): value is string => typeof value === "string";
 const SEARCH_DELAY_MS = 300;
 /** A list shows only for the filter and search it was loaded with. */
 type RequestList = { key: string; requests: NousOperatorRequest[]; hasMore: boolean; counts?: Record<NousRequestStatus, number> };
-
-/** The Requests tab's badge (operator 1/11 03:41 BKK): how many requests are In progress or Not done (6/11), read with the dock's other counts. */
-export function useRequestsInProgress(active: boolean) {
-  const [count, setCount] = useState(0);
-  useEffect(() => {
-    if (!active) return;
-    const load = () => void api.nousRequests(undefined, undefined, 1).then((page) => setCount((page.counts?.IN_PROGRESS ?? 0) + (page.counts?.NOT_DONE ?? 0)), () => undefined);
-    load();
-    const timer = window.setInterval(load, POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [active]);
-  return count;
-}
 
 export function NousRequests({ active, onOpenPlan }: { active: boolean; onOpenPlan(id: string): void }) {
   // One state: the newest page's poll refreshes the rows and never brings back "Load earlier" once the oldest page is in.
@@ -86,7 +73,7 @@ export function NousRequests({ active, onOpenPlan }: { active: boolean; onOpenPl
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   return (
-    <div className="nous-decisions nous-requests" data-sensitive-masked="manual">
+    <div className="nous-decisions nous-requests">
       <select className="dock-kit-select nous-requests-filter" aria-label={t("Status")} value={filter} onChange={(event) => setFilter(event.currentTarget.value as Filter)}>
         <option value="ALL">{t("All")}{counts ? ` (${STATUSES.reduce((sum, status) => sum + counts[status], 0)})` : ""}</option>
         {STATUSES.map((status) => <option key={status} value={status}>{t(STATUS_LABELS[status])}{counts ? ` (${counts[status]})` : ""}</option>)}

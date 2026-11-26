@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { eventSchema, type Pane, type Room } from "@space/contracts";
+import { eventSchema, needsYouAnswerKind, type Pane, type Room } from "@space/contracts";
 import { InMemorySiteSigninsRepository, InMemorySpaceNotificationsRepository } from "@space/db";
 import { makeSpaceId, SpaceEventBus } from "@space/runtime";
 import { createNotificationService } from "../src/notifications/service.js";
-import { baseRateRecommendation, createNousPaneNotices, ledgerRecommendation, NOUS_PREDICTION_RULE, principleConflicts, ruleRecommendation } from "../src/nous/pane-notices.js";
+import { baseRateRecommendation, createNousPaneNotices, ledgerRecommendation, NOUS_PREDICTION_RULE, cannotWorkRules, principleAgainst, principleConflicts, principlePick, ruleRecommendation } from "../src/nous/pane-notices.js";
 import { heldForNousNote, NOUS_QUESTION_REWAKE_MS, sweepCopilotQuestions } from "../src/nous/copilot-questions.js";
 import { cardTextMatched } from "../src/nous/predictions.js";
 import { createNousTools, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
@@ -55,9 +55,24 @@ describe("Nous's cards to the operator", () => {
     await f.notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Upwork needs you", items: [{ text: "Pass the Cloudflare check" }] });
     await f.notices.notify(owner, room, bob, { room: "Freelance", pane: "Bob", title: "Meridial needs you", items: [{ text: "Sign the W-8BEN form" }] });
     expect(await f.notices.closedSince(owner, Date.now() - 3_600_000)).toEqual([]);
+    const andyCard = (await f.service.list(owner, { status: "OPEN", source: "NOUS", limit: 5 })).find((card) => card.paneId === andy.id)!;
+    await f.service.setStatus(owner, andyCard.id, "READ");
     await f.service.resolve(owner, "nous:pane:pane:andy0001", "done");
     expect((await f.notices.closedSince(owner, Date.now() - 3_600_000)).map((card) => card.paneId)).toEqual([andy.id]);
     expect(await f.notices.closedSince(owner, Date.now() + 1_000)).toEqual([]);
+  });
+
+  it("17/11 (card 1e91952e): a card resolved with no read and no answer never reached the operator, so closedSince leaves it out and the raise goes through", async () => {
+    const f = fixture();
+    const raise = (pane: typeof andy) => f.service.raise({ ownerUserId: owner, roomId: room.id, paneId: pane.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION",
+      title: "Jack needs you", body: "micro1 AI interview: 4 camera/ID steps", link: { roomId: room.id, paneId: pane.id }, dedupeKey: `agent:needs-you:${pane.id}`, payload: {}, telegram: null });
+    await raise(andy);
+    await f.service.resolve(owner, `agent:needs-you:${andy.id}`, "the pane's done report named it");
+    expect(await f.notices.closedSince(owner, Date.now() - 3_600_000)).toEqual([]);
+    // Answered (ACKED with its answer) or read before it closed: it counts as asked.
+    const answered = await raise(bob);
+    await f.service.setStatus(owner, answered.id, "ACKED", { answer: { text: "Go now", at: new Date().toISOString(), routed: "PANE" } });
+    expect((await f.notices.closedSince(owner, Date.now() - 3_600_000)).map((card) => card.paneId)).toEqual([bob.id]);
   });
 
   it("open and closedSince carry the pane agents' needs-you cards too, for Nous's duplicate check (13/11 Cartesia card)", async () => {
@@ -67,6 +82,7 @@ describe("Nous's cards to the operator", () => {
     await f.service.raise({ ownerUserId: owner, roomId: room.id, paneId: bob.id, source: "AGENT", kind: "INFO", severity: "INFO", title: "Bob finished",
       body: "done", link: { roomId: room.id, paneId: bob.id }, dedupeKey: `agent:finished:${bob.id}`, payload: {}, telegram: null });
     expect((await f.notices.open(owner)).map((card) => [card.source, card.paneId])).toEqual([["AGENT", andy.id]]);
+    await f.service.setStatus(owner, (await f.notices.open(owner))[0]!.id, "READ");
     await f.service.resolve(owner, `agent:needs-you:${andy.id}`, "answered");
     expect(await f.notices.open(owner)).toEqual([]);
     expect((await f.notices.closedSince(owner, Date.now() - 3_600_000)).map((card) => [card.source, card.paneId])).toEqual([["AGENT", andy.id]]);
@@ -253,6 +269,31 @@ describe("Nous's cards to the operator", () => {
     expect((await notices.notify(owner, room, bob, { room: "Freelance", pane: "Bob", title: "Pick", items: [{ text: "Pick the Upwork profile" }] })).ok).toBe(true);
   });
 
+  it("refuses an item asking the operator to act on a site or a pane that opens neither, and says what to add (14/11 correction 824bd787)", async () => {
+    const { notices } = fixture();
+    const card = (on: Pane | null, text: string, item: Record<string, unknown> = {}) => notices.notify(owner, room, on, { room: "Freelance",
+      ...(on ? { pane: "Andy" } : { plan: "clipboard:plan0001abcd" }), title: "Needs you", checked: ["The plan: waits on this"], items: [{ text, ...item }] });
+    for (const text of ["Open the unboxexpert product page and accept the new layout", "Δες τη σελίδα του προϊόντος και έγκρινε", "Check the result in Andy's pane"]) {
+      expect(await card(null, text), text).toMatchObject({ ok: false, refused: true, display: "A card needs its link", result: expect.stringContaining("`target` (url:https://") });
+    }
+    // Its link, its target, or (for a pane) the card on that pane opens it; an item that acts on no site or pane needs none.
+    expect((await card(null, "Open https://unboxexpert.com/product/x and accept the new layout")).ok).toBe(true);
+    expect((await card(andy, "Check the result in this pane")).ok).toBe(true);
+    expect((await card(andy, "Review the product page", { target: "url:https://unboxexpert.com/product/x" })).ok).toBe(true);
+    expect((await card(null, "Approve the promote of dev to stable")).ok).toBe(true);
+  });
+
+  it("Nous errors 24/11 (b25510ce, 931c907c): a click on a page is an agent's, so a card asking the operator to press one is refused", async () => {
+    const { notices } = fixture();
+    const card = (text: string) => notices.notify(owner, room, null, { room: "Freelance", plan: "clipboard:plan0001abcd", title: "Needs you",
+      checked: ["The plan: waits on this"], items: [{ text, target: "url:https://example.invalid/settings" }] });
+    for (const text of ["Press «Συγχρονισμός του Vault» on the spaceapp-hz row", "Πάτα «Σύνδεση» στη σελίδα"]) {
+      expect(await card(text), text).toMatchObject({ ok: false, refused: true, display: "An agent presses it" });
+    }
+    // A sign-in, a payment or a send stays the operator's.
+    for (const text of ["Sign in and press Continue", "Press Pay on the checkout page", "Πάτα Αποστολή για να στείλεις το email"]) expect((await card(text)).ok, text).toBe(true);
+  });
+
   it("R27-2: a hands item without options asks Go now (recommended) and on a browser pane opens its page; R27-3: a code item asks for the code", async () => {
     // Mercor card 11:52 (1/11) went unscored; the operator answered «open the page and go to the point» 2/2.
     const { service, notices } = fixture();
@@ -276,6 +317,43 @@ describe("Nous's cards to the operator", () => {
     expect(await card(null, [code])).toMatchObject({ ok: false, refused: true, display: "A code item goes to its pane" });
     expect(await card(andy, [code, { ...code, question: "And the mail code" }])).toMatchObject({ ok: false, refused: true });
     expect(await card(andy, [{ ...code, options: ["A", "B"], recommended: "A" }])).toMatchObject({ ok: false, refused: true });
+  });
+
+  it("16/11 REVIEW (nous_msg:33444df3): a code card goes only while its page is open and its pane reported in the last 15 minutes", async () => {
+    // A Shopify SMS code card on Dino/Bob said a code was sent; no Shopify tab was open and nothing showed it sent.
+    const at = Date.parse("2026-11-15T14:20:00Z");
+    let tabOpen = false; let reportAt: string | null = "2026-11-15T14:10:00Z";
+    const seen: Array<[string | undefined, string]> = [];
+    const notices = createNousPaneNotices({ notifications: fixture().service, now: () => at, paneReportAt: async () => reportAt,
+      codePageOpen: async (_owner, _pane, target, text) => { seen.push([target, text]); return tabOpen; } });
+    const code = { text: "Shopify Partners: phone verification code for +66 82 558 4972", question: "The code Shopify sent by SMS", code: true as const,
+      target: "url:https://partners.shopify.com/signup" };
+    const card = (on: Pane) => notices.notify(owner, room, on, { room: "Dino", pane: on.paneName!, title: "Bob needs you", items: [code] });
+    expect(await card(bob)).toMatchObject({ ok: false, refused: true, display: "Reopen the page and request the code first", result: expect.stringContaining("no tab at its site is open") });
+    expect(seen[0]).toEqual([code.target, `${code.text}\n${code.question}`]);
+    tabOpen = true; reportAt = "2026-11-15T14:05:00Z";
+    expect(await card(bob)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Bob in Freelance's newest report is 15 min old") });
+    reportAt = null;
+    expect(await card(bob)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("has made no report") });
+    reportAt = "2026-11-15T14:06:00Z";
+    expect(await card(bob)).toMatchObject({ ok: true });
+    // A browser pane makes no reports: its open tab is enough.
+    reportAt = null;
+    expect(await card({ ...andy, mode: "BROWSER" } as Pane)).toMatchObject({ ok: true });
+  });
+
+  it("21/11 REVIEW: a hands card goes only while its page is live (a held tab; an address mid-flow with a tab at its site)", async () => {
+    // 5 hands cards answered against the recommendation: SMS window closed, AWS puzzle not open, Braintrust browser closed.
+    let tabOpen = false;
+    const notices = createNousPaneNotices({ notifications: fixture().service, codePageOpen: async () => tabOpen });
+    const card = (item: { text: string; question: string; target: string }) => notices.notify(owner, room, bob, { room: "Dino", pane: "Bob", title: "Bob needs you", items: [item] });
+    const puzzle = { text: "AWS sign-up: solve the puzzle", question: "Solve the AWS captcha", target: "tab:page-aws" };
+    expect(await card(puzzle)).toMatchObject({ ok: false, refused: true, display: "Bring the page back to that step first", result: expect.stringContaining("tab:page-aws") });
+    expect(await card({ ...puzzle, target: "url:https://signin.aws.amazon.com/signup" })).toMatchObject({ ok: false, refused: true });
+    // A sign-in at an address opens afresh at its start: it goes without a tab.
+    expect(await card({ text: "Sign in to Toggl", question: "Sign in to Toggl", target: "url:https://track.toggl.com/login" })).toMatchObject({ ok: true });
+    tabOpen = true;
+    expect(await card(puzzle)).toMatchObject({ ok: true });
   });
 
   it("operator nous_msg:4b36b80e: a hands item joining the pane's card with its page leads it, its own Go now on top; every item's steps stay in the body", async () => {
@@ -352,7 +430,7 @@ describe("Nous's cards to the operator", () => {
     expect(await card(["Andy tried the stored Google sign-in: Google asks for the code on his phone"])).toMatchObject({ refused: true, display: "Space holds a sign-in for this site" });
     // The stored method failed, with its reason (triedStored): the card goes.
     expect((await card(["Andy's report: the course page asks to log in"], "Google sign-in as ntheogr@gmail.com: Google asks for the code on his phone")).ok).toBe(true);
-    // Done is no recommendation for a hands card unless the operator's answers to that question say so (5 or more, 80 %).
+    // Done is no recommendation for a hands card, not even after 5 "Done" answers (operator 16/11 21:55 BKK: only they say it is done).
     const rows: Array<{ source: string; title: string; answer: string; at: string }> = [];
     const notices = createNousPaneNotices({ notifications: fixture().service, ledger: async () => rows });
     const ask = () => notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Andy needs you", checked: ["Andy's space_look: the billing page shows no linked account"],
@@ -363,7 +441,7 @@ describe("Nous's cards to the operator", () => {
       items: [{ text: "Σύνδεσε το Google billing", steps: ["https://console.cloud.google.com/billing"], question: "Συνδέθηκε το billing;", options: ["Έγινε", "Όχι ακόμα"], recommended: "Έγινε" }] }))
       .toMatchObject({ ok: false, refused: true, display: '"Έγινε" is no recommendation for a hands card' });
     for (let index = 0; index < 5; index += 1) rows.push({ source: "NEEDS_YOU:NOUS", title: "Billing linked?", answer: "Done", at: new Date(Date.now() - index * 60_000 - 3 * 3_600_000).toISOString() });
-    expect((await ask()).ok).toBe(true);
+    expect(await ask()).toMatchObject({ ok: false, refused: true, display: '"Done" is no recommendation for a hands card' });
   });
 
   it("R60 (cards 2-3/11): site work an agent can do is an agent's, the operator's own part waits for a signed-in page, and the extras speak the options' language", async () => {
@@ -404,6 +482,19 @@ describe("Nous's cards to the operator", () => {
     expect((await f.service.list(owner, { status: "ALL", limit: 5 }))[0]!.payload.ask).toMatchObject({ options: ["Πάω τώρα", "Απέτυχε", "Θέλω βοήθεια"] });
   });
 
+  it("slice 23 (15/11, pane:P0SdxtiCR4wU with no room): a pane one room holds names its room; one no room holds is a hold that says so", async () => {
+    const notify = vi.fn(async () => ({ ok: true, display: "Sent the card", result: "ok" }));
+    const tools = createNousTools({ rooms: async () => [room], listPanes: async () => [andy], vault: { agent: { call: async () => ({ status: "LISTED", items: [] }) } },
+      paneNotices: { notify } } as unknown as NousToolDeps);
+    const ctx = { owner, turnId: "nous_turn:noroom", callId: "toolu_noroom", traceId: "trace:noroom" };
+    const card = (ref: string) => tools.execute("space_notify_operator", { pane: ref, title: "Needs you", checked: ["Andy's report: the proposal waits for approval"],
+      items: [{ text: "Approve the Upwork proposal at https://www.upwork.com/nx/proposals" }] }, ctx);
+    expect(await card(andy.id)).toMatchObject({ ok: true });
+    expect(notify).toHaveBeenCalledWith(owner, expect.objectContaining({ id: room.id }), expect.objectContaining({ id: andy.id }), expect.anything());
+    expect(await card("pane:P0SdxtiCR4wU")).toMatchObject({ ok: false, refused: true, result: expect.stringMatching(/^No room of yours holds pane:P0SdxtiCR4wU: /) });
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
   it("2/11 (Twitch 2FA, PayPal SMS cards whose codes also come by mail): a code card for a site whose mail reaches a connected mailbox is an agent's", async () => {
     const notify = vi.fn(async () => ({ ok: true, display: "Sent the card", result: "ok" }));
     const mailContext = vi.fn(async (_owner: string, _refs: unknown, sites: string[]) => sites.includes("twitch.tv") ? ['Mail from twitch.tv in 30 days: spaceappdv@gmail.com: 3 threads'] : []);
@@ -416,6 +507,39 @@ describe("Nous's cards to the operator", () => {
     expect(notify).not.toHaveBeenCalled();
     // Nous read the mailbox and the code is not there, or the site never mails: the card goes up.
     expect((await card("Twitch asks for the 2FA code to sign in at https://www.twitch.tv/login", ["spaceappdv@gmail.com inbox: no Twitch code mail in 10 minutes, Twitch sends it by SMS only"])).ok).toBe(true);
+    expect((await card("Bank asks for the SMS code at https://ebanking.example-bank.gr", ["Andy's report: the bank asks for the code"])).ok).toBe(true);
+    expect(notify).toHaveBeenCalledTimes(2);
+  });
+
+  it("14/11 21:25 BKK (oll4.com/admin TOTP setup QR into the Vault UI, held 3 times): a setup item is no code, and ruleDiffers leaves the mail-code rule", async () => {
+    const notify = vi.fn(async () => ({ ok: true, display: "Sent the card", result: "ok" }));
+    const mailContext = vi.fn(async () => ['Mail from oll4.com in 30 days: spaceappdv@gmail.com: 13+ threads']);
+    const tools = createNousTools({ rooms: async () => [room], listPanes: async () => [andy], vault: { agent: { call: async () => ({ status: "LISTED", items: [] }) } },
+      paneNotices: { notify }, mailContext } as unknown as NousToolDeps);
+    const ctx = { owner, turnId: "nous_turn:totpsetup", callId: "toolu_totpsetup", traceId: "trace:totpsetup" };
+    const card = (item: Record<string, unknown>) => tools.execute("space_notify_operator", { room: "Freelance", pane: "Andy", title: "Andy needs you", items: [item],
+      checked: ["Vault: oll4.com admin login, no authenticator key yet"] }, ctx);
+    const setup = await card({ text: "Στο oll4.com/admin δώσε το QR στο Vault (στοιχείο «oll4.com admin» → Authenticator key → Read a setup QR image)",
+      question: "Πέρασες το QR του oll4.com/admin στο Vault και ενεργοποιήθηκε η 2FA;" });
+    expect(setup.result).toBe("ok");
+    const code = { text: "oll4.com asks for the 2FA code at https://oll4.com/admin" };
+    expect(await card(code)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("connected mailbox") });
+    expect((await card({ ...code, ruleDiffers: "oll4.com/admin sends no code by mail: the code comes from the authenticator only" })).ok).toBe(true);
+    expect(notify).toHaveBeenCalledTimes(2);
+  });
+
+  it("Vault Authenticator (plan clipboard:3aH7Gpr9F-yJ): a code card for a site whose Vault login holds the authenticator key is the pane's", async () => {
+    const notify = vi.fn(async () => ({ ok: true, display: "Sent the card", result: "ok" }));
+    const call = vi.fn(async ({ body }: { body: { site?: string } }) => ({ status: "LISTED",
+      items: body.site === "github.com" ? [{ handle: "vault_item:gh", label: "GitHub", origins: ["https://github.com"], fields: ["USERNAME", "PASSWORD", "OTP"] }] : [] }));
+    const tools = createNousTools({ rooms: async () => [room], listPanes: async () => [andy], vault: { agent: { call } }, paneNotices: { notify } } as unknown as NousToolDeps);
+    const ctx = { owner, turnId: "nous_turn:totp", callId: "toolu_totp", traceId: "trace:totp" };
+    const card = (text: string, checked: string[]) => tools.execute("space_notify_operator", { room: "Freelance", pane: "Andy", title: "Andy needs you", items: [{ text, code: true }], checked }, ctx);
+    expect(await card("GitHub asks for the 2FA code at https://github.com/sessions/two-factor", ["Andy's report: the sign-in asks for a code"])).toMatchObject({ ok: false, refused: true,
+      result: expect.stringContaining("space_vault_request_totp_fill") });
+    expect(notify).not.toHaveBeenCalled();
+    // The fill failed and says why, or the site's login has no key: the card goes up.
+    expect((await card("GitHub asks for the 2FA code at https://github.com/sessions/two-factor", ["space_vault_request_totp_fill: BLOCKED FIELD_NOT_FOUND"])).ok).toBe(true);
     expect((await card("Bank asks for the SMS code at https://ebanking.example-bank.gr", ["Andy's report: the bank asks for the code"])).ok).toBe(true);
     expect(notify).toHaveBeenCalledTimes(2);
   });
@@ -501,6 +625,60 @@ describe("Nous's cards to the operator", () => {
     expect(baseRateRecommendation(rows.slice(0, 4), { source: "MAIL_COPILOT", kind: "NEEDS_USER", options: ["I handled it", "Ignore it"] })).toBeNull();
     expect(baseRateRecommendation([...rows, row("I handled it")], { source: "MAIL_COPILOT", kind: "NEEDS_USER", options: ["I handled it", "Ignore it"] })).toBeNull();
     expect(baseRateRecommendation(rows, { source: "FREELANCE_COPILOT", kind: "NEEDS_USER", options: ["I handled it", "Ignore it"] })).toBeNull();
+    // Operator 16/11 21:55 BKK («δεν ειπα ποτε done»): a completion is never predicted, however often it was the answer.
+    const done = Array.from({ length: 6 }, () => ({ source: "NEEDS_YOU:NOUS", kind: "NOUS:QUESTION", answer: "Done" }));
+    expect(baseRateRecommendation(done, { source: "NOUS", kind: "QUESTION", options: ["Done", "Go now"] })).toBeNull();
+    expect(baseRateRecommendation(done.map((row) => ({ ...row, answer: "Signed in" })), { source: "NOUS", kind: "QUESTION", options: ["Signed in", "Go now"] })).toBeNull();
+  });
+
+  it("23/11 REVIEW (Village Global, Moonstone): another producer's pick against the operator's rule takes the option that follows it", async () => {
+    const rules = [{ id: "space_memory:763c4398", title: "Operator rule: predictions for disputed third-party money claims and third-party forms",
+      body: "DISPUTED MONEY CLAIM BY A THIRD PARTY: predict and recommend **reject the deductions and insist on the full amount and the evidence**. "
+        + "THIRD-PARTY FORM ASKING FOR HIS OWN BUSINESS NUMBERS (burn, runway, revenue): predict he states the status without a figure ('pre-revenue, founder-funded, no number')." }];
+    const village = ["Γράψε: pre-revenue, founder-funded, δεν δίνω αριθμό", "Θα σου πω το μηνιαίο ποσό και τους μήνες runway", "Παράλειψε το Village Global"];
+    const form = "Kate needs you\nVillage Global Velocity form: only the required 'Monthly burn and runway' is missing (Azure cloud burn €24.23/ημέρα).\nΤι να γράψω στο υποχρεωτικό «Monthly burn and runway» της αίτησης Village Global;";
+    expect(principlePick(village[1]!, form, village, rules)).toMatchObject({ option: village[0], principle: "state the status without a figure on a third party's form", rule: { id: "space_memory:763c4398" } });
+    expect(principlePick(village[0]!, form, village, rules)).toBeNull();
+    expect([principleAgainst(village[1]!, form), principleAgainst("Ignore it", "A refund mail from MOBILE BUZZ.")]).toEqual([true, false]);
+    expect(principlePick("I'll tell you the monthly burn", form, ["Write: pre-revenue", "I'll tell you the monthly burn"], rules)).toMatchObject({ option: "Write: pre-revenue" });
+    expect(principlePick("I'll tell you the date", "Conference talk on 3 December", ["Write: pre-revenue", "I'll tell you the date"], rules)).toBeNull();
+    expect(principlePick(village[1]!, form, village, [{ id: "space_memory:x", title: "Mail", body: "Archive what is done." }])).toBeNull();
+    // Moonstone: the cash option follows no rule; the one that rejects the deductions is picked.
+    const moonstone = ["Μεταφορά σε τράπεζα, με ρητή επιφύλαξη (όχι αποδοχή εκκαθάρισης)", "Μετρητά στο κτίριο, με ρητή επιφύλαξη", "Απόρριψη των κρατήσεων, επιμονή στα 12.000 και στο CCTV", "Καμία απάντηση ακόμα"];
+    expect(principlePick(moonstone[0]!, "Τι απαντάμε στο Moonstone για την επιστροφή 6.313 THB;", moonstone, rules)).toMatchObject({ option: moonstone[2] });
+    // On the card: an agent's pick is replaced and the body says by which rule; Nous's own cards are left to its tools' hold.
+    const service = createNotificationService({ repository: new InMemorySpaceNotificationsRepository(undefined, true), eventBus: new SpaceEventBus(), userSettings: async () => ({ notifications: null }) as never,
+      recordRoomEvent: async (input) => eventSchema.parse({ ...input, id: makeSpaceId("event"), workflowId: null, createdAt: new Date().toISOString() }),
+      nous: { held: async () => false, raised: () => {}, recommend: async () => null, principlePick: async (card) => principlePick(card.recommended, card.context, card.options, rules) } });
+    const raise = (source: "AGENT" | "NOUS", dedupeKey: string) => service.raise({ ownerUserId: owner, roomId: room.id, paneId: andy.id, source, kind: "NEEDS_YOU", severity: "ATTENTION",
+      title: "Kate needs you", body: "Village Global Velocity form: only the required 'Monthly burn and runway' is missing.", link: {}, dedupeKey, telegram: null,
+      payload: { ask: { question: "Τι να γράψω στο υποχρεωτικό «Monthly burn and runway» της αίτησης Village Global;", options: village, recommended: village[1], answer: { kind: "PANE" } } } });
+    const agent = await raise("AGENT", "agent:village:1");
+    expect(agent.payload.ask).toMatchObject({ recommended: village[0] });
+    expect(agent.body).toContain(`Recommended "${village[0]}" by your rule [space_memory:763c4398]`);
+    expect((await raise("NOUS", "nous:village:1")).payload.ask).toMatchObject({ recommended: village[1] });
+  });
+
+  it("recommends the first option, logged and never an Always answer, when neither the producer nor the base rate does (audit §4 item 8)", async () => {
+    const warned: unknown[] = [];
+    const service = createNotificationService({ repository: new InMemorySpaceNotificationsRepository(undefined, true), eventBus: new SpaceEventBus(), userSettings: async () => ({ notifications: null }) as never,
+      recordRoomEvent: async (input) => eventSchema.parse({ ...input, id: makeSpaceId("event"), workflowId: null, createdAt: new Date().toISOString() }),
+      log: { warn: (fields: unknown) => warned.push(fields) } as never, nous: { held: async () => false, raised: () => {}, recommend: async () => null } });
+    const raised = await service.raise({ ownerUserId: owner, roomId: room.id, paneId: andy.id, source: "MARKETING_COPILOT", kind: "CAMPAIGN_PROPOSED", severity: "ATTENTION",
+      title: "Marketing Copilot proposes a campaign", body: "Launch week.", link: {}, dedupeKey: "marketing:campaign:c1", telegram: null,
+      payload: { ask: { question: "Approve the campaign?", options: ["Approve", "Decline"], answer: { kind: "NOUS" } } } });
+    expect(raised.payload).toMatchObject({ ask: { recommended: "Approve" }, recommendedDefault: true });
+    expect(warned).toEqual([expect.objectContaining({ source: "MARKETING_COPILOT", options: ["Approve", "Decline"] })]);
+    expect(needsYouAnswerKind(raised)).toBeNull();
+    // 16/11 21:55 BKK: the default is Go now, else no completion; a card offering only completions gets none.
+    const ask = (options: string[], key: string) => service.raise({ ownerUserId: owner, roomId: room.id, paneId: andy.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION",
+      title: "Andy needs you", body: `Card ${key}: ${options.join(" or ")}.`, link: {}, dedupeKey: key, telegram: null, payload: { ask: { question: "Ready?", options, answer: { kind: "NOUS" } } } });
+    expect((await ask(["Done", "Later today", "Go now"], "agent:ask:1")).payload.ask).toMatchObject({ recommended: "Go now" });
+    expect((await ask(["Done", "Need links/steps"], "agent:ask:2")).payload.ask).toMatchObject({ recommended: "Need links/steps" });
+    expect((await ask(["Done", "I handled it"], "agent:ask:3")).payload.ask).not.toHaveProperty("recommended");
+    // A producer's own "Done" is never stored by "Always answer like this" either (ebdb06cc was ACKED 27 s after its raise, 16/11).
+    expect(needsYouAnswerKind({ ...raised, payload: { ...raised.payload, recommendedDefault: undefined, ask: { ...(raised.payload.ask as object), options: ["Done", "Not now"], recommended: "Done" } } })).toBeNull();
+    expect(needsYouAnswerKind({ ...raised, payload: { ...raised.payload, recommendedDefault: undefined } })).not.toBeNull();
   });
 
   it("reaches the operator at once even while Nous holds other notifications, and resolves the cards of closed panes", async () => {
@@ -746,6 +924,25 @@ describe("Copilot questions go to Nous first (Ask Last step 7, 2026-10-27)", () 
   });
 });
 
+describe("1155: a card whose step the operator already said cannot work (18/11 REVIEW: Azure/Microsoft account cards)", () => {
+  const rule = (id: string, title: string, body: string) => ({ id, title, body });
+  it("names a saved cannot-work rule that names the card's name, in Greek or English, and nothing else", () => {
+    const azure = rule("space_memory:az01", "Operator: Azure account", "Το Azure account δεν γίνεται με την κάρτα.");
+    const card = "Create the account: open an Azure account with the saved card?";
+    expect(cannotWorkRules(card, [azure])).toEqual([{ id: "space_memory:az01", title: "Operator: Azure account" }]);
+    expect(cannotWorkRules("Sign up for a Microsoft developer account?", [rule("space_memory:ms01", "Accounts", "Microsoft sign-up cannot work from this server.")])).toHaveLength(1);
+    expect(cannotWorkRules("Renew the Hetzner server?", [azure])).toEqual([]);
+    expect(cannotWorkRules(card, [rule("space_memory:az02", "Operator: Azure", "Use Azure for the demo.")])).toEqual([]);
+    expect(cannotWorkRules("Azure is first in the sentence only", [azure])).toEqual([]);
+    // DEV3D-003: a name with regex characters is matched literally, never thrown on (the card tool failed with an internal error).
+    expect(cannotWorkRules("Run the Build Step[2] for Config{env now", [azure])).toEqual([]);
+    expect(cannotWorkRules("Then try Azure(EU) again?", [azure])).toHaveLength(1);
+    // 25/11 Gshopper mail-review approve: Space's own nouns ("Mail Copilot") name no third party, so a Mail Copilot rule never holds it.
+    const mailRule = rule("space_memory:mc01", "Operator: Mail Copilot", "Το Mail Copilot δεν γίνεται να στέλνει χωρίς έλεγχο.");
+    expect(cannotWorkRules("Έγκριση απάντησης Mail Copilot προς Gshopper (κουπόνια UnboxExpert)", [mailRule])).toEqual([]);
+  });
+});
+
 describe("1056: a recommendation against a saved principle rule (13/11 REVIEW: Vault→keep, Pavago→skip)", () => {
   const rule = (id: string, title: string, body: string) => ({ id, title, body });
   it("keep over delete: a delete pick is flagged, a keep pick or a negated delete is not", () => {
@@ -754,6 +951,14 @@ describe("1056: a recommendation against a saved principle rule (13/11 REVIEW: V
     expect(principleConflicts("Keep", "Old Vault login", rules)).toEqual([]);
     expect(principleConflicts("Keep it, never delete", "Old Vault login", rules)).toEqual([]);
     expect(principleConflicts("Delete it", "Old Vault login", [rule("space_memory:x", "Mail", "Archive what is done.")])).toEqual([]);
+  });
+  it("slice 28 (3ca0aa75): keep over delete reads the operator's Greek rules and a Greek free-up pick, accents or not", () => {
+    const disk = [rule("space_memory:1734fb8c", "Operator: Ο δίσκος μεγαλώνει κατά 512 GiB", "Δεν σβήνεται τίποτα.")];
+    const yes = "Ναι: A και B τώρα (~19 GB)\nΓερμανικός server (hz): να ελευθερώσει ο Andy ~19 GB από προσωρινά αρχεία;";
+    expect(principleConflicts(yes, "", disk)).toEqual([{ principle: "keep over delete", rule: { id: "space_memory:1734fb8c", title: "Operator: Ο δίσκος μεγαλώνει κατά 512 GiB" } }]);
+    expect(principleConflicts("Ναι, σβησε τα", "", [rule("space_memory:613a", "Operator: My answer to \"Σβήνεις τις 3 εγγραφές;\": Κράτησέ τες", "")])).toMatchObject([{ principle: "keep over delete" }]);
+    expect(principleConflicts("Όχι: μην σβήσεις τίποτα, δώσε δίσκο", "", disk)).toEqual([]);
+    expect(principleConflicts(yes, "", [rule("space_memory:x", "Operator: σβήσε τα vm 444", "")])).toEqual([]);
   });
   it("a free option first: a paid pick is flagged only when a free option is on the table", () => {
     const rules = [rule("space_memory:free0001", "Tools", "Always look for a free solution first, before any paid plan.")];
@@ -766,6 +971,30 @@ describe("1056: a recommendation against a saved principle rule (13/11 REVIEW: V
     expect(principleConflicts("Send it now", "Reply to the accelerator about the grant", rules)).toMatchObject([{ principle: "the operator reads funding mail before it is sent" }]);
     expect(principleConflicts("Show me the draft first, then send", "Reply to the accelerator about the grant", rules)).toEqual([]);
     expect(principleConflicts("Send it now", "Reply to the landlord about the lease", rules)).toEqual([]);
+  });
+  it("23/11 REVIEW (Moonstone): taking a disputed refund's partial transfer goes against the reject-and-insist rule, insisting does not", () => {
+    const rules = [rule("space_memory:763c4398", "Operator rule: predictions for disputed third-party money claims and third-party forms",
+      "DISPUTED MONEY CLAIM BY A THIRD PARTY (deposit deductions, refunds): predict and recommend **reject the deductions and insist on the full amount and the evidence**.")];
+    const question = "Τι απαντάμε στο Moonstone για την επιστροφή 6.313 THB;";
+    expect(principleConflicts("Μεταφορά σε τράπεζα, με ρητή επιφύλαξη (όχι αποδοχή εκκαθάρισης)", question, rules))
+      .toEqual([{ principle: "reject disputed deductions and insist on the full amount", rule: { id: "space_memory:763c4398", title: rules[0]!.title } }]);
+    expect(principleConflicts("Accept the 6,313 THB refund", "Landlord deposit", rules)).toMatchObject([{ principle: "reject disputed deductions and insist on the full amount" }]);
+    expect(principleConflicts("Απόρριψη των κρατήσεων, επιμονή στα 12.000 και στο CCTV", question, rules)).toEqual([]);
+    expect(principleConflicts("Accept the invitation", "Conference talk on 3 December", rules)).toEqual([]);
+    expect(principleConflicts("Μεταφορά σε τράπεζα", question, [rule("space_memory:greek01", "Operator: απόρριψη των κρατήσεων, επιμονή στα 12.000", "")])).toMatchObject([{ principle: "reject disputed deductions and insist on the full amount" }]);
+    expect(principleConflicts("Μεταφορά σε τράπεζα", question, [rule("space_memory:x", "Mail", "Archive what is done.")])).toEqual([]);
+  });
+  it("983: the agent sends what the operator said to send: handing the send back is flagged, the agent send is not", () => {
+    const greek = [rule("space_memory:kane0001", "Operator: κάνε το εσύ μην μου έρχονται τέτοια Needs you!!!", "αυτά πρέπει να τα κάνεις εσύ")];
+    const english = [rule("space_memory:self0001", "Operator rule: before asking me to do anything, verify you cannot do it yourself", "")];
+    const context = "Eight Sleep support reply: who sends it?";
+    expect(principleConflicts("I'll send it myself from Gmail", context, greek)).toEqual([{ principle: "the agent sends what the operator said to send", rule: { id: "space_memory:kane0001", title: "Operator: κάνε το εσύ μην μου έρχονται τέτοια Needs you!!!" } }]);
+    expect(principleConflicts("Send it manually from your Gmail", context, english)).toMatchObject([{ principle: "the agent sends what the operator said to send" }]);
+    expect(principleConflicts("Θα το στείλω εγώ", "Απάντηση στην Eight Sleep", greek)).toMatchObject([{ principle: "the agent sends what the operator said to send" }]);
+    expect(principleConflicts("Send it yourself", context, greek)).toEqual([]);
+    expect(principleConflicts("Never send it manually: the agent sends it", context, greek)).toEqual([]);
+    expect(principleConflicts("I'll do it myself", "Rename the Vault folder", greek)).toEqual([]);
+    expect(principleConflicts("I'll send it myself", context, [rule("space_memory:x", "Mail", "Archive what is done.")])).toEqual([]);
   });
 });
 

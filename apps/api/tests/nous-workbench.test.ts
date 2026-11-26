@@ -1,7 +1,7 @@
 // Nous's workbench (operator request 2026-10-21, plan clipboard:GZNzxm7FNwjM): its own folder, Agent Files from it, public pages,
 // web search, network checks, git read only and the Space reads it used to ask panes for. No shell, GET only, public hosts only.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { createSocket } from "node:dgram";
 import { createServer as createTcpServer } from "node:net";
@@ -14,7 +14,7 @@ import { isPublicAddress } from "../src/public-url-fetch.js";
 import { createNousFiles } from "../src/nous/files.js";
 import { createNousGit } from "../src/nous/git.js";
 import { createNousWeb } from "../src/nous/web.js";
-import { claudeSearchFindings } from "../src/council/web-search.js";
+import { poolSearchFindings } from "../src/council/web-search.js";
 import { poolBackAt } from "../src/nous/tokens.js";
 import { decisionActionFailed } from "../src/nous/workbench.js";
 import { createNousTools, nousToolDefinitions, type NousToolDeps, type NousToolOutcome } from "../src/nous/tools.js";
@@ -46,6 +46,14 @@ describe("Nous's own folder (space_files_write) and Agent Files (space_agent_fil
     expect(readFileSync(join(ownRoot, "research", "dns.md"), "utf8")).toBe("# DNS\nMX ok\n");
     expect((await nous.execute("space_files_write", { path: `${ownRoot}/research/dns.md`, text: "fresh", mode: "replace" }, ctx)).ok).toBe(true);
     expect(readFileSync(join(ownRoot, "research", "dns.md"), "utf8")).toBe("fresh");
+    // 18/11 (×5 EACCES): a file a pane wrote (another owner, 644) is replaced or extended through a copy renamed over it.
+    chmodSync(join(ownRoot, "research", "dns.md"), 0o444);
+    expect((await nous.execute("space_files_write", { path: "research/dns.md", text: " more", mode: "append" }, ctx)).ok).toBe(true);
+    expect(readFileSync(join(ownRoot, "research", "dns.md"), "utf8")).toBe("fresh more");
+    chmodSync(join(ownRoot, "research", "dns.md"), 0o444);
+    expect((await nous.execute("space_files_write", { path: "research/dns.md", text: "fresh", mode: "replace" }, ctx)).ok).toBe(true);
+    expect(readFileSync(join(ownRoot, "research", "dns.md"), "utf8")).toBe("fresh");
+    expect(readdirSync(join(ownRoot, "research")).filter((name) => name.endsWith(".tmp"))).toEqual([]);
     const read = await nous.execute("space_files_read", { path: "nous/research/dns.md" }, ctx);
     expect(read).toMatchObject({ ok: true });
     expect(read.result).toContain("fresh");
@@ -103,6 +111,14 @@ describe("Nous's own folder (space_files_write) and Agent Files (space_agent_fil
     const added = await nous.execute("space_agent_files_add", { path: "reports/olla.md", folder: "Documents/Reports", name: "olla-report.md" }, ctx);
     expect(added).toMatchObject({ ok: true });
     expect(add).toHaveBeenCalledWith(owner, { roomId: room.id, sourceRoot: ownRoot, sourcePath: join(ownRoot, "reports", "olla.md"), filename: "olla-report.md", folder: "Documents/Reports", copiedFrom: null });
+    // Nous errors 24/11 (the operator in the Nous app saw no file): a file added while the operator waits is shared to the Nous app too.
+    const share = vi.fn(async () => ({ ok: true, display: "Shared", result: "Shared olla-report.md (artifact:new00001) to the Nous app as nous_share:1." }));
+    const shared = tools({ agentFiles: { add: vi.fn(async () => ({ id: "artifact:new00001", byteSize: 5 })) }, sharedFiles: { share } as never });
+    await shared.execute("space_agent_files_add", { path: "reports/olla.md", folder: "Documents" }, ctx);
+    expect(share).not.toHaveBeenCalled();
+    const asked = await shared.execute("space_agent_files_add", { path: "reports/olla.md", folder: "Documents" }, { ...ctx, turn: { operatorMessage: { id: "nous_msg:1", content: "show me" } } as never });
+    expect(share).toHaveBeenCalledWith(owner, { artifactId: "artifact:new00001" });
+    expect(asked.result).toContain("to the Nous app as nous_share:1");
     // W45 step 2 (2/11: 3 stored FAILED): a path outside the workspace is a hold, worded as final for that path.
     expect(await nous.execute("space_agent_files_add", { path: "../outside.txt", folder: "Documents" }, ctx)).toMatchObject({ ok: false, refused: true,
       result: expect.stringContaining("Nothing added. Do not call it again with this path;") });
@@ -177,6 +193,7 @@ describe("Nous reads the web (space_web_read, space_web_search) and checks hosts
       }
       if (request.url === "/escape") { response.writeHead(302, { location: "http://private.example/" }); response.end(); return; }
       if (request.url === "/doc.pdf") { response.writeHead(200, { "content-type": "application/pdf" }); response.end(Buffer.from("%PDF-1.4\n%\u00e2\u00e3\n", "latin1")); return; }
+      if (request.url === "/packages") { response.writeHead(200, { "content-type": "application/octet-stream" }); response.end("Package: nginx\nVersion: 1.27\n"); return; }
       if (request.url === "/image") { response.writeHead(200, { "content-type": "image/png" }); response.end(Buffer.from([137, 80, 78, 71, 0, 0])); return; }
       response.writeHead(404, { "content-type": "text/plain" });
       response.end("missing");
@@ -221,7 +238,9 @@ describe("Nous reads the web (space_web_read, space_web_search) and checks hosts
     // Plan ro5ukMcJnIk4 step 2: the public-address gate is a refusal (no Score tool failure).
     expect(await nous.execute("space_web_read", { url: `http://site.example:${port}/escape` }, ctx)).toMatchObject({ ok: false, refused: true, result: expect.stringMatching(/Private and local addresses/) });
     expect(await nous.execute("space_web_read", { url: "http://localhost/" }, ctx)).toMatchObject({ ok: false, refused: true });
-    expect((await nous.execute("space_web_read", { url: `http://site.example:${port}/image` }, ctx)).result).toContain("not a text page");
+    // 18/11: a binary page is a refusal; text sent as application/octet-stream (nginx's Packages lists, ×3) is read.
+    expect(await nous.execute("space_web_read", { url: `http://site.example:${port}/image` }, ctx)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("not a text page") });
+    expect((await nous.execute("space_web_read", { url: `http://site.example:${port}/packages` }, ctx)).result).toContain("Package: nginx");
   });
 
   it("reads a PDF page as its text (plan ro5ukMcJnIk4 step 2: 6 reads failed 'is application/pdf, not a text page' in 7 days)", async () => {
@@ -263,26 +282,53 @@ describe("Nous reads the web (space_web_read, space_web_search) and checks hosts
     expect(search).toHaveBeenCalledTimes(2);
   });
 
-  it("2026-11-07 REVIEW (10 of 10 failed, Codex out to 11/11): while the Codex pool is out the search runs on Claude; only both failing answers the quota text", async () => {
+  it("2026-11-07 REVIEW (10 of 10 failed, Codex out to 11/11): while the Codex pool is out the search runs on Groq's free pool (Claude refused them all, 20/11); only both failing answers the quota text", async () => {
     let clock = Date.parse("2026-11-06T14:59:00Z");
     const search = vi.fn(async () => { throw Object.assign(new Error("Web search HTTP 429: Rate limit exceeded. Try again in 300s"), { kind: "quota" }); });
-    const fallbackSearch = vi.fn(async () => claudeSearchFindings({ content: [{ type: "server_tool_use" }, { type: "web_search_tool_result", content: [] },
-      { type: "text", text: "LinkedIn's appeal form is at its help page.", citations: [{ type: "web_search_result_location", url: "https://www.linkedin.com/help/linkedin/ask/RA", title: "Appeal a restriction", cited_text: "…" }] }] }));
+    const fallbackSearch = vi.fn(async () => poolSearchFindings({ content: "LinkedIn's appeal form is at its help page.【0†L4-L9】",
+      executed_tools: [{ type: "browser_search", search_results: { results: [{ title: "Appeal a restriction", url: "https://www.linkedin.com/help/linkedin/ask/RA" }] } }] }));
     const searcher = web({ search, fallbackSearch, now: () => clock, searchBackAt: async () => Date.parse("2026-11-11T05:35:19Z") });
     const nous = tools({ web: searcher });
     const first = await nous.execute("space_web_search", { query: "LinkedIn restricted account appeal form" }, ctx);
     expect(first.ok).toBe(true);
     expect(first.result).toContain("https://www.linkedin.com/help/linkedin/ask/RA");
-    expect(searcher.searchOutLine()).toBe("Web search: the Codex pool is out until 2026-11-11 05:35 UTC; space_web_search runs on Claude's search meanwhile.");
+    expect(searcher.searchOutLine()).toBe("Web search: the Codex pool is out until 2026-11-11 05:35 UTC; space_web_search runs on the free search (Groq) meanwhile.");
     clock += 3_600_000;
     expect((await nous.execute("space_web_search", { query: "LinkedIn appeal" }, ctx)).ok).toBe(true);
     expect(search).toHaveBeenCalledTimes(1);
     expect(fallbackSearch).toHaveBeenCalledTimes(2);
-    fallbackSearch.mockRejectedValueOnce(new Error("Claude web search HTTP 429"));
+    fallbackSearch.mockRejectedValueOnce(new Error("Space Gateway found no route with room: openai/gpt-oss-120b 429."));
     const both = await nous.execute("space_web_search", { query: "LinkedIn appeal" }, ctx);
     expect(both.ok).toBe(false);
     expect(both.result).toContain("out of quota until 2026-11-11 05:35 UTC");
-    expect(both.result).toContain("Claude's search failed too: Claude web search HTTP 429");
+    expect(both.result).toContain("the free search failed too: Space Gateway found no route with room: openai/gpt-oss-120b 429.");
+  });
+
+  it("Daily Nous errors 21/11 (×2 at 40 s): a slow search answers with the free search's findings, else a free hold naming a shorter query", async () => {
+    const search = vi.fn(async () => { throw Object.assign(new Error("The operation timed out."), { name: "TimeoutError" }); });
+    const fallbackSearch = vi.fn(async () => poolSearchFindings({ content: '{"findings":[{"title":"Fund II","url":"https://example.com/fund","finding":"It closed at 50 M."}]}' }));
+    const nous = tools({ web: web({ search, fallbackSearch }) });
+    const found = await nous.execute("space_web_search", { query: "Metavallon VC fund II final close size 2026" }, ctx);
+    expect(found).toMatchObject({ ok: true });
+    expect(found.result).toContain("https://example.com/fund");
+    // Overnight 21/11: when the whole query finds nothing in time, its first four words, run beside it, answer.
+    fallbackSearch.mockResolvedValueOnce([]);
+    const part = await nous.execute("space_web_search", { query: "Metavallon VC fund II final close size 2026" }, ctx);
+    expect(part).toMatchObject({ ok: true });
+    expect(part.result).toMatch(/^Findings for "Metavallon VC fund II" \(the whole query took longer than 40 s; these answer its first words\)/);
+    expect(fallbackSearch).toHaveBeenLastCalledWith("Metavallon VC fund II", expect.any(String), expect.any(AbortSignal), expect.anything());
+    fallbackSearch.mockRejectedValueOnce(Object.assign(new Error("aborted"), { name: "TimeoutError" })).mockRejectedValueOnce(Object.assign(new Error("aborted"), { name: "TimeoutError" }));
+    const slow = await nous.execute("space_web_search", { query: "Metavallon VC fund II final close size 2026" }, ctx);
+    expect(slow).toMatchObject({ ok: false, refused: true });
+    expect(slow.result).toBe('The search took longer than 40 s; search again with fewer words (e.g. "Metavallon VC fund II"), or read a page you know with space_web_read.');
+    expect(await tools({ web: web({ search }) }).execute("space_web_search", { query: "Metavallon fund" }, ctx)).toMatchObject({ ok: false, refused: true });
+    expect((await tools({ web: web({ search: vi.fn(async () => { throw new Error("HTTP 500"); }) }) }).execute("space_web_search", { query: "Metavallon fund" }, ctx)).refused).toBeFalsy();
+  });
+
+  it("Groq's search answer gives the prompt's JSON findings without its source marks (plan clipboard:VypZ4sl7NR04 step 4)", () => {
+    expect(poolSearchFindings({ content: '{"findings":[{"title":"Fund II","url":"https://example.com/fund","finding":"It closed at 50 M.【1†L3-L5】"}]}' }))
+      .toEqual([{ title: "Fund II", url: "https://example.com/fund", finding: "It closed at 50 M." }]);
+    expect(poolSearchFindings({ content: null })).toEqual([]);
   });
 
   it("2026-11-06 REVIEW (18 of 18 failed while the Codex weeks were used up): a quota refusal waits for the pool's return, and the world says so before a call", async () => {
@@ -319,7 +365,8 @@ describe("Nous reads the web (space_web_read, space_web_search) and checks hosts
     for (const host of ["localhost", "db", "printer.local", "metadata.google.internal"]) {
       expect((await nous.execute("space_net_check", { check: "dns", host }, ctx)).ok, host).toBe(false);
     }
-    expect((await nous.execute("space_net_check", { check: "dns", host: "10.0.0.1", type: "PTR" }, ctx)).ok).toBe(false);
+    // 18/11 (×5): a PTR of a private address or a name is the public-address gate's refusal, never a failed check.
+    expect(await nous.execute("space_net_check", { check: "dns", host: "10.0.0.1", type: "PTR" }, ctx)).toMatchObject({ ok: false, refused: true });
     // Daily Nous errors 13/11 09:55 ("The operation was aborted"): a site that does not answer in time is the check's finding, as tcp's "not reachable".
     expect(await tools({ web: web({ checkTimeoutMs: 200 }) }).execute("space_net_check", { check: "http", host: `http://site.example:${port}/stuck` }, ctx))
       .toMatchObject({ ok: true, result: expect.stringContaining("/stuck → no answer within 0.2 s from public-host (timed out)") });
@@ -340,6 +387,45 @@ describe("Nous reads the web (space_web_read, space_web_search) and checks hosts
       const nous = tools({ web: web({ dnsServers: [`127.0.0.1:${dns.address().port}`] }) });
       expect(await nous.execute("space_net_check", { check: "dns", host: "kartiva.com", type: "NS" }, ctx))
         .toMatchObject({ ok: true, result: expect.stringContaining("NS kartiva.com:\n- SERVFAIL: the public resolvers got no answer") });
+    } finally { dns.close(); }
+  });
+
+  it("asks the public resolvers once more on ETIMEOUT before that is the answer (slice 17: \"DNS A spaceapp.example failed: ETIMEOUT\" ×1)", async () => {
+    // A resolver that drops the first ask's two tries and answers the next with one A record.
+    const dns = createSocket("udp4");
+    let asked = 0;
+    dns.on("message", (query, peer) => {
+      if (++asked <= 2) return;
+      let end = 12;
+      while (query[end]) end += query[end]! + 1;
+      const answer = Buffer.concat([query.subarray(0, end + 5), Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 93, 184, 216, 34])]);
+      answer.writeUInt16BE(0x8180, 2); answer.writeUInt16BE(1, 4); answer.writeUInt16BE(1, 6); answer.writeUInt32BE(0, 8);
+      dns.send(answer, peer.port, peer.address);
+    });
+    await new Promise<void>((done) => dns.bind(0, "127.0.0.1", done));
+    try {
+      const nous = tools({ web: web({ dnsServers: [`127.0.0.1:${dns.address().port}`], checkTimeoutMs: 200 }) });
+      expect(await nous.execute("space_net_check", { check: "dns", host: "spaceapp.example", type: "A" }, ctx))
+        .toMatchObject({ ok: true, result: expect.stringContaining("93.184.216.34 (ttl 60)") });
+      expect(asked).toBe(3);
+    } finally { dns.close(); }
+  });
+
+  it("answers an address with no PTR record as \"no reverse DNS\", not a failure (17/11: getHostByAddr ENOTFOUND ×1)", async () => {
+    // A resolver that answers NXDOMAIN (RCODE 3) to every question.
+    const dns = createSocket("udp4");
+    dns.on("message", (query, peer) => {
+      let end = 12;
+      while (query[end]) end += query[end]! + 1;
+      const answer = Buffer.from(query.subarray(0, end + 5));
+      answer.writeUInt16BE(0x8183, 2); answer.writeUInt16BE(1, 4); answer.writeUInt32BE(0, 6); answer.writeUInt16BE(0, 10);
+      dns.send(answer, peer.port, peer.address);
+    });
+    await new Promise<void>((done) => dns.bind(0, "127.0.0.1", done));
+    try {
+      const nous = tools({ web: web({ dnsServers: [`127.0.0.1:${dns.address().port}`] }) });
+      expect(await nous.execute("space_net_check", { check: "dns", host: "186.247.190.77", type: "PTR" }, ctx))
+        .toMatchObject({ ok: true, result: expect.stringContaining("PTR 186.247.190.77:\n- no reverse DNS") });
     } finally { dns.close(); }
   });
 
@@ -405,6 +491,14 @@ describe("Nous reads git (space_git)", () => {
     expect((await run({ op: "branches" })).result).toContain("main");
     expect((await run({ op: "file", rev: "HEAD~1", path: "app.ts" })).result).toContain("export const a = 1;");
     expect((await run({ op: "blame", path: "app.ts" })).result).toContain("Bob");
+    // Daily Nous errors 22/11 (×6 "lines: must match pattern", helpers reading a file): a file's lines, in the range forms models write.
+    expect((await run({ op: "file", path: "app.ts", lines: "1-1" })).result).toMatch(/characters 0-19 of 19 \(end\)\.[\s\S]*export const a = 2;$/);
+    expect((await run({ op: "blame", path: "app.ts", lines: "L1:1" })).result).toContain("Bob");
+    // DEV3D-055: GitHub's L10-L20 form strips both Ls.
+    expect((await run({ op: "blame", path: "app.ts", lines: "L1-L1" })).result).toContain("Bob");
+    // DEV3D-060: a reversed range is read the way git blame reads it, not as an empty file.
+    expect((await run({ op: "file", path: "app.ts", lines: "2-1" })).result).toContain("export const a = 2;");
+    expect((await run({ op: "file", path: "app.ts", lines: "two" })).ok).toBe(false);
   });
 
   it("refuses options as revisions, paths out of the repository, secrets, binaries and repositories outside the list", async () => {
@@ -425,6 +519,12 @@ describe("Nous reads git (space_git)", () => {
       expect((await nous.execute("space_git", { repo: ref, op: "log" }, ctx)).result, ref).toContain("Raise a to 2");
     }
     expect((await nous.execute("space_git", { repo: "no-such-branch", op: "log" }, ctx)).result).toContain('rev "<branch>"');
+    // Daily Nous errors 14/11 (7/11 14:51 a diff of fix/snip-held-video-paste, which no repository had): the branches sharing its words, a refusal.
+    const guessed = await nous.execute("space_git", { repo: "stable", op: "diff", rev: "fix/snip-held-video" }, ctx);
+    expect(guessed).toMatchObject({ ok: false, refused: true });
+    expect(guessed.result).toMatch(/\nNearest branches and tags to fix\/snip-held-video: fix\/snip-held\.$/);
+    const nowhere = await nous.execute("space_git", { repo: "stable", op: "log", rev: "zzqx..HEAD~1" }, ctx);
+    expect(nowhere).toMatchObject({ ok: false, refused: true, result: expect.stringContaining('\nNo branch, tag or commit zzqx in this repository: op "branches" lists the branches') });
   });
 });
 
@@ -455,6 +555,9 @@ describe("R51-3: space_git names the repository that has what the other lacks", 
     expect((await run({ op: "log", rev: "dev..stable" })).ok).toBe(true);
     // Nowhere: the error alone.
     expect((await run({ op: "file", path: "missing.ts" })).result).not.toContain("call again with repo");
+    // 14/11 (14/11 01:54, 8/11 06:30 blame): no near miss either, so the answer names how to list a folder, and a blame's "no such path" is the same.
+    expect(await run({ op: "file", path: "missing.ts" })).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("\nNo path at HEAD shares its words; op \"file\" with a folder's path lists that folder.") });
+    expect(await run({ op: "blame", path: "src/app.ts" })).toMatchObject({ ok: false, refused: true, result: expect.stringMatching(/no such path src\/app\.ts in HEAD\nNearest paths at HEAD: app\.ts\.$/) });
     // R84 (6-8/11: guessed paths such as apps/api/src/nous-providers.ts): the nearest real paths follow the error.
     expect((await run({ op: "file", path: "src/app.ts" })).result).toMatch(/does not exist in 'HEAD'\nNearest paths at HEAD: app\.ts\.$/);
   });
@@ -637,6 +740,12 @@ describe("Nous reliability fixes (workbench review 2026-10-21)", () => {
   it("reads an artifact id given without its prefix, clips a card item over 200 characters, and points a draft refusal at the draft tool", async () => {
     const read = vi.fn(async (_owner: string, input: { artifactId?: string }) => `read ${input.artifactId}`);
     expect((await nousFor({ files: { read } as never }).execute("space_files_read", { artifactId: "MDhGXmj67XBw" }, ctx)).result).toBe("read artifact:MDhGXmj67XBw");
+    // Daily Nous errors 22/11 13:46Z: an artifact or file under another key name is read, not failed.
+    expect((await nousFor({ files: { read } as never }).execute("space_files_read", { artifact: "MDhGXmj67XBw" }, ctx)).result).toBe("read artifact:MDhGXmj67XBw");
+    expect((await nousFor({ files: { read } as never }).execute("space_files_read", { name: "artifact:MDhGXmj67XBw" }, ctx)).result).toBe("read artifact:MDhGXmj67XBw");
+    const readPath = vi.fn(async (_owner: string, input: { path?: string }) => `read ${input.path}`);
+    expect((await nousFor({ files: { read: readPath } as never }).execute("space_files_read", { file: "nous/a.md" }, ctx)).result).toBe("read nous/a.md");
+    expect((await nousFor({ files: { read } as never }).execute("space_files_read", {}, ctx)).ok).toBe(false);
     const notify = vi.fn(async () => ({ ok: true, display: "Card", result: "Card" }));
     expect((await nousFor({ paneNotices: { notify } as never }).execute("space_notify_operator", { room: "Cleo", pane: "Andy", title: "Sign in",
       items: [{ text: "x".repeat(260) }, { text: "Solve the CAPTCHA" }], checked: ["Vault: no login for this site"] }, ctx)).ok).toBe(true);
@@ -648,11 +757,12 @@ describe("Nous reliability fixes (workbench review 2026-10-21)", () => {
 
   it("keeps panes off the paid Claude API key while Claude Max is only pace-held, and allows it once every Max account is out (operator 6/11)", async () => {
     const roomTool = vi.fn(async () => ({ ok: true, display: "Model set", result: "{\"status\":\"COMPLETED\"}" }));
-    const max = (nowLeft: number | null) => async () => [{ key: "claude", name: "Claude Max", nowLeft }] as never;
+    // max(0): no usable Max account left (claudeMaxHasNoRoom).
+    const max = (nowLeft: number | null) => async () => [{ key: "claude", name: "Claude Max", accounts: nowLeft ? 2 : 0, nowLeft }] as never;
     const keyModel = { room: "Cleo", pane: "Andy", modelId: "space-gateway-claude/claude-opus-5-5" };
     // Pace-held: the week and 5-hour window still have room, so Max serves over its daily share and the key takes nothing.
     expect(await nousFor({ roomTool: roomTool as never, providerRooms: max(72) }).execute("space_set_pane_model", keyModel, ctx))
-      .toMatchObject({ ok: false, display: "Claude Max has room", result: expect.stringContaining("cli:claude") });
+      .toMatchObject({ ok: false, refused: true, display: "Claude Max has room", result: expect.stringContaining("cli:claude") });
     expect(roomTool).not.toHaveBeenCalled();
     // A Max model is never refused.
     expect((await nousFor({ roomTool: roomTool as never, providerRooms: max(72) }).execute("space_set_pane_model", { ...keyModel, modelId: "claude-opus-5-5" }, ctx)).ok).toBe(true);

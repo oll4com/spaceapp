@@ -10,7 +10,7 @@ import type { NotificationService } from "../notifications/service.js";
 import { BRIEF_TAKEN_STALE_MS } from "../copilot-brief-watch.js";
 import type { SecurityFeeds } from "./feeds.js";
 import {
-  distroFindings, exposureFindings, imageFindings, lifecycleFindings, libraryFindings, newsFindings, productFindings, PRODUCT_CPE,
+  cveRecordNamesPackage, distroFindings, exposureFindings, imageFindings, lifecycleFindings, libraryFindings, newsFindings, productFindings, PRODUCT_CPE,
   type FindingDraft, type KevEntry, type NewsItem, type NvdCve, type OsvVuln
 } from "./matcher.js";
 
@@ -98,7 +98,7 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
   // In-memory intelligence (shortcut: lost on restart; the first pass after a start reads the last 30 days of NVD again).
   const intel = { kev: new Map<string, KevEntry>(), kevOk: false, nvd: new Map<string, NvdCve>(), nvdUntil: 0, news: [] as NewsItem[], newsOk: false,
     exposure: new Map<string, string[]>(), exposureOk: false, osv: new Map<string, { key: string; at: number; hits: Array<{ library: SecurityInventory["libraries"][number]; vuln: OsvVuln }> }>(),
-    debian: new Map<string, { key: string; cves: Map<string, string[]> }>() };
+    debian: new Map<string, { key: string; cves: Map<string, string[]> }>(), cveRecords: new Map<string, string[]>() };
 
   const settingsOf = (pane: Pane): SecurityCopilotPaneSettings => resolveSecurityCopilotPaneMetadata(pane.securityCopilotMetadata).settings;
   function assertPane(pane: Pane): void {
@@ -247,7 +247,7 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
       for (const { ip, alias } of addresses) if (alias === host.alias && intel.exposure.has(ip)) drafts.push(...exposureFindings(ip, intel.exposure.get(ip)!, intel.kev));
       sources.push("INTERNETDB");
     }
-    if (intel.newsOk) drafts.push(...newsFindings(inventory, intel.news, intel.kev));
+    if (intel.newsOk) drafts.push(...newsFindings(inventory, intel.news, intel.kev, intel.cveRecords));
     drafts.push(...imageFindings(inventory, intel.kev), ...lifecycleFindings(inventory, now()));
     sources.push("VENDOR");
     // Image findings close only once every listed image has a scan: an unscanned new image must not close its predecessor's finding.
@@ -264,6 +264,19 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
       if (closed && !(Date.parse(scannedAt.get(draft.package) ?? "") > Date.parse(closed))) continue;
       const result = await repository.upsertFinding({ ownerUserId: owner, hostId: host.id, ...draft });
       if (result.created || result.reopened) fresh.push(result.finding);
+    }
+    // A NEWS-only lead raised before its CVE 5 record was checked (CVE-2026-128841, Apache Griffin, on apache2/httpd: secfind:DI1Mom32jFjZ,
+    // lk5Qv4U4dqJE, BmjE7s8VKaVa) goes NOT_AFFECTED as the pane's "Mark not affected" does once the record names another product.
+    for (const finding of await openFindings(owner, host.id)) {
+      if (!finding.advisory.sources.every((source) => source === "NEWS") || !/^CVE-\d{4}-\d{4,8}$/.test(finding.advisoryId)) continue;
+      if (!intel.cveRecords.has(finding.advisoryId) && options.feeds) {
+        const names = await options.feeds.cveRecord(finding.advisoryId).catch(() => null);
+        if (names) intel.cveRecords.set(finding.advisoryId, names);
+      }
+      const names = intel.cveRecords.get(finding.advisoryId);
+      if (names && cveRecordNamesPackage(finding.package, names) === false) {
+        await updateFinding(owner, finding.id, { status: "NOT_AFFECTED", note: `CVE 5 record names ${[...new Set(names)].join(", ")}, not ${finding.package}` }, "OPERATOR");
+      }
     }
     // An NVD finding closes only when its product binary changed version or left the host: the CVE cache in memory may be partial.
     const productAt = new Map(inventory.products.map((item) => [item.path ? `${item.product}:${item.path}` : item.product, item.version]));
@@ -316,6 +329,17 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
     return null;
   }
 
+  /** One finding's triage (the pane's buttons, the agent's space_security_finding_update and the watch's news re-check). */
+  async function updateFinding(owner: string, id: string, input: { status: SecurityFinding["status"]; note: string }, by: "AGENT" | "OPERATOR") {
+    const finding = await repository.getFinding(owner, id);
+    if (!finding) throw new SpaceNotFoundError(`Finding ${id} was not found.`);
+    if (by === "AGENT" && input.status === "ACCEPTED" && (finding.priority === "P0" || finding.priority === "P1")) {
+      throw new SpaceConflictError("Accepting the risk of a P0 or P1 finding is the operator's call: ask with space_security_ask.");
+    }
+    const updated = (await repository.updateFinding(owner, id, { status: input.status, note: trimmed(input.note) }))!;
+    if (!SECURITY_OPEN_FINDING_STATUSES.includes(input.status)) await resolveNotices(owner, [id]);
+    return findingView(updated);
+  }
   async function setFindings(owner: string, ids: string[], status: SecurityFinding["status"], note: string) {
     for (const id of ids) await repository.updateFinding(owner, id, { status, note: trimmed(note) });
     if (!SECURITY_OPEN_FINDING_STATUSES.includes(status)) await resolveNotices(owner, ids);
@@ -538,16 +562,7 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
     async findings(owner: string, filter: { hostId?: string; open?: boolean; limit?: number }) {
       return (await repository.listFindings(owner, { hostId: filter.hostId, status: filter.open === false ? undefined : [...SECURITY_OPEN_FINDING_STATUSES], limit: filter.limit })).map(findingView);
     },
-    async updateFinding(owner: string, id: string, input: { status: SecurityFinding["status"]; note: string }, by: "AGENT" | "OPERATOR") {
-      const finding = await repository.getFinding(owner, id);
-      if (!finding) throw new SpaceNotFoundError(`Finding ${id} was not found.`);
-      if (by === "AGENT" && input.status === "ACCEPTED" && (finding.priority === "P0" || finding.priority === "P1")) {
-        throw new SpaceConflictError("Accepting the risk of a P0 or P1 finding is the operator's call: ask with space_security_ask.");
-      }
-      const updated = (await repository.updateFinding(owner, id, { status: input.status, note: trimmed(input.note) }))!;
-      if (!SECURITY_OPEN_FINDING_STATUSES.includes(input.status)) await resolveNotices(owner, [id]);
-      return findingView(updated);
-    },
+    updateFinding,
     /** Confirms a news lead: the server reads the allowlisted vendor page and needs the advisory id (or an alias) on it. */
     async confirm(owner: string, findingId: string, url: string) {
       const finding = await repository.getFinding(owner, findingId);
@@ -759,6 +774,14 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
         if (intel.nvd.size > 5000) intel.nvd = new Map([...intel.nvd.entries()].slice(-5000));
         const news = await feeds.news(NEWS_DAYS).catch(() => null);
         if (news) { intel.news = news; intel.newsOk = true; }
+        // A news lead matches a package only through its CVE 5 record (CVE-2026-128841, Apache Griffin, was raised P1 on apache2/httpd).
+        const newsCves = new Set(intel.news.flatMap((item) => item.cves));
+        intel.cveRecords = new Map([...intel.cveRecords].filter(([id]) => newsCves.has(id)));
+        for (const id of newsCves) {
+          if (intel.cveRecords.has(id)) continue;
+          const names = await feeds.cveRecord(id).catch(() => null);
+          if (names) intel.cveRecords.set(id, names);
+        }
         let exposureOk = true;
         const ips = new Set(everyPane.flatMap(({ pane }) => settingsOf(pane).publicAddresses.map((entry) => entry.ip)));
         for (const ip of ips) {

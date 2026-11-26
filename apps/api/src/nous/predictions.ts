@@ -52,7 +52,7 @@ function optionMarks(text: string): Set<string> {
  * Whether the operator answered as an option prediction said: an APPROVED decision chose its recommended option, an ANSWERED one is
  * read from their words (the option's letter or number is enough, case-folded); a DECLINED one chose none.
  */
-export function optionPredictionMatched(predicted: string, decision: Pick<NousDecision, "recommendation"> & { refs?: { prediction?: { written?: true } } },
+export function optionPredictionMatched(predicted: string, decision: Pick<NousDecision, "recommendation"> & { options?: string[]; refs?: { prediction?: { written?: true } } },
   status: string, answer: string | null): boolean | null {
   if (decision.refs?.prediction?.written) return writtenPredictionMatched(predicted, status, answer);
   if (status === "DECLINED") return false;
@@ -62,14 +62,25 @@ export function optionPredictionMatched(predicted: string, decision: Pick<NousDe
   const got = optionMarks(said);
   if ([...want].some((mark) => mark.length > 2) || [...got].some((mark) => mark.length > 2)) {
     const [a, b] = [predicted.toLowerCase(), said.toLowerCase()];
-    return a.includes(b.trim()) || b.includes(a.trim());
+    if (a.includes(b.trim()) || b.includes(a.trim())) return true;
+    // 17/11 Linkwise: «Ναι όταν μπαίνει κάποιος από Ελλάδα…» chose the one option that leads with yes, the predicted «Ναι: φτιάχνουμε /gr…».
+    const saidLead = status === "ANSWERED" ? answerLead(status, answer) : null;
+    const led = saidLead ? (decision.options ?? []).filter((option) => lead(option) === saidLead) : [];
+    const chosen = led.length === 1 ? led[0]!.toLowerCase().trim() : null;
+    return chosen !== null && (chosen.includes(a.trim()) || a.includes(chosen));
   }
   return want.size === got.size && [...want].every((mark) => got.has(mark));
 }
 
 const YES_NO = new Set(["yes", "ναι", "οχι"]);
+// Daily Nous errors 23/11 (833f6705 «στειλε το εμαιλ με ενεργοποιηση της παρακολουθησης» on «Ναι, στείλ' την όπως είναι» / «Όχι ακόμα» scored MISS):
+// for scoring only, an answer that opens with "send"/"go on" and sets no condition or asks nothing for the operator first chose the yes.
+const ACT_LEAD = new Set(["στειλε", "στειλ", "στειλτε", "προχωρα", "προχωρησε", "send", "proceed"]);
+const ACT_HELD = /(?<!\p{L})(?:μου|πρωτα|αν|εαν|μονο|οταν|μετα|αυριο|αργοτερα|οχι|μην|δεν|me|first|if|only|when|after|tomorrow|later|not|don)(?!\p{L})/u;
 const lead = (text: string): "APPROVE" | "DECLINE" | null => {
-  const word = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().match(/\p{L}+/u)?.[0];
+  const folded = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  const word = folded.match(/\p{L}+/u)?.[0];
+  if (word && ACT_LEAD.has(word) && !ACT_HELD.test(folded)) return "APPROVE";
   return word === "yes" || word === "ναι" || word === "ok" || word === "οκ" ? "APPROVE" : word === "no" || word === "οχι" ? "DECLINE" : null;
 };
 // What the operator said: the button, else their words read as a bare yes or no, else the yes or no their words lead with.
@@ -92,9 +103,15 @@ export function writtenPredictionMatched(predicted: string, status: string, answ
   return [...words].filter((word) => said.has(word)).length * 2 >= words.size;
 }
 
+// Nous errors 24/11 (ledger: Microsoft SR mail review, predicted APPROVE, answered «θελω να μου εξηγησεις … δεν εχω καταλαβει!!!»): words
+// with no yes or no that ask back (a question, "explain", "I don't understand") answer nothing yet; the re-ask is scored on its own.
+const ASKS_BACK = /[?;]\s*$|(?<!\p{L})(?:εξηγ|explain|καταλαβ|understand)/u;
+
 /** 14/11: a yes or no prediction matches a written answer that leads with the same yes or no («Ναι, 12:15 στο PC μου»), not only the buttons. */
-export function yesNoPredictionMatched(predicted: "APPROVE" | "DECLINE", status: string, answer: string | null): boolean {
-  return answerLead(status, answer) === predicted;
+export function yesNoPredictionMatched(predicted: "APPROVE" | "DECLINE", status: string, answer: string | null): boolean | null {
+  const got = answerLead(status, answer);
+  if (!got && status === "ANSWERED" && ASKS_BACK.test((answer ?? "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim())) return null;
+  return got === predicted;
 }
 
 export interface PredictionScore { matched: number; total: number }
@@ -115,8 +132,10 @@ export function predictionAccuracy(decisions: NousDecision[], cards: SpaceNotifi
       if (matched) scored.decisions.matched += 1;
       continue;
     }
+    const matched = yesNoPredictionMatched(predicted, decision.status, decision.answer);
+    if (matched === null) continue;
     scored.decisions.total += 1;
-    if (yesNoPredictionMatched(predicted, decision.status, decision.answer)) scored.decisions.matched += 1;
+    if (matched) scored.decisions.matched += 1;
   }
   for (const card of cards) {
     const matched = cardAnswerMatched(card, since);
@@ -133,21 +152,25 @@ export function predictionAccuracy(decisions: NousDecision[], cards: SpaceNotifi
 const NOT_AFFIRMATIVE = /\b(fail\w*|still|need|not|no|cannot|can'?t|later|tomorrow|skip|stop|cancel|decline|reject)\b|δεν|όχι|οχι|αργότερα|αυριο|αύριο/iu;
 // JavaScript's \b sees no Greek letter as a word character: the word ends at a space, a mark or the end. R60 (2-3/11: «στο προσθεσα», «μολις
 // ανεβασα», «τον αλλαξα» scored MISS): the act done with its object («άλλαξα» alone is also "I changed my mind"), after «μόλις» too.
-const DONE_WORDS = /^\s*(?:μόλις\s+|μολις\s+)?(?:ναι|ok|οκ|έτοιμο|ετοιμο|είναι έτοιμο|ειναι ετοιμο|έγινε|εγινε|το έκανα|το εκανα|έκανα|εκανα|έβαλα|εβαλα|δουλεύει|δουλευει|δούλεψε|δουλεψε|(?:στο |το |τα )?(?:πρόσθεσα|προσθεσα|ανέβασα|ανεβασα)|(?:τον|την|το|τα) (?:άλλαξα|αλλαξα)|done|ready|did it|installed|works|it works|yes)(?=$|[\s,.!;:—–-])/iu;
+const DONE_WORDS = /^\s*(?:μόλις\s+|μολις\s+)?(?:ναι|ok|οκ|έτοιμο|ετοιμο|είναι έτοιμο|ειναι ετοιμο|έγινε|εγινε|το έκανα|το εκανα|έκανα|εκανα|έβαλα|εβαλα|δουλεύει|δουλευει|δούλεψε|δουλεψε|(?:στο |το |τα )?(?:πρόσθεσα|προσθεσα|ανέβασα|ανεβασα)|(?:τον|την|το|τα) (?:άλλαξα|αλλαξα)|(?:έλεγξα|ελεγξα|έλεγξε|έλεγξέ|ελεγξε|έλενξα|ελενξα|έλενξε|έλενξέ|ελενξε|recheck|rechecked)|done|ready|did it|installed|works|it works|yes)(?=$|[\s,.!;:—–-])/iu;
 // R74 (4/11 UNICEF card: «Ναι, όλα Όχι» answered «ναι σε όλα …» scored MISS): an option opening with yes is affirmative though it says no later,
 // when it is the card's only option that opens with yes.
 const YES_FIRST = /^\s*(?:ναι|yes)(?=$|[\s,.!;:—–-])/iu;
+// Goal 7365014c (ledger 1608, 17/11 «ειναι εοτιμο ςο λογαριασμος τον εφτιαξα» on "Έγινε" scored MISS): «I made it» with its object anywhere
+// in an answer with no negation, since typos before it defeat the opening-word match.
+const MADE_IT = /(?:^|[\s,.!;:—–-])(?:τον|την|το|τα) (?:έφτιαξα|εφτιαξα)(?=$|[\s,.!;:—–-])/iu;
 export function cardWordsConfirm(recommended: string | null | undefined, words: string | null | undefined, intent: "APPROVE" | "DECLINE" | null, options: readonly string[] = []): boolean {
   const yesFirst = !!recommended && YES_FIRST.test(recommended) && !options.some((option) => option !== recommended && YES_FIRST.test(option));
   if (!recommended || !words?.trim() || (NOT_AFFIRMATIVE.test(recommended) && !yesFirst) || /\?\s*$/u.test(words)) return false;
-  return intent === "APPROVE" || DONE_WORDS.test(words);
+  return intent === "APPROVE" || DONE_WORDS.test(words) || (MADE_IT.test(words) && !NOT_AFFIRMATIVE.test(words));
 }
 
 export function cardAnswerMatched(card: SpaceNotification, since: string): boolean | null {
   const recommended = (card.payload.ask as { recommended?: unknown } | undefined)?.recommended;
   const answer = card.payload.answer as { text?: unknown; at?: unknown; by?: unknown } | undefined;
   // Space's own answers, on "Always answer like this" (7365014c-d) or the standing timing answer (R16-3), are not the operator's.
-  if (typeof recommended !== "string" || typeof answer?.text !== "string" || String(answer.at ?? card.updatedAt) < since || answer.by === "ALWAYS" || answer.by === "TIMING") return null;
+  // Goal 7365014c: raise()'s fallback recommendedDefault is no producer or base-rate prediction, so it is never scored.
+  if (card.payload.recommendedDefault === true || typeof recommended !== "string" || typeof answer?.text !== "string" || String(answer.at ?? card.updatedAt) < since || answer.by === "ALWAYS" || answer.by === "TIMING") return null;
   // R38: a "Go now" visit (R27-2) only takes the operator to the work; while the card still waits its outcome is unknown, so it is not scored yet.
   if (answer.text === NEEDS_YOU_GO_NOW && (card.status === "OPEN" || card.status === "READ")) return null;
   return cardTextMatched(card.payload.ask as { recommended?: unknown; options?: unknown }, answer.text);
@@ -156,6 +179,14 @@ export function cardAnswerMatched(card: SpaceNotification, since: string): boole
 // "I'll type it" options: the operator typing the value is that option (R38: 27/10 a postal address and a postal code scored MISS).
 // R60 (2/11 0c53714e: the IBAN typed on «Στέλνω ελληνικό IBAN + ΑΦΜ» scored MISS): "I send it" is the same.
 const TYPE_IT = /^(?:i'?ll|i will)\s+(?:type|write|enter|send)\b|^θα\s+(?:το\s+)?(?:γράψω|γραψω|πληκτρολογήσω|πληκτρολογησω|στείλω|στειλω)|^(?:στέλνω|στελνω)(?=\s|$)/iu;
+// 2026-11-16 REVIEW (hands cards 49 of 85, 58%: «ανοιξε σελιδα και δωσε μου focus», «εχω ολοκληρωση την διαδικασία!!», «συνεχισε» scored MISS):
+// on a "Go now" card, words that open the page, say it is done or say go on are the visit. Accent-folded word stems.
+// 21/11 REVIEW: the operator arriving or finishing in other words: «μπήκα», «έχω μπει», «δείξε μου τη σελίδα», «πάμε», «ξεκίνα», «το έλυσα», "signed in".
+// Goal 7365014c (ledger 23/11 13:04 BKK «τα εχω κανει ολα!!» on "Start now?" scored MISS): «έχω κάνει» is finishing too.
+// Nous errors 24/11 (ledger 23/11: «περασα το νεο κλειδη στο vault», «οι διακοπτες ειναι ολοι ενεργοποιημενοι!!!» scored MISS): the step
+// reported done, «πέρασα», «ενεργοποίησα» / «ενεργοποιημένοι», «άναψα»; the imperatives («πέρασε», «ενεργοποίησε») stay misses.
+// 2026-11-25 REVIEW (ledger 24/11: "Start now?" answered «ελενξε το ξανα»): recheck / check-again answers count as the visit too.
+const GO_NOW_WORDS = /^(?:ανοιξ|ανοιγ|focus|ολοκληρ|τελειωσ|συνεχ|προχωρ|μπηκα|μπει|δειξ|παμε|ξεκιν|ελυσα|κανει|περασα|ενεργοποιησα|ενεργοποιημεν|αναψα|ελενξ|ελεγξ|open|continue|proceed|done|finished|completed|signed|logged|solved|ready|enabled|added|saved|check|recheck)/u;
 /**
  * The one matcher of a card's stored answer against its recommended option, for the scorecard, the REVIEW and the decision ledger (R38):
  * the option itself or with a note (R19-3: "<option>: <note>"); else, when the answer is no option of the card, a typed value on an
@@ -170,6 +201,8 @@ export function cardTextMatched(ask: { recommended?: unknown; options?: unknown 
   if (options.some((option) => text === option || text.startsWith(`${option}: `))) return false;
   const intent = nousAnswerIntent(text);
   if (TYPE_IT.test(recommended)) return intent !== "DECLINE" && !/[?;]\s*$/u.test(text);
+  if (recommended === NEEDS_YOU_GO_NOW && intent !== "DECLINE" && !NOT_AFFIRMATIVE.test(text) && !/[?;]\s*$/u.test(text)
+    && foldWords(text).some((word) => GO_NOW_WORDS.test(word))) return true;
   return cardWordsConfirm(recommended, text, intent, options);
 }
 

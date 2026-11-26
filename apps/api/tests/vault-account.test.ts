@@ -26,9 +26,9 @@ async function harness(paneAccount: string | null, undelegated: Array<"home" | "
   const items = { home: await add(HOME, KEY), work: await add(WORK, KEY), plain: await add(null, null) };
   await repository.createDelegation("user:alice", { keyEnvelope: { sealed: "key" }, fillEnvelopes: {}, certificate: { claims: { generation: 1, vaultId: body.vaultId,
     items: Object.entries(items).filter(([name]) => !undelegated.includes(name as never)).map(([, handle]) => ({ handle, origins: site.delegated, fields: ["USERNAME", "PASSWORD", "OTP"], approvalMode: "FULL", submit: true })) } } } as never);
-  const issueUse = vi.fn(async (_input: { handle: string }) => ({ capability: { claims: "signed by the broker" } }));
+  const issueUse = vi.fn<(input: { handle: string }) => Promise<{ capability: { claims: string } }>>(async () => ({ capability: { claims: "signed by the broker" } }));
   const vaultFill = vi.fn(async () => ({ status: "FILLED" as const, reason: null, sealedGenerated: null }));
-  const protection = { ownerOf: async () => null, protect: async () => true, unprotect: async () => true };
+  const protection = { ownerOf: async () => null, protect: async () => true, unprotect: async () => true, flowHold: () => null, holdFlow: () => undefined, endFlow: () => undefined };
   const agent = createVaultAgent({ repository, broker: { issueUse } as never, protection: protection as never, listPanes: async () => [BROWSER], paneOwner: async () => "user:alice",
     browser: { vaultTarget: async () => ({ eligible: true, reason: null, targetId: "t", frameId: "f", origin: site.target, document: "d" }), vaultFill },
     googleAccounts: async () => [{ id: WORK, email: "work@example.com" }, { id: HOME, email: "home@example.com" }], paneAccount: async () => paneAccount });

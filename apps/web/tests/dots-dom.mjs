@@ -1,3 +1,4 @@
+/* global window, document, HTMLElement, getComputedStyle, location, matchMedia -- dotsDom runs inside the proof page */
 // Shared by the authenticated Dots proof (scripts/dots-chat-proof.mjs) and dots-proof-probe-dom.test.tsx: kept here because the public tree ships apps/web/tests, not that script.
 // Only this fixed function is evaluated. The caller cannot supply JavaScript,
 // selectors, dimensions, fault targets or arbitrary browser actions.

@@ -18,7 +18,8 @@ come from memory, never from this file alone. Numbers marked [verify] are not cl
 - AI agents / MCP / RAG / LLM workflows: $1,500-5,000 fixed (Starter $1,500, Standard $3,000, Advanced $5,000).
 - E-commerce / marketplace integrations (Shopify, WooCommerce, CS-Cart, Amazon/eBay): $800-3,000 fixed.
 - PostgreSQL audit or migration: $500-2,500 fixed.
-- Hourly: $60-75 now, $90-120 after 3-5 reviews; never under the floor in Setup ($35).
+- Hourly: $60-75 now, $90-120 after 3-5 reviews; never under the floor in Setup ($20). Until the first 5 reviews,
+  SKILL.md "Volume until the first 5 reviews" sets the bids instead.
 - Always milestones; work starts only when the milestone is funded. No unpaid samples on request; the
   demo-first sketch below is the only exception, and only your own choice.
 
@@ -29,7 +30,8 @@ come from memory, never from this file alone. Numbers marked [verify] are not cl
 - +15 budget at or above the package range or the hourly floor
 - 0 and SKIPPED: scam signals (`references/scams.md`), unpaid tests, below the floor, full-time employment
   disguised as a contract, work outside the operator's skills.
-- QUALIFIED from 60. Best first; a few strong proposals beat many weak ones (3-8 a day on Upwork).
+- QUALIFIED from 60. Best first. Until the first 5 reviews every post that passes SKILL.md "Volume until the first
+  5 reviews" is QUALIFIED and gets a proposal, up to the daily cap.
 
 ## The proposal (under 1,200 characters)
 1. First line: their problem in their words (shows you read it). No greeting paragraph, no "I am the best".
@@ -40,6 +42,7 @@ come from memory, never from this file alone. Numbers marked [verify] are not cl
 Answer screening questions directly, from memory. English unless the post is in another language.
 
 ## Demo-first (score 70+)
+- Not before the first 5 reviews: SKILL.md "Volume until the first 5 reviews" sends every proposal at once.
 - Pick by the post: a live site or store with a visible problem (speed, a broken page, checkout, feed, SEO) →
   `screenshot` with two lines of finding; an integration, automation or agent (API sync, n8n, MCP, ERP) → `flow`,
   the boxes and arrows of your design with milestone 1 marked; a screen or app to build → `mockup` of the one
@@ -59,3 +62,4 @@ Answer screening questions directly, from memory. English unless the post is in 
 - Scope creep, discounts, retainers, exclusivity, NDAs, IP terms, calls and contracts: client_ready.
 - Availability (operator rule 2026-10-19): full-time for freelance clients, 40+ hours a week, long-term contracts welcome,
   any hours of the day in the client's time zone. Hours or duration are never a reason to skip a post.
+  Any time you propose, book or accept for a call, interview or meeting starts and ends within the operator's appointment hours: read them (`hours`) from `space_appointments` first, never from memory; a time the other side set outside them is recorded as it is and you ask them to move it.

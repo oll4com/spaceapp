@@ -185,6 +185,31 @@ export function vaultLoginKey(unlocked: UnlockedVault, origin: string, username:
 }
 
 const itemScope = (unlocked: UnlockedVault, itemId: string) => ({ ownerUserId: unlocked.ownerUserId, vaultId: unlocked.vaultId, keyVersion: 1, itemId });
+/** Null for an item that does not open with these keys (19/11: its key was sealed while a lock wiped the VRK); any other error throws. */
+const decryptOrNull = (unlocked: UnlockedVault, record: VaultItemRecord) => decryptVaultItem(unlocked, record)
+  .catch((error: unknown) => { if (error instanceof VaultCryptoError && error.code === "OPEN_FAILED") return null; throw error; });
+
+/**
+ * Items whose key was sealed under the wiped (all-zero) VRK (14/11 14:14Z: inbox logins saved after a LOCK, 33 skipped at the
+ * 23/11 unlock) open with that key, which anyone holding the database knows: their item key is sealed under the VRK again and
+ * their login key recomputed. Fields and history stay as they are. Returns the records with the repaired ones in their place.
+ */
+export async function repairWipedKeyItems(client: Pick<typeof liveApi, "vaultSaveItem">, unlocked: UnlockedVault, records: VaultItemRecord[]): Promise<VaultItemRecord[]> {
+  const wiped = { ...unlocked, vrk: new Uint8Array(32) };
+  const out: VaultItemRecord[] = [];
+  for (const record of records) {
+    const secrets = await decryptOrNull(unlocked, record) ? null : await decryptOrNull(wiped, record);
+    if (!secrets) { out.push(record); continue; }
+    const scope = { ...itemScope(unlocked, record.metadata.id), purpose: "ITEM_KEY" as const };
+    const dek = await openVaultEnvelope(wiped.vrk, record.dekEnvelope, scope);
+    let dekEnvelope;
+    try { dekEnvelope = await sealVaultEnvelope(unlocked.vrk, dek, scope); } finally { wipeVaultBytes(dek); }
+    const origin = record.metadata.origins[0];
+    const loginKey = secrets.USERNAME && origin ? vaultLoginKey(unlocked, origin, secrets.USERNAME) : null;
+    out.push((await client.vaultSaveItem({ ...record, dekEnvelope, metadata: { ...record.metadata, loginKey } })).item);
+  }
+  return out;
+}
 
 /**
  * Encrypts an item for saving. Editing keeps the item key; a changed password moves the earlier fields into history
@@ -292,6 +317,9 @@ export const VAULT_OLD_BROKER_DELEGATION_MAX = 200;
 /** What a login starts with since agents and Nous share one switch (operator decision 2026-10-18); agentUse off hides it from them. */
 export const VAULT_AGENT_POLICY = { agentUse: true, approvalMode: "FULL", submitAllowed: true, maxFillsPerHour: 60, acceptedOriginRisks: [] } as const;
 
+// The API takes labels of at most 80 characters (23/11: 84- and 90-character copy labels answered VALIDATION_ERROR every 30 s).
+const COPY_SUFFIX = " (added again: the earlier copy does not open)";
+
 export interface VaultImportResult {
   imported: number;
   /** Waiting logins sealed to a key this inbox does not hold: they stay waiting and are reported, never dropped silently. */
@@ -302,7 +330,7 @@ export interface VaultImportResult {
 
 /**
  * Logins agents saved and passwords they generated become ACTIVE items at once: a new login is added, a changed password is
- * applied and keeps the old one in history.
+ * applied and keeps the old one in history, an authenticator key joins its login.
  */
 export async function importVaultPending(client: VaultInboxApi, unlocked: UnlockedVault, inbox: { privateKey: Uint8Array; publicKey: Uint8Array }): Promise<VaultImportResult> {
   const scope = scopeOf(unlocked.ownerUserId, unlocked.vaultId);
@@ -317,7 +345,9 @@ export async function importVaultPending(client: VaultInboxApi, unlocked: Unlock
   const logins: Array<{ id: string; origins: string[]; username: string | null; changedAt: string }> = [];
   for (const metadata of listed.items.filter((item) => item.status === "ACTIVE")) {
     if (!pending.some((entry) => entry.kind === "NEW_ACCOUNT" && metadata.origins.includes(entry.origin))) continue;
-    const username = (await decryptVaultItem(unlocked, (await client.vaultItem(metadata.id)).item)).USERNAME ?? null;
+    const secrets = await decryptOrNull(unlocked, (await client.vaultItem(metadata.id)).item);
+    if (!secrets) continue;
+    const username = secrets.USERNAME ?? null;
     logins.push({ id: metadata.id, origins: metadata.origins, username, changedAt: listed.stats?.[metadata.id]?.changedAt ?? "" });
   }
   const sameLogin = (origin: string, username: string | undefined) => username
@@ -330,8 +360,10 @@ export async function importVaultPending(client: VaultInboxApi, unlocked: Unlock
   for (const entry of pending) {
     let password: string | undefined;
     let username: string | undefined;
+    let otp: string | undefined;
     try {
       password = await open(entry.sealedPassword);
+      otp = await open(entry.sealedOtp);
       username = entry.kind === "NEW_ACCOUNT" ? await open(entry.sealedUsername) : undefined;
     } catch {
       unreadable.push({ id: entry.id, kind: entry.kind, label: entry.label, origin: entry.origin });
@@ -342,18 +374,30 @@ export async function importVaultPending(client: VaultInboxApi, unlocked: Unlock
       // A changed password of a login that is no item (its new account was merged before this run, or it was deleted)
       // becomes a login of its own: the site now has that password, so it is never lost (stable 25-30/10: one such row
       // answered 404 and stopped every import behind it).
-      const existing = entry.kind === "CHANGE_PASSWORD" ? (items.has(handle) ? handle : null) : sameLogin(entry.origin, username)?.id ?? null;
-      if (existing) {
-        const previous = (await client.vaultItem(existing)).item;
-        const secrets = await decryptVaultItem(unlocked, previous);
+      const existing = entry.kind !== "NEW_ACCOUNT" ? (items.has(handle) ? handle : null) : sameLogin(entry.origin, username)?.id ?? null;
+      // An authenticator key an agent read from a setup QR (SET_OTP) joins the login and leaves its password as it is.
+      const added = { ...(password !== undefined ? { PASSWORD: password } : {}), ...(otp !== undefined ? { OTP: otp } : {}) };
+      const previous = existing ? (await client.vaultItem(existing)).item : null;
+      const secrets = previous ? await decryptOrNull(unlocked, previous) : null;
+      if (previous) {
         const { id: _id, fieldRoles: _roles, ...metadata } = previous.metadata;
-        await client.vaultSaveItem(await encryptVaultItem(unlocked, { ...metadata, status: "ACTIVE", secrets: { ...secrets, PASSWORD: password } }, previous));
-        const login = logins.find((candidate) => candidate.id === existing);
-        if (login) login.changedAt = entry.createdAt;
-        if (entry.kind === "NEW_ACCOUNT") merged.set(entry.handle, existing);
+        if (!secrets) {
+          // The login it belongs to does not open: what waits becomes a copy of that login (its address and policy) with a new
+          // handle, so it is kept and fillable; the old item stays for the operator to check and delete. Later changes go to the copy.
+          const id = newVaultHandle("vault_item");
+          await client.vaultSaveItem(await encryptVaultItem(unlocked, { ...metadata, id, label: `${metadata.label.slice(0, 80 - COPY_SUFFIX.length)}${COPY_SUFFIX}`,
+            status: "ACTIVE", secrets: { USERNAME: username, PASSWORD: password, ...added } }));
+          merged.set(entry.handle, id);
+          items.add(id);
+        } else {
+          await client.vaultSaveItem(await encryptVaultItem(unlocked, { ...metadata, status: "ACTIVE", secrets: { ...secrets, ...added } }, previous));
+          const login = logins.find((candidate) => candidate.id === existing);
+          if (login) login.changedAt = entry.createdAt;
+          if (entry.kind === "NEW_ACCOUNT") merged.set(entry.handle, previous.metadata.id);
+        }
       } else {
         await client.vaultSaveItem(await encryptVaultItem(unlocked, { id: handle, label: entry.label, origins: [entry.origin], loginPage: entry.loginPage, status: "ACTIVE",
-          secrets: { USERNAME: username, PASSWORD: password }, policy: { ...VAULT_AGENT_POLICY, acceptedOriginRisks: [] } }));
+          secrets: { USERNAME: username, PASSWORD: password, ...added }, policy: { ...VAULT_AGENT_POLICY, acceptedOriginRisks: [] } }));
         logins.push({ id: handle, origins: [entry.origin], username: username ?? null, changedAt: entry.createdAt });
         items.add(handle);
       }
@@ -386,7 +430,7 @@ export async function signVaultSignupGrant(unlocked: UnlockedVault, input: { sit
  * Null when there is nothing to hand over.
  */
 export async function delegateVaultItems(client: Pick<typeof liveApi, "vaultBroker" | "vaultDelegate">, unlocked: UnlockedVault,
-  input: { records: VaultItemRecord[]; delegationGeneration: number; epoch?: number; days?: number; inbox?: { privateKey: Uint8Array } }): Promise<{ generation: number; count: number } | null> {
+  input: { records: VaultItemRecord[]; delegationGeneration: number; epoch?: number; days?: number; inbox?: { privateKey: Uint8Array } }): Promise<{ generation: number; count: number; unreadable: string[] } | null> {
   const records = input.records.filter((record) => record.metadata.policy.agentUse && record.metadata.status === "ACTIVE");
   if (records.length === 0) return null;
   const generation = input.delegationGeneration + 1;
@@ -395,9 +439,12 @@ export async function delegateVaultItems(client: Pick<typeof liveApi, "vaultBrok
   try {
     const fillEnvelopes: Record<string, Partial<Record<VaultFieldRole, Awaited<ReturnType<typeof sealVaultEnvelope>>>>> = {};
     const items = [];
+    // One item that does not open no longer stops the whole hand-over (19/11: none reached agents for a day); it is named instead.
+    const unreadable: string[] = [];
     for (const record of records) {
       const handle = record.metadata.id;
-      const secrets = await decryptVaultItem(unlocked, record);
+      const secrets = await decryptOrNull(unlocked, record);
+      if (!secrets) { unreadable.push(record.metadata.label); continue; }
       const fields = (Object.keys(secrets) as VaultFieldRole[]).filter((role) => secrets[role]);
       fillEnvelopes[handle] = {};
       for (const role of fields) {
@@ -407,6 +454,7 @@ export async function delegateVaultItems(client: Pick<typeof liveApi, "vaultBrok
       // A card has no address (the broker fills it at any https checkout) and is never submitted: the agent clicks Pay.
       items.push({ handle, origins: vaultDelegationOrigins(record.metadata.origins), fields, approvalMode: "FULL", submit: !record.metadata.card });
     }
+    if (items.length === 0) return { generation: input.delegationGeneration, count: 0, unreadable };
     const expiresAt = new Date(Date.now() + (input.days ?? 3650) * 86_400_000).toISOString();
     const envelopeDigest = await vaultDigest(fillEnvelopes);
     // The vault's current epoch (a revoke while unlocked moves it on); signing it proves the unlock key is held now.
@@ -419,7 +467,7 @@ export async function delegateVaultItems(client: Pick<typeof liveApi, "vaultBrok
     // unlock (operator request 2026-10-20). The broker never returns it.
     const sealedInboxKey = input.inbox ? await sealToVaultPublicKey(b64.decode(broker.publicKey), input.inbox.privateKey, scope) : undefined;
     const answer = await client.vaultDelegate({ items, fillEnvelopes, sealedFillKey, generation, unlockEpoch, expiresAt, operatorSignature, ...(sealedInboxKey ? { sealedInboxKey } : {}) });
-    return { generation: answer.generation, count: items.length };
+    return { generation: answer.generation, count: items.length, unreadable };
   } finally {
     wipeVaultBytes(fillKey);
   }

@@ -3,16 +3,18 @@ import { registerSpaceControlRoutes } from "../src/space-control-routes.js";
 import { describe,it,expect,vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { InMemoryControlRepository } from "@space/db";
-import { controlExecuteSchema } from "@space/contracts";
+import { controlExecuteSchema, type Pane } from "@space/contracts";
 import { createSpaceControl } from "../src/space-control.js";
 import { CliTaskNotResumableError } from "../src/unified-cli-task-registry.js";
+/** A service result read back in an assertion. */
+type Row={id:string;status:string;[key:string]:unknown};
 const actor={id:"operator:one",role:"ADMIN" as const};
 function fixture(){
  const store=new InMemorySpaceStore(),repository=new InMemoryControlRepository();
  const room=store.createRoom({name:"Control test",initialPaneCount:0,kind:"AGENT_PROOF"});
  const panes=store.createPanes(["C","A","B"].map(title=>({roomId:room.id,title,mode:"TERMINAL" as const,terminalRuntimeId:"cli:codex"})));
- const observation=(pane:any)=>({paneId:pane.id,title:pane.title,runtimeId:"cli:codex",sessionId:"session:one",state:"IDLE" as const,nativeTaskRef:"native:one",modelId:"test",nativeMode:"default",checkedAt:new Date().toISOString(),tasks:[]});
- const controller={catalog:vi.fn(async()=>({types:[],unavailable:[]})),inspect:vi.fn(async(p:any)=>observation(p)),configure:vi.fn(async()=>({})),command:vi.fn(async()=>({})),start:vi.fn(async()=>({})),resume:vi.fn(async()=>({})),interrupt:vi.fn(async()=>({}))};
+ const observation=(pane:Pane)=>({paneId:pane.id,title:pane.title,runtimeId:"cli:codex",sessionId:"session:one",state:"IDLE" as const,nativeTaskRef:"native:one",modelId:"test",nativeMode:"default",checkedAt:new Date().toISOString(),tasks:[]});
+ const controller={catalog:vi.fn(async()=>({types:[],unavailable:[]})),inspect:vi.fn(async(p:Pane)=>observation(p)),configure:vi.fn(async()=>({})),command:vi.fn(async()=>({})),start:vi.fn(async()=>({})),resume:vi.fn(async()=>({})),interrupt:vi.fn(async()=>({}))};
  const send=vi.fn(async()=>({submitted:true}));
  const options={store,repository,controller,send,publish:vi.fn(async()=>{})};
  const service=createSpaceControl(options);
@@ -32,6 +34,16 @@ describe("Space control",()=>{
    expect(c.send).toHaveBeenCalledWith(expect.objectContaining({id:c.panes[0]!.id}),"Fixed prompt","command:distinct","req:http-original");
    await app.inject({method:"POST",url:"/api/control/v1/commands",payload});
    expect(c.send).toHaveBeenCalledOnce();
+  } finally {await app.close();}
+ });
+ it("an MCP call that misses the schema names the rejected field (16/11 Cleo/Andy: close without requestId)",async()=>{
+  const c=fixture(), app=Fastify();
+  app.addHook("onRequest",async request=>{request.user={id:actor.id,role:"ADMIN",email:"test@example.invalid"} as never;});
+  registerSpaceControlRoutes(app,c.service);
+  try {
+   const command={roomId:c.room.id,actions:[{kind:"pane",operation:"close",target:{paneIds:[c.panes[1]!.id],state:"ALL"},when:"NOW"}]};
+   const response=await app.inject({method:"POST",url:"/api/control/v1/mcp",payload:{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"space_execute",arguments:command}}});
+   expect(response.json().error.message).toMatch(/^Invalid Space control arguments: requestId: /);
   } finally {await app.close();}
  });
  it("OBS-006: a space_execute through the MCP endpoint passes its HTTP request id too",async()=>{
@@ -78,32 +90,32 @@ describe("Space control",()=>{
   const prompting=c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[pane.id]},text:"Second task",when:"NOW"}],"request:held");
   await vi.waitFor(()=>expect(c.send).toHaveBeenCalledTimes(2));
   await c.service.tick();
-  expect((await c.service.watches(actor,c.room.id,"list",{}) as any[]).some(w=>w.status==="RUNNING")).toBe(true);
+  expect((await c.service.watches(actor,c.room.id,"list",{}) as Row[]).some(w=>w.status==="RUNNING")).toBe(true);
   taken();await prompting;
  });
  it("a watch tick reads its pane before the room lock within a bound, and a slow pane stops no other watch (2/11 02:30 UTC)",async()=>{
   // Stable 2/11 02:30-02:55 UTC: watch ticks of busy Bruno/Leo, Alex/Hugo and Alex/Andy held their rooms 30 s each inside the pane
   // read (API event loop at 98 %), and each timeout ended the tick for every room.
-  const c=fixture(),[slow,other,free]=c.panes as [any,any,any];
+  const c=fixture(),[slow,other,free]=c.panes as [Pane,Pane,Pane];
   await c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[slow.id]},text:"Slow task"}],"request:slow");
   await c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[other.id]},text:"Other task"}],"request:other");
   const base=await c.controller.inspect(other);
   let release!:(value:unknown)=>void;
   const hung=new Promise(resolve=>{release=resolve;});
-  const running=(pane:any)=>({...base,paneId:pane.id,state:"RUNNING",tasks:[{taskId:`turn:${pane.title}`,title:pane.title,status:"RUNNING",timing:{source:"NATIVE",startedAt:new Date().toISOString(),completedAt:null,durationMs:null,observedAt:new Date().toISOString()},modelsUsed:[]}]});
-  c.controller.inspect.mockImplementation(async(p:any)=>p.id===slow.id?hung as any:running(p));
+  const running=(pane:Pane)=>({...base,paneId:pane.id,state:"RUNNING",tasks:[{taskId:`turn:${pane.title}`,title:pane.title,status:"RUNNING",timing:{source:"NATIVE",startedAt:new Date().toISOString(),completedAt:null,durationMs:null,observedAt:new Date().toISOString()},modelsUsed:[]}]});
+  c.controller.inspect.mockImplementation(async(p:Pane)=>(p.id===slow.id?hung:running(p)) as never);
   c.controller.inspect.mockClear();
   const service=createSpaceControl({...c.options,observeBudgetMs:50});
   const started=Date.now();
   await service.tick();
   expect(Date.now()-started).toBeLessThan(5_000);
   expect(await service.withOperatorMutation(free,async()=>"attached")).toBe("attached");
-  const bound=async(pane:any)=>((await service.watches(actor,c.room.id,"list",{})) as any[]).find(w=>w.paneId===pane.id)?.targetTaskRef;
+  const bound=async(pane:Pane)=>((await service.watches(actor,c.room.id,"list",{})) as Row[]).find(w=>w.paneId===pane.id)?.targetTaskRef;
   expect(await bound(other)).toBe(`turn:${other.title}`);
   expect(await bound(slow)).toBeNull();
   // The next tick shares the read still running instead of stacking another on the busy pane.
   await service.tick();
-  expect(c.controller.inspect.mock.calls.filter(([p])=>(p as any).id===slow.id)).toHaveLength(1);
+  expect(c.controller.inspect.mock.calls.filter(([p])=>(p as Row).id===slow.id)).toHaveLength(1);
   release(running(slow));
   await vi.waitFor(async()=>{await service.tick();expect(await bound(slow)).toBe(`turn:${slow.title}`);});
  });
@@ -112,14 +124,14 @@ describe("Space control",()=>{
   await c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[pane.id]},text:"First task"}]);
   const makeTask=(taskId:string,status:string)=>({taskId,title:taskId,status,timing:{source:"NATIVE",startedAt:new Date().toISOString(),completedAt:status==="COMPLETED"?new Date().toISOString():null,durationMs:null,observedAt:new Date().toISOString()},modelsUsed:[]});
   const base=await c.controller.inspect(pane);
-  c.controller.inspect.mockResolvedValue({...base,state:"RUNNING",tasks:[makeTask("turn:first","RUNNING")]} as any);
+  c.controller.inspect.mockResolvedValue({...base,state:"RUNNING",tasks:[makeTask("turn:first","RUNNING")]} as never);
   await c.service.tick();
-  const bound=await c.service.watches(actor,c.room.id,"list",{}) as any[];
+  const bound=await c.service.watches(actor,c.room.id,"list",{}) as Row[];
   expect(bound).toHaveLength(1);
   expect(bound[0]).toMatchObject({status:"RUNNING",targetTaskRef:"turn:first",submission:{turnId:"turn:first"}});
   // Reconstruct the service to prove the binding survives process state loss.
   const service=createSpaceControl(c.options);
-  c.controller.inspect.mockResolvedValue({...base,state:"RUNNING",text:"Unrelated second task output",commands:["second command"],tasks:[makeTask("turn:first","COMPLETED"),makeTask("turn:second","RUNNING")]} as any);
+  c.controller.inspect.mockResolvedValue({...base,state:"RUNNING",text:"Unrelated second task output",commands:["second command"],tasks:[makeTask("turn:first","COMPLETED"),makeTask("turn:second","RUNNING")]} as never);
   await service.tick();await service.tick();
   const pending=await service.pendingWatches(actor,c.room.id);
   expect(pending).toHaveLength(1);
@@ -133,15 +145,19 @@ describe("Space control",()=>{
   const c=fixture(),pane=c.panes[0]!;
   const base=await c.controller.inspect(pane);
   // The 15 s cached read still says RUNNING; only a fresh read sees the stopped turn.
-  c.controller.inspect.mockImplementation(async(_p:any,freshness?:{fresh?:boolean})=>({...base,state:freshness?.fresh?"IDLE":"RUNNING"}) as any);
+  c.controller.inspect.mockImplementation(async(_p:Pane,freshness?:{fresh?:boolean})=>({...base,state:freshness?.fresh?"IDLE":"RUNNING"}) as never);
   const stopped=await c.execute([{kind:"pane",operation:"stop",target:{paneIds:[pane.id]}}],"stop-one");
   expect(stopped.results[0]).toMatchObject({status:"COMPLETED",detail:"Native execution stopped successfully."});
-  c.controller.inspect.mockResolvedValue({...base,state:"RUNNING"} as any);
+  c.controller.inspect.mockResolvedValue({...base,state:"RUNNING"} as never);
   const deferred=await c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[pane.id]},text:"After the turn",when:"AFTER_TURN"}],"later-one");
   const scheduleId=(deferred.results[0]!.evidence as {scheduleId:string}).scheduleId;
   expect(scheduleId).toMatch(/^control_schedule:/);
   const read=await c.execute([{kind:"watch",operation:"status",id:scheduleId}],"read-one");
   expect(read.results[0]).toMatchObject({status:"COMPLETED",evidence:{result:{id:scheduleId,status:"SCHEDULED"}}});
+  // Slice 16: read from another room, the refusal names the schedule's room (Nous runs the call there, tools.ts); nothing crosses rooms here.
+  const other=c.store.createRoom({name:"Other",initialPaneCount:0,kind:"AGENT_PROOF"});
+  const elsewhere=await c.service.execute(actor,controlExecuteSchema.parse({roomId:other.id,requestId:"read-elsewhere",actions:[{kind:"watch",operation:"status",id:scheduleId}]}));
+  expect(elsewhere.results[0]).toMatchObject({status:"FAILED",error:`Schedule belongs to another room: ${c.room.id}.`});
  });
  it("reads a watch status with no id as the room's watches (12-13/11: 3 failed calls)",async()=>{
   const c=fixture(),pane=c.panes[0]!;
@@ -180,6 +196,32 @@ describe("Space control",()=>{
   notReady=null;await service.tick();
   expect(c.controller.configure).toHaveBeenCalledOnce();
   expect(c.controller.configure.mock.calls[0]![1]).toMatchObject({modelId:"gpt-6-astra"});
+ });
+ it("an after-turn model change to an idle pane whose composer holds text waits for its empty prompt, never fails (16/11 Alex/Jack)",async()=>{
+  const c=fixture(),pane=c.panes[0]!;
+  let notReady:string|null="its composer holds text";
+  const service=createSpaceControl({...c.options,promptNotReady:async()=>notReady,resolveActor:async()=>actor});
+  const sent=await service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"draft-model",actions:[
+   {kind:"configure",target:{paneIds:[pane.id]},modelId:"gpt-6-astra",when:"AFTER_TURN"}]}),true);
+  expect(sent.results[0]).toMatchObject({status:"PENDING",detail:"Model change scheduled for the pane's next empty prompt (its composer holds text)."});
+  await service.tick();
+  expect(c.controller.configure).not.toHaveBeenCalled();
+  notReady=null;await service.tick();
+  expect(c.controller.configure).toHaveBeenCalledOnce();
+  expect(c.controller.configure.mock.calls[0]![1]).toMatchObject({modelId:"gpt-6-astra"});
+ });
+ it("a model change to the model the pane already runs is OK and touches nothing, also mid-turn (16/11 Alex/Jack)",async()=>{
+  const c=fixture(),pane=c.panes[0]!;
+  const base=await c.controller.inspect(pane);
+  c.controller.inspect.mockImplementation(async()=>({...base,state:"RUNNING"}) as never);
+  const promptNotReady=vi.fn(async()=>"its composer holds text");
+  const service=createSpaceControl({...c.options,promptNotReady,resolveActor:async()=>actor});
+  const sent=await service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"same-model",actions:[
+   {kind:"configure",target:{paneIds:[pane.id]},modelId:"test",when:"AFTER_TURN"}]}),true);
+  expect(sent.results[0]).toMatchObject({status:"COMPLETED",detail:"The pane already runs test; nothing changed."});
+  await service.tick();
+  expect(c.controller.configure).not.toHaveBeenCalled();
+  expect(promptNotReady).not.toHaveBeenCalled();
  });
  it("an after-turn prompt waits for the pane's next empty prompt while its CLI still works, never typed now (31/10 Alex/Max)",async()=>{
   const c=fixture(),pane=c.panes[0]!;
@@ -269,7 +311,7 @@ describe("Space control",()=>{
   expect(c.send).toHaveBeenCalledTimes(1);
  });
  it("does not submit a second continue to productive panes",async()=>{
-  const c=fixture();c.controller.inspect.mockImplementation(async(p:any)=>({...await Promise.resolve({paneId:p.id,title:p.title,runtimeId:"cli:codex",sessionId:"session:one",state:"RUNNING",nativeTaskRef:"native:one",modelId:"test",nativeMode:"default",checkedAt:new Date().toISOString(),tasks:[]})}) as any);
+  const c=fixture();c.controller.inspect.mockImplementation(async(p:Pane)=>({...await Promise.resolve({paneId:p.id,title:p.title,runtimeId:"cli:codex",sessionId:"session:one",state:"RUNNING",nativeTaskRef:"native:one",modelId:"test",nativeMode:"default",checkedAt:new Date().toISOString(),tasks:[]})}) as never);
   const result=await c.execute([{kind:"pane",operation:"continue",target:{paneIds:[c.panes[0]!.id]}}]);
   expect(result.status).toBe("FAILED");expect(c.controller.resume).not.toHaveBeenCalled();
  });
@@ -279,8 +321,8 @@ describe("Space control",()=>{
   expect(result.status).toBe("PARTIAL");expect(c.store.getRoom(c.room.id).name).toBe("Control test");expect(result.results).toHaveLength(3);
  });
  it("saves and restores tree layouts without restarting native sessions",async()=>{
-  const c=fixture();const saved=await c.execute([{kind:"layout",operation:"save"}],"save");const snapshotId=(saved.results[0]!.evidence.result as any).snapshotId;
-  const tree=await c.execute([{kind:"layout",operation:"tree"}],"tree");expect(tree.status).toBe("COMPLETED");expect((await c.service.layout(c.room.id) as any).placements).toHaveLength(3);
+  const c=fixture();const saved=await c.execute([{kind:"layout",operation:"save"}],"save");const snapshotId=(saved.results[0]!.evidence.result as Row).snapshotId;
+  const tree=await c.execute([{kind:"layout",operation:"tree"}],"tree");expect(tree.status).toBe("COMPLETED");expect((await c.service.layout(c.room.id) as Row).placements).toHaveLength(3);
   await c.execute([{kind:"layout",operation:"restore",snapshotId}],"restore");expect(await c.service.layout(c.room.id)).toBeNull();expect(c.controller.interrupt).not.toHaveBeenCalled();
  });
  it("requires an active client for media and never claims it played",async()=>{
@@ -298,7 +340,7 @@ describe("Space control",()=>{
   const done=await c.execute([{kind:"room",operation:"rename",name:"Kept"}],"kept");
   const doneVersion=(await c.repository.get("operation",actor.id,done.id))!.version;
   const restarted=createSpaceControl(c.options);await restarted.start();
-  const list=await restarted.operations(actor,c.room.id) as any[];expect(list.find(o=>o.id===completed.id).status).toBe("UNKNOWN");
+  const list=await restarted.operations(actor,c.room.id) as Row[];expect(list.find(o=>o.id===completed.id)!.status).toBe("UNKNOWN");
   expect((await c.repository.get("operation",actor.id,done.id))!.version).toBe(doneVersion);
   expect(c.store.getRoom(c.room.id).name).toBe("Kept");await restarted.close();
  });
@@ -311,6 +353,21 @@ describe("Space control",()=>{
   const c=fixture();const service=createSpaceControl({...c.options,integration:async()=>({status:"APPROVAL_REQUIRED"})});
   const result=await service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"denied",actions:[{kind:"resource",operation:"ops.deploy",input:{}}]}));
   expect(result.status).toBe("FAILED");
+ });
+ it("names an MCP result's code and message when the adapter does not complete (15/11 04:41 ops.logs)",async()=>{
+  const c=fixture();const service=createSpaceControl({...c.options,integration:async()=>({status:"BLOCKED",code:"TOOL_NOT_VERIFIED",message:"MCP tool is not verified."})});
+  const result=await service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"blocked",actions:[{kind:"resource",operation:"ops.logs",input:{}}]}));
+  expect(result.results[0]).toMatchObject({status:"FAILED",detail:"TOOL_NOT_VERIFIED: MCP tool is not verified."});
+ });
+ it("names the adapter's status when its result gives no reason (20/11: the old generic text is a historical hold)",async()=>{
+  const c=fixture();const service=createSpaceControl({...c.options,integration:async()=>({status:"FAILED"})});
+  const result=await service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"bare",actions:[{kind:"resource",operation:"ops.logs",input:{}}]}));
+  expect(result.results[0]).toMatchObject({status:"FAILED",detail:"The protected adapter answered FAILED with no reason; its result is in this receipt's evidence."});
+ });
+ it("answers an adapter's no-op as completed with its reason (closed pane panes.move, Daily Nous errors 22/11)",async()=>{
+  const c=fixture();const service=createSpaceControl({...c.options,integration:async()=>({ok:true,noop:"Pane B is closed: nothing moved."})});
+  const result=await service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"noop",actions:[{kind:"resource",operation:"panes.move",id:c.panes[0]!.id,input:{targetRoomId:"room:x"}}]}));
+  expect(result.results[0]).toMatchObject({status:"COMPLETED",detail:"Pane B is closed: nothing moved."});
  });
  it("serializes different commands across services using the shared repository",async()=>{
   const c=fixture();let release!:()=>void;const events:string[]=[];
@@ -332,32 +389,47 @@ describe("Space control",()=>{
   expect(c.store.getRoom(c.room.id).name).toBe("Control test");running=false;
   await service.tick();await service.tick();
   expect(c.controller.configure).toHaveBeenCalledOnce();expect(c.store.getRoom(c.room.id).name).toBe("After turn");
-  expect((await service.operations(actor,c.room.id,result.id) as any).status).toBe("COMPLETED");
+  expect((await service.operations(actor,c.room.id,result.id) as Row).status).toBe("COMPLETED");
  });
  it("a later stop invalidates a previously scheduled native continuation",async()=>{
   const c=fixture();const service=createSpaceControl({...c.options,resolveActor:async()=>actor,checkQuota:async()=>({allowed:true,reason:"available"})});
   const command=controlExecuteSchema.parse({roomId:c.room.id,requestId:"later",actions:[{kind:"pane",operation:"continue",target:{paneIds:[c.panes[0]!.id]}}]});
-  const scheduled=await service.schedules(actor,c.room.id,"create",undefined,new Date(Date.now()+1000).toISOString(),command) as any;
+  const scheduled=await service.schedules(actor,c.room.id,"create",undefined,new Date(Date.now()+1000).toISOString(),command) as Row;
   await service.rememberStop(c.panes[0]!);
   const saved=(await c.repository.get("schedule",actor.id,scheduled.id))!;
   await c.repository.write({...saved,value:{...scheduled,dueAt:new Date(Date.now()-100).toISOString()}},saved.version);
   await service.tick();expect(c.send).not.toHaveBeenCalled();
-  expect((await service.schedules(actor,c.room.id,"list") as any[])[0].status).toBe("BLOCKED");
+  expect((await service.schedules(actor,c.room.id,"list") as Row[])[0]!.status).toBe("BLOCKED");
+ });
+ it("a due schedule whose pane state is unconfirmed retries on the next tick instead of blocking (16/11 Dino/Cody)",async()=>{
+  const c=fixture();const service=createSpaceControl({...c.options,resolveActor:async()=>actor,checkQuota:async()=>({allowed:true,reason:"available"})});
+  const command=controlExecuteSchema.parse({roomId:c.room.id,requestId:"unconfirmed",actions:[{kind:"pane",operation:"continue",target:{paneIds:[c.panes[0]!.id]}}]});
+  const scheduled=await service.schedules(actor,c.room.id,"create",undefined,new Date(Date.now()+1000).toISOString(),command) as {id:string};
+  const saved=(await c.repository.get("schedule",actor.id,scheduled.id))!;
+  await c.repository.write({...saved,value:{...scheduled,dueAt:new Date(Date.now()-100).toISOString()}},saved.version);
+  let state="UNKNOWN";
+  const observed=c.controller.inspect.getMockImplementation()!;
+  c.controller.inspect.mockImplementation(async(p)=>({...await observed(p),state}) as never);
+  await service.tick();expect(c.send).not.toHaveBeenCalled();
+  expect((await service.schedules(actor,c.room.id,"list") as {status:string}[])[0]!.status).toBe("SCHEDULED");
+  state="WAITING_FOR_INPUT";await service.tick();expect(c.send).not.toHaveBeenCalled();
+  state="IDLE";await service.tick();expect(c.send).toHaveBeenCalledOnce();
+  expect((await service.schedules(actor,c.room.id,"list") as {status:string}[])[0]!.status).toBe("COMPLETED");
  });
  it("revalidates a claimed schedule after restart before submitting input",async()=>{
   const c=fixture();const service=createSpaceControl({...c.options,resolveActor:async()=>actor,checkQuota:async()=>({allowed:true,reason:"available"})});
   const command=controlExecuteSchema.parse({roomId:c.room.id,requestId:"restart",actions:[{kind:"pane",operation:"continue",target:{paneIds:[c.panes[0]!.id]}}]});
-  const scheduled=await service.schedules(actor,c.room.id,"create",undefined,new Date(Date.now()+1000).toISOString(),command) as any;
+  const scheduled=await service.schedules(actor,c.room.id,"create",undefined,new Date(Date.now()+1000).toISOString(),command) as Row;
   const saved=(await c.repository.get("schedule",actor.id,scheduled.id))!;
   await c.repository.write({...saved,value:{...scheduled,status:"RUNNING",dueAt:new Date(Date.now()-100).toISOString()}},saved.version);
   await service.rememberStop(c.panes[0]!);
   await service.tick();expect(c.send).not.toHaveBeenCalled();
-  expect((await service.schedules(actor,c.room.id,"list") as any[])[0].status).toBe("BLOCKED");
+  expect((await service.schedules(actor,c.room.id,"list") as Row[])[0]!.status).toBe("BLOCKED");
  });
  it("does not race an authorized terminal stop with scheduled continuation",async()=>{
   const c=fixture();const service=createSpaceControl({...c.options,resolveActor:async()=>actor,checkQuota:async()=>({allowed:true,reason:"available"})});
   const command=controlExecuteSchema.parse({roomId:c.room.id,requestId:"race",actions:[{kind:"pane",operation:"continue",target:{paneIds:[c.panes[0]!.id]}}]});
-  const scheduled=await service.schedules(actor,c.room.id,"create",undefined,new Date(Date.now()+1000).toISOString(),command) as any;
+  const scheduled=await service.schedules(actor,c.room.id,"create",undefined,new Date(Date.now()+1000).toISOString(),command) as Row;
   const saved=(await c.repository.get("schedule",actor.id,scheduled.id))!;
   await c.repository.write({...saved,value:{...scheduled,dueAt:new Date(Date.now()-100).toISOString()}},saved.version);
   let release!:()=>void;
@@ -366,25 +438,25 @@ describe("Space control",()=>{
   await vi.waitFor(()=>expect(stop).toHaveBeenCalledOnce());
   const ticking=service.tick();expect(c.send).not.toHaveBeenCalled();
   release();await Promise.all([stopping,ticking]);expect(c.send).not.toHaveBeenCalled();
-  expect((await service.schedules(actor,c.room.id,"list") as any[])[0].status).toBe("BLOCKED");
+  expect((await service.schedules(actor,c.room.id,"list") as Row[])[0]!.status).toBe("BLOCKED");
  });
  it("executes a due schedule once across independent scheduler instances",async()=>{
   const c=fixture();const options={...c.options,resolveActor:async()=>actor,checkQuota:async()=>({allowed:true,reason:"available"})};
   const service=createSpaceControl(options),other=createSpaceControl(options);
   const command=controlExecuteSchema.parse({roomId:c.room.id,requestId:"once",actions:[{kind:"pane",operation:"continue",target:{paneIds:[c.panes[0]!.id]}}]});
-  const scheduled=await service.schedules(actor,c.room.id,"create",undefined,new Date(Date.now()+1000).toISOString(),command) as any;
+  const scheduled=await service.schedules(actor,c.room.id,"create",undefined,new Date(Date.now()+1000).toISOString(),command) as Row;
   const saved=(await c.repository.get("schedule",actor.id,scheduled.id))!;
   const dueAt=new Date(Date.now()-100).toISOString();
   await c.repository.write({...saved,value:{...scheduled,dueAt}},saved.version);
   await Promise.all([service.tick(),other.tick()]);expect(c.send).toHaveBeenCalledOnce();
   // OBS-006: an AT_TIME schedule starts from no request; the send it fires names a server-minted id for the schedule and its due time.
   expect(c.send.mock.calls[0]![3]).toBe(`sched-${scheduled.id}-${dueAt}`);
-  expect((await service.schedules(actor,c.room.id,"list") as any[])[0].status).toBe("COMPLETED");
+  expect((await service.schedules(actor,c.room.id,"list") as Row[])[0]!.status).toBe("COMPLETED");
  });
  it("refreshes native readiness after start instead of reusing the pre-start observation",async()=>{
   const c=fixture();let started=false;
   c.controller.start.mockImplementation(async()=>{started=true;return {};});
-  c.controller.inspect.mockImplementation(async(p:any,freshness?:{fresh?:boolean})=>({paneId:p.id,title:p.title,runtimeId:"cli:gemini",sessionId:"session:one",state:started&&freshness?.fresh?"IDLE":"UNKNOWN",nativeTaskRef:null,modelId:null,nativeMode:null,checkedAt:new Date().toISOString(),tasks:[]}) as any);
+  c.controller.inspect.mockImplementation(async(p:Pane,freshness?:{fresh?:boolean})=>({paneId:p.id,title:p.title,runtimeId:"cli:gemini",sessionId:"session:one",state:started&&freshness?.fresh?"IDLE":"UNKNOWN",nativeTaskRef:null,modelId:null,nativeMode:null,checkedAt:new Date().toISOString(),tasks:[]}) as never);
   const result=await c.execute([{kind:"pane",operation:"start",target:{paneIds:[c.panes[0]!.id]}}]);
   expect(result.status).toBe("COMPLETED");expect(c.controller.start).toHaveBeenCalledOnce();
  });
@@ -394,17 +466,26 @@ describe("Space control",()=>{
   c.store.createPaneCliSession({paneId:pane.id,roomId:c.room.id,runtimeId:"cli:codex",providerId:"codex",agentId:"codex",modelId:"test",reasoningEffort:"low",launchMode:"FRESH",cwd:"/tmp",codexThreadId:"05644479-4762-4a1e-a376-f7f8569dd788",status:"EXITED"});
   let started=false;
   c.controller.start.mockImplementation(async()=>{started=true;return {};});
-  c.controller.inspect.mockImplementation(async(p:any)=>({paneId:p.id,title:p.title,runtimeId:"cli:codex",sessionId:"session:one",state:started?"IDLE":"EXITED",nativeTaskRef:started?"native:new":null,modelId:null,nativeMode:null,checkedAt:new Date().toISOString(),tasks:[]}) as any);
+  c.controller.inspect.mockImplementation(async(p:Pane)=>({paneId:p.id,title:p.title,runtimeId:"cli:codex",sessionId:"session:one",state:started?"IDLE":"EXITED",nativeTaskRef:started?"native:new":null,modelId:null,nativeMode:null,checkedAt:new Date().toISOString(),tasks:[]}) as never);
   expect((await c.execute([{kind:"pane",operation:"start",target:{paneIds:[pane.id]}}],"request:start")).status).toBe("COMPLETED");
   const resumed=await c.execute([{kind:"pane",operation:"resume",target:{paneIds:[pane.id]}}],"request:resume");
   expect(resumed.status).toBe("UNKNOWN");expect(JSON.stringify(resumed)).toContain("original native task has not been confirmed");
+ });
+ it("a resume whose native task id shows a moment later is confirmed, not UNKNOWN (slice 15, restart_pane 8/11)",async()=>{
+  const c=fixture(),pane=c.panes[0]!;
+  c.store.createPaneCliSession({paneId:pane.id,roomId:c.room.id,runtimeId:"cli:codex",providerId:"codex",agentId:"codex",modelId:"test",reasoningEffort:"low",launchMode:"FRESH",cwd:"/tmp",codexThreadId:"05644479-4762-4a1e-a376-f7f8569dd788",status:"EXITED"});
+  let reads=0;
+  c.controller.resume.mockImplementation(async()=>({}));
+  c.controller.inspect.mockImplementation(async(p:Pane,freshness?:{fresh?:boolean})=>{if(freshness?.fresh)reads++;return {paneId:p.id,title:p.title,runtimeId:"cli:codex",sessionId:"session:one",state:"IDLE",nativeTaskRef:reads>=2?"05644479-4762-4a1e-a376-f7f8569dd788":null,modelId:null,nativeMode:null,checkedAt:new Date().toISOString(),tasks:[]} as never;});
+  expect((await c.execute([{kind:"pane",operation:"resume",target:{paneIds:[pane.id]}}],"request:resume-late")).status).toBe("COMPLETED");
+  expect(reads).toBe(2);
  });
  it("restart and reopen of a CLI that never ran a command start a fresh session; resume still fails (SpaceApp Android, 2/11)",async()=>{
   // 2/11 Bruno/Iris: the phone's Restart of a Codex pane quit by Ctrl+C before any command failed "… has no resumable transcript".
   const c=fixture(),pane=c.panes[0]!;
   c.store.createPaneCliSession({paneId:pane.id,roomId:c.room.id,runtimeId:"cli:codex",providerId:"codex",agentId:"codex",modelId:"test",reasoningEffort:"low",launchMode:"FRESH",cwd:"/tmp",codexThreadId:"05644479-4762-4a1e-a376-f7f8569dd788",status:"EXITED"});
   c.controller.resume.mockRejectedValue(new CliTaskNotResumableError("Space CLI task cli_task:one has no resumable transcript."));
-  c.controller.inspect.mockImplementation(async(p:any)=>({paneId:p.id,title:p.title,runtimeId:"cli:codex",sessionId:"session:two",state:"IDLE",nativeTaskRef:"native:new",modelId:null,nativeMode:null,checkedAt:new Date().toISOString(),tasks:[]}) as any);
+  c.controller.inspect.mockImplementation(async(p:Pane)=>({paneId:p.id,title:p.title,runtimeId:"cli:codex",sessionId:"session:two",state:"IDLE",nativeTaskRef:"native:new",modelId:null,nativeMode:null,checkedAt:new Date().toISOString(),tasks:[]}) as never);
   const restarted=await c.execute([{kind:"pane",operation:"restart",target:{paneIds:[pane.id]}}],"request:restart");
   expect(restarted.status).toBe("COMPLETED");expect(restarted.results[0]!.detail).toContain("a fresh CLI session started");
   expect(c.controller.start).toHaveBeenCalledOnce();
@@ -418,11 +499,28 @@ describe("Space control",()=>{
   const other=await c.execute([{kind:"pane",operation:"restart",target:{paneIds:[pane.id]}}],"request:other");
   expect(other.status).toBe("FAILED");expect(c.controller.start).toHaveBeenCalledTimes(2);
  });
+ it("a pane restart relaunches the pane's Chrome when it stopped answering (operator order 20/11, Job Copilot hung 1 h 40)",async()=>{
+  const c=fixture(),pane=c.store.createPane({roomId:c.room.id,title:"Job",mode:"JOB_APPLY"});
+  const relaunchHungBrowser=vi.fn(async()=>true);
+  const service=createSpaceControl({...c.options,relaunchHungBrowser});
+  const result=await service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"request:hung",actions:[{kind:"pane",operation:"restart",target:{paneIds:[pane.id]}}]}));
+  expect(result.status).toBe("COMPLETED");expect(relaunchHungBrowser).toHaveBeenCalledWith(expect.objectContaining({id:pane.id}));
+ });
  it("reopens Chat without submitting a continuation prompt",async()=>{
   const c=fixture();c.store.updatePane(c.panes[0]!.id,{mode:"CHAT",isClosed:true,status:"CLOSED"});
   const result=await c.execute([{kind:"pane",operation:"reopen",target:{paneIds:[c.panes[0]!.id],state:"CLOSED"}}]);
   expect(result.status).toBe("COMPLETED");expect(c.controller.start).toHaveBeenCalledOnce();
   expect(c.controller.resume).not.toHaveBeenCalled();expect(c.send).not.toHaveBeenCalled();
+ });
+ it("names the filter, a closed pane and the room's open panes when no pane matches (slice 24, Nous sends 15/11 01:40)",async()=>{
+  const c=fixture();const [a,b]=c.panes as [typeof c.panes[0],typeof c.panes[0]];const label=(p:typeof a)=>`${p.paneName??p.title} (${p.id})`;
+  const runtime=await c.execute([{kind:"pane",operation:"prompt",text:"work",target:{paneIds:[a.id],runtimeId:"cli:none",state:"OPEN"}}]);
+  expect(runtime.status).toBe("FAILED");expect(JSON.stringify(runtime)).toContain(`No panes match this selection (runtime cli:none). Open panes in this room: ${label(a)}`);
+  c.store.updatePane(a.id,{isClosed:true,status:"CLOSED"});
+  const closed=await c.execute([{kind:"pane",operation:"prompt",text:"work",target:{paneIds:[a.id],state:"OPEN"}}],"request:closed");
+  expect(closed.status).toBe("FAILED");expect(c.send).not.toHaveBeenCalled();
+  expect(JSON.stringify(closed)).toContain(`${label(a)} is closed: reopen it first`);
+  if(b)expect(JSON.stringify(closed)).toContain(`Open panes in this room: ${label(b)}`);
  });
  it("executes cancel as an alias of stop and interrupts running pane",async()=>{
   const c=fixture();
@@ -443,7 +541,7 @@ describe("Space control",()=>{
   const result=await service.execute(actor,controlExecuteSchema.parse({roomId:c.room.id,requestId:"shot:one",actions:[{kind:"screenshot",operation:"capture",target:"APP",format:"jpeg",quality:80}]}));
   expect(result.status).toBe("COMPLETED");
   expect(captureScreenshot).toHaveBeenCalledWith(actor,c.room.id,expect.objectContaining({format:"jpeg",quality:80}));
-  expect((result.results[0]!.evidence.result as any).artifactId).toBe("art_shot_1");
+  expect((result.results[0]!.evidence.result as Row).artifactId).toBe("art_shot_1");
  });
  it("fails screenshot execution when capture engine is unavailable and no client is connected",async()=>{
   const c=fixture();
@@ -484,7 +582,7 @@ describe("Space control",()=>{
   expect(c.store.listClipboardItems(actor.id).items).toHaveLength(0);
  });
  it("handles task resource operations with audit and destructive confirmation",async()=>{
-  const integrationCalls: any[] = [];
+  const integrationCalls: unknown[] = [];
   const integration = vi.fn(async (_actor, _roomId, action) => {
    integrationCalls.push(action);
    if (action.operation === "tasks.delete" && !action.input?.confirm) {
@@ -553,7 +651,7 @@ describe("Space control",()=>{
  it("minimize does not require runtime assertion and works on non-TERMINAL panes", async () => {
   const c = fixture();
   const pane = c.panes[0]!;
-  c.store.updatePane(pane.id, { mode: "BROWSER", terminalRuntimeId: null as any });
+  c.store.updatePane(pane.id, { mode: "BROWSER", terminalRuntimeId: null as never });
   const result = await c.execute([{ kind: "pane", operation: "minimize", target: { paneIds: [pane.id] } }], "min:browser");
   expect(result.status).toBe("COMPLETED");
   expect(c.store.getPane(pane.id).isMinimized).toBe(true);
@@ -593,8 +691,8 @@ describe("Space control",()=>{
   const c = fixture();
   const pane = c.panes[1]!;
   c.store.updatePane(pane.id, { isMinimized: true });
-  const state = await c.service.inspect(actor, { roomId: c.room.id, section: "STATE", offset: 0, limit: 25 }) as any;
-  const entry = state.panes.find((p: any) => p.id === pane.id);
+  const state = await c.service.inspect(actor, { roomId: c.room.id, section: "STATE", offset: 0, limit: 25 }) as { panes: Row[] };
+  const entry = state.panes.find((p: { id: string }) => p.id === pane.id)!;
   expect(entry.isMinimized).toBe(true);
   expect(entry.isMaximized).toBe(false);
  });
@@ -653,7 +751,7 @@ describe("Space control",()=>{
  it("inspect STATE enriches panes with verified model and account fields", async () => {
   const c = fixture();
   const pane = c.panes[0]!;
-  const inspectPaneState = vi.fn(async (p: any) => ({
+  const inspectPaneState = vi.fn(async (p: Pane) => ({
    paneId: p.id,
    title: p.title,
    runtimeId: "cli:gemini",
@@ -683,26 +781,26 @@ describe("Space control",()=>{
    tasks: []
   }));
   const service = createSpaceControl({ ...c.options, inspectPaneState });
-  const state = await service.inspect(actor, { roomId: c.room.id, section: "STATE" }) as any;
-  const entry = state.panes.find((p: any) => p.id === pane.id);
+  const state = await service.inspect(actor, { roomId: c.room.id, section: "STATE" }) as { panes: Row[] };
+  const entry = state.panes.find((p: { id: string }) => p.id === pane.id)!;
   expect(entry.configuredModelId).toBe("gemini-2.5-flash");
   expect(entry.effectiveModelId).toBe("gemini-3.8-flash-high");
   expect(entry.modelVerificationStatus).toBe("VERIFIED");
   expect(entry.accountProfileId).toBe("google-2");
   expect(entry.accountEmail).toBe("profile2@example.com");
   expect(entry.accountVerificationStatus).toBe("VERIFIED");
-  expect(entry.verificationEvidence.modelVerified).toBe(true);
-  expect(entry.verificationEvidence.accountVerified).toBe(true);
+  expect((entry.verificationEvidence as Row).modelVerified).toBe(true);
+  expect((entry.verificationEvidence as Row).accountVerified).toBe(true);
  });
  it("closes a pane whose CLI runtime has no native controls, like the UI's close button (27/10: Bruno/Leo)", async () => {
   const c = fixture();
   const shell = c.store.createPane({ roomId: c.room.id, title: "Leo", mode: "TERMINAL", terminalRuntimeId: "cli:harness" });
-  const prompt = await c.execute([{ kind: "pane", operation: "prompt", target: { paneIds: [shell.id] }, text: "Hi" }], "request:prompt") as any;
+  const prompt = await c.execute([{ kind: "pane", operation: "prompt", target: { paneIds: [shell.id] }, text: "Hi" }], "request:prompt") as never;
   expect(JSON.stringify(prompt)).toContain("Native controls for this CLI runtime are not supported.");
-  const dry = await c.execute([{ kind: "pane", operation: "close", target: { paneIds: [shell.id], state: "ALL" } }], "request:dry", { dryRun: true }) as any;
+  const dry = await c.execute([{ kind: "pane", operation: "close", target: { paneIds: [shell.id], state: "ALL" } }], "request:dry", { dryRun: true }) as never;
   expect(JSON.stringify(dry)).not.toContain("Native controls");
   expect(c.store.getPane(shell.id).isClosed).toBe(false);
-  const closed = await c.execute([{ kind: "pane", operation: "close", target: { paneIds: [shell.id], state: "ALL" } }], "request:close") as any;
+  const closed = await c.execute([{ kind: "pane", operation: "close", target: { paneIds: [shell.id], state: "ALL" } }], "request:close") as never;
   expect(closed).toMatchObject({ status: "COMPLETED", results: [{ paneId: shell.id, status: "COMPLETED" }] });
   expect(c.store.getPane(shell.id)).toMatchObject({ isClosed: true, status: "CLOSED" });
   expect(c.controller.interrupt).toHaveBeenCalledWith(expect.objectContaining({ id: shell.id }), expect.any(String));
@@ -718,7 +816,7 @@ describe("Space control",()=>{
   await c.execute([{ kind: "pane", operation: "close", target: { paneIds: [c.panes[0]!.id, c.panes[1]!.id], state: "ALL" } }]);
   // The third pane c.panes[2] remains open
   const openPane = c.panes[2]!;
-  c.controller.inspect.mockImplementation(async (p: any) => ({
+  c.controller.inspect.mockImplementation(async (p: Pane) => ({
     paneId: p.id,
     title: p.title,
     runtimeId: "cli:codex",
@@ -728,21 +826,21 @@ describe("Space control",()=>{
     checkedAt: new Date().toISOString(),
     tasks: []
   }));
-  const content = await c.service.inspect(actor, { roomId: c.room.id, section: "CONTENT", offset: 0, limit: 1 }) as any[];
+  const content = await c.service.inspect(actor, { roomId: c.room.id, section: "CONTENT", offset: 0, limit: 1 }) as Row[];
   expect(content).toHaveLength(1);
-  expect(content[0].paneId).toBe(openPane.id);
-  expect(content[0].closed).toBe(false);
-  expect(content[0].text).toContain("Five tiny words");
+  expect(content[0]!.paneId).toBe(openPane.id);
+  expect(content[0]!.closed).toBe(false);
+  expect(content[0]!.text).toContain("Five tiny words");
  });
  it("inspect CONTENT reads a copilot pane's CLI like a terminal, and still refuses a pane without a CLI (SpaceApp Android, 31/10)", async () => {
   const c = fixture();
   const mail = c.store.createPane({ roomId: c.room.id, title: "Emma", mode: "MAIL_COPILOT" } as never);
   const web = c.store.createPane({ roomId: c.room.id, title: "Web", mode: "BROWSER" } as never);
-  c.controller.inspect.mockImplementation(async (p: any) => ({ paneId: p.id, title: p.title, state: "IDLE", text: "Inbox: 3 new", checkedAt: new Date().toISOString(), tasks: [] }));
-  const [copilot] = await c.service.inspect(actor, { roomId: c.room.id, paneId: mail.id, section: "CONTENT", offset: 0, limit: 1 }) as any[];
+  c.controller.inspect.mockImplementation(async (p: Pane) => ({ paneId: p.id, title: p.title, state: "IDLE", text: "Inbox: 3 new", checkedAt: new Date().toISOString(), tasks: [] }));
+  const [copilot] = await c.service.inspect(actor, { roomId: c.room.id, paneId: mail.id, section: "CONTENT", offset: 0, limit: 1 }) as Row[];
   expect(copilot).toMatchObject({ paneId: mail.id, text: "Inbox: 3 new" });
-  expect(copilot.supported).toBeUndefined();
-  const [browser] = await c.service.inspect(actor, { roomId: c.room.id, paneId: web.id, section: "CONTENT", offset: 0, limit: 1 }) as any[];
+  expect(copilot!.supported).toBeUndefined();
+  const [browser] = await c.service.inspect(actor, { roomId: c.room.id, paneId: web.id, section: "CONTENT", offset: 0, limit: 1 }) as Row[];
   expect(browser).toMatchObject({ paneId: web.id, supported: false, reason: "Native content adapter is unavailable for this pane type." });
  });
  it("inspect CONTENT asks the pane for its colour runs only when styled (SpaceApp Android R9)", async () => {
@@ -756,7 +854,7 @@ describe("Space control",()=>{
  });
  it("space_test_mcp_tools counts the room's open panes from the STATE answer",async()=>{
   const c=fixture();c.store.updatePane(c.panes[0]!.id,{isClosed:true,status:"CLOSED"});
-  const report=await c.service.testMcpTools(actor,c.room.id,{tools:["space_inspect:STATE"]}) as any;
+  const report=await c.service.testMcpTools(actor,c.room.id,{tools:["space_inspect:STATE"]}) as { results: unknown[] };
   expect(report.results[0]).toMatchObject({status:"PASS",details:{totalOpenPanes:2,paneCap:c.room.paneCap}});
  });
 });

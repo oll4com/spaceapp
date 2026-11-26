@@ -1,9 +1,10 @@
 import type { Pane, Room } from "@space/contracts";
+import { SpaceNotFoundError } from "@space/runtime";
 import { createCopilotPaneReopen, type CopilotReopenDeps } from "../copilot-pane-reopen.js";
 import type { FreelanceCopilotService } from "./service.js";
 
 export interface FreelanceCopilotSchedulerDeps {
-  service: Pick<FreelanceCopilotService, "settingsOf" | "pollMail" | "weeklyDigest" | "runView" | "followUpsDue" | "approvedDue">;
+  service: Pick<FreelanceCopilotService, "settingsOf" | "pollMail" | "weeklyDigest" | "runView" | "followUpsDue" | "approvedDue" | "queueHunt">;
   store: { listRooms(): Promise<Room[]> | Room[]; listPanes(roomId: string, includeClosed?: boolean): Promise<Pane[]> | Pane[] };
   /** Whether the pane's CLI agent is running (a run's kickoff is typed into it). */
   hasAgent(pane: Pane): Promise<boolean>;
@@ -26,7 +27,8 @@ const DEFAULT_INTERVAL_MS = 5 * 60_000;
  * Keeps the copilot working without the operator pressing Start: for every open Freelance Copilot pane that is not
  * paused, new mail in work@example.invalid becomes work items, the weekly digest is written, and when work is waiting
  * (briefs, mails, approved messages, due follow-ups) and no run is active a run starts in the pane's CLI. A pane
- * without a running CLI agent raises one notification instead. Single-flight: a slow tick is never overlapped.
+ * without a running CLI agent raises one notification instead. With nothing waiting, a pane whose agent runs gets a
+ * job-hunt brief (queueHunt) and a run. Single-flight: a slow tick is never overlapped.
  */
 export function createFreelanceCopilotScheduler(deps: FreelanceCopilotSchedulerDeps) {
   const reopener = createCopilotPaneReopen(deps.reopen);
@@ -45,7 +47,15 @@ export function createFreelanceCopilotScheduler(deps: FreelanceCopilotSchedulerD
         const owner = room.ownerUserId;
         if (!owner) continue;
         // Closed panes too: the store lists open ones by default, and item 44 reopens a closed one (28/10: Cleo/Bob was never seen).
-        const freelance = (await deps.store.listPanes(room.id, true)).filter((candidate) => candidate.mode === "FREELANCE_COPILOT");
+        let roomPanes: Pane[];
+        try {
+          roomPanes = await deps.store.listPanes(room.id, true);
+        } catch (error) {
+          // A temporary room (e.g. proof room) may be deleted between listRooms() and listPanes().
+          if (error instanceof SpaceNotFoundError) continue;
+          throw error;
+        }
+        const freelance = roomPanes.filter((candidate) => candidate.mode === "FREELANCE_COPILOT");
         for (const pane of freelance) panes.add(owner, room, pane);
         for (const pane of freelance.filter((candidate) => !candidate.isClosed)) {
           try {
@@ -57,7 +67,11 @@ export function createFreelanceCopilotScheduler(deps: FreelanceCopilotSchedulerD
             await deps.service.weeklyDigest(owner, pane);
             if (await deps.hasActiveRun(pane)) continue;
             const { backlog } = await deps.service.runView(owner, pane);
-            if (!backlog) continue;
+            if (!backlog) {
+              // Operator 14/11 11:19 BKK: apply all the time, so an idle copilot hunts for jobs instead of waiting for a brief.
+              if (await deps.hasAgent(pane) && await deps.service.queueHunt(owner, pane)) { await deps.startRun(owner, pane); started += 1; }
+              continue;
+            }
             if (await deps.hasAgent(pane)) {
               await deps.startRun(owner, pane);
               started += 1;

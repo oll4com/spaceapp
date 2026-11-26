@@ -29,6 +29,11 @@ export interface AppStudioRepository {
 }
 
 const copy = <T>(row: T): T => structuredClone(row);
+function withoutOwner(row: AppStudioPreview & { ownerUserId: string }): AppStudioPreview {
+  const preview: AppStudioPreview & { ownerUserId?: string } = copy(row);
+  delete preview.ownerUserId;
+  return preview;
+}
 const byNewest = (left: AppStudioEvent, right: AppStudioEvent) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
 
 export class InMemoryAppStudioRepository implements AppStudioRepository {
@@ -65,13 +70,12 @@ export class InMemoryAppStudioRepository implements AppStudioRepository {
     const replaced = this.previews.get(key)?.artifactId ?? null;
     const row = { ...copy(input), capturedAt: this.now() };
     this.previews.set(key, row);
-    const { ownerUserId: _owner, ...preview } = row;
-    return { preview, replacedArtifactId: replaced };
+    return { preview: withoutOwner(row), replacedArtifactId: replaced };
   }
   async listPreviews(owner: string, paneId: string) {
     return [...this.previews.values()].filter((row) => row.ownerUserId === owner && row.paneId === paneId)
       .sort((left, right) => left.route.localeCompare(right.route) || left.deviceId.localeCompare(right.deviceId))
-      .map(({ ownerUserId: _owner, ...preview }) => copy(preview));
+      .map(withoutOwner);
   }
   async trimPreviewRoutes(owner: string, paneId: string, keepRoutes: number) {
     const rows = [...this.previews.entries()].filter(([, row]) => row.ownerUserId === owner && row.paneId === paneId);

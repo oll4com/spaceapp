@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { healthSendable, mailCampaignCreateSchema, mailCampaignFingerprintInput, mailCampaignScheduleSchema, mailSenderCreateSchema, mailSuppressed,
   mailSuppressionInputSchema, mailTemplateContentSchema, mailTemplateFingerprintInput, mailTemplateVariablesUsed, normalizeMailAddress,
-  normalizeSuppressionPattern, renderMailTemplate } from "../src/mail-campaigns.js";
+  normalizeSuppressionPattern, renderMailTemplate, mailAttachmentInfo, MAIL_TEMPLATE_ATTACHMENTS_MAX_BYTES } from "../src/mail-campaigns.js";
 
 describe("mail campaign addresses", () => {
   it("normalizes one address per mailbox and refuses what is not local@domain.tld", () => {
@@ -48,6 +48,21 @@ describe("mail templates", () => {
     expect(mailTemplateFingerprintInput({ ...content })).toBe(base);
     for (const change of [{ subject: "x" }, { preheader: "x" }, { html: "<p>x</p>" }, { text: "x" }, { variables: [] }])
       expect(mailTemplateFingerprintInput({ ...content, ...change })).not.toBe(base);
+  });
+  it("attaches only PDFs and pictures whose bytes match, within the body's room, and keeps every older fingerprint (20/11)", () => {
+    const pdf = { filename: "sample-el.pdf", contentBase64: Buffer.from("%PDF-1.6 sample").toString("base64") };
+    const parsed = mailTemplateContentSchema.parse({ ...content, attachments: [pdf] });
+    expect(parsed.attachments).toEqual([pdf]);
+    expect(mailTemplateContentSchema.parse(content).attachments).toEqual([]);
+    expect(mailTemplateFingerprintInput(mailTemplateContentSchema.parse(content))).toBe(mailTemplateFingerprintInput(content));
+    expect(mailTemplateFingerprintInput(parsed)).not.toBe(mailTemplateFingerprintInput(content));
+    expect(mailTemplateFingerprintInput({ ...parsed, attachments: [{ ...pdf, filename: "other.pdf" }] })).not.toBe(mailTemplateFingerprintInput(parsed));
+    expect(mailAttachmentInfo(pdf)).toEqual({ filename: "sample-el.pdf", contentType: "application/pdf", bytes: 15 });
+    for (const bad of [{ ...pdf, filename: "run.exe" }, { ...pdf, filename: "../x.pdf" }, { ...pdf, filename: 'a".pdf' }, { ...pdf, filename: "photo.png" },
+      { ...pdf, contentBase64: "not base64!" }, { ...pdf, contentBase64: "!!!!!!!!" }, { ...pdf, contentBase64: `-${pdf.contentBase64}` }]) expect(mailTemplateContentSchema.safeParse({ ...content, attachments: [bad] }).success).toBe(false);
+    expect(mailTemplateContentSchema.safeParse({ ...content, attachments: [pdf, { ...pdf, filename: "SAMPLE-EL.pdf" }] }).success).toBe(false);
+    const big = { filename: "big.pdf", contentBase64: Buffer.concat([Buffer.from("%PDF-"), Buffer.alloc(MAIL_TEMPLATE_ATTACHMENTS_MAX_BYTES)]).toString("base64") };
+    expect(mailTemplateContentSchema.safeParse({ ...content, attachments: [big] }).success).toBe(false);
   });
   it("takes a plain-text mail without HTML", () => {
     expect(mailTemplateContentSchema.parse({ subject: "s", text: "Hello" }).html).toBe("");

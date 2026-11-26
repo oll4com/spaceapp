@@ -202,4 +202,34 @@ describe("Agent Files links in CLI output", () => {
     fireEvent.click(screen.getByRole("link", { name: "nous/x.md" }));
     expect((await screen.findByRole("alert")).textContent).toContain("No file or folder nous/x.md");
   });
+
+  // Last in the file: it moves the shared index's clock forward.
+  it("re-reads only the newest page of the list while it is unchanged (18 requests a minute before, 22/11)", async () => {
+    const start = Date.now() + 600_000;
+    const now = vi.spyOn(Date, "now").mockReturnValue(start);
+    const older = agentFile("artifact:older", "older-report.md");
+    const list = vi.spyOn(liveRuntime.api, "artifacts").mockImplementation(async (query) => ({
+      data: [query?.page === 2 ? older : emails],
+      pagination: { page: query?.page ?? 1, pageSize: 100, totalItems: 2, totalPages: 2 }
+    }));
+    const terminal = new Terminal({ cols: 80, rows: 4, allowProposedApi: true });
+    const register = vi.spyOn(terminal, "registerLinkProvider");
+    terminal.loadAddon(new AgentFileLinkStore().addon());
+    const provider = register.mock.calls[0]![0] as ILinkProvider;
+    await write(terminal, "older-report.md");
+    const links = () => new Promise<ILink[] | undefined>((resolve) => provider.provideLinks(1, resolve));
+
+    await links();
+    await waitFor(async () => expect(await links()).toHaveLength(1));
+    expect(list).toHaveBeenCalledTimes(2);
+    for (const minute of [1, 2]) {
+      now.mockReturnValue(start + minute * 61_000);
+      await links();
+      await waitFor(() => expect(list).toHaveBeenCalledTimes(2 + minute));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(list.mock.calls.filter(([query]) => query?.page === 2)).toHaveLength(1);
+    expect(await links()).toHaveLength(1);
+    terminal.dispose();
+  });
 });

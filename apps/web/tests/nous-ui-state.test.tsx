@@ -2,7 +2,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { noteSignedInUser } from "../src/auth-bootstrap-cache.js";
-import { useNousUiState } from "../src/features/nous/nous-ui-state.js";
+import { leaveNousFullscreen, useNousUiState } from "../src/features/nous/nous-ui-state.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 
@@ -29,4 +29,16 @@ it("keeps a choice per user, reads the device's earlier value until the user wri
   bob.rerender();
   const again = renderHook(() => useNousUiState("requests.status", "ALL", isStatus));
   expect(again.result.current[0]).toBe("ALL");
+});
+
+it("leaveNousFullscreen closes the fullscreen and the open plan so an opened pane is not covered", () => {
+  signIn("user:ann");
+  const isFlag = (value: unknown): value is boolean => typeof value === "boolean";
+  const isPlan = (value: unknown): value is string | null => value === null || typeof value === "string";
+  const full = renderHook(() => useNousUiState("fullscreen", false, isFlag));
+  const plan = renderHook(() => useNousUiState("plan", null, isPlan));
+  act(() => { full.result.current[1](true); plan.result.current[1]("clipboard:x"); });
+  act(() => leaveNousFullscreen());
+  expect(full.result.current[0]).toBe(false);
+  expect(plan.result.current[0]).toBe(null);
 });

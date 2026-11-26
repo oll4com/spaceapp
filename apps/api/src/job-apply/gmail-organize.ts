@@ -61,7 +61,7 @@ export function jobGmailCall(accessToken: string, fetchImpl: typeof fetch = fetc
         signal: AbortSignal.timeout(20_000)
       });
       const text = await response.text();
-      let body: Record<string, unknown> = {};
+      let body: Record<string, unknown>;
       try { body = maskPasswordResetJson((text ? JSON.parse(text) : {}) as Record<string, unknown>); } catch { body = {}; }
       if (response.ok) return body;
       // One retry for a per-user rate limit: these clear within seconds (a triage pass just before can trip them).

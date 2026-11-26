@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { nousDecisionKind, nousDecisionRunsWhen, type NousDecision } from "@space/contracts";
 import { InMemoryNousRepository, type NewNousDecision } from "@space/db";
-import { MAY_RESTART_HOLD_LINE, MAY_SEND_HOLD_LINE, PRICES_LINE, mayDeleteOwnCovers, mayDeleteTestCovers, mayPublishCovers, mayRestartHostsCovers, maySendKind, priceTokens, stableQueueIdle, type OwnArtifact, type PublishFacts, type RestartFacts, type TestResourceRecord } from "../src/nous/allowances.js";
+import { MAY_RESTART_HOLD_LINE, MAY_SEND_HOLD_LINE, MAY_CLEAN_SYSTEM_ANSWER, NEVER_BUY_ANSWER, operatorReadsFirst, PRICES_LINE, purchaseAsk, mayCleanSystemCovers, mayDeleteOwnCovers, mayDeleteTestCovers, mayPublishCovers, mayRestartHostsCovers, maySendKind, priceTokens, stableQueueIdle, type OwnArtifact, type PublishFacts, type RestartFacts, type TestResourceRecord } from "../src/nous/allowances.js";
 import { createNousService } from "../src/nous/service.js";
 
 const owner = "user:operator";
@@ -12,7 +12,7 @@ const ask = (refs: Partial<NousDecision["refs"]> = {}, title = "Send the pilot o
   options: [], recommendation: "Yes. Πρόβλεψη: ναι (90%)", action, refs: { files: ["active/pilots/offer.md"], sendKind: "pilot-offer", recipients: ["ann@acme.io"], ...refs } });
 
 function fixture(maySend = true, hashes: Array<{ ref: string; sha256: string | null; size: number | null }> | null = null,
-  reviewRequiredBy?: (owner: string, action: unknown) => Promise<{ id: string; text: string } | null>) {
+  reviewRequiredBy?: (owner: string, action: unknown) => Promise<{ id: string; text: string } | null>, planTitle?: (owner: string, id: string) => Promise<string | null>) {
   const repository = new InMemoryNousRepository();
   const raise = vi.fn(async () => ({}) as never);
   const resolve = vi.fn(async () => {});
@@ -22,7 +22,7 @@ function fixture(maySend = true, hashes: Array<{ ref: string; sha256: string | n
   const service = createNousService({ repository, runner: async () => ({ text: "", isError: false }), tools: { execute: vi.fn() } as never,
     world: async () => ({ text: "", overview: { plans: [], needsHands: [], trains: "", planMap: null } }), settings: async () => settings as never,
     saveSettings: async (_owner, value) => { settings = value as never; return value; }, notifications: { raise, resolve } as never, executeAction,
-    sendTexts: texts, ...(hashes ? { fileHashes: async () => hashes } : {}), ...(reviewRequiredBy ? { reviewRequiredBy } : {}), timeZone: async () => "Asia/Bangkok" });
+    sendTexts: texts, ...(hashes ? { fileHashes: async () => hashes } : {}), ...(reviewRequiredBy ? { reviewRequiredBy } : {}), ...(planTitle ? { planTitle } : {}), timeZone: async () => "Asia/Bangkok" });
   return { repository, raise, resolve, executeAction, service, texts, setSettings: (value: object) => { settings = { ...settings, ...value }; } };
 }
 
@@ -35,6 +35,10 @@ describe("May send: what it covers", () => {
       action: { type: "COPILOT", copilot, item: "REVIEW", itemId: "mktpost:SUoAkMeF1xpR", paneId: null, decision } as never });
     expect([maySendKind(review("MARKETING", "approve")), maySendKind(review("MARKETING", "edit")), maySendKind(review("FREELANCE", "edit"))]).toEqual(["marketing-x", "marketing-x", "marketing-x"]);
     expect(maySendKind(review("SECURITY", "approve"))).toBeNull();
+    // Audit §4 item 1: a Marketing campaign's approve is a send; its complete or cancel sends nothing; a Marketing LEAD stays uncovered.
+    const campaign = (decision: string, item = "CAMPAIGN") => ({ category: "DIRECTION" as const, refs: {}, action: { type: "COPILOT", copilot: "MARKETING", item, itemId: "mktcamp:x", paneId: null, decision } as never });
+    expect([maySendKind(campaign("approve")), maySendKind(campaign("complete")), maySendKind(campaign("cancel")), maySendKind(campaign("approve", "LEAD"))])
+      .toEqual(["marketing-review", "marketing-review-back", "marketing-review-back", null]);
     // R24-3 (operator rule 5e8bc029, 1/11 11:50 BKK: Nous approves OR sends back every Marketing review): a reject, decline or revise sends nothing
     // and runs at once too, on every review rail, with a kind of its own when Nous gave none; Security and Monitoring reviews stay the operator's.
     expect([maySendKind(review("MARKETING", "reject")), maySendKind(review("MARKETING", "revise")), maySendKind(review("JOB", "decline"))]).toEqual(["marketing-x", "marketing-x", "marketing-x"]);
@@ -42,7 +46,7 @@ describe("May send: what it covers", () => {
     expect([maySendKind({ ...review("SECURITY", "decline"), refs: {} }), maySendKind({ ...review("MONITORING", "reject"), refs: {} })]).toEqual([null, null]);
     expect(maySendKind({ category: "EXTERNAL", action: { type: "COPILOT", copilot: "MARKETING", item: "REVIEW", id: "mktpost:x", decision: "approve" } as never, refs: { sendKind: "x-reply" } })).toBe("x-reply");
     expect(maySendKind({ category: "EXTERNAL", action: { type: "COPILOT", copilot: "MARKETING", item: "REVIEW", id: "mktpost:x", decision: "reject" } as never, refs: { sendKind: "x-reply" } })).toBe("x-reply");
-    expect(maySendKind({ category: "EXTERNAL", action: { type: "COPILOT", copilot: "MARKETING", item: "CAMPAIGN", id: "mktcamp:x", decision: "approve" } as never, refs: { sendKind: "x-reply" } })).toBeNull();
+    expect(maySendKind({ category: "EXTERNAL", action: { type: "COPILOT", copilot: "MARKETING", item: "CAMPAIGN", id: "mktcamp:x", decision: "approve" } as never, refs: { sendKind: "x-reply" } })).toBe("x-reply");
     expect(maySendKind({ category: "EXTERNAL", action, refs: {} })).toBeNull();
     expect(maySendKind({ category: "DIRECTION", action, refs: { sendKind: "pilot-offer" } })).toBeNull();
     expect(priceTokens(["Only €490 / month, 10 % off; η τιμή μένει", null])).toEqual(["10%off", "τιμή", "€490"]);
@@ -120,16 +124,50 @@ describe("May send in the decision flow", () => {
     expect(held).toHaveBeenCalledWith(owner, review);
     expect(f.executeAction).not.toHaveBeenCalled();
     expect(f.raise).toHaveBeenCalledTimes(2);
-    // Sending it back sends nothing: maySend still runs it, and no memory is read.
+    // lessons-mail-review-preempt (mailrev:70yml4x5icYO sent back 13/11 13:37Z, the operator sent it 13:42Z): sending it back is held the same.
     held.mockClear();
-    expect((await f.service.ask({ ...ask({}, "Send back the Arize reply?"), refs, action: { ...review, decision: "reject" } })).status).toBe("APPROVED");
-    expect(held).not.toHaveBeenCalled();
+    const back = fixture(true, null, held);
+    expect((await back.service.ask({ ...ask({}, "Send back the Arize reply?"), refs, action: { ...review, decision: "reject" } })).status).toBe("OPEN");
+    expect(held).toHaveBeenCalledTimes(1);
+    expect(back.executeAction).not.toHaveBeenCalled();
     // Memories that cannot be read hold it too; with no such memory the allowance runs it as before.
     const unread = fixture(true, null, async () => { throw new Error("db down"); });
     expect(await unread.service.ask({ ...ask({}, "Approve the Arize reply?"), refs, action: review })).toMatchObject({ status: "OPEN",
       body: expect.stringMatching(/^Not covered by "May send to third parties": the copilot's rule memories could not be read/) });
     const free = fixture(true, null, async () => null);
     expect(await free.service.ask({ ...ask({}, "Approve the Arize reply?"), refs, action: review })).toMatchObject({ status: "APPROVED", answer: "Approved by allowance maySend (send kind mail-review)" });
+  });
+
+  it("lessons-mail-review-preempt: nothing runs under May send on a review an open decision already asks the operator about", async () => {
+    const f = fixture(false, null, async () => null);
+    const review = { type: "COPILOT" as const, copilot: "MAIL" as const, item: "REVIEW" as const, itemId: "mailrev:70yml4x5icYO", paneId: null, decision: "approve" };
+    const refs = { files: [], recipients: ["support@vultr.com"] };
+    expect((await f.service.ask({ ...ask({}, "Approve the Vultr reply?"), refs, action: review })).status).toBe("OPEN");
+    f.setSettings({ maySend: true });
+    expect(await f.service.ask({ ...ask({}, "Send back the Vultr reply?"), refs, action: { ...review, decision: "reject" } })).toMatchObject({ status: "OPEN",
+      body: expect.stringMatching(/^Not covered by "May send to third parties": the open decision "Approve the Vultr reply\?" already asks you about this item/) });
+    expect(f.executeAction).not.toHaveBeenCalled();
+    // Another review still runs at once.
+    expect((await f.service.ask({ ...ask({}, "Send back the Akamai reply?"), refs, action: { ...review, itemId: "mailrev:akamai000001", decision: "reject" } })).status).toBe("APPROVED");
+  });
+
+  it("correction bcd69f4e (21/11): a send replacing an open card with a file that card never showed stays the operator's card", async () => {
+    const draft = { ref: "active/20261121-moonstone-614/no3-reply-draft.md", sha256: "0f488f6c".padEnd(64, "0"), size: 5212 };
+    const final = { ref: "nous/moonstone-614/20261121-reply-No3-final.md", sha256: "b1ab5435".padEnd(64, "0"), size: 9704 };
+    const refs = { sendKind: "mail-reply", recipients: ["moonstoneresidence@gmail.com"] };
+    const run = async (sent: typeof draft) => {
+      const f = fixture(false, null);
+      const shown = await f.service.ask(ask({ ...refs, files: [draft.ref], fileHashes: [draft] } as never, "Moon Stone 614: send reply No3? Read it first"));
+      f.setSettings({ maySend: true });
+      return { f, decision: await f.service.ask(ask({ ...refs, files: [sent.ref], fileHashes: [sent] } as never, "Moon Stone 614: send reply No3 now"), { replaces: shown.id }) };
+    };
+    const swapped = await run(final);
+    expect(swapped.decision).toMatchObject({ status: "OPEN", body: expect.stringMatching(/^Not covered by "May send to third parties": it replaces the open decision "Moon Stone 614: send reply No3\? Read it first", which did not show you nous\/moonstone-614\/20261121-reply-No3-final\.md/) });
+    expect(swapped.f.executeAction).not.toHaveBeenCalled();
+    // The file the operator was shown, sent under a new title, still runs at once.
+    const kept = await run(draft);
+    expect(kept.decision.status).toBe("APPROVED");
+    expect(kept.f.executeAction).toHaveBeenCalledTimes(1);
   });
 
   it("Nous 13/11: an ask that replaces an open decision of the same title is a new card with the new text and action, never that decision", async () => {
@@ -169,6 +207,52 @@ describe("May send in the decision flow", () => {
     const held = fixture(true, [{ ref: "active/pilots/offer.md", sha256: "b".repeat(64), size: 10 }]);
     const open = await held.service.ask({ ...ask({ sendKind: "credits-application", fileHashes: [{ ref: "active/pilots/offer.md", sha256: "a".repeat(64), size: 10 }] } as never), action: control });
     expect([open.status, held.executeAction.mock.calls.length]).toEqual(["OPEN", 0]);
+  });
+
+  it("rule SLvZ9IZgCRc4: a funding, credits or program send stays OPEN for the operator to read first; other kinds still go", async () => {
+    const f = fixture(true, null, undefined, async (_owner, id) => id === "clipboard:funding1" ? "Funding: startup credits 2026" : "Pilot outreach");
+    const outscale = await f.service.ask(ask({ sendKind: "cloud-credit-followup", recipients: ["startups@outscale.com"] }, "b2c1d147: Send the OUTSCALE credits follow-up?"));
+    const codex = await f.service.ask(ask({ sendKind: "program-application", recipients: ["oss@openai.com"] }, "06fc6ecd: Apply to Codex for OSS?"));
+    const byPlan = await f.service.ask(ask({ sendKind: "pilot-offer", planId: "clipboard:funding1" } as never, "Send the grant intro?"));
+    for (const held of [outscale, codex, byPlan]) {
+      expect([held.status, held.outcome, held.body]).toEqual(["OPEN", "operator reads first (rule SLvZ9IZgCRc4)", expect.stringContaining("operator reads first")]);
+    }
+    expect(f.executeAction).not.toHaveBeenCalled();
+    const other = await f.service.ask(ask({ sendKind: "pilot-offer", planId: "clipboard:pilot1" } as never, "Send the pilot offer?"));
+    expect([other.status, f.executeAction.mock.calls.length]).toEqual(["APPROVED", 1]);
+    // An old held send of such a kind is not released by the minute check either.
+    const legacy = await f.repository.createDecision({ ...ask({ sendKind: "program-followup" }), body: `${MAY_SEND_HOLD_LINE} 12:00 unless you press Decline (Stop).` });
+    expect(await f.service.releaseAllowanceSends(owner)).toBe(0);
+    expect((await f.repository.getDecision(owner, legacy.id))!.outcome).toContain("operator reads first (rule SLvZ9IZgCRc4)");
+    // 22/11 (lessons-1121-investor-review-autosent, nous_decision:879172f3): investor/VC mail review stays OPEN even with sendKind mail-review and no planId.
+    const mailApprove = { type: "COPILOT" as const, copilot: "MAIL" as const, item: "REVIEW" as const, itemId: "mailrev:nH4I_tSo5hnu", paneId: null, decision: "approve" };
+    const metavallon = await f.service.ask({ ...ask({ sendKind: "mail-review", files: [] }, "Έγκριση follow-up προς Metavallon VC"),
+      body: "Review mailrev:nH4I_tSo5hnu: follow-up στον George Kroustalakis.", action: mailApprove });
+    expect([metavallon.status, metavallon.outcome]).toEqual(["OPEN", "operator reads first (rule SLvZ9IZgCRc4)"]);
+    // Mail review whose funding/investor signal is only in its body or edited text is held too; reject sends nothing so it is not held.
+    const bodyOnly = { ...ask({ sendKind: "mail-review", files: [] }, "Έγκριση follow-up"), body: "Raising a $500K pre-seed SAFE with an investor.", action: mailApprove };
+    expect(operatorReadsFirst(bodyOnly)).toBe(true);
+    expect(operatorReadsFirst({ ...metavallon, action: { ...mailApprove, decision: "reject" } })).toBe(false);
+    // 23/11 Banggood e9aea0da: Nous's own "not funding" names no funding; a real mention beside it still holds.
+    const banggood = { ...ask({ sendKind: "mail-review", files: [] }, "Έγκριση review Banggood (κουπόνια/API follow-up)"), action: mailApprove,
+      body: "Affiliate, όχι χρηματοδότηση.\n• Affiliate coupons mail, not funding/investor" };
+    expect(operatorReadsFirst(banggood)).toBe(false);
+    expect(operatorReadsFirst({ ...banggood, body: `${banggood.body}\nWe also ask about startup credits.` })).toBe(true);
+    // Ordinary non-funding mail review still runs under maySend.
+    const latsis = await f.service.ask({ ...ask({ sendKind: "mail-review", files: [] }, "Υπενθύμιση στη Latsis για γραπτή προσφορά (FCS-48897)"),
+      body: "Ο Mail Copilot ετοίμασε υπενθύμιση για γραπτή προσφορά.", action: { ...mailApprove, itemId: "mailrev:latsis00001" } });
+    expect(latsis.status).toBe("APPROVED");
+  });
+
+  it("23/11 (nous_decision:8bf54f47 Moonstone): a send whose ask says it differs from an operator rule stays OPEN under maySend", async () => {
+    const f = fixture();
+    const mailApprove = { type: "COPILOT" as const, copilot: "MAIL" as const, item: "REVIEW" as const, itemId: "mailrev:0NX8iQ42w4ap", paneId: null, decision: "approve" };
+    const moonstone = await f.service.ask({ ...ask({ sendKind: "mail-review", files: [] }, "Moonstone: send the corrected letter?"), action: mailApprove,
+      body: "Emma fixed the 2 points.\n\nDiffers from your rule: the Moonstone rule (22/11) asks to read it first; only 2 points changed." });
+    expect([moonstone.status, f.executeAction.mock.calls.length]).toEqual(["OPEN", 0]);
+    expect(moonstone.body).toMatch(/^Not covered by "May send to third parties": this send differs from your rule/);
+    const plain = await f.service.ask({ ...ask({ sendKind: "mail-review", files: [] }, "Moonstone reply?"), action: { ...mailApprove, itemId: "mailrev:other0000001" } });
+    expect(plain.status).toBe("APPROVED");
   });
 
   it("leaves a send whose file changed since the ask to the operator (R10-18)", async () => {
@@ -476,5 +560,137 @@ describe("May run guarded host restarts (R16-1; operator 31/10 16:07 BKK: no win
     expect((await off.service.ask(browser)).status).toBe("OPEN");
     expect(off.deps.facts).not.toHaveBeenCalled();
     expect(off.raise).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Never buy (audit §4 item 4, operator rule «Ποτέ αγορά, πάντα δωρεάν διαδρομή»)", () => {
+  it("is a question naming a buy word and a paid thing, in English or Greek with or without accents", () => {
+    expect(purchaseAsk("Πόσα Upwork Connects να αγοράσουμε για τις προτάσεις με χαμηλές τιμές;")).toBe(true);
+    expect(purchaseAsk("Plesk του public-host: να περάσουμε σε Web Admin μηνιαίο (~$17/μήνα) αντί για ανανέωση του Web Pro με €280,39 στις 25/11;")).toBe(true);
+    expect(purchaseAsk("Η φόρμα διορθώθηκε στα 20 Connects με $3.72. Θέλεις να περάσεις τα στοιχεία της κάρτας;")).toBe(true);
+    expect(purchaseAsk("Buy 100 Upwork Connects ($18.60)?")).toBe(true);
+    expect(purchaseAsk("Subscribe to the Pro plan?")).toBe(true);
+    expect(purchaseAsk("Renew the TLS certificate now?")).toBe(false);
+    expect(purchaseAsk("Approve the plan step and the price list for shop.example?")).toBe(false);
+    expect(purchaseAsk("Send the pilot offer to Ann for €490 a month?")).toBe(false);
+    // 18/11 18:59Z: a reply to a buyer of the operator's stock (αγοραστή, a photo πακέτο) is a sale, not a purchase.
+    expect(purchaseAsk("Shop.example lots: αποστολή ενημερωμένων λιστών & φωτογραφιών στον αγοραστή Example Trading GmbH (info@example.com)\nΝα σταλεί τώρα η απάντηση με τις ενημερωμένες λίστες CSV και το πακέτο δειγμάτων φωτογραφιών ώστε ο αγοραστής να επανέλθει με προσφορά πριν την προθεσμία 26/11.")).toBe(false);
+    expect(purchaseAsk("Να αγοράσουμε το πακέτο των 100 credits;")).toBe(true);
+    // DEV3D-031: the passive verb (αγοραστούν, αγοράστηκε) is a buy, not the noun "buyer".
+    expect(purchaseAsk("Να αγοραστούν 50 Connects;")).toBe(true);
+    expect(purchaseAsk("Αγοράστηκαν τα 50 credits;")).toBe(true);
+    // 19/11 REVIEW (363fd74a): the send's kind names the operator's sale, so no wording of it is a purchase; a kind naming a buy still is.
+    expect(purchaseAsk("Να σταλεί η τιμή αγοράς του πακέτου (€900) στον αγοραστή;", "lot-buyer-reply")).toBe(false);
+    expect(purchaseAsk("Send the buyer the price list for 2,222 pieces at €0.40?", "olla-lot-reply")).toBe(false);
+    expect(purchaseAsk("Buy 80 Connects for $12?", "connects-purchase")).toBe(true);
+    expect(purchaseAsk("Buy the lot of 80 Connects for $12?", "buy-lot")).toBe(true);
+    // DEV3D-024: a sale kind does not hide a buy of a paid thing.
+    expect(purchaseAsk("Buy 80 Connects to send the proposal?", "upwork-offer")).toBe(true);
+    expect(purchaseAsk("Να ανανεώσουμε τη συνδρομή του εργαλείου πωλήσεων;", "sales-tool")).toBe(true);
+    // DEV3D-042: in a sale the customer pays; its payment words with seats or a licence are the operator's offer, not a buy.
+    expect(purchaseAsk("Pilot terms: 5 seats for 3 months, payment due within 30 days of invoice.", "pilot-offer")).toBe(false);
+    expect(purchaseAsk("Hi, the pilot includes a 12-month licence; payment by bank transfer.", "pilot-offer")).toBe(false);
+    expect(purchaseAsk("Οι άδειες χρήσης: πληρωμή με τιμολόγιο.", "pilot-offer")).toBe(false);
+    expect(purchaseAsk("Pay for 80 Connects to send the proposal?", "upwork-offer")).toBe(true);
+    expect(purchaseAsk("Να πληρώσουμε 80 Connects για την πρόταση;", "upwork-offer")).toBe(true);
+    // DEV3D-050: "renews"/"subscribes"/"pays" describe the customer's licence in a sale; "renew" as an order is still a buy.
+    expect(purchaseAsk("Send Acme the pilot offer: 10 seats, the licence renews yearly at the pilot price.", "pilot-offer")).toBe(false);
+    expect(purchaseAsk("Offer: the customer pays per seat and subscribes yearly to the pro plan.", "pilot-offer")).toBe(false);
+    expect(purchaseAsk("Renew our Upwork membership to send the offer?", "upwork-offer")).toBe(true);
+    expect(purchaseAsk("Purchase 80 Connects to send the proposal?", "upwork-offer")).toBe(true);
+    expect(purchaseAsk("Pay for 80 Connects to send the proposal?")).toBe(true);
+    // 22/11 (d43fff0e + d4924b41, 16/11): free OpenAI Codex OSS grant citing «δεν πληρώνουν» + API credits is not a purchase.
+    expect(purchaseAsk("Codex for Open Source (OpenAI): να υποβληθεί η δωρεάν αίτηση με αυτά ακριβώς τα πεδία;\nΝαι, με τα δύο κουτάκια. Το Codex Security δεν κοστίζει και δίνει έλεγχο ασφαλείας σε κάθε αλλαγή. Τα API credits είναι δωρεάν tokens που δεν πληρώνουν τίποτε άλλο, άρα είναι ακριβώς ο στόχος σου.")).toBe(false);
+    expect(purchaseAsk("Codex for Open Source (OpenAI): να υποβληθεί η φόρμα με αυτά ακριβώς τα πεδία;\nΤα API credits είναι δωρεάν tokens που δεν πληρώνουν τίποτε άλλο.")).toBe(false);
+    expect(purchaseAsk("Free startup credits application — we do not pay anything, no payment required.")).toBe(false);
+    expect(purchaseAsk("Χωρίς πληρωμή: δωρεάν 100 credits για startup.")).toBe(false);
+    // Real purchases stay true, including when another clause negates a different buy.
+    expect(purchaseAsk("Ανανέωση NordVPN για 3 μήνες ($37.47), για να ξαναγυρίσει η διαδρομή Thailand")).toBe(true);
+    expect(purchaseAsk("Claude Windows app μέσω Space Gateway: να χρεώνεται στο Claude API key (πληρωμένο) με όριο $5/ημέρα;")).toBe(true);
+    expect(purchaseAsk("car.gr: να αγοράσουμε «One-click ανανεώσεις» 4,99 € για 30 ημέρες στην αγγελία του Golf;")).toBe(true);
+    expect(purchaseAsk("We do not buy Connects yet, but renew NordVPN for $37.47.")).toBe(true);
+    expect(purchaseAsk("Αν δεν ανανεώσουμε τη NordVPN ($37.47) σήμερα, χάνουμε τη διαδρομή Thailand.")).toBe(true);
+    expect(purchaseAsk("If we don't pay $5 today the API key stops.")).toBe(true);
+    // DEV3D-054: a longer conditional or a question is still a buy.
+    for (const ask of ["If we do not pay $49 the account closes.", "If we do not renew the $99 plan today, we lose the route.",
+      "If the team does not pay the $49 invoice, the account closes.", "Unless we really do not pay the $49 invoice, it closes.",
+      "Αν η ομάδα δεν πληρώσει $49, κλείνει ο λογαριασμός.", "Why not buy the $20 Pro plan?", "Whether or not to renew the $99 subscription?"]) expect(purchaseAsk(ask), ask).toBe(true);
+    expect(purchaseAsk("Free credits: we do not pay anything, no payment required.")).toBe(false);
+  });
+
+  it("declines a purchase question at once with the switch on, before May send could approve it (ledger ALLOWANCE, no card); off, it is a card", async () => {
+    const f = fixture(true);
+    const buy = { ...ask({ sendKind: "connects-purchase" }, "Πόσα Upwork Connects να αγοράσουμε;"), recommendation: "20 Connects ($3.72)" };
+    const open = await f.service.ask(buy);
+    expect(open.status).not.toBe("DECLINED");
+    f.setSettings({ neverBuy: true });
+    f.executeAction.mockClear();
+    f.raise.mockClear();
+    const declined = await f.service.ask({ ...buy, title: "Buy 20 Upwork Connects?" });
+    expect(declined).toMatchObject({ status: "DECLINED", answer: NEVER_BUY_ANSWER });
+    expect(f.raise).not.toHaveBeenCalled();
+    expect(f.executeAction).not.toHaveBeenCalled();
+    expect(await f.repository.listLedger(owner, "2000-01-01T00:00:00Z")).toEqual(expect.arrayContaining([expect.objectContaining({ source: "ALLOWANCE", kind: "never-buy", answer: `DECLINED: ${NEVER_BUY_ANSWER}` })]));
+    // Anything else still runs as before.
+    expect((await f.service.ask(ask())).status).toBe("APPROVED");
+  });
+});
+
+describe("May clean regenerable system files (audit §4 item 3, plan clipboard:USQ6ktIIN_1D)", () => {
+  // Decision 3ca0aa75 (15/11, hz at 97%) asked the operator for exactly this kind of text.
+  const text = "Nous: free disk on hz. Run rm -rf /tmp/tmp.* after checking no process uses them, then docker image prune -f and docker builder prune -f. Never touch /opt/spaceapp or the volumes. Report free GB.";
+  const clean = (body = text, cleanup: string[] = ["/tmp/tmp.*", "docker image prune", "docker builder prune"]): NewNousDecision => ({ ownerUserId: owner, category: "DESTRUCTIVE",
+    title: "hz disk 97%: clean temp exports and docker caches?", body: "All of it is rebuilt or downloaded again.", options: [], recommendation: "Yes. Πρόβλεψη: ναι (90%)",
+    action: { type: "PANE_TEXT", roomId: "room:main0001", paneId: "pane:andy0001", text: body, mode: "PROMPT" }, refs: { cleanup } });
+  const check = (input: NewNousDecision) => { const result = mayCleanSystemCovers(input as never); return result.covered ? "covered" : result.reason; };
+
+  it("covers only regenerable targets the text names, and refuses any other delete in the text", () => {
+    expect(check(clean())).toBe("covered");
+    expect(check(clean("rm -rf /tmp/space-build-1 /tmp/space-build-2.", ["/tmp/space-*"]))).toBe("covered");
+    expect(check(clean(text, ["/opt/spaceapp/var/worktrees/space/old"]))).toMatch(/not a regenerable target/);
+    expect(check(clean(text, ["/tmp/../etc"]))).toMatch(/not a regenerable target/);
+    expect(check(clean("docker image prune -f", ["/tmp/space-*", "docker image prune"]))).toMatch(/does not name \/tmp\/space-\*/);
+    expect(check(clean(`${text} Also rm -rf /home/hzrun/.cache.`))).toMatch(/removes \/home\/hzrun\/\.cache/);
+    expect(check(clean(`${text} find /var/lib/docker -name '*.log' -delete`))).toMatch(/deletes under \/var\/lib\/docker/);
+    expect(check(clean(text.replace("docker image prune -f", "docker image prune -af")))).toMatch(/also runs/);
+    expect(check(clean(`${text} docker volume prune -f`))).toMatch(/also runs/);
+    expect(check(clean(`${text} Then zfs destroy vmdata/data/vm-207-disk-0@pre-1.`))).toMatch(/also runs/);
+    expect(check(clean(`${text} git clean -fdx in /opt/spaceapp.`))).toMatch(/also runs/);
+    expect(check({ ...clean(), category: "OPERATIONAL" } as never)).toMatch(/not a DESTRUCTIVE pane prompt/);
+    // DEV3D-033: a quoted path, find -exec rm, xargs rm and a cd before a relative rm were all "covered".
+    const tmp = (extra: string) => check(clean(`rm -rf /tmp/space-build-1; ${extra}`, ["/tmp/space-*"]));
+    expect(tmp(`rm -rf "/opt/spaceapp/backups"`)).toMatch(/removes \/opt\/spaceapp\/backups/);
+    expect(tmp(`find /opt/spaceapp/backups -mtime +30 -exec rm -rf {} +`)).toMatch(/deletes under \/opt\/spaceapp\/backups/);
+    expect(tmp(`find "/opt/spaceapp/backups" -delete`)).toMatch(/deletes under \/opt\/spaceapp\/backups/);
+    expect(tmp(`ls /opt/spaceapp/backups | xargs rm -rf`)).toMatch(/also runs "xargs rm"/);
+    expect(tmp(`cd /srv && rm -rf space`)).toMatch(/also runs "cd \/srv"/);
+    expect(tmp(`cd /tmp/space-build-2 && rm -rf out; find '/tmp/space-x' -exec rm {} +`)).toBe("covered");
+    // DEV3D-041: an rm by path or under sudo in find, and a bare cd (home) before a relative rm, were "covered".
+    expect(tmp(`find /home -type f -exec /bin/rm -f {} +`)).toMatch(/deletes under \/home/);
+    expect(tmp(`find /home -type f -exec sudo rm -f {} +`)).toMatch(/deletes under \/home/);
+    expect(tmp(`find /home -ok rm {} ;`)).toMatch(/deletes under \/home/);
+    expect(tmp(`cd; rm -rf Documents`)).toMatch(/also runs "cd"/);
+    expect(tmp(`cd && rm -rf projects`)).toMatch(/also runs "cd/);
+    // DEV3D-048: a second rm in a later sentence on the same line, a second find start path and "ci/cd" prose.
+    const one = (body: string) => check(clean(body, ["/tmp/space-build"]));
+    expect(one("Run rm -rf /tmp/space-build. Then rm -rf /opt/spaceapp/var/backups.")).toMatch(/removes \/opt\/spaceapp\/var\/backups/);
+    expect(one("Run find /tmp/space-build /opt/spaceapp/var -mtime +1 -delete.")).toMatch(/deletes under \/opt\/spaceapp\/var/);
+    expect(one("Run find /tmp/space-build -mtime +1 -delete after the ci/cd run finishes.")).toBe("covered");
+  });
+
+  it("runs a covered cleanup at once with the switch on (ledger ALLOWANCE, no card); off, or not covered, it is the operator's card", async () => {
+    const f = fixture(false);
+    expect((await f.service.ask(clean())).status).toBe("OPEN");
+    f.setSettings({ mayCleanSystem: true });
+    f.raise.mockClear();
+    const ran = await f.service.ask({ ...clean(), title: "hz disk 97% again: clean temp exports and docker caches?" });
+    expect(ran).toMatchObject({ status: "APPROVED", answer: MAY_CLEAN_SYSTEM_ANSWER, outcome: "Sent to Andy in Main." });
+    expect(f.raise).not.toHaveBeenCalled();
+    expect(f.executeAction).toHaveBeenCalledTimes(1);
+    expect(await f.repository.listLedger(owner, "2000-01-01T00:00:00Z")).toEqual(expect.arrayContaining([expect.objectContaining({ source: "ALLOWANCE", kind: "clean-system" })]));
+    const held = await f.service.ask({ ...clean(`${text} Also rm -rf /opt/spaceapp/var/worktrees/space/wt-old.`), title: "hz: clean temp and an old worktree?" });
+    expect(held.status).toBe("OPEN");
+    expect(held.body).toMatch(/Not covered by "May clean regenerable system files": the text removes \/opt\/spaceapp\/var\/worktrees\/space\/wt-old/);
+    expect(f.executeAction).toHaveBeenCalledTimes(1);
   });
 });

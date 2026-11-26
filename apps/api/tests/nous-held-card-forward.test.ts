@@ -38,4 +38,25 @@ describe("Nous forwarding a pane agent's card held for it", () => {
 
     expect(await nous.execute("space_focus_pane", forward, ctx)).toMatchObject({ ok: false, display: "The pane's own card is open" });
   });
+
+  // 21/11 «μου δινεις ερωτησεις χωρις να υπαρχει ερωτηση»: cards 92d96b90, 32dff8fe and fc39ac2e were released with these notes, unchecked.
+  it("keeps the card held when Nous's note asks whether the operator will do it or did it, or speaks to an agent", async () => {
+    const service = createNotificationService({ repository: new InMemorySpaceNotificationsRepository(), eventBus: new SpaceEventBus(), userSettings: async () => ({ notifications: null }) as never,
+      recordRoomEvent: async (input) => eventSchema.parse({ ...input, id: makeSpaceId("event"), workflowId: null, createdAt: new Date().toISOString() }),
+      nous: { held: async () => true, raised: () => undefined, holdsCopilotQuestions: async () => true } });
+    const card = await service.raise({ ownerUserId: owner, roomId: room.id, paneId: pane.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION", title: "spaceapp-hz switches",
+      body: "The two spaceapp-hz switches are wired.", link: { roomId: room.id, paneId: pane.id }, dedupeKey: `agent:needs-you:${pane.id}`, telegram: false,
+      payload: { ask: { question: "Which switch goes on first?", options: ["Left", "Right"], answer: { kind: "PANE" } } } });
+    const nous = createNousTools({ rooms: async () => [room], listPanes: async () => [pane], notifications: service,
+      paneNotices: createNousPaneNotices({ notifications: service }) } as unknown as NousToolDeps);
+    const notes = ["Can you turn them on now?", "Άναψαν και οι δύο διακόπτες;", "Did you turn on both switches?", "through space_remote act, hand Nik the switch list"];
+    for (const reason of notes) {
+      const answer = await nous.execute("space_focus_pane", { room: "Felix", pane: "Bob", reason, ref: card.id, checked: ["pane: the wiring is done"] }, ctx);
+      expect(answer, reason).toMatchObject({ ok: false, display: "The pane's held card stays held" });
+    }
+    expect((await service.get(owner, card.id))!.payload.heldForNous).toBeTruthy();
+    // The act itself passes.
+    expect(await nous.execute("space_focus_pane", { room: "Felix", pane: "Bob", reason: "Turn on both spaceapp-hz switches, left first", ref: card.id, checked: ["pane: the wiring is done"] }, ctx))
+      .toMatchObject({ ok: true, display: "Showed the pane's held card to the operator" });
+  });
 });

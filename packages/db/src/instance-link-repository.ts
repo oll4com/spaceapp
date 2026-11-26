@@ -1,3 +1,4 @@
+import type { VaultLinkSync } from "@space/contracts";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 
 /**
@@ -18,13 +19,17 @@ export interface InstanceLinkRecord {
   scopes: string[];
   /** Cloudflare Access service token in front of its channel (migration 0327): Vault key ids, never values; null when none. */
   accessKeys: InstanceLinkAccessKeys | null;
+  /** Vault sync to this link (migration 0343): the operator's signed consent and the last push; null while off. */
+  vaultSync: InstanceLinkVaultSync | null;
   createdAt: string;
   lastSeenAt: string | null;
 }
 
 export interface InstanceLinkAccessKeys { clientId: string; clientSecret: string }
+/** `mark`: what the Vault looked like at the last push that landed (its next change pushes again); `itemsAt`: the newest item time sent. */
+export interface InstanceLinkVaultSync { consent: VaultLinkSync; mark: string | null; itemsAt: string | null; syncedAt: string | null; error: string | null }
 
-type NewLink = Omit<InstanceLinkRecord, "createdAt" | "lastSeenAt">;
+type NewLink = Omit<InstanceLinkRecord, "createdAt" | "lastSeenAt" | "vaultSync">;
 /** A connect's news: the time, the scopes it answered and, after its routine key rotation, its new keys. */
 type Seen = { atIso: string; scopes: string[]; noisePublic?: string; identityPublic?: string };
 
@@ -32,8 +37,11 @@ export interface InstanceLinkRepository {
   create(input: NewLink): Promise<InstanceLinkRecord>;
   /** The owner's links, oldest first. */
   list(ownerUserId: string): Promise<InstanceLinkRecord[]>;
+  /** Every owner's links (the version sync's pass at start and after a promote). */
+  listAll(): Promise<InstanceLinkRecord[]>;
   get(ownerUserId: string, id: string): Promise<InstanceLinkRecord | null>;
   seen(id: string, seen: Seen): Promise<void>;
+  setVaultSync(ownerUserId: string, id: string, value: InstanceLinkVaultSync | null): Promise<void>;
   /** The person removed the link: its row and sealed key go. False when it is not the owner's. */
   remove(ownerUserId: string, id: string): Promise<boolean>;
   dispose(): Promise<void>;
@@ -42,12 +50,15 @@ export interface InstanceLinkRepository {
 export class InMemoryInstanceLinkRepository implements InstanceLinkRepository {
   private readonly rows = new Map<string, InstanceLinkRecord>();
   async create(input: NewLink) {
-    const row = { ...input, createdAt: new Date().toISOString(), lastSeenAt: null };
+    const row = { ...input, vaultSync: null, createdAt: new Date().toISOString(), lastSeenAt: null };
     this.rows.set(row.id, row);
     return { ...row };
   }
   async list(ownerUserId: string) {
     return [...this.rows.values()].filter((row) => row.ownerUserId === ownerUserId).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((row) => ({ ...row }));
+  }
+  async listAll() {
+    return [...this.rows.values()].map((row) => ({ ...row }));
   }
   async get(ownerUserId: string, id: string) {
     const row = this.rows.get(id);
@@ -57,6 +68,10 @@ export class InMemoryInstanceLinkRepository implements InstanceLinkRepository {
     const row = this.rows.get(id);
     if (row) Object.assign(row, { lastSeenAt: seen.atIso, scopes: seen.scopes }, seen.noisePublic ? { noisePublic: seen.noisePublic, identityPublic: seen.identityPublic } : {});
   }
+  async setVaultSync(ownerUserId: string, id: string, value: InstanceLinkVaultSync | null) {
+    const row = this.rows.get(id);
+    if (row?.ownerUserId === ownerUserId) row.vaultSync = value;
+  }
   async remove(ownerUserId: string, id: string) {
     return this.rows.get(id)?.ownerUserId === ownerUserId && this.rows.delete(id);
   }
@@ -65,7 +80,7 @@ export class InMemoryInstanceLinkRepository implements InstanceLinkRepository {
 
 interface Row extends Omit<InstanceLinkRecord, "createdAt" | "lastSeenAt"> { createdAt: Date; lastSeenAt: Date | null }
 const columns = `id, owner_user_id AS "ownerUserId", label, origins, noise_public AS "noisePublic", identity_public AS "identityPublic",
-  device_id AS "deviceId", sealed_device_private AS "sealedDevicePrivate", scopes, access_keys AS "accessKeys", created_at AS "createdAt", last_seen_at AS "lastSeenAt"`;
+  device_id AS "deviceId", sealed_device_private AS "sealedDevicePrivate", scopes, access_keys AS "accessKeys", vault_sync AS "vaultSync", created_at AS "createdAt", last_seen_at AS "lastSeenAt"`;
 const toRecord = (row: Row): InstanceLinkRecord => ({ ...row, createdAt: new Date(row.createdAt).toISOString(), lastSeenAt: row.lastSeenAt && new Date(row.lastSeenAt).toISOString() });
 
 export class PostgresInstanceLinkRepository implements InstanceLinkRepository {
@@ -82,6 +97,9 @@ export class PostgresInstanceLinkRepository implements InstanceLinkRepository {
   async list(ownerUserId: string) {
     return (await this.pool.query<Row>(`SELECT ${columns} FROM instance_links WHERE owner_user_id = $1 ORDER BY created_at`, [ownerUserId])).rows.map(toRecord);
   }
+  async listAll() {
+    return (await this.pool.query<Row>(`SELECT ${columns} FROM instance_links ORDER BY created_at`)).rows.map(toRecord);
+  }
   async get(ownerUserId: string, id: string) {
     const row = (await this.pool.query<Row>(`SELECT ${columns} FROM instance_links WHERE owner_user_id = $1 AND id = $2`, [ownerUserId, id])).rows[0];
     return row ? toRecord(row) : null;
@@ -89,6 +107,9 @@ export class PostgresInstanceLinkRepository implements InstanceLinkRepository {
   async seen(id: string, seen: Seen) {
     await this.pool.query(`UPDATE instance_links SET last_seen_at = $2, scopes = $3::jsonb, noise_public = COALESCE($4, noise_public),
       identity_public = COALESCE($5, identity_public) WHERE id = $1`, [id, seen.atIso, JSON.stringify(seen.scopes), seen.noisePublic ?? null, seen.identityPublic ?? null]);
+  }
+  async setVaultSync(ownerUserId: string, id: string, value: InstanceLinkVaultSync | null) {
+    await this.pool.query(`UPDATE instance_links SET vault_sync = $3::jsonb WHERE owner_user_id = $1 AND id = $2`, [ownerUserId, id, value ? JSON.stringify(value) : null]);
   }
   async remove(ownerUserId: string, id: string) {
     return ((await this.pool.query(`DELETE FROM instance_links WHERE owner_user_id = $1 AND id = $2`, [ownerUserId, id])).rowCount ?? 0) > 0;

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { promisify } from "node:util";
 import { idSchema } from "@space/contracts";
 import { z } from "zod";
 import { childProcessEnv } from "./child-process-env.js";
@@ -88,9 +89,8 @@ export function pulseBrowserAudioMuteDeps(pulseServer: string, profilesOf: Brows
   const env = { ...childProcessEnv(), PULSE_SERVER: pulseServer };
   let warned = false;
   return {
-    pactl: (args) => new Promise((done, fail) => {
-      execFile("pactl", args, { env, timeout: 5_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => error ? fail(error) : done(stdout));
-    }),
+    // promisify: runs in the exec helper; the callback form forked the API 5-14 times per 5 minutes (stable 14/11), each fork holding its event loop.
+    pactl: async (args) => (await promisify(execFile)("pactl", args, { env, timeout: 5_000, maxBuffer: 4 * 1024 * 1024 })).stdout,
     watch(onNew) {
       let stopped = false;
       let child: ReturnType<typeof spawn> | null = null;

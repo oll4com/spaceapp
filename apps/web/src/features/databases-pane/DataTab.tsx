@@ -22,18 +22,20 @@ import {
   X,
   Table as TableIcon
 } from "../ui-theme/app-icons.js";
-import type { DatabaseColumnMeta, DatabaseTableDataResponse } from "@space/contracts";
+import type { DatabaseTableDataResponse } from "@space/contracts";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
 export function formatCellDisplay(val: unknown): string {
   if (val === null || val === undefined) return "";
   let str = typeof val === "object" ? JSON.stringify(val) : String(val);
   if (str.includes("\u001b") || str.includes("\x1b")) {
+    /* eslint-disable no-control-regex -- stripping terminal escape sequences is the point */
     str = str
       .replace(/\x1b\[[0-9;?<>]*[a-zA-Z~]/g, "")
       .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
       .replace(/\x1b[()][AB012]/g, "")
       .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\r]/g, "");
+    /* eslint-enable no-control-regex */
   }
   return str;
 }
@@ -41,8 +43,6 @@ export function formatCellDisplay(val: unknown): string {
 
 export interface DataTabProps {
   tableName?: string;
-  sidebarVisible?: boolean;
-  onToggleSidebar?: () => void;
   onBrowseTables?: () => void;
   tableData: DatabaseTableDataResponse | null;
   isLoading: boolean;
@@ -67,8 +67,6 @@ export interface DataTabProps {
 
 export function DataTab({
   tableName,
-  sidebarVisible,
-  onToggleSidebar,
   onBrowseTables,
   tableData,
   isLoading,
@@ -108,8 +106,8 @@ export function DataTab({
   const [showAddRowModal, setShowAddRowModal] = useState(false);
   const [newRowValues, setNewRowValues] = useState<Record<string, string>>({});
 
-  const columnsMeta = tableData?.columns || [];
-  const primaryKeys = tableData?.primaryKeys || [];
+  const columnsMeta = useMemo(() => tableData?.columns || [], [tableData?.columns]);
+  const primaryKeys = useMemo(() => tableData?.primaryKeys || [], [tableData?.primaryKeys]);
   const rows = tableData?.rows || [];
   const totalRows = tableData?.totalRows || 0;
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));

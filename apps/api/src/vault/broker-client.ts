@@ -1,7 +1,7 @@
 import { request } from "node:http";
 import {
   VAULT_BROKER_API_MAX_BYTES, vaultBase64url, vaultDelegationCertificateSchema, vaultSignupGrantCertificateSchema, vaultSymmetricEnvelopeSchema, vaultTransportEnvelopeSchema, vaultUseCapabilitySchema,
-  verifyVaultCertificate, type VaultSymmetricEnvelope, type VaultTransportEnvelope
+  verifyVaultCertificate, type VaultLinkSync, type VaultSymmetricEnvelope, type VaultTransportEnvelope
 } from "@space/contracts";
 import type { SealedFillBroker } from "./sealed-fill.js";
 import { z } from "zod";
@@ -55,8 +55,8 @@ export interface VaultBroker {
    */
   delegatePending(input: {
     ownerUserId: string; vaultId: string; certificate: unknown; keyEnvelope: VaultSymmetricEnvelope; inboxKeyEnvelope: VaultSymmetricEnvelope;
-    entry: { handle: string; origin: string; sealedUsername: VaultTransportEnvelope | null; sealedPassword: VaultTransportEnvelope | null };
-  }): Promise<{ certificate: z.infer<typeof vaultDelegationCertificateSchema>; fieldEnvelopes: Partial<Record<"USERNAME" | "PASSWORD", VaultSymmetricEnvelope>> }>;
+    entry: { handle: string; origin: string; sealedUsername: VaultTransportEnvelope | null; sealedPassword: VaultTransportEnvelope | null; sealedOtp?: VaultTransportEnvelope };
+  }): Promise<{ certificate: z.infer<typeof vaultDelegationCertificateSchema>; fieldEnvelopes: Partial<Record<"USERNAME" | "PASSWORD" | "OTP", VaultSymmetricEnvelope>> }>;
   /**
    * One fill: the broker checks the delegation and generation, records a one-time nonce and signs a use capability bound to
    * this pane's live target, frame and exact origin (as the Browser Host reported them).
@@ -86,6 +86,18 @@ export interface VaultBroker {
   signupRevoke(input: { ownerUserId: string; vaultId: string; grantId: string }): Promise<{ revoked: true }>;
   /** A one-site, one-use sign-up grant minted under the active delegation, for a site the operator signed no grant for. */
   signupAutoGrant(input: { ownerUserId: string; vaultId: string; certificate: unknown; origin: string }): Promise<{ certificate: z.infer<typeof vaultSignupGrantCertificateSchema> }>;
+  /** Space Link Vault sync, sending side: the server share and the active delegation's keys sealed to the broker the operator's consent names. */
+  moveOut(input: {
+    ownerUserId: string; vaultId: string; unlockPublicKey: string; serverShareEnvelope: VaultSymmetricEnvelope; link: VaultLinkSync;
+    delegation?: { certificate: unknown; keyEnvelope: VaultSymmetricEnvelope; inboxKeyEnvelope?: VaultSymmetricEnvelope };
+  }): Promise<{ sealedServerShare: VaultTransportEnvelope; sealedFillKey?: VaultTransportEnvelope; sealedInboxKey?: VaultTransportEnvelope }>;
+  /** Root's pin for a Space Link (public keys only); `pinned: false` while root pinned none. deviceId: the receiving side's pin. */
+  linkPin(linkId: string): Promise<{ pinned: false } | { pinned: true; linkId: string; ownerUserId: string; transportKey: string; signingKey: string; deviceId?: string }>;
+  /** Receiving side: the sending broker's delegation signed again here, its keys rewrapped under this ARK. */
+  moveIn(input: {
+    ownerUserId: string; vaultId: string; certificate: unknown; sealedFillKey: VaultTransportEnvelope; sealedInboxKey?: VaultTransportEnvelope;
+    link: VaultLinkSync; unlockPublicKey: string; serverShareEnvelope: VaultSymmetricEnvelope;
+  }): Promise<{ certificate: z.infer<typeof vaultDelegationCertificateSchema>; keyEnvelope: VaultSymmetricEnvelope; inboxKeyEnvelope?: VaultSymmetricEnvelope }>;
 }
 
 const transportKeySchema = z.object({ publicKey: z.string().regex(/^[A-Za-z0-9_-]{40,80}$/), keyVersion: z.number().int().min(1) }).strict();
@@ -127,7 +139,7 @@ export function createSocketVaultBroker(socketPath = VAULT_BROKER_SOCKET_PATH): 
     delegate: (input) => call(socketPath, "POST", "/v1/delegate", input, z.object({ certificate: vaultDelegationCertificateSchema, keyEnvelope: vaultSymmetricEnvelopeSchema,
       inboxKeyEnvelope: vaultSymmetricEnvelopeSchema.optional() }).strict()),
     delegatePending: (input) => call(socketPath, "POST", "/v1/delegate-pending", input, z.object({ certificate: vaultDelegationCertificateSchema,
-      fieldEnvelopes: z.object({ USERNAME: vaultSymmetricEnvelopeSchema.optional(), PASSWORD: vaultSymmetricEnvelopeSchema.optional() }).strict() }).strict()),
+      fieldEnvelopes: z.object({ USERNAME: vaultSymmetricEnvelopeSchema.optional(), PASSWORD: vaultSymmetricEnvelopeSchema.optional(), OTP: vaultSymmetricEnvelopeSchema.optional() }).strict() }).strict()),
     sealServerShare: (input) => call(socketPath, "POST", "/v1/server-share", input, z.object({ serverShareEnvelope: vaultSymmetricEnvelopeSchema }).strict())
       .then((answer) => answer.serverShareEnvelope),
     unlock: (input) => call(socketPath, "POST", "/v1/unlock", input, z.object({ sealedServerShare: vaultTransportEnvelopeSchema }).strict())
@@ -135,7 +147,13 @@ export function createSocketVaultBroker(socketPath = VAULT_BROKER_SOCKET_PATH): 
     signupGrant: (input) => call(socketPath, "POST", "/v1/signup-grant", input, z.object({ certificate: vaultSignupGrantCertificateSchema }).strict()),
     signup: (input) => call(socketPath, "POST", "/v1/signup", input, z.object({ sealedPassword: vaultTransportEnvelopeSchema, sealedFields: vaultTransportEnvelopeSchema }).strict()),
     signupRevoke: (input) => call(socketPath, "POST", "/v1/signup-revoke", input, z.object({ revoked: z.literal(true) }).strict()),
-    signupAutoGrant: (input) => call(socketPath, "POST", "/v1/signup-auto-grant", input, z.object({ certificate: vaultSignupGrantCertificateSchema }).strict())
+    signupAutoGrant: (input) => call(socketPath, "POST", "/v1/signup-auto-grant", input, z.object({ certificate: vaultSignupGrantCertificateSchema }).strict()),
+    moveOut: (input) => call(socketPath, "POST", "/v1/move-out", input, z.object({ sealedServerShare: vaultTransportEnvelopeSchema,
+      sealedFillKey: vaultTransportEnvelopeSchema.optional(), sealedInboxKey: vaultTransportEnvelopeSchema.optional() }).strict()),
+    linkPin: (linkId) => call(socketPath, "POST", "/v1/link-pin", { linkId }, z.union([z.object({ pinned: z.literal(false) }).strict(),
+      z.object({ pinned: z.literal(true), linkId: z.string(), ownerUserId: z.string(), transportKey: z.string(), signingKey: z.string(), deviceId: z.string().optional() }).strict()])),
+    moveIn: (input) => call(socketPath, "POST", "/v1/move-in", input, z.object({ certificate: vaultDelegationCertificateSchema, keyEnvelope: vaultSymmetricEnvelopeSchema,
+      inboxKeyEnvelope: vaultSymmetricEnvelopeSchema.optional() }).strict())
   };
 }
 

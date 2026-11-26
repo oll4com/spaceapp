@@ -17,6 +17,17 @@ export interface DesktopDisplayInfo {
   hasActiveWindow: boolean;
 }
 
+/** The desktop shell's preload bridge (window.spaceDesktop); members are optional for older shells and the web. */
+interface DesktopDisplayBridge {
+  isDesktop?: boolean;
+  displays?: {
+    getAll?: () => Promise<DesktopDisplayInfo[]>;
+    launchAll?: () => Promise<{ openedCount: number }>;
+    closeAll?: () => Promise<unknown>;
+    openWindow?: (input: { displayId: number; fullscreen: boolean; roomId?: string; paneId?: string }) => Promise<unknown>;
+  };
+}
+
 interface DesktopDisplayControlsProps {
   activeRoomId?: string | null;
   activePaneId?: string | null;
@@ -25,7 +36,6 @@ interface DesktopDisplayControlsProps {
 
 export function DesktopDisplayControls({
   activeRoomId,
-  activePaneId,
   variant = "titlebar"
 }: DesktopDisplayControlsProps) {
   const embedded = useWorkspaceSurface();
@@ -35,7 +45,7 @@ export function DesktopDisplayControls({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const desktopBridge = typeof window !== "undefined" ? (window as any).spaceDesktop : null;
+  const desktopBridge = typeof window !== "undefined" ? (window as unknown as { spaceDesktop?: DesktopDisplayBridge }).spaceDesktop : null;
   const isDesktop = typeof window !== "undefined" && Boolean(
     desktopBridge?.isDesktop ||
     desktopBridge?.displays ||
@@ -134,8 +144,8 @@ export function DesktopDisplayControls({
       const res = await desktopBridge.displays.launchAll();
       setStatusMessage(`Launched ${res.openedCount} fullscreen displays.`);
       await fetchDisplays();
-    } catch (err: any) {
-      setStatusMessage(`Error: ${err?.message || String(err)}`);
+    } catch (err) {
+      setStatusMessage(`Error: ${(err as { message?: string } | null)?.message || String(err)}`);
     } finally {
       setActionPending(false);
     }
@@ -148,8 +158,8 @@ export function DesktopDisplayControls({
       await desktopBridge.displays.closeAll();
       setStatusMessage("Closed all satellite windows.");
       await fetchDisplays();
-    } catch (err: any) {
-      setStatusMessage(`Error: ${err?.message || String(err)}`);
+    } catch (err) {
+      setStatusMessage(`Error: ${(err as { message?: string } | null)?.message || String(err)}`);
     } finally {
       setActionPending(false);
     }
@@ -166,8 +176,8 @@ export function DesktopDisplayControls({
         paneId: options?.paneId
       });
       await fetchDisplays();
-    } catch (err: any) {
-      setStatusMessage(`Error: ${err?.message || String(err)}`);
+    } catch (err) {
+      setStatusMessage(`Error: ${(err as { message?: string } | null)?.message || String(err)}`);
     } finally {
       setActionPending(false);
     }

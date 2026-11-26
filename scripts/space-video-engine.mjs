@@ -36,9 +36,13 @@ const REFRAMES = ["OFF", "CENTER", "FACE"];
 const IMAGE_EXT = [".png", ".jpg", ".jpeg", ".webp"], AUDIO_EXT = [".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"];
 const CAP = { shots: 500, silences: 500, candidates: 20 };
 const MAX_MUSIC_BYTES = 50 * 1024 * 1024;
-// YouTube asks the server's own address to sign in ("not a bot"); the CLI VPN routes' SOCKS5 proxies get through (the same
-// addresses as FREELANCE_EGRESS_PROXIES in contracts; Mullvad left out, its account does not handshake). Tried in order after direct.
-export const FETCH_PROXIES = ["socks5://10.254.241.2:1080", "socks5://10.254.242.2:1080", "socks5://10.254.244.2:1080"];
+// YouTube asks the server's own address to sign in ("not a bot"); the CLI VPN routes' SOCKS5 proxies get through (the API's
+// SPACE_VPN_SOCKS_PROXIES, set in the local env only; Mullvad left out, its account does not handshake). Tried in order after direct.
+export function fetchProxies(env = process.env) {
+  const proxies = Object.fromEntries((env.SPACE_VPN_SOCKS_PROXIES ?? "").split(",").map((pair) => pair.split("=").map((part) => part.trim())));
+  return ["greece", "thailand", "nord"].filter((route) => proxies[route]).map((route) => `socks5://${proxies[route]}`);
+}
+const FETCH_PROXIES = fetchProxies();
 const BOT_CHECK = /not a bot|HTTP Error 429/i;
 /** yt-dlp's format: the best video up to `maxHeight` (0: the best the site has, the full resolution) with the best audio. */
 export const ytdlpFormat = (maxHeight) => maxHeight ? `bv*[height<=${maxHeight}]+ba/b` : "bv*+ba/b";
@@ -194,7 +198,8 @@ async function worker(ctx, request, from, to) {
 }
 
 async function probeOp(job, ctx) {
-  const { hasVideo, ...info } = await probeInfo(ctx.source(job.sourceIndex));
+  const info = await probeInfo(ctx.source(job.sourceIndex));
+  delete info.hasVideo;
   return info;
 }
 

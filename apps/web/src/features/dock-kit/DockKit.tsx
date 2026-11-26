@@ -3,6 +3,7 @@ import {
   useEffect,
   useEffectEvent,
   useId,
+  useMemo,
   useRef,
   useState,
   type ButtonHTMLAttributes,
@@ -139,17 +140,24 @@ export function DockSearch({ value, onChange, label, placeholder, name, classNam
   name?: string;
   className?: string;
 }) {
+  // The element changes only with its own props (PERF-001 C-2 pattern): React 19 rewrites name and type of a
+  // re-created <input> on every commit, and the Rooms dock re-renders on every room switch.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const input = useMemo(() => (
+    <input
+      type="search"
+      name={name}
+      aria-label={label}
+      placeholder={placeholder ?? `${label}…`}
+      value={value}
+      onChange={(event) => onChangeRef.current(event.currentTarget.value)}
+    />
+  ), [name, label, placeholder, value]);
   return (
     <div className={cx("dock-kit-search", className)}>
       <Search aria-hidden="true" />
-      <input
-        type="search"
-        name={name}
-        aria-label={label}
-        placeholder={placeholder ?? `${label}…`}
-        value={value}
-        onChange={(event) => onChange(event.currentTarget.value)}
-      />
+      {input}
       {value ? (
         <button type="button" className="dock-kit-search-clear" aria-label="Clear search" title="Clear search" onClick={() => onChange("")}>
           <X aria-hidden="true" />

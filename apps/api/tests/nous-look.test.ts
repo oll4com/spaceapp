@@ -84,6 +84,10 @@ describe("space_look", () => {
     const capacity = { getActive: async () => { throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "No Xvfb display is available for a headed browser session."); }, action };
     expect(await tools({ browser: capacity }).nous.execute("space_look", { room: "Main", pane: "Web" }, ctx))
       .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("No Xvfb display is available") });
+    // Slice 19 r2: a Browser Host failing the capture itself (BROWSER_HOST_INTERNAL_ERROR, mapped to BROWSER_HOST_UNAVAILABLE) is held too.
+    const internal = { getActive: async () => ({}), action: async () => { throw new SpaceFeatureDisabledError("BROWSER_HOST_UNAVAILABLE", "The Browser Host is running but failed this request (BROWSER_HOST_INTERNAL_ERROR)."); } };
+    expect(await tools({ browser: internal }).nous.execute("space_look", { room: "Main", pane: "Marketing" }, ctx))
+      .toMatchObject({ ok: false, refused: true, display: "Marketing's browser is unavailable", result: expect.stringContaining("BROWSER_HOST_INTERNAL_ERROR") });
     // Daily errors 12/11 17:24 UTC: the one-route-per-account guard is a refusal naming the pane that holds the account.
     const route = { getActive: async () => { throw new Error("BROWSER_ROUTE: another pane uses this browser account on another network route; give both the same route, close the other pane, or use another browser account."); }, action };
     const browserTabs = async () => [{ paneId: webPane.id, profile: "google:a" }, { paneId: "pane:jobs00001", paneName: "Jobs", roomId: room.id, profile: "google:a" }];
@@ -128,5 +132,21 @@ describe("space_look", () => {
     expect((await nous.execute("space_look", { artifactId: "artifact:missing01" }, ctx)).ok).toBe(false);
     expect(await nous.execute("space_look", {}, ctx)).toMatchObject({ ok: false, display: "Name a pane or an artifact" });
     expect(action).not.toHaveBeenCalled();
+  });
+
+  // 2026-11-24 REVIEW (Work/Iris 23/11 19:46Z): space_answer_pane to a browser pane routes to its card, else to a look, instead of failing.
+  it("routes an answer to a browser pane without a CLI to its open card, else to a look at its page", async () => {
+    const card = { id: "notif:card00001", paneId: webPane.id, title: "Awin form filled: press Send" };
+    const carded = tools({ browser: { getActive: async () => ({}), action: vi.fn() }, paneNeeds: async () => [card] } as never);
+    expect(await carded.nous.execute("space_answer_pane", { room: "Main", pane: "Web", answer: "ok" }, ctx))
+      .toMatchObject({ ok: true, display: "Left Web's card to the operator", result: expect.stringContaining("[notif:card00001], so nothing was answered") });
+    expect(carded.action).not.toHaveBeenCalled();
+    const action = vi.fn(async () => ({ text: JSON.stringify({ artifactId: "artifact:shot0001", path: shotPath, masked: true }), session: { currentUrl: "https://x.com/compose" } }));
+    const { nous } = tools({ browser: { getActive: async () => ({}), action },
+      paneNeeds: async () => [{ ...card, paneId: "pane:other0001" }] } as never);
+    const looked = await nous.execute("space_answer_pane", { room: "Main", pane: "Web", answer: "ok" }, ctx);
+    expect(looked).toMatchObject({ ok: true, display: "Looked at Web: no CLI, nothing answered", result: expect.stringContaining("nothing was typed") });
+    expect(looked.images).toEqual([{ data: png.toString("base64"), mimeType: "image/png" }]);
+    expect(action).toHaveBeenCalledWith(webPane, { type: "masked_screenshot" }, "trace:1");
   });
 });

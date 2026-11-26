@@ -2,25 +2,59 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { z } from "zod";
 import { redactMemoryText } from "@space/runtime";
-import { countRailDecisions, listRailDecisions, searchCopilotMemories, type PgClientLike } from "@space/db";
+import { countRailDecisions, currentTenantId, listRailDecisions, searchCopilotMemories, TENANT_LOCAL, type PgClientLike } from "@space/db";
 
 /**
  * Nous reads Space's own database (operator order 2026-10-24: access to everything). Read only by construction: one statement per
  * call, sent as a prepared statement (the server refuses a second command), inside a READ ONLY transaction that is rolled back, on a
  * connection that is destroyed afterwards (no session state, lock or setting survives). Secrets in the database are sealed or hashed;
- * columns named like them still show [hidden], and the answer is redacted like every other Nous read.
+ * the read runs as NOUS_DB_READER, which cannot select them (DEV3D-016), columns named like them still show [hidden], and the answer is
+ * redacted like every other Nous read.
  */
 // Technical: a slice and its header within the 12,000-character tool result; the answer names the offset of the next slice.
 export const NOUS_DB_SLICE = 11_500;
 const TIMEOUT_MS = 15_000;
+// Technical: planning (no rows are read) of a statement that timed out.
+const PLAN_TIMEOUT_MS = 2_000;
 const DEFAULT_ROWS = 100;
 const WRAPPED = new Set(["select", "with", "table", "values"]);
 const WRAP_HEAD = "SELECT * FROM (\n";
 const WRAP_TAIL = "\n) AS nous_query";
 const PLAIN = new Set(["explain", "show"]);
 // Side effects a read-only transaction still allows (or that need privileges the API should not lend): sessions, locks, settings, files.
-const BLOCKED_CALLS = /\b(?:pg_terminate_backend|pg_cancel_backend|pg_advisory\w*|set_config|pg_sleep\w*|lo_\w+|dblink\w*|pg_read_\w+|pg_ls_\w+|pg_reload_conf|pg_rotate_logfile|pg_promote|pg_switch_wal|pg_create_\w+|pg_drop_\w+|pg_stat_reset\w*|pg_notify)\s*\(/i;
+const BLOCKED_CALLS = /\b(?:pg_terminate_backend|pg_cancel_backend|pg_advisory\w*|set_config|pg_sleep\w*|lo_\w+|dblink\w*|pg_read_\w+|pg_ls_\w+|pg_reload_conf|pg_rotate_logfile|pg_promote|pg_switch_wal|pg_create_\w+|pg_drop_\w+|pg_stat_reset\w*|pg_notify|query_to_xml\w*|ts_stat)\s*\(/i;
 const SECRET_COLUMN = /(?:encrypted|sealed|cipher|password|secret|envelope|key_hash|token_hash|session_hash|sid_sha|^token$|preview_token|totp)/i;
+/**
+ * DEV3D-016: every read runs as this role (migration 0356), which may SELECT only the columns whose names are not secret, so an alias
+ * or a whole row (SELECT *, to_jsonb(t), t::text) of a table with a secret column fails with 42501 instead of printing it.
+ */
+export const NOUS_DB_READER = "space_nous_reader";
+/**
+ * Join keys named like a secret that are not one: granted so a join or count can use them, still printed as [hidden] (cell below).
+ * The mail-open token is the public pixel id inside every tracked mail and the only link from a hit to its mail (42501, 23/11 00:03Z).
+ */
+const NOUS_DB_JOIN_KEYS = ["mail_open_messages.token", "mail_open_hits.token"];
+
+/** Grants the reader SELECT on every non-secret column of the schema's tables, after taking back what it held (a renamed column). */
+export async function nousDbGrantReader(pool: pg.Pool): Promise<void> {
+  const client = await pool.connect();
+  try {
+    const schema = (await client.query<{ name: string }>("SELECT quote_ident(current_schema()) AS name")).rows[0]!.name;
+    const tables = await client.query<{ rel: string; readable: string | null }>(
+      `SELECT c.oid::regclass::text AS rel, string_agg(quote_ident(a.attname), ', ' ORDER BY a.attnum) FILTER (WHERE a.attname !~* $1 OR c.relname || '.' || a.attname = ANY($2::text[])) AS readable
+         FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+        WHERE c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema()) AND c.relkind IN ('r', 'p') GROUP BY c.oid`,
+      [SECRET_COLUMN.source, NOUS_DB_JOIN_KEYS]);
+    const statements = [`GRANT USAGE ON SCHEMA ${schema} TO ${NOUS_DB_READER}`, ...tables.rows.flatMap((table) => [`REVOKE ALL ON ${table.rel} FROM ${NOUS_DB_READER}`,
+      ...(table.readable ? [`GRANT SELECT (${table.readable}) ON ${table.rel} TO ${NOUS_DB_READER}`] : [])])];
+    // One simple-protocol string runs as one implicit transaction: all grants or none.
+    await client.query(statements.join(";\n"));
+  } finally {
+    client.release();
+  }
+}
+const readerError = (error: unknown) => `space_db_query is unavailable: this API's database user cannot read as ${NOUS_DB_READER} (${(error as Error).message}). `
+  + "Migration 0356 creates it as a user that may create roles; on dev, scripts/space-dev-setup.sh db-role grants it to space_dev.";
 // Strings, quoted names, dollar quotes and comments: a ; inside them ends no statement.
 const QUOTED = /'(?:[^']|'')*'|"(?:[^"]|"")*"|\$([A-Za-z_]\w*)?\$[\s\S]*?\$\1\$|--[^\n]*|\/\*[\s\S]*?\*\//g;
 
@@ -63,7 +97,10 @@ export function nousDbStatement(args: NousDbArgs): { text: string; limit: number
   // R78 (5/11 18:23 UTC: "(SELECT …) UNION ALL (SELECT …)" refused): a read may open with its own parenthesis.
   const first = /^[(\s]*([A-Za-z]+)/.exec(sql)?.[1]?.toLowerCase() ?? "";
   const limit = args.limit ?? DEFAULT_ROWS;
-  if (BLOCKED_CALLS.test(sql)) throw new Error("That function changes sessions, locks, settings or files; space_db_query only reads.");
+  // DEV3D-047: a quoted name ("set_config"), a comment before ( or a U& escape hid set_config('role','none') from the test; the dynamic
+  // SQL of query_to_xml/ts_stat would build the name in a string, so those are refused outright.
+  const called = sql.replace(QUOTED, (token) => token.startsWith('"') ? token.slice(1, -1) : token.startsWith("--") || token.startsWith("/*") ? " " : token);
+  if (BLOCKED_CALLS.test(called) || /U&\s*"/i.test(sql)) throw new Error("That function changes sessions, locks, settings or files; space_db_query only reads.");
   // R59 (2026-11-04 REVIEW: 6 of 24 failed reads were a ; syntax error): a ; left inside the text starts a second statement.
   if (sql.replace(QUOTED, "").includes(";")) throw new Error("space_db_query reads only one statement per call: send each statement as its own space_db_query (a final ; is fine).");
   if (WRAPPED.has(first)) return { text: `${WRAP_HEAD}${sql}${WRAP_TAIL} LIMIT ${limit + 1}`, limit };
@@ -120,13 +157,88 @@ export function nousDbSyntaxLine(statement: string, position: number, token: str
   const near = token ? ` at "${token}"` : "";
   // R19-2 (29/10: 3 reads failed at ";"): only a final ; is dropped; one inside means two statements.
   const one = token === ";" ? " One statement per call: send each statement as its own space_db_query." : "";
-  if (!Number.isFinite(at) || at < 0 || at >= query.length) return `Syntax error${near} at the end of your query: …${query.slice(-80)}${one}`;
-  return `Syntax error${near}, character ${at + 1} of your query: ${at > 80 ? "…" : ""}${query.slice(Math.max(0, at - 80), at)}⟪here⟫${query.slice(at, at + 60)}${at + 60 < query.length ? "…" : ""}${one}`;
+  // queue.md 3/11 (42601 at "at"): a keyword PostgreSQL takes only after AS, written as a bare alias in a select list (`created_at at,` / `… at FROM`).
+  const before = query.slice(0, Math.max(0, at));
+  const list = /\bselect\b(?![\s\S]*\b(?:select|from)\b)[\s\S]*[\w")\]]\s+$/i.test(before);
+  const label = token && /^[a-z_]+$/i.test(token) && list && /^\s*(?:,|from\b|$)/i.test(query.slice(at + token.length))
+    ? ` "${token}" is an SQL keyword: as a column alias write AS "${token}".` : "";
+  if (!Number.isFinite(at) || at < 0 || at >= query.length) return `Syntax error${near} at the end of your query: …${query.slice(-80)}${one}${label}`;
+  return `Syntax error${near}, character ${at + 1} of your query: ${at > 80 ? "…" : ""}${query.slice(Math.max(0, at - 80), at)}⟪here⟫${query.slice(at, at + 60)}${at + 60 < query.length ? "…" : ""}${one}${label}`;
 }
 
 /** PostgreSQL's message, code and hint, plus the real columns (42703) or the nearest table names (42P01), so the next call is right
  * (stable 2026-10-24..27: 58 failed reads in 7 days, mostly guessed column names). Lookups are best effort on the same connection. */
-async function nousDbErrorText(client: pg.PoolClient, error: unknown, sql: string, statement: string): Promise<{ error: string; corrected: { code: string; sql: string } | null }> {
+export type NousDbPlanNode = {
+  "Node Type": string; "Relation Name"?: string; Alias?: string; "Parent Relationship"?: string; "Subplan Name"?: string;
+  "Plan Rows"?: number; "Total Cost"?: number; Filter?: string; Plans?: NousDbPlanNode[];
+};
+/** Below this many rows a whole-table read repeated per row is cheap enough to leave unnamed. */
+const SLOW_SCAN_ROWS = 10_000;
+// Nodes that keep their child's rows: a scan under them runs once, not once per outer row.
+const CACHED_NODES = new Set(["Materialize", "Hash", "Memoize"]);
+
+/**
+ * Daily Nous errors 14/11 (57014 ×3 in 7 d, each turn's next read rewritten blind; reproduced: a per-row EXISTS that ILIKEs
+ * nous_messages.meta::text runs a whole-table scan once per returned row): PostgreSQL's plan names where the time goes. A whole-table
+ * scan repeated per row comes first (a subquery in SELECT or WHERE, the inner side of a nested loop), then the largest filtered scan.
+ * `tableRows` holds each read table's estimated size (pg_class.reltuples).
+ */
+export function nousDbSlowPlanLines(root: NousDbPlanNode, tableRows: Map<string, number>): string[] {
+  const rowsOf = (scan: NousDbPlanNode) => tableRows.get(scan["Relation Name"] ?? "") ?? scan["Plan Rows"] ?? 0;
+  const count = (rows: number) => Math.round(rows).toLocaleString("en-US");
+  const test = (scan: NousDbPlanNode) => scan.Filter ? `, testing ${scan.Filter.length > 140 ? `${scan.Filter.slice(0, 140)}…` : scan.Filter}` : "";
+  const scansUnder = (node: NousDbPlanNode): NousDbPlanNode[] => node["Node Type"] === "Seq Scan" ? [node]
+    : CACHED_NODES.has(node["Node Type"]) ? [] : (node.Plans ?? []).filter((child) => child["Parent Relationship"] !== "SubPlan").flatMap(scansUnder);
+  const repeated: Array<{ weight: number; line: string }> = [];
+  const allScans: NousDbPlanNode[] = [];
+  const walk = (node: NousDbPlanNode, limit: number) => {
+    if (node["Node Type"] === "Seq Scan") allScans.push(node);
+    const cap = node["Node Type"] === "Limit" ? Math.min(limit, node["Plan Rows"] ?? limit) : limit;
+    const children = node.Plans ?? [];
+    children.forEach((child, index) => {
+      const subplan = child["Parent Relationship"] === "SubPlan";
+      const inner = node["Node Type"] === "Nested Loop" && index > 0 && !subplan;
+      if (subplan || inner) {
+        const times = Math.min(cap, (subplan ? node["Plan Rows"] : children[0]?.["Plan Rows"]) ?? 0);
+        for (const scan of scansUnder(child)) {
+          if (times < 2 || rowsOf(scan) < SLOW_SCAN_ROWS) continue;
+          const what = subplan ? `${child["Subplan Name"] ?? "A subquery"} (a subquery in SELECT or WHERE)` : "The inner side of a nested-loop join";
+          repeated.push({ weight: rowsOf(scan) * times,
+            line: `${what} reads all of ${scan["Relation Name"]} (≈${count(rowsOf(scan))} rows) once for each of ≈${count(times)} rows${test(scan)}.` });
+        }
+      }
+      walk(child, cap);
+    });
+  };
+  walk(root, Number.POSITIVE_INFINITY);
+  if (repeated.length) {
+    return [`Where the time goes (PostgreSQL's plan of this query): ${repeated.sort((a, b) => b.weight - a.weight).slice(0, 2).map((entry) => entry.line).join(" ")}`,
+      "Read that table once instead: join it in FROM (LEFT JOIN … GROUP BY, or a WITH that collects the ids it holds) and match ids with = or IN rather than ILIKE over a whole json or text column, or bound it by created_at first."];
+  }
+  const big = allScans.filter((scan) => rowsOf(scan) >= SLOW_SCAN_ROWS).sort((a, b) => rowsOf(b) - rowsOf(a)).slice(0, 2);
+  if (!big.length) return [];
+  return [`Where the time goes (PostgreSQL's plan of this query): ${big.map((scan) => `it reads all of ${scan["Relation Name"]} (≈${count(rowsOf(scan))} rows)${test(scan)}.`).join(" ")}`,
+    "No index serves that: bound it by an indexed column (created_at or an id) before any text match, or count first."];
+}
+
+/** 57014: PostgreSQL's plan of the same statement (EXPLAIN without ANALYZE: planned, never run) on the same connection; best effort. */
+async function nousDbSlowPlan(client: pg.PoolClient, statement: string): Promise<string[]> {
+  if (!statement.startsWith(WRAP_HEAD)) return [];
+  await client.query("ROLLBACK");
+  await client.query("BEGIN READ ONLY");
+  await client.query(`SET LOCAL statement_timeout = ${PLAN_TIMEOUT_MS}`);
+  const explained = await client.query<{ "QUERY PLAN": Array<{ Plan: NousDbPlanNode }> }>(`EXPLAIN (FORMAT JSON) ${statement}`);
+  const root = explained.rows[0]?.["QUERY PLAN"]?.[0]?.Plan;
+  if (!root) return [];
+  const relations = new Set<string>();
+  const collect = (node: NousDbPlanNode) => { if (node["Relation Name"]) relations.add(node["Relation Name"]); node.Plans?.forEach(collect); };
+  collect(root);
+  const sizes = await client.query<{ relname: string; rows: number }>(
+    "SELECT relname, greatest(reltuples, 0)::float8 AS rows FROM pg_class WHERE relkind IN ('r', 'p', 'm') AND relname = ANY($1)", [[...relations]]);
+  return nousDbSlowPlanLines(root, new Map(sizes.rows.map((row) => [row.relname, Number(row.rows)])));
+}
+
+async function nousDbErrorText(client: pg.PoolClient, error: unknown, sql: string, statement: string, timeoutMs = TIMEOUT_MS): Promise<{ error: string; corrected: { code: string; sql: string } | null }> {
   const pgError = error as { message?: string; code?: string; hint?: string; detail?: string; position?: string };
   let corrected: { code: string; sql: string } | null = null;
   const lines = [`Postgres: ${String(pgError.message ?? error)}${pgError.code ? ` (code ${pgError.code})` : ""}`];
@@ -147,7 +259,10 @@ async function nousDbErrorText(client: pg.PoolClient, error: unknown, sql: strin
     if (pgError.code === "2201B" && !repeats.length && /repetition count/.test(pgError.message ?? "")) lines.push("A { followed by a digit starts a repeat {n} or {n,m} with n ≤ m ≤ 255: to match a brace as text escape it (\\{ and \\}, or [{] and [}]); or compare plain text with ILIKE or position(), where a brace needs no escape.");
     if (repeats.length) lines.push(`A regex repeat counts to 255 at most in PostgreSQL (${repeats.map((match) => match[0]).join(", ")} here): compare length(<column>) >= ${repeats[0]![1]} for a length, or split it into repeats of 255 or fewer.`);
     // Daily Nous errors 13/11 02:08 UTC (57014, nothing else in the answer): say how to make the read fit the limit.
-    if (pgError.code === "57014") lines.push(`The read ran past ${TIMEOUT_MS / 1_000} s, the limit that keeps the database answering everyone: narrow it to recent rows (created_at > now() - interval '1 day'), filter on an id, drop a join or a text search over a whole table, or count first.`);
+    if (pgError.code === "57014") {
+      lines.push(`The read ran past ${timeoutMs / 1_000} s, the limit that keeps the database answering everyone: narrow it to recent rows (created_at > now() - interval '1 day'), add a LIMIT (LIMIT 100) with an ORDER BY on an indexed column, filter on an id, drop a join or a text search over a whole table, or count first.`);
+      lines.push(...await nousDbSlowPlan(client, statement).catch(() => []));
+    }
     // Daily Nous errors 14/11 (20:16 UTC 21000, nothing else in the answer): say which forms take several rows.
     if (pgError.code === "21000") lines.push("A subquery used as one value returned several rows: compare with IN (SELECT ...) or = ANY(ARRAY(SELECT ...)), or make it one row with LIMIT 1 or an aggregate (max, count, string_agg).");
     if (pgError.code === "42883" || pgError.code === "42804") {
@@ -160,7 +275,15 @@ async function nousDbErrorText(client: pg.PoolClient, error: unknown, sql: strin
         lines.push(`Corrected query (cast where the types differ): ${cast}`);
       }
     }
-    if (pgError.code === "42703" || pgError.code === "42P01" || pgError.code === "42702") await client.query("ROLLBACK");
+    if (["42703", "42P01", "42702", "42501"].includes(pgError.code ?? "")) await client.query("ROLLBACK");
+    if (pgError.code === "42501") {
+      lines.push("space_db_query never reads secret columns (passwords, tokens, keys, sealed or encrypted values): name the columns you need instead of * or a whole row (to_jsonb(t), t::text, row_to_json(t)).");
+      const table = /permission denied for table (\S+)/.exec(pgError.message ?? "")?.[1];
+      const result = table ? await client.query<{ column_name: string }>(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 ORDER BY ordinal_position", [table]) : { rows: [] };
+      const readable = result.rows.map((row) => row.column_name).filter((column) => !SECRET_COLUMN.test(column) || NOUS_DB_JOIN_KEYS.includes(`${table}.${column}`));
+      if (readable.length) lines.push(`Readable columns of ${table}: ${readable.join(", ")}`);
+    }
     // Round 9b item 3 (operator 28/10 15:04 BKK: 8 of 11 failed calls were reads): an ambiguous column names every table (and its
     // alias) in the query that has it, and the qualified forms to use.
     if (pgError.code === "42702") {
@@ -186,6 +309,8 @@ async function nousDbErrorText(client: pg.PoolClient, error: unknown, sql: strin
       for (const table of new Set(named)) { const note = NOUS_DB_COLUMN_NOTES[table]?.[guessed]; if (note) lines.push(note); }
       // Tool error samples 8/11 (7 d: models and space_gateway_accounts is_active, providers is_enabled, rooms is_closed): a guessed flag is the table's state.
       if (guessed.startsWith("is_")) for (const row of result.rows) lines.push(...nousDbFlagNote(row.table_name, guessed, row.columns.split(", ")));
+      // Queue 21/11 (42703 artifacts.owner_user_id): a table with no owner column belongs to its owner through its room.
+      if (OWNER_GUESSES.has(guessed)) for (const row of result.rows) lines.push(...nousDbOwnerNote(row.table_name, guessed, row.columns.split(", ")));
       // R52-2 (3/11 11:45 UTC: column "id" answered with nothing else): no named table is one of Space's, so say so and how to list one.
       if (!result.rows.length) lines.push(`${named.length ? `${[...new Set(named)].join(", ")} ${named.length > 1 ? "are" : "is"} no Space table (a catalog view, function, CTE or subquery alias)` : "This query reads no table"}: list a relation's columns with SELECT column_name FROM information_schema.columns WHERE table_name = '<name>'.`);
       const fixed = nousDbCorrectedQuery(sql, pgError.message ?? "", pgError.hint, new Map(result.rows.map((row) => [row.table_name, row.columns.split(", ")])));
@@ -319,6 +444,13 @@ export const NOUS_DB_COLUMN_NOTES: Record<string, Record<string, string>> = {
   design_requests: { room_id: "design_requests has no room_id: the pane and room that asked are requester->>'paneId' and requester->>'roomId' (when a pane asked); "
     + "the Design pane that takes it is design_pane_id (its room is panes.room_id)." }
 };
+const OWNER_GUESSES = new Set(["owner_user_id", "user_id", "owner", "owner_id", "created_by"]);
+/** A guessed owner column on a table that has none but has room_id: the owner is its room's (rooms.owner_user_id). */
+export function nousDbOwnerNote(table: string, guessed: string, columns: string[]): string[] {
+  if (columns.includes(guessed) || columns.includes("owner_user_id") || !columns.includes("room_id")) return [];
+  return [`${table} has no ${guessed}: a row belongs to its room's owner, JOIN rooms r ON r.id = ${table}.room_id and read r.owner_user_id.`];
+}
+
 /** R21-1 (artifacts.title, .name and .collection ×9 in 24 h to 1/11): a guessed column a table keeps inside its JSON metadata. */
 export const NOUS_DB_COLUMN_PATHS: Record<string, Record<string, [string, string]>> = {
   artifacts: { title: ["metadata", "originalFilename"], name: ["metadata", "originalFilename"], filename: ["metadata", "originalFilename"],
@@ -386,6 +518,11 @@ export function nousDbQualifiedQuery(sql: string, column: string, qualifier: str
 export function nousDbCastQuery(sql: string, message: string): string | null {
   const named = /function ([\w$.]+)\(([^)]*)\) does not exist/i.exec(message);
   const types = named?.[2]!.split(",").map((type) => type.trim().toLowerCase()) ?? [];
+  // 8/11 REVIEW (jsonb_array_length over a text[] column): an array's length is cardinality().
+  if (named && /^jsonb?_array_length$/i.test(named[1]!.split(".").pop()!) && types[0]?.endsWith("[]")) {
+    const fixed = sql.replace(/\bjsonb?_array_length\s*\(/gi, "cardinality(");
+    return fixed === sql ? null : fixed;
+  }
   if (!named || !types.some((type) => type === "json" || type === "jsonb")) return null;
   const name = named[1]!.split(".").pop()!;
   // R25 (1/11: avg(jsonb) was "corrected" to avg(text), which fails too): a numeric function reads the json scalar as a number.
@@ -487,6 +624,8 @@ const SQL_WORDS = new Set(["where", "on", "join", "left", "right", "inner", "out
 /** Technical: the column list's share of the tool description loaded every turn; 42703/42P01 answers name the other columns. */
 const COLUMNS_CHARS = 3_000;
 const COLUMNS_CACHE_MS = 5 * 60_000;
+/** Technical: how long tools/list (every turn's MCP handshake) waits for the column list before answering without it. */
+const COLUMNS_WAIT_MS = 3_000;
 
 /** Their real columns for space_db_query's description, whole tables only (in the given order) within `max` characters. */
 export function nousDbColumnsText(tables: Array<{ table_name: string; columns: string }>, max = COLUMNS_CHARS): string {
@@ -499,18 +638,36 @@ export function nousDbColumnsText(tables: Array<{ table_name: string; columns: s
   return tables.length ? text : "";
 }
 
-export function createNousDb(deps: { pool: pg.Pool }) {
+export function createNousDb(deps: { pool: pg.Pool; timeoutMs?: number; columnsWaitMs?: number }) {
+  const timeoutMs = deps.timeoutMs ?? TIMEOUT_MS;
+  let reader: Promise<void> | null = null;
+  const grantReader = (again = false) => {
+    if (!reader || again) reader = nousDbGrantReader(deps.pool).catch((error: unknown) => { reader = null; throw error; });
+    return reader;
+  };
   /** One read on a connection destroyed afterwards: its rows, or PostgreSQL's answer and the one corrected query when there is one. */
-  async function read(args: NousDbArgs): Promise<{ out?: string; error?: string; corrected?: { code: string; sql: string } | null }> {
+  async function read(args: NousDbArgs): ReturnType<typeof readOnce> {
+    const first = await readOnce(args);
+    // DEV3D-016: a table made after the last grant sync is denied as well; sync once more and read again.
+    if (!/\(code 42501\)/.test(first.error ?? "")) return first;
+    return grantReader(true).then(() => readOnce(args), () => readOnce(args));
+  }
+  async function readOnce(args: NousDbArgs): Promise<{ out?: string; error?: string; corrected?: { code: string; sql: string } | null }> {
     const { text, limit } = nousDbStatement(args);
+    try { await grantReader(); } catch (error) { return { error: readerError(error) }; }
     const client = await deps.pool.connect();
     try {
       await client.query("BEGIN READ ONLY");
-      await client.query(`SET LOCAL statement_timeout = ${TIMEOUT_MS}`);
+      await client.query(`SET LOCAL statement_timeout = ${timeoutMs}`);
+      // Fails closed: no read runs as the API's own user.
+      try { await client.query(`SET LOCAL ROLE ${NOUS_DB_READER}`); } catch (error) { return { error: readerError(error) }; }
+      // K1 M4: row-level security shows a role that owns no table only its tenant's rows (none without one).
+      // Outside a tenant context (Nous jobs, SPACE_TENANCY_ENABLED off) tenant:local: every row of a single-user install.
+      await client.query("SELECT set_config('space.tenant_id', $1, true)", [currentTenantId() ?? TENANT_LOCAL]);
       const result = await client.query<unknown[]>({ name: `nous_db_${randomUUID().slice(0, 8)}`, text, rowMode: "array" });
       return { out: nousDbRows(result.fields.map((field) => field.name), result.rows, limit) };
     } catch (error) {
-      return await nousDbErrorText(client, error, args.sql, text);
+      return await nousDbErrorText(client, error, args.sql, text, timeoutMs);
     } finally {
       // Destroyed, never pooled again: the rollback ends the transaction with it.
       client.release(true);
@@ -519,20 +676,32 @@ export function createNousDb(deps: { pool: pg.Pool }) {
   let columns: Promise<string> | null = null;
   let columnsAt = 0;
   return {
+    /** The reader's grants, synced at startup and on a denied read. */
+    grantReader: () => grantReader(),
     /** One information_schema read per COLUMNS_CACHE_MS (each turn lists the tools once); "" when it fails. */
     columns(): Promise<string> {
       if (!columns || Date.now() - columnsAt > COLUMNS_CACHE_MS) {
         columnsAt = Date.now();
         columns = deps.pool.query<{ table_name: string; columns: string }>(
           `SELECT table_name, string_agg(column_name, ', ' ORDER BY ordinal_position) AS columns FROM information_schema.columns
-           WHERE table_schema = current_schema() AND table_name::text = ANY($1::text[]) GROUP BY table_name ORDER BY array_position($1::text[], table_name::text)`,
+           WHERE table_schema = current_schema() AND table_name::text = ANY($1::text[])
+             -- K1 M1: tenant_id is on every tenant table and names no data; listed, it pushed tables out of the budget.
+             AND column_name <> 'tenant_id'
+           GROUP BY table_name ORDER BY array_position($1::text[], table_name::text)`,
           [NOUS_DB_COMMON_TABLES]).then((result) => nousDbColumnsText(result.rows), () => { columns = null; return ""; });
       }
-      return columns;
+      // Response time 23/11 07:29–07:49Z: a stalled pool held every turn's tools/list, so first answers took 8 min; the plain description wins.
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<string>((resolve) => { timer = setTimeout(resolve, deps.columnsWaitMs ?? COLUMNS_WAIT_MS, ""); timer.unref(); });
+      return Promise.race([columns, late]).finally(() => clearTimeout(timer));
     },
     async query(args: NousDbArgs): Promise<string> {
-      const first = await read(args);
-      let out = first.out;
+      let first = await read(args);
+      // Slice 12 (57014 ×3 in 7 d to 14/11): a timeout whose plan names no slow scan waited on a lock or a busy server, so it runs once more;
+      // a slow plan's timeout would only time out again.
+      const transient = /\(code 57014\)/.test(first.error ?? "") && !first.error!.includes("Where the time goes");
+      if (transient) first = await read(args);
+      let out = first.out === undefined || !transient ? first.out : `(The first run hit the ${timeoutMs / 1_000} s limit with no slow plan; run once more it answered.)\n${first.out}`;
       if (out === undefined) {
         // R13-1 (73 failed reads in 3 days, 45 a wrong column): exactly one corrected query is run. R21-1: PostgreSQL names one wrong
         // column at a time, so a run that fails on the next wrong column with one correction is corrected again; a query never runs twice.
@@ -578,7 +747,8 @@ export function createNousDb(deps: { pool: pg.Pool }) {
 export type NousDb = ReturnType<typeof createNousDb>;
 
 export function nousDbPool(connectionString: string): pg.Pool {
-  const pool = new pg.Pool({ connectionString, max: 2, idleTimeoutMillis: 30_000, application_name: "space-nous-db" });
+  // connectionTimeoutMillis: a read waiting for one of the two clients fails after a statement's limit instead of hanging its turn.
+  const pool = new pg.Pool({ connectionString, max: 2, idleTimeoutMillis: 30_000, connectionTimeoutMillis: TIMEOUT_MS, application_name: "space-nous-db" });
   // API audit 12/11: an idle client's error (57P01 at a PostgreSQL shutdown) had no listener and shut the API down.
   pool.on("error", (error: Error) => console.error("[nous-db] Idle PostgreSQL connection error:", error.message));
   pool.on("connect", (client) => client.on("error", () => { /* reported by the pending query or the pool */ }));

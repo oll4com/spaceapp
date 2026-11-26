@@ -62,11 +62,8 @@ const fromRow = (row: Row): CouncilRun => councilRunSchema.parse({
   stage: row.stage, plan: row.plan, error: row.error, createdAt: iso(row.createdAt), updatedAt: iso(row.updatedAt)
 });
 /** Everything that is not a column. */
-const dataOf = (run: CouncilRun) => {
-  const { id: _id, ownerUserId: _owner, question: _question, coordinatorModelId: _coordinator, status: _status, stage: _stage, plan: _plan, error: _error,
-    createdAt: _created, updatedAt: _updated, ...data } = run;
-  return data;
-};
+const columnKeys = new Set(["id", "ownerUserId", "question", "coordinatorModelId", "status", "stage", "plan", "error", "createdAt", "updatedAt"]);
+const dataOf = (run: CouncilRun) => Object.fromEntries(Object.entries(run).filter(([key]) => !columnKeys.has(key)));
 const isUniqueViolation = (error: unknown) => (error as { code?: string }).code === "23505";
 
 export class PostgresCouncilRepository implements CouncilRepository {

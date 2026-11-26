@@ -115,12 +115,18 @@ describe("trace lookup projection", () => {
       // EXT-G-5: Space Gateway rows logged under this id; a code that is not an identifier is dropped, never echoed.
       gatewayRequests: [
         { provider: "ANTIGRAVITY", model: "gemini-3.8-flash-tiered", status: "success", errorCode: null, latencyMs: 4100, requestedAt: "2026-10-11T10:00:01.000Z" },
-        { provider: "CODEX", model: "gpt-image", status: "error", errorCode: `bad ${secret}`, latencyMs: 90, requestedAt: "2026-10-11T10:00:02.000Z" }
+        { provider: "CODEX", model: "gpt-image", status: "error", errorCode: `bad ${secret}`, latencyMs: 90, requestedAt: "2026-10-11T10:00:02.000Z" },
+        // A traced CLI session's own call, found by its pane tag.
+        { provider: "CLAUDE", model: "claude-opus-5-5", status: "success", errorCode: null, latencyMs: 2300, requestedAt: "2026-10-11T10:00:03.000Z",
+          cliSessionId: "cli_session:projection1" }
       ]
     });
     expect(projected.gatewayRequests).toEqual([
-      { provider: "ANTIGRAVITY", model: "gemini-3.8-flash-tiered", status: "success", errorCode: null, latencyMs: 4100, requestedAt: "2026-10-11T10:00:01.000Z" },
-      { provider: "CODEX", model: "gpt-image", status: "error", errorCode: null, latencyMs: 90, requestedAt: "2026-10-11T10:00:02.000Z" }
+      { provider: "ANTIGRAVITY", model: "gemini-3.8-flash-tiered", status: "success", errorCode: null, latencyMs: 4100, requestedAt: "2026-10-11T10:00:01.000Z",
+        cliSessionId: null },
+      { provider: "CODEX", model: "gpt-image", status: "error", errorCode: null, latencyMs: 90, requestedAt: "2026-10-11T10:00:02.000Z", cliSessionId: null },
+      { provider: "CLAUDE", model: "claude-opus-5-5", status: "success", errorCode: null, latencyMs: 2300, requestedAt: "2026-10-11T10:00:03.000Z",
+        cliSessionId: "cli_session:projection1" }
     ]);
     expect(projected.causalError).toMatchObject({ code: "OPENCODE_TURN_TIMEOUT", category: "TIMEOUT", source: "event:TURN_FAILED" });
     expect(projected.events[0]).toMatchObject({ runId: "agent_run:1", status: "FAILED" });

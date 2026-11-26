@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -130,6 +130,29 @@ const changedGenerated = entries
   .filter((path) => isRuntimeOrSecretPath(path) || isRepoArtifactPath(path));
 if (changedGenerated.length) {
   fail("Tracked changes touch forbidden runtime/generated/report paths.", changedGenerated);
+}
+
+// These three test:deploy guards caused 11 of the 17 failed-test hits in dev queue batches on 20-21/11, and each failure
+// cost a batch plus a bisect. They take seconds, so a worktree's preflight runs them before submit.
+if (preflight && !liveCheckout) {
+  const hasEslint = existsSync(resolve(repoRoot, "node_modules/.bin/eslint"));
+  const guards = ["domain-boundaries-current", "composition-root-size", ...(hasEslint ? ["lint-ceiling"] : [])]
+    .map((name) => `scripts/tests/${name}.test.mjs`).filter((path) => existsSync(resolve(repoRoot, path)));
+  if (!hasEslint && existsSync(resolve(repoRoot, "scripts/tests/lint-ceiling.test.mjs"))) {
+    warnings.push({ message: "No node_modules here, so the lint warning ceiling was not checked; the queue's test:deploy still checks it.", details: [] });
+  }
+  const run = guards.length
+    ? spawnSync(process.execPath, ["--test", ...guards], {
+      cwd: repoRoot, encoding: "utf8", maxBuffer: 256 * 1024 * 1024,
+      // A parent node --test sets NODE_TEST_CONTEXT, which makes the child report to it and exit 0 whatever fails.
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "NODE_TEST_CONTEXT"))
+    })
+    : { status: 0 };
+  if (run.status !== 0) {
+    const lines = `${run.stdout ?? ""}\n${run.stderr ?? ""}`.split("\n").map((line) => line.trim());
+    const causes = lines.filter((line) => /^✖ |New dependency cycle|problems \(|too many warnings|its budget is/.test(line));
+    fail("A merge queue test:deploy guard fails in this tree; fix it before you submit.", causes.length ? causes : lines.slice(-12));
+  }
 }
 
 console.log(`Space hygiene ${preflight ? "preflight" : "status"} report`);

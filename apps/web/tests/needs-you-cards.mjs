@@ -37,7 +37,7 @@ export function readNeedsYouCards(words, root = document) {
   };
   const drop = ".nous-decision-actions, form, button, select, details";
   const own = (article) => norm(lines(article, drop));
-  return [...root.querySelectorAll(".nous-decisions article.nous-decision")].filter((article) => article.checkVisibility?.() !== false).map((article) => {
+  return [...root.querySelectorAll(".nous-decisions article.nous-decision, .nous-inbox article.nous-decision")].filter((article) => article.checkVisibility?.() !== false).map((article) => {
     const text = own(article);
     if (!article.dataset.notificationId) return { id: article.dataset.decisionId ?? null, type: "decision", inLanguage: inLanguage(lines(article, drop)) };
     const facts = [...article.querySelectorAll(".ny-details section > h4, .ny-facts > dt")];

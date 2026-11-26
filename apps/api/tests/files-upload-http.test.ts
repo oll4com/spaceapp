@@ -31,7 +31,9 @@ beforeAll(async () => {
   store = new InMemorySpaceStore();
   app = await createApp({
     store,
-    config: getApiConfig({ SPACE_ARTIFACT_ROOT: join(root, "artifacts") }),
+    // Its own (empty) Space Memory: the host's monthlies warm recall at startup and grow RSS inside the bound below.
+    config: getApiConfig({ SPACE_ARTIFACT_ROOT: join(root, "artifacts"), SPACE_MEMORY_INDEX_PATH: join(root, "memory", "space_memory.md"),
+      SPACE_MEMORY_MONTHLY_PATH: join(root, "memory", "space_memory_2026-11.md") }),
     systemAnalyticsService: ownedSystemAnalytics(store, root),
     auth: { sessionSecret: "owned-http-upload-fixture-secret", devLogin: true, secureCookies: false }
   });

@@ -12,7 +12,8 @@ export class MockBrowserSocket extends EventTarget {
       void frame(); this.timer = setInterval(() => void frame(), 1000);
     });
   }
-  send(_data: unknown) {}
+  // The demo browser pane sends input the fixture ignores, so the payload is not declared.
+  send() {}
   close() { if (this.timer) clearInterval(this.timer); this.readyState = 3; this.dispatchEvent(new CloseEvent("close", { code: 1000, wasClean: true })); }
   private emit(value: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
 }

@@ -56,7 +56,7 @@ describe("runtime pane names allocation", () => {
     const room = store.createRoom({ name: "Reopen Room", paneCap: 16 });
 
     const p1 = store.createPane({ roomId: room.id, title: "P1", mode: "CHAT" }); // Andy
-    const p2 = store.createPane({ roomId: room.id, title: "P2", mode: "TERMINAL" }); // Bob
+    store.createPane({ roomId: room.id, title: "P2", mode: "TERMINAL" }); // Bob
 
     // Close Andy
     store.updatePane(p1.id, { isClosed: true });

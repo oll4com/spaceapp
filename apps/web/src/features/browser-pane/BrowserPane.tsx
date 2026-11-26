@@ -372,6 +372,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const narrowToolbar = toolbarWidth < NARROW_TOOLBAR_WIDTH;
   const tightToolbar = !compactToolbar && toolbarWidth < LABELLED_TOOLBAR_WIDTH;
   const session = (response?.session as BrowserSessionV2 | undefined) ?? null;
+  const sessionStatusRef = useRef(session?.status);
+  sessionStatusRef.current = session?.status;
   const audible = useBrowserPaneAudible(paneRef, isVisible);
   const { audioState, resumeAudio } = useBrowserAudio(pane.id, session?.sessionId, audible && !observerOnly && session?.status !== "CLOSED");
   const viewport = session?.viewport ?? (mobile ? "mobile" : defaultViewport);
@@ -625,7 +627,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       }
       applyPagePayload(next);
       return next;
-    }).catch(() => null).finally(() => {
+    }).catch(() => {
+      // The held session may be gone (stopped, replaced, lost by the Browser Host): read the server's instead of retrying it forever.
+      if (sessionId && request === pageRequestRef.current && sessionId === pageSessionIdRef.current) void followServerSession(sessionId);
+      return null;
+    }).finally(() => {
       if (pageFlightRef.current?.promise === promise) pageFlightRef.current = null;
     });
     pageFlightRef.current = { sessionId, request, promise };
@@ -642,7 +648,9 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   // billing pane): it follows the session an agent starts later instead of staying "Offline".
   async function followServerSession(heldSessionId: string | null) {
     const next = await api.browserSession(pane.id).catch(() => null);
-    if (!next || next.session.sessionId === heldSessionId || pageSessionIdRef.current !== heldSessionId) return;
+    if (!next || pageSessionIdRef.current !== heldSessionId) return;
+    // The same session closed on the server (an agent or the reaper stopped it): show it closed, not a live view that never streams.
+    if (next.session.sessionId === heldSessionId && (next.session.status !== "CLOSED" || sessionStatusRef.current === "CLOSED")) return;
     if (!heldSessionId && (next.session.status === "CLOSED" || next.session.status === "ERROR")) return;
     if (!heldSessionId) setError(null);
     applyResponse(next);
@@ -905,7 +913,8 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       }
       if (disposed) return;
       if (ticket.paneId !== pane.id || ticket.sessionId !== sessionId) {
-        setError(t("Browser frame stream returned a ticket for a different session."));
+        // An agent replaced this browser: follow its session silently; the reconnect notice clears once it streams (26/11).
+        void followServerSession(sessionId);
         scheduleReconnect();
         return;
       }
@@ -1595,12 +1604,12 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
 
   /** `renew` asks the server even while a lease is held: an explicit join (the control icon, a copilot's
    * "Take control") must reach it, so a handoff the agent requested meanwhile is accepted. */
-  async function acquireControlForInput(renew = false, interaction = true): Promise<BrowserControlLeasePayload | null> {
-    if (!session || session.status === "CLOSED" || observerOnly) return null;
+  async function acquireControlForInput(renew = false, interaction = true, current = session): Promise<BrowserControlLeasePayload | null> {
+    if (!current || current.status === "CLOSED" || observerOnly) return null;
     // A hover is forwarded but is not an interaction: it does not keep the browser from the agent.
     if (interaction) lastOperatorInputAtRef.current = Date.now();
     const currentLease = controlLeaseRef.current;
-    const held = currentLease?.status === "ACTIVE" && currentLease.sessionId === session.sessionId && Date.parse(currentLease.expiresAt) > Date.now() + 1000;
+    const held = currentLease?.status === "ACTIVE" && currentLease.sessionId === current.sessionId && Date.parse(currentLease.expiresAt) > Date.now() + 1000;
     if (held && !renew) return currentLease;
     if (!held) controlLeaseRef.current = null;
     if (controlAcquirePromiseRef.current) return controlAcquirePromiseRef.current;
@@ -1639,7 +1648,21 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     scrollPaneIntoView(paneRef.current);
     setPending(true);
     setError(null);
-    const lease = await acquireControlForInput(true);
+    let current = session;
+    // A browser closed for the night keeps its handoff on the card: Take control reopens it on its last page (the API restores it)
+    // and the API moves the handoff to it.
+    if (current.status === "CLOSED" && !observerOnly) {
+      try {
+        const next = await api.startBrowserSession(pane.id, { viewport, ownerAgentId: `agent:${agentNumber}` });
+        applyResponse(next);
+        current = next.session as BrowserSessionV2;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t("Browser restart failed"));
+        setPending(false);
+        return;
+      }
+    }
+    const lease = await acquireControlForInput(true, true, current);
     if (!lease && !legacyControlRef.current) {
       setPending(false);
       return;
@@ -2276,7 +2299,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                   <button type="button" role="menuitem" aria-label={t("{action} {title}", { action: browserControlLabel, title: pane.title })} aria-pressed={handoff} disabled={!session || pending}
                     onClick={() => { browserToolbar.closeMenus(); void (handoff ? releaseControl() : joinSession()); }}><UserCheck aria-hidden="true" /><span>{browserControlLabel}</span></button>
                   <span className="browser-tools-menu-label" role="presentation">{t("Viewport")}</span>
-                  {viewportOptions.map(({ id, label, Icon }) => <button key={id} type="button" role="menuitem" aria-label={t("{action} {title}", { action: viewName(id), title: pane.title })} aria-pressed={viewport === id && !fitPane} disabled={!canUseSession || pending}
+                  {viewportOptions.map(({ id, Icon }) => <button key={id} type="button" role="menuitem" aria-label={t("{action} {title}", { action: viewName(id), title: pane.title })} aria-pressed={viewport === id && !fitPane} disabled={!canUseSession || pending}
                     onClick={() => { browserToolbar.closeMenus(); void setViewport(id); }}><Icon aria-hidden="true" /><span>{viewName(id)}</span></button>)}
                   <button type="button" role="menuitem" aria-label={t("{action} {title}", { action: focusMode ? t("Exit browser focus mode") : t("Expand browser view"), title: pane.title })} disabled={!session}
                     onClick={() => { browserToolbar.closeMenus(); toggleFocusMode(); }}><Maximize2 aria-hidden="true" /><span>{focusMode ? t("Exit focus mode") : t("Expand browser view")}</span></button>

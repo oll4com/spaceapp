@@ -1,16 +1,18 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NOTIFICATION_SOURCES, needsYouCardTexts, type SpaceNotification } from "@space/contracts";
+import { notificationRow } from "../src/features/notifications/NotificationRow.js";
 import { NotificationCenterDock } from "../src/features/notifications/NotificationCenterDock.js";
 import { NotificationSettingsCard } from "../src/features/notifications/NotificationSettingsCard.js";
 import { NotificationToastHost } from "../src/features/notifications/NotificationToastHost.js";
 import { deliverNotifications } from "../src/features/notifications/notification-delivery.js";
 import { desktopNotificationPermission, setDesktopNotifications, showDesktopNotification, subscribeNativeNotificationOpen, subscribePushTokenRegistration } from "../src/features/notifications/desktop-notifications.js";
 import {
-  ingestNotificationStreamPayload, openNotification, peekNotificationStore, pushNotificationToast, refreshNotifications, resetNotificationStore, setNotificationDeliveryHandler, setNotificationNavigator, subscribeNotificationStore
+  ingestNotificationStreamPayload, notificationsBadge, openNotification, peekNotificationStore, pushNotificationToast, refreshNotifications, resetNotificationStore, setNotificationDeliveryHandler, setNotificationNavigator, subscribeNotificationStore
 } from "../src/features/notifications/notification-store.js";
-import { consumeDoneView } from "../src/features/nous/nous-done-events.js";
+import { consumeDoneView, consumeUpdatesView } from "../src/features/nous/nous-done-events.js";
 import { consumeNeedsYouView } from "../src/features/needs-you/needs-you-view.js";
+import { writeHiddenDockIds } from "../src/features/docks/use-docks-visibility.js";
 import { workspaceRoomActivity } from "../src/features/ui-theme/workspace-room-filter.js";
 import { NOUS_FOCUS_EVENT, writeNousFocusEnabled, type NousFocusDetail } from "../src/features/nous-focus/nous-focus-events.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
@@ -18,8 +20,10 @@ import { announceAgentLanguage, announceUiLanguage } from "../src/features/ui-la
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 
 const apiMock = vi.hoisted(() => ({
-  notificationsPending: vi.fn(), notifications: vi.fn(), notification: vi.fn(), markNotificationRead: vi.fn(), ackNotification: vi.fn(), readAllNotifications: vi.fn(), testNotification: vi.fn(),
-  registerPushDevice: vi.fn(), removePushDevice: vi.fn(), userSettings: vi.fn(), updateUserSettings: vi.fn()
+  notificationsPending: vi.fn(), notifications: vi.fn(), notification: vi.fn(), markNotificationRead: vi.fn(), ackNotification: vi.fn(), answerNotification: vi.fn(async () => ({ display: "Done, all good" })), readAllNotifications: vi.fn(), testNotification: vi.fn(),
+  registerPushDevice: vi.fn(), removePushDevice: vi.fn(), userSettings: vi.fn(), updateUserSettings: vi.fn(), mailThread: vi.fn(), mailAttachmentUrl: vi.fn(() => "#"),
+  inbox: vi.fn(async () => { throw new Error("No inbox route in these tests") }),
+  artifacts: vi.fn(async () => ({ data: [], pagination: { page: 1, pageSize: 100, totalItems: 0, totalPages: 0 } }))
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
 const chimeMock = vi.hoisted(() => ({ playChime: vi.fn() }));
@@ -109,6 +113,17 @@ describe("Space notifications (web)", () => {
     stop();
   });
 
+  it("a card answered on another client leaves its toast at the next refresh (spec v2 §7, plan clipboard:aE7U1J_gU9OV step 4)", async () => {
+    let items = [notification("elsewhere"), notification("kept", { paneId: "pane:other" })];
+    apiMock.notificationsPending.mockImplementation(async () => structuredClone(pending(items)));
+    apiMock.notifications.mockImplementation(async () => ({ notifications: structuredClone(items) }));
+    await refreshNotifications();
+    for (const item of items) pushNotificationToast(item);
+    items = [notification("elsewhere", { status: "ACKED" }), notification("kept", { paneId: "pane:other", status: "READ" })];
+    await refreshNotifications({ ifChanged: true });
+    expect(peekNotificationStore().toasts.map((toast) => toast.id)).toEqual(["notification:kept"]);
+  });
+
   it("delivers a needs-you request on a pane as the focus banner instead of a toast, with one chime; the device setting off keeps the toast (operator request 2026-10-24)", async () => {
     installSpaceRuntime(liveRuntime);
     writeNousFocusEnabled(true);
@@ -146,10 +161,19 @@ describe("Space notifications (web)", () => {
     expect(screen.getAllByText("Mail Copilot")).toHaveLength(2);
     expect(chimeMock.playChime).toHaveBeenCalledTimes(1);
     expect(chimeMock.playChime).toHaveBeenCalledWith("notification");
+    // A mail's toast shows that mail where the operator is, not the Mail pane (operator 19/11 nous_msg:8c3a737937b14ac089e5a7e6).
+    const message = { messageId: "m2", threadId: "t1", account: "me@gmail.com", from: { name: "Me", address: "me@gmail.com" }, to: [{ name: "", address: "anna@example.com" }], cc: [],
+      subject: "Re: Invoice #4521", receivedAt: now, text: "Thanks Anna, paid today.", html: null, unread: false, blockedImages: false, attachments: [] };
+    apiMock.mailThread.mockResolvedValue({ thread: { account: "me@gmail.com", threadId: "t1", subject: "Re: Invoice #4521", messages: [message] } });
     fireEvent.click(screen.getByText("Anna Papadopoulou"));
-    expect(navigate).toHaveBeenCalledWith({ roomId: "room:1", paneId: "pane:mail", target: "thread:me@gmail.com:t1" }, expect.objectContaining({ id: "notification:a" }));
+    expect(navigate).not.toHaveBeenCalled();
+    const viewer = await screen.findByRole("dialog", { name: "Re: Invoice #4521" });
+    expect(apiMock.mailThread).toHaveBeenCalledWith("pane:mail", "me@gmail.com", "t1", false);
+    expect(within(viewer).getByText("Thanks Anna, paid today.")).toBeTruthy();
     await waitFor(() => expect(apiMock.markNotificationRead).toHaveBeenCalledWith("notification:a"));
     await waitFor(() => expect(screen.queryByText("Anna Papadopoulou")).toBeNull());
+    fireEvent.click(within(viewer).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
     document.documentElement.setAttribute("data-suppress-notifications", "true");
     act(() => { deliverNotifications([notification("c")], null); });
     expect(screen.queryByText(/Anna/)).toBeNull();
@@ -167,7 +191,7 @@ describe("Space notifications (web)", () => {
     expect(chimeMock.playChime).toHaveBeenCalledTimes(1);
   });
 
-  it("shows one toast per pane (the newest replaces the rest) and closes it on its own", async () => {
+  it("shows one toast per pane (the newest replaces the rest) and keeps it until its X (operator 19/11 nous_msg:8c3a737937b14ac089e5a7e6)", async () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     vi.useFakeTimers();
     try {
@@ -186,8 +210,9 @@ describe("Space notifications (web)", () => {
       // A later notification of the same pane replaces its toast instead of stacking.
       act(() => { deliverNotifications([notification("q3", { ...pane, source: "JOB_COPILOT", title: "Next question" })], null); });
       expect(peekNotificationStore().toasts.map((toast) => toast.id)).toEqual(["notification:mail", "notification:q3"]);
-      act(() => { vi.advanceTimersByTime(8_100); });
-      expect(peekNotificationStore().toasts).toEqual([]);
+      act(() => { vi.advanceTimersByTime(3_600_000); });
+      expect(peekNotificationStore().toasts.map((toast) => toast.id)).toEqual(["notification:mail", "notification:q3"]);
+      fireEvent.click(within(screen.getByText("Next question").closest("aside")!).getByRole("button", { name: "Dismiss notification" }));
       expect(screen.queryByText("Next question")).toBeNull();
     } finally {
       vi.useRealTimers();
@@ -223,7 +248,7 @@ describe("Space notifications (web)", () => {
   });
 
 
-  it("a needs-you toast stays until its translation arrives, up to the pop-up's 12 s, then its 8 s (plan clipboard:32etNsBgtbI- step 9)", async () => {
+  it("a needs-you toast shows its translation when it lands and, like every toast, stays until its X", async () => {
     vi.useFakeTimers();
     announceUiLanguage("el"); announceAgentLanguage("el");
     try {
@@ -232,29 +257,13 @@ describe("Space notifications (web)", () => {
       const translated = { ...question, payload: { translated: { language: "el", from: needsYouCardTexts(question).from, title: "Ο Job Copilot σε χρειάζεται",
         body: "Ποιο βιογραφικό;", question: "Ποιο βιογραφικό;", options: [] } } };
       act(() => { pushNotificationToast(question); });
-      act(() => { vi.advanceTimersByTime(10_000); });
+      act(() => { vi.advanceTimersByTime(30_000); });
       expect(screen.getByText("Job Copilot needs you")).toBeTruthy();
-      // The translation lands 10 s in: the toast reads it for 8 s from then.
       apiMock.notificationsPending.mockResolvedValue(pending([translated]));
       apiMock.notifications.mockResolvedValue({ notifications: [translated] });
       await act(async () => { await refreshNotifications(); });
+      act(() => { vi.advanceTimersByTime(3_600_000); });
       expect(screen.getByText("Ο Job Copilot σε χρειάζεται")).toBeTruthy();
-      act(() => { vi.advanceTimersByTime(7_900); });
-      expect(screen.getByText("Ο Job Copilot σε χρειάζεται")).toBeTruthy();
-      act(() => { vi.advanceTimersByTime(200); });
-      expect(screen.queryByText("Ο Job Copilot σε χρειάζεται")).toBeNull();
-      // No translation comes: the needs-you toast waits 12 s, then its 8 s as written; a toast that is not needs-you keeps its 8 s.
-      act(() => {
-        pushNotificationToast(notification("tq2", { source: "JOB_COPILOT", kind: "QUESTION", title: "Second question", paneId: "pane:job2" }));
-        pushNotificationToast(notification("info", { severity: "INFO", title: "New mail", paneId: "pane:mail2" }));
-      });
-      act(() => { vi.advanceTimersByTime(8_100); });
-      expect(screen.queryByText("New mail")).toBeNull();
-      expect(screen.getByText("Second question")).toBeTruthy();
-      act(() => { vi.advanceTimersByTime(11_800); });
-      expect(screen.getByText("Second question")).toBeTruthy();
-      act(() => { vi.advanceTimersByTime(200); });
-      expect(screen.queryByText("Second question")).toBeNull();
     } finally {
       announceUiLanguage("en"); announceAgentLanguage("en");
       vi.useRealTimers();
@@ -302,7 +311,7 @@ describe("Space notifications (web)", () => {
     }
   });
 
-  it("lists notifications in the Center with unread first, acknowledges one and marks all read", async () => {
+  it("lists notifications in the Center with unread first, acknowledges one and marks all read (operator 17/11: the bell's dock is back)", async () => {
     const items = [notification("a"), notification("b", { status: "READ", source: "ROOM_AGENT", title: "Bob is waiting" })];
     apiMock.notificationsPending.mockResolvedValue(pending(items));
     apiMock.notifications.mockResolvedValue({ notifications: items });
@@ -317,6 +326,90 @@ describe("Space notifications (web)", () => {
     await waitFor(() => expect(apiMock.ackNotification).toHaveBeenCalledWith("notification:a"));
     fireEvent.click(screen.getByRole("button", { name: "Mark all read" }));
     await waitFor(() => expect(apiMock.readAllNotifications).toHaveBeenCalled());
+  });
+
+  it("keeps a needs-you card the operator opened (READ) under Unread, and the bell's badge equals the dock's count (efe70d0bf7, nous_msg:e1bcd1d9)", async () => {
+    const card = notification("card", { source: "NOUS", kind: "NEEDS_HANDS", status: "READ", title: "Upwork needs you", dedupeKey: "nous:pane:pane:mail" });
+    const mail = notification("mail", { paneId: "pane:other", link: { roomId: "room:1", paneId: "pane:other" } });
+    const read = notification("old", { status: "READ", paneId: "pane:third", title: "An old invoice", link: { roomId: "room:1", paneId: "pane:third" } });
+    const waiting = [card, mail];
+    apiMock.notificationsPending.mockResolvedValue({ ...pending(waiting), total: 2, latest: waiting });
+    apiMock.notifications.mockResolvedValue({ notifications: [card, mail, read] });
+    (apiMock.inbox as unknown as { mockResolvedValueOnce(value: unknown): void }).mockResolvedValueOnce({ badge: 7, attention: true, threads: [] });
+    render(<NotificationCenterDock />);
+    expect(await screen.findByText("2 unread")).toBeTruthy();
+    const list = screen.getByRole("list");
+    expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(list).getByRole("button", { name: "Nous: Upwork needs you" })).toBeTruthy();
+    expect(within(list).queryByText("An old invoice")).toBeNull();
+    expect(notificationsBadge(peekNotificationStore())).toBe(2);
+    expect(within(screen.getByRole("group", { name: "Show" })).getByRole("button", { name: /Unread/ }).textContent).toContain("2");
+  });
+
+  it("a needs-you card's row check marks it read and never acknowledges it; an ordinary alert's still acknowledges (operator 17/11 14:04 BKK)", async () => {
+    const card = notification("card", { source: "NOUS", kind: "NEEDS_HANDS", status: "READ", title: "Upwork needs you", dedupeKey: "nous:pane:pane:mail" });
+    const plain = notification("mail", { paneId: "pane:other", link: { roomId: "room:1", paneId: "pane:other" } });
+    render(<ul>{[card, plain].map((item) => <li key={item.id}>{notificationRow(item)}</li>)}</ul>);
+    const [cardRow, plainRow] = screen.getAllByRole("listitem");
+    expect(within(cardRow!).queryByRole("button", { name: "Acknowledge" })).toBeNull();
+    fireEvent.click(within(cardRow!).getByRole("button", { name: "Mark read" }));
+    await waitFor(() => expect(apiMock.readAllNotifications).toHaveBeenCalledWith("notification:card"));
+    expect(apiMock.ackNotification).not.toHaveBeenCalled();
+    fireEvent.click(within(plainRow!).getByRole("button", { name: "Acknowledge" }));
+    await waitFor(() => expect(apiMock.ackNotification).toHaveBeenCalledWith("notification:mail"));
+    cleanup();
+    // Once marked it has nothing left to do in the row; it still waits in Needs you.
+    render(<ul><li>{notificationRow({ ...card, payload: { ...card.payload, markedReadAt: now } })}</li></ul>);
+    expect(screen.queryByRole("button", { name: /Mark read|Acknowledge/ })).toBeNull();
+  });
+
+  it("a waiting needs-you card closes from its Notifications dock row with one tap, Completed, as «Done, all good»; never on a review (plan clipboard:aE7U1J_gU9OV step 5)", async () => {
+    const card = notification("card", { source: "NOUS", kind: "NEEDS_HANDS", status: "READ", title: "Upwork needs you", dedupeKey: "nous:pane:pane:mail",
+      payload: { ask: { question: "Sign in?", options: ["Go now", "Failed", "Done, all good"], answer: { kind: "PANE" } } } });
+    const review = notification("review", { source: "NOUS", kind: "NEEDS_HANDS", title: "Send it?", dedupeKey: "nous:pane:pane:review", paneId: "pane:review",
+      payload: { ask: { question: "Send it?", options: ["Approve", "Decline"], answer: { kind: "COPILOT_DECISION" } } } });
+    const plain = notification("mail", { paneId: "pane:other" });
+    render(<ul>{[card, review, plain].map((item) => <li key={item.id}>{notificationRow(item)}</li>)}</ul>);
+    const [cardRow, reviewRow, plainRow] = screen.getAllByRole("listitem");
+    fireEvent.click(within(cardRow!).getByRole("button", { name: "Completed" }));
+    // Listed by the ask, so it goes as its option.
+    await waitFor(() => expect(apiMock.answerNotification).toHaveBeenCalledWith("notification:card", { option: "Done, all good" }));
+    expect(within(reviewRow!).queryByRole("button", { name: "Completed" })).toBeNull();
+    expect(within(plainRow!).queryByRole("button", { name: "Completed" })).toBeNull();
+    cleanup();
+    // An answered card has nothing left to close.
+    render(<ul><li>{notificationRow({ ...card, status: "ACKED" })}</li></ul>);
+    expect(screen.queryByRole("button", { name: "Completed" })).toBeNull();
+  });
+
+  it("Mark all read takes an opened needs-you card off Unread without answering it (operator 17/11 14:04 BKK)", async () => {
+    const card = notification("card", { source: "NOUS", kind: "NEEDS_HANDS", status: "READ", title: "Upwork needs you", dedupeKey: "nous:pane:pane:mail" });
+    apiMock.notificationsPending.mockResolvedValue({ ...pending([card]), total: 1, latest: [card] });
+    apiMock.notifications.mockResolvedValue({ notifications: [card] });
+    render(<NotificationCenterDock />);
+    expect(await screen.findByText("1 unread")).toBeTruthy();
+    const marked = { ...card, payload: { ...card.payload, markedReadAt: new Date().toISOString() } };
+    apiMock.notificationsPending.mockResolvedValue({ ...pending([]), total: 0, latest: [] });
+    apiMock.notifications.mockResolvedValue({ notifications: [marked] });
+    fireEvent.click(screen.getByRole("button", { name: "Mark all read" }));
+    expect(await screen.findByText("Nothing waiting")).toBeTruthy();
+    expect(screen.getByText("All caught up")).toBeTruthy();
+    expect(notificationsBadge(peekNotificationStore())).toBe(0);
+    fireEvent.click(within(screen.getByRole("group", { name: "Show" })).getByRole("button", { name: "All" }));
+    expect(within(screen.getByRole("list")).getByRole("button", { name: "Nous: Upwork needs you" })).toBeTruthy();
+  });
+
+  it("loads earlier notifications on demand past the newest 100 (31/10: the Center held only the newest 100)", async () => {
+    const newest = Array.from({ length: 100 }, (_, index) => notification(`n${index}`, { status: "READ", createdAt: new Date(Date.parse(now) - index * 1_000).toISOString() }));
+    const older = notification("old", { status: "READ", title: "An old invoice", createdAt: new Date(Date.parse(now) - 500_000).toISOString() });
+    apiMock.notificationsPending.mockResolvedValue(pending([]));
+    apiMock.notifications.mockImplementation(async (query: { before?: string }) => ({ notifications: query.before ? [older] : newest }));
+    render(<NotificationCenterDock />);
+    fireEvent.click(within(await screen.findByRole("group", { name: "Show" })).getByRole("button", { name: "All" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load earlier notifications" }));
+    expect(await screen.findByText("An old invoice", { exact: false })).toBeTruthy();
+    expect(apiMock.notifications).toHaveBeenLastCalledWith({ status: "ALL", limit: 100, before: newest.at(-1)!.createdAt });
+    expect(screen.queryByRole("button", { name: "Load earlier notifications" })).toBeNull();
   });
 
   it("gives an appointment reminder a Join button with its link in the Center and its toast (operator 13/11 16:00 BKK)", async () => {
@@ -336,34 +429,21 @@ describe("Space notifications (web)", () => {
     expect((await screen.findByRole("link", { name: "Join meet.google.com" })).getAttribute("href")).toBe("https://meet.google.com/abc-defg-hij");
   });
 
-  it("loads earlier notifications on demand past the newest 100 (31/10: the Center held only the newest 100)", async () => {
-    const newest = Array.from({ length: 100 }, (_, index) => notification(`n${index}`, { status: "READ", createdAt: new Date(Date.parse(now) - index * 1_000).toISOString() }));
-    const older = notification("old", { status: "READ", title: "An old invoice", createdAt: new Date(Date.parse(now) - 500_000).toISOString() });
-    apiMock.notificationsPending.mockResolvedValue(pending([]));
-    apiMock.notifications.mockImplementation(async (query: { before?: string }) => ({ notifications: query.before ? [older] : newest }));
-    render(<NotificationCenterDock />);
-    fireEvent.click(within(await screen.findByRole("group", { name: "Show" })).getByRole("button", { name: "All" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Load earlier notifications" }));
-    expect(await screen.findByText("An old invoice", { exact: false })).toBeTruthy();
-    expect(apiMock.notifications).toHaveBeenLastCalledWith({ status: "ALL", limit: 100, before: newest.at(-1)!.createdAt });
-    expect(screen.queryByRole("button", { name: "Load earlier notifications" })).toBeNull();
-  });
-
   it("offers under Unread only the sources with something unread, and keeps the chosen one", async () => {
     const items = [notification("a"), notification("b", { source: "DESIGN", title: "Logo" }), notification("c", { status: "READ", source: "ROOM_AGENT", title: "Bob is waiting" })];
     apiMock.notificationsPending.mockResolvedValue(pending(items));
     apiMock.notifications.mockResolvedValue({ notifications: items });
     render(<NotificationCenterDock />);
     const sourceChips = async () => within(await screen.findByRole("group", { name: "Source" })).getAllByRole("button").map((chip) => chip.textContent);
-    expect(await sourceChips()).toEqual(["All", "Mail Copilot1", "Design1"]);
+    expect(await sourceChips()).toEqual(["All sources", "Mail Copilot1", "Design1"]);
     fireEvent.click(within(screen.getByRole("group", { name: "Show" })).getByRole("button", { name: "All" }));
-    expect(await sourceChips()).toEqual(["All", "Mail Copilot1", "Design1", "Room Agent0"]);
+    expect(await sourceChips()).toEqual(["All sources", "Mail Copilot1", "Design1", "Room Agent0"]);
     fireEvent.click(within(screen.getByRole("group", { name: "Source" })).getByRole("button", { name: "Room Agent0" }));
     fireEvent.click(within(screen.getByRole("group", { name: "Show" })).getByRole("button", { name: /Unread/ }));
-    expect(await sourceChips()).toEqual(["All", "Mail Copilot1", "Design1", "Room Agent0"]);
+    expect(await sourceChips()).toEqual(["All sources", "Mail Copilot1", "Design1", "Room Agent0"]);
   });
 
-  it("groups a pane's notifications under Nous's card, opens its card in Needs you (never the pane) and delivers a new list once more (plan clipboard:8FfXWclYUfOH)", async () => {
+  it("groups a pane's notifications under Nous's card, opens its card in Needs you (or the pane when Nous is hidden) and delivers a new list once more (plan clipboard:8FfXWclYUfOH)", async () => {
     const card = (alertAt: string) => notification("nous", { source: "NOUS", kind: "NEEDS_HANDS", title: "Upwork needs you", body: "• Pass the Cloudflare check",
       dedupeKey: "nous:pane:pane:mail", link: { roomId: "room:1", paneId: "pane:mail" }, payload: { alertAt } });
     const items = [card("2026-10-17T14:00:00.000Z"), notification("a"), notification("c", { paneId: "pane:other", title: "Other pane" })];
@@ -388,6 +468,16 @@ describe("Space notifications (web)", () => {
     expect(consumeNeedsYouView()).toEqual({ id: "notification:nous" });
     expect(apiMock.markNotificationRead).toHaveBeenCalledWith("notification:nous");
 
+    // With Nous hidden (operator 17/11, nous_msg:e1bcd1d9), clicking a row navigates to the notification's room/pane without opening Nous.
+    navigate.mockClear();
+    writeHiddenDockIds(["nous"]);
+    try {
+      fireEvent.click(within(list).getByRole("button", { name: "Unread: Nous: Upwork needs you" }));
+      expect(navigate).toHaveBeenCalledWith({ roomId: "room:1", paneId: "pane:mail" }, expect.objectContaining({ id: "notification:nous" }));
+    } finally {
+      writeHiddenDockIds([]);
+    }
+
     const delivered = vi.fn();
     setNotificationDeliveryHandler(delivered);
     await refreshNotifications();
@@ -397,6 +487,36 @@ describe("Space notifications (web)", () => {
     apiMock.notifications.mockResolvedValue({ notifications: relisted });
     await refreshNotifications();
     expect(delivered).toHaveBeenCalledWith([expect.objectContaining({ id: "notification:nous" })]);
+  });
+
+  it("with Nous hidden a Done and an Update open under their row with the full report, and Seen it acknowledges (plan clipboard:JD8EbQgQdRls step 4)", async () => {
+    const done = notification("done", { source: "NOUS", kind: "REQUEST_DONE", roomId: null, paneId: null, title: "Done: four tabs", body: "The Inbox has four tabs", link: { surface: "nous", target: "done" },
+      payload: { request: "Bring the tabs back", summary: "The Inbox has four tabs", where: "dev", verified: "each tab opens on dev", planId: "clipboard:plan" } });
+    const update = notification("update", { source: "NOUS", kind: "OPERATOR_UPDATE", roomId: null, paneId: null, title: "Approved: Algolia", body: "$10,000 credits", link: { surface: "nous", target: "updates" },
+      payload: { report: "Algolia approved the startup program.\nThe credits are on the account.", links: [{ label: "Program page", url: "https://algolia.example/startups" }] } });
+    apiMock.notificationsPending.mockResolvedValue(pending([done, update]));
+    apiMock.notifications.mockResolvedValue({ notifications: [done, update] });
+    const navigate = vi.fn();
+    setNotificationNavigator(navigate);
+    writeHiddenDockIds(["nous"]);
+    try {
+      render(<NotificationCenterDock />);
+      fireEvent.click(await screen.findByRole("button", { name: "Unread: Nous: Approved: Algolia" }));
+      // The link to Nous becomes the Notifications dock itself, so a toast's click lands on the open row too.
+      expect(navigate).toHaveBeenCalledWith({ surface: "notifications", target: "updates" }, expect.objectContaining({ id: "notification:update" }));
+      expect(consumeUpdatesView()).toBe(false);
+      expect(screen.getByText(/The credits are on the account\./)).toBeTruthy();
+      expect(screen.getByRole("link", { name: "Program page" }).getAttribute("href")).toBe("https://algolia.example/startups");
+
+      fireEvent.click(screen.getByRole("button", { name: "Unread: Nous: Done: four tabs" }));
+      expect(screen.queryByRole("link", { name: "Program page" })).toBeNull();
+      const card = screen.getByRole("article", { name: "Bring the tabs back" });
+      expect(card.textContent).toContain("Checked: each tab opens on dev");
+      // No plan view exists without Nous, so the card offers no dead Open plan.
+      expect(within(card).queryByRole("button", { name: "Open plan" })).toBeNull();
+      fireEvent.click(within(card).getByRole("button", { name: "Seen it" }));
+      await waitFor(() => expect(apiMock.ackNotification).toHaveBeenCalledWith("notification:done"));
+    } finally { writeHiddenDockIds([]); }
   });
 
   it("saves the channel settings and raises a test notification from the settings card", async () => {

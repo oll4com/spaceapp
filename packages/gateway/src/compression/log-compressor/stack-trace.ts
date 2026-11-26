@@ -47,7 +47,7 @@ const isJsAtFrame = (text: string): boolean =>
 /** `at <package.Class.method>(`; `/` admits JPMS module prefixes and lambda frames. */
 function isJavaAtFrame(text: string): boolean {
   if (!text.startsWith("at ") || !text.includes("(")) return false;
-  return /^[A-Za-z0-9._$\/]+$/.test(text.slice(3, text.indexOf("(")));
+  return /^[A-Za-z0-9._$/]+$/.test(text.slice(3, text.indexOf("(")));
 }
 
 /** `:<digits>:<digit>` anywhere (line:col). */
@@ -78,7 +78,7 @@ function isGoCallFrame(line: string): boolean {
   const open = line.indexOf("(");
   if (open < 0) return false;
   const symbol = line.slice(0, open);
-  return symbol.includes(".") && /^[A-Za-z0-9._\/*]+$/.test(symbol);
+  return symbol.includes(".") && /^[A-Za-z0-9._/*]+$/.test(symbol);
 }
 
 const isDotnetOpener = (text: string): boolean => text.startsWith("Unhandled exception.") || isDotnetFrame(text);

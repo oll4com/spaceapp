@@ -6,7 +6,7 @@ describe("Database Retention Sweep", () => {
   it("iterates in bounded batches until fewer than batchLimit are pruned", async () => {
     let callCount = 0;
     const mockStore: any = {
-      pruneExpiredCliTranscriptChunks: vi.fn(async ({ olderThanDays, batchSize }) => {
+      pruneExpiredCliTranscriptChunks: vi.fn(async () => {
         callCount++;
         if (callCount === 1) return { deletedChunks: 500 };
         if (callCount === 2) return { deletedChunks: 500 };

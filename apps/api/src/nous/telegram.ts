@@ -24,7 +24,7 @@ const DECISION_TAIL = /Decision (nous_decision:[A-Za-z0-9_-]{6,80})\s*$/;
 /** A button's data stays under Telegram's 64 bytes: the decision id without its prefix and one letter. */
 const BUTTON = /^nd:([A-Za-z0-9_-]{6,80}):(a|d)$/;
 
-export type NousTelegramClient = Pick<TelegramBotApiClient, "getUpdates" | "sendMessage" | "answerCallbackQuery">;
+export type NousTelegramClient = Pick<TelegramBotApiClient, "getUpdates" | "sendMessage" | "answerCallbackQuery" | "editMessageText">;
 
 export interface NousTelegramDeps {
   persistence: Pick<TelegramPersistence, "getIntegration" | "getPendingPairing" | "updateIntegrationOffset">;
@@ -149,8 +149,8 @@ export function createNousTelegram(deps: NousTelegramDeps) {
       return true;
     },
 
-    /** A decision's card with its Approve and Decline buttons; false hands the text to the outbox. */
-    async decisionCard(owner: string, decision: NousDecision, text: string): Promise<boolean> {
+    /** A decision's card with its Approve and Decline buttons, answering its chat message; false hands the text to the outbox. */
+    async decisionCard(owner: string, decision: NousDecision, text: string): Promise<string | false> {
       const live = await chat();
       if (!live || (await deps.owner()) !== owner) return false;
       const tail = `\n\nDecision ${decision.id}`;
@@ -159,9 +159,21 @@ export function createNousTelegram(deps: NousTelegramDeps) {
       const room = NOUS_TELEGRAM_CHUNK - tail.length;
       const split = Math.max(0, text.length - room);
       if (split) await sendWhole(live.client, live.chatId, text.slice(0, split));
-      await live.client.sendMessage(live.chatId, `${text.slice(split)}${tail}`,
+      const sent = await live.client.sendMessage(live.chatId, `${text.slice(split)}${tail}`,
         { replyMarkup: { inline_keyboard: [[{ text: "Approve", callback_data: `nd:${id}:a` }, { text: "Decline", callback_data: `nd:${id}:d` }]] } });
-      return true;
+      return sent.messageId;
+    },
+
+    /** Spec v2 §7 (step 4b): a Thread answered (anywhere) reads as answered in the paired chat; a card's buttons go with its old text. */
+    async markAnswered(messageIds: readonly string[], title: string): Promise<void> {
+      if (!messageIds.length) return;
+      const integration = await deps.persistence.getIntegration();
+      if (!integration.isEnabled || integration.connectionStatus !== "CONNECTED" || !integration.chatId || !integration.secretVersion) return;
+      const client = clientFactory(await deps.secrets.read(integration.secretVersion));
+      const text = `${Array.from(title).slice(0, NOUS_TELEGRAM_CHUNK).join("")}\n\n✓ Answered`;
+      for (const messageId of messageIds) {
+        await client.editMessageText(integration.chatId, messageId, text).catch((error) => deps.log?.warn({ err: error }, "Telegram answered edit failed."));
+      }
     }
   };
 }

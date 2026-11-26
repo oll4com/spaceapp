@@ -16,9 +16,41 @@ type NativeControl = { runtimeId: string; read: () => Promise<Screen>; write: (d
 /** Pane picks are namespaced so a persisted pick is never confused with the runtime's generic default id. */
 export const CLAUDE_PANE_MODEL_PREFIX = "claude:";
 export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+/** The Claude family a pane model id names: a pane pick (`claude:sonnet`) or a full id (`claude-sonnet-5-5`); never the runtime's bare default id. */
+export function claudePaneModelFamily(modelId: string | null | undefined): string | null {
+  const family = modelId?.startsWith(CLAUDE_PANE_MODEL_PREFIX) ? modelId.slice(CLAUDE_PANE_MODEL_PREFIX.length) : /^claude-([a-z]+)-[\w.-]+$/.exec(modelId ?? "")?.[1];
+  return family && /^(?:opus|fable|sonnet|haiku)$/.test(family) ? family : null;
+}
+// Plan clipboard:VypZ4sl7NR04 (token saving, 20/11): a Claude copilot pane with no Claude pick runs its type's class instead of
+// Claude Code's default Opus at xhigh; code and security work stays on Opus. Nous's space_set_pane_model moves a pane up or down.
+export const CLAUDE_COPILOT_DEFAULTS: Readonly<Record<string, { modelId: string; reasoningEffort: string }>> = {
+  MAIL_COPILOT: { modelId: "claude:sonnet", reasoningEffort: "high" },
+  MARKETING_COPILOT: { modelId: "claude:sonnet", reasoningEffort: "high" },
+  FREELANCE_COPILOT: { modelId: "claude:sonnet", reasoningEffort: "high" },
+  JOB_APPLY: { modelId: "claude:sonnet", reasoningEffort: "medium" },
+  MONITORING_COPILOT: { modelId: "claude:sonnet", reasoningEffort: "medium" },
+  APP_STUDIO: { modelId: "claude:opus", reasoningEffort: "high" },
+  SECURITY_COPILOT: { modelId: "claude:opus", reasoningEffort: "high" },
+  DESIGN: { modelId: "claude:opus", reasoningEffort: "high" },
+  VIDEO: { modelId: "claude:opus", reasoningEffort: "high" }
+};
+/** A Claude copilot pane's launch model on every start and resume path: its own Claude pick, else its type's class; null for other panes.
+ * 23/11: Jack (JOB_APPLY, opened by Nous) and Bob (MAIL_COPILOT, resumed on an 18/11 Opus task) ran Opus, ~190M tokens/day. */
+export function claudeCopilotLaunch(runtimeId: string, pane: { mode: string; modelId: string | null; reasoningEffort: string }) {
+  const copilot = runtimeId === "cli:claude" ? CLAUDE_COPILOT_DEFAULTS[pane.mode] : undefined;
+  if (!copilot) return null;
+  return claudePaneModelFamily(pane.modelId) ? { modelId: pane.modelId!, reasoningEffort: pane.reasoningEffort } : copilot;
+}
 const identifier = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+const GEMINI_EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const geminiEffortIdSuffix = /-(minimal|low|medium|high|xhigh|max|thinking)$/;
+const geminiEffortValueSuffix = /-(minimal|low|medium|high|xhigh|max)$/;
+const normalizeGeminiEffort = (value: string) => {
+  const lower = value.toLowerCase();
+  return lower === "thinking" ? "high" : lower === "extra high" ? "xhigh" : lower;
+};
 const cursorFamilyName = (name: string) => name.replace(/(?:\s+(?:\d+(?:\.\d+)?[MK]|Extra High|None|Low|Medium|High|Thinking|Fast|Max))+$/i, "").trim();
-const geminiFamilyName = (name: string) => name.replace(/\s*\((?:Extra High|None|Low|Medium|High|Thinking|Fast|Max)\)\s*$/i, "").trim();
+const geminiFamilyName = (name: string) => name.replace(/\s*\((?:Extra High|XHigh|None|Minimal|Low|Medium|High|Thinking|Fast|Max)\)\s*$/i, "").trim();
 
 function nativeSettingsMenu(screen: string): boolean {
   // Cursor can retain a rendered model list above its next composer. Only the
@@ -59,6 +91,8 @@ function nativePromptDraft(text: string, runtimeId: string): string | undefined 
   return prompt;
 }
 
+const settingsCommandDraft = /^\/(?:model|effort|reasoning|thinking|switch)(?:\s|$)/;
+
 /** Model controls may replace a native settings menu, never a user prompt or approval. */
 export async function prepareNativeCliSettings(input: NativeControl): Promise<Screen> {
   const wait = input.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
@@ -83,7 +117,7 @@ export async function prepareNativeCliSettings(input: NativeControl): Promise<Sc
   }
   // Escape can restore a previous settings command. A normal draft is never
   // cleared, even when a previous picker attempt failed.
-  if (prompt && /^\/(?:model|effort|reasoning|thinking|switch)(?:\s|$)/.test(prompt)) {
+  if (prompt && settingsCommandDraft.test(prompt)) {
     await input.assertCurrent(); await input.write('\u0015'); await wait(250); screen = await input.read();
   } else if (prompt && !(input.runtimeId === 'cli:gemini' && /^(?:Accept-edits|Plan|Default) mode: /.test(prompt)) && !(input.runtimeId === 'cli:hermes' && [
     'Ask me anything…', 'Try "explain this codebase"', 'Try "write a test for…"',
@@ -95,7 +129,7 @@ export async function prepareNativeCliSettings(input: NativeControl): Promise<Sc
   return screen;
 }
 
-/** Escapes a native settings menu left open; a prompt, approval or turn is never touched. */
+/** Escapes a native settings menu left open and clears a settings command left typed; a prompt, approval or turn is never touched. */
 export async function cleanupNativeSettingsMenu(input: NativeControl): Promise<void> {
   const wait = input.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -105,7 +139,12 @@ export async function cleanupNativeSettingsMenu(input: NativeControl): Promise<v
       await input.write('\u0015'); await wait(250);
       return;
     }
-    if (nativeApprovalOrTurn(screen) || !nativeSettingsMenu(screen)) return;
+    if (nativeApprovalOrTurn(screen)) return;
+    if (!nativeSettingsMenu(screen)) {
+      // 21/11 PTY: a dropped Enter after "/model" fails the switch with the command still typed, and the pane's next send is refused.
+      if (settingsCommandDraft.test(nativePromptDraft(screen, input.runtimeId) ?? '')) { await input.write('\u0015'); await wait(250); }
+      return;
+    }
     await input.write('\u001b'); await wait(250);
   }
 }
@@ -183,16 +222,16 @@ export function nativeCliCatalogModels(commandPath: string, raw: string): Model[
     const id = isCursor
       ? `cursor-family:${displayName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`
       : isGemini
-        ? model.id.replace(/-(low|medium|high|thinking)$/, "")
+        ? model.id.replace(geminiEffortIdSuffix, "")
         : isClaude && !model.id.startsWith(CLAUDE_PANE_MODEL_PREFIX)
           ? `${CLAUDE_PANE_MODEL_PREFIX}${model.id}`
           : model.id;
 
     if (isGemini) {
-      const variantEffort = model.id.match(/-(low|medium|high)$/)?.[1]
-        ?? (model.displayName.match(/\b(Low|Medium|High|Thinking)\b/i)?.[1]?.toLowerCase());
+      const variantEffort = model.id.match(geminiEffortValueSuffix)?.[1]
+        ?? model.displayName.match(/(?:\(\s*|\b)(Extra High|XHigh|Minimal|Low|Medium|High|Max|Thinking)(?:\s*\))?\s*$/i)?.[1];
       if (variantEffort) {
-        const normalizedEffort = variantEffort === "thinking" ? "high" : variantEffort;
+        const normalizedEffort = normalizeGeminiEffort(variantEffort);
         const key = `${id}\u0000${normalizedEffort}`;
         if (!geminiVariantIds.get(key)?.endsWith(`-${normalizedEffort}`)) geminiVariantIds.set(key, model.id);
         if (geminiVariantIds.get(key) === model.id) geminiVariantLabels.set(key, model.displayName);
@@ -239,8 +278,8 @@ export function nativeCliCatalogModels(commandPath: string, raw: string): Model[
     model.reasoningOptions?.sort((a,b) => order.indexOf(a.reasoningEffort) - order.indexOf(b.reasoningEffort));
     if (commandPath.endsWith('/cursor-vscode-parity') && model.supportedReasoningEfforts.includes('medium')) model.defaultReasoningEffort = 'medium';
     if (commandPath.endsWith('/gemini-vscode-parity') && model.supportedReasoningEfforts.includes('high')) model.defaultReasoningEffort = 'high';
-    // Space starts Claude Code with effortLevel xhigh (claude-space-settings.json).
-    if (commandPath.endsWith('/claude-vscode-parity') && model.supportedReasoningEfforts.includes('xhigh')) model.defaultReasoningEffort = 'xhigh';
+    // Space starts Claude Code with effortLevel high (claude-space-settings.json; xhigh until plan clipboard:VypZ4sl7NR04, 20/11).
+    if (commandPath.endsWith('/claude-vscode-parity') && model.supportedReasoningEfforts.includes('high')) model.defaultReasoningEffort = 'high';
     return model;
   });
 }
@@ -281,10 +320,16 @@ export function nativeCliConfirmedReasoning(screen: string, runtimeId: string, m
     screen = screen.replace(/(effort for[^\n]*)(?:\n([^·❯›>─\n][^\n]*)){0,3}/g, value => value.replace(/\n/g, ' '));
   }
   if (runtimeId === 'cli:gemini') {
-    const footer = screen.match(/(?:^|·)\s*Gemini [^·\n]+\s*·\s*(low|medium|high)\s*$/im);
-    if (footer) return footer[1]!.toLowerCase();
-    const setMsg = screen.match(/Model set to [^(\n]+\((High|Medium|Low)\)/i);
-    if (setMsg) return setMsg[1]!.toLowerCase();
+    const footer = [...screen.matchAll(/(?:^|·)\s*(?:Gemini|Claude|GPT-OSS) [^·\n]+\s*·\s*(minimal|low|medium|high|xhigh|extra high|max)\s*$/gim)].at(-1);
+    if (footer) return normalizeGeminiEffort(footer[1]!);
+    const setMsg = [...screen.matchAll(/Model set to [^\n(]+(?:\n\s+[^\n(]+)?\((Extra High|XHigh|Minimal|Low|Medium|High|Max)\)/gi)].at(-1);
+    if (setMsg) return normalizeGeminiEffort(setMsg[1]!);
+    const bannerLines = screen.split(/\r?\n/);
+    for (let i = bannerLines.length - 2; i >= 0; i--) {
+      if (!bannerLines[i + 1]?.trim().startsWith('/')) continue;
+      const bannerEffort = bannerLines[i]!.trim().match(/\((Extra High|XHigh|Minimal|Low|Medium|High|Max)\)\s*$/i)?.[1];
+      if (bannerEffort) return normalizeGeminiEffort(bannerEffort);
+    }
     if (model?.reasoningOptions?.length) return model.defaultReasoningEffort;
   }
   if (runtimeId === 'cli:claude') {
@@ -525,12 +570,19 @@ const isNewer = (a: number[], b: number[]) => {
 /** What a Gemini pane starts on: its model while the account still lists it, else the newest of its family (3/11: agy retired
  * Claude Opus 4.6 for Opus 5.5, and the pane fell to agy's default Gemini Flash), with agy's label for the effort. null: no match. */
 export function geminiLaunchModel(models: readonly Model[], modelId: string, effort: string) {
-  const id = modelId.replace(/-(low|medium|high|thinking)$/, "");
-  const model = models.find(entry => entry.id === id) ?? models
+  const id = modelId.replace(geminiEffortIdSuffix, "");
+  let model = models.find(entry => entry.id === id) ?? models
     .filter(entry => geminiFamilyOf(entry.id) === geminiFamilyOf(id))
     .reduce<Model | undefined>((best, entry) => !best || isNewer(geminiVersionOf(entry.id), geminiVersionOf(best.id)) ? entry : best, undefined);
+  if (!model && id.includes("argon")) {
+    // Operator 22/11 c74c7453: Neon before Hydrogen.
+    model = models.find(entry => /^gemini-\d+-neon\b/.test(entry.id)) ?? models.find(entry => entry.id.includes("hydrogen"));
+  }
   if (!model) return null;
-  const reasoningEffort = model.supportedReasoningEfforts.includes(effort) ? effort : model.defaultReasoningEffort;
+  const requestedEffort = model.supportedReasoningEfforts.includes(effort)
+    ? effort
+    : (modelId.match(geminiEffortValueSuffix)?.[1] ?? effort);
+  const reasoningEffort = model.supportedReasoningEfforts.includes(requestedEffort) ? requestedEffort : model.defaultReasoningEffort;
   return { modelId: model.id, reasoningEffort, label: geminiVariantLabels.get(`${model.id}\u0000${reasoningEffort}`) ?? null };
 }
 
@@ -582,8 +634,11 @@ export function nativeCliConfirmedModel(screen: string, models: readonly Model[]
     if (!/Session-only model:/i.test(line) && (/(?:^|\s)\/(?:model|switch)(?:\s|$)/i.test(line) || /(?:unknown|invalid|failed|rejected|unavailable|not found|error)\b/i.test(line))) continue;
     let modelText = line.match(/^(?:[✓✔✅*]\s*)?(?:(?:current |active )?model\s*[:→]|(?:model\s+)?(?:switched|changed|set|updated)(?:\s+model)?\s+(?:to\s*:?[ ]*)?|already on\s+|using\s+(?:model\s+)?)[ ]*(.*)$/i)?.[1];
     if (runtimeId === 'cli:gemini') {
-      const footer = line.match(/(?:^|·)\s*(Gemini [^·]+)\s*·\s*(low|medium|high)\s*$/i);
-      if (footer) modelText = `${footer[1]!.trim()} (${footer[2]![0]!.toUpperCase()}${footer[2]!.slice(1).toLowerCase()})`;
+      const footer = line.match(/(?:^|·)\s*((?:Gemini|Claude|GPT-OSS) [^·]+)\s*·\s*(minimal|low|medium|high|xhigh|extra high|max)\s*$/i);
+      if (footer) {
+        const effortLabel = footer[2]!.toLowerCase() === 'extra high' ? 'XHigh' : `${footer[2]![0]!.toUpperCase()}${footer[2]!.slice(1).toLowerCase()}`;
+        modelText = `${footer[1]!.trim()} (${effortLabel})`;
+      }
     }
     if (runtimeId === "cli:hermes" && /^[^│┃·]+\s*·\s*Nous Research/.test(line)) modelText ??= line.split(/\s*·\s*/)[0];
     if (runtimeId === "cli:deepseek") modelText ??= line.match(/\bMODEL\s+(.+?)\s+EFFORT\b/)?.[1];
@@ -606,7 +661,7 @@ export function nativeCliConfirmedModel(screen: string, models: readonly Model[]
     for (const model of models) {
       const candidateText = (runtimeId === "cli:cursor" && model.id.startsWith("cursor-family:")
         ? cursorFamilyName(modelText.trim())
-        : runtimeId === "cli:gemini" && !/-(low|medium|high)$/.test(model.id)
+        : runtimeId === "cli:gemini" && !geminiEffortValueSuffix.test(model.id)
           ? geminiFamilyName(modelText.trim())
           : modelText.trim()).replace(/\s+/g, ' ');
       const names = [model.id, model.displayName];
@@ -628,7 +683,7 @@ export function nativeCliConfirmedModel(screen: string, models: readonly Model[]
         }
         const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const escaped = runtimeId === 'cli:deepseek' && !/\s/.test(name) ? [...name].map(escape).join('\\s*') : escape(name);
-        if (new RegExp(`^["']?${escaped}(?:["']?$|["']?\\s*(?:[│┃·]|-(?:low|medium|high|thinking)|\\(|with thinking\\b|for this session\\b))`, "i").test(candidateText)) matched.add(model.id);
+        if (new RegExp(`^["']?${escaped}(?:["']?$|["']?\\s*(?:[│┃·]|-(?:minimal|low|medium|high|xhigh|max|thinking)|\\(|with thinking\\b|for this session\\b))`, "i").test(candidateText)) matched.add(model.id);
       }
     }
     if (matched.size === 1) return [...matched][0]!;
@@ -647,16 +702,17 @@ export function nativeCliConfirmedModel(screen: string, models: readonly Model[]
  */
 export function claudeModelMenu(screen: string): {
   rows: { number: number; label: string; highlighted: boolean }[];
-  effort: string | null; effortSupported: boolean; sessionOnly: boolean; searching: boolean;
+  effort: string | null; effortDefault: boolean; effortSupported: boolean; sessionOnly: boolean; searching: boolean;
   moreAbove: boolean; moreBelow: boolean; hintsVisible: boolean;
 } | null {
   let start = screen.lastIndexOf("Select model");
-  if (start < 0 && /Esc to cancel/i.test(screen) && screen.includes("▔")) start = screen.lastIndexOf("▔") + 1;
+  if (start < 0 && /Esc\s+to\s+cancel/i.test(screen) && screen.includes("▔")) start = screen.lastIndexOf("▔") + 1;
   if (start < 0) return null;
   const menu = screen.slice(start);
   const rows: { number: number; label: string; highlighted: boolean }[] = [];
   let effort: string | null = null;
-  let moreBelow = /^\s*(?:…|\.\.\.)\s*\+\d+\s+models?\b/mu.test(menu);
+  // "… +3 models"; Claude Code 2.1.330 draws "↓ 3 more" (21/11 PTY: Sonnet below it was refused as not in the account's menu).
+  let moreBelow = /^\s*(?:(?:…|\.\.\.)\s*\+\d+\s+models?|↓\s*\d+\s+more)\b/mu.test(menu);
   for (const line of menu.split(/\r?\n/)) {
     const row = line.match(/^\s*(?:(❯)|↑|(↓))?\s*(\d+)\.\s+(.+?)(?:\s{2,}|$)/u);
     if (row) {
@@ -666,9 +722,9 @@ export function claudeModelMenu(screen: string): {
     }
     effort ??= line.match(/^\s*\S\s+(Low|Medium|High|xHigh|Max)\s+effort\b/i)?.[1]?.toLowerCase() ?? null;
   }
-  return { rows, effort, effortSupported: !/Effort\s+not\s+supported/i.test(menu),
+  return { rows, effort, effortDefault: /^\s*\S\s+(?:Low|Medium|High|xHigh|Max)\s+effort\s*\(default\)/im.test(menu), effortSupported: !/Effort\s+not\s+supported/i.test(menu),
     sessionOnly: /\bs\s+to\s+use\s+this\s+session\s+only\b/i.test(menu), searching: /Type to (?:search|filter)/i.test(menu),
-    moreAbove: rows.length > 0 && Math.min(...rows.map((row) => row.number)) > 1, moreBelow, hintsVisible: /Esc to cancel/i.test(menu) };
+    moreAbove: rows.length > 0 && Math.min(...rows.map((row) => row.number)) > 1, moreBelow, hintsVisible: /Esc\s+to\s+cancel/i.test(menu) };
 }
 
 /**
@@ -780,7 +836,8 @@ async function applyClaudeSessionModel(input: {
       key = levels.indexOf(effort) > levels.indexOf(menu.effort!) ? "\u001b[C" : "\u001b[D";
     } else {
       key = "s";
-      chosen = { withEffort: menu.effortSupported, answers: 0 };
+      // 21/11 PTY: a pick at the model's default effort is confirmed with no effort ("Set model to Haiku 5.5 for this session only").
+      chosen = { withEffort: menu.effortSupported && !menu.effortDefault, answers: 0 };
     }
     if (++steps > 24) throw new SpaceConflictError("The Claude model menu did not follow the selection. Check its terminal.");
     actedOn = after.revision;
@@ -831,14 +888,17 @@ async function applyNativeCliModel(input: {
   if (input.runtimeId === "cli:qoder") return applyQoderSessionModel(input, before, wait);
   const hermesParts = input.runtimeId === "cli:hermes" ? input.model.id.split(/:(.*)/s) : null;
   let targetModel = input.model.id;
+  // agy's own label of the variant typed below ("Claude Opus 5.5 (High)"), named in a refusal.
+  let geminiLabel: string | undefined;
   if (input.runtimeId === "cli:cursor") {
     targetModel = input.model.displayName;
   } else if (input.runtimeId === "cli:gemini") {
     const effort = input.effort ?? input.model.defaultReasoningEffort;
     const advertised = effort ? geminiVariantIds.get(`${targetModel}\u0000${effort}`) : undefined;
+    geminiLabel = effort ? geminiVariantLabels.get(`${targetModel}\u0000${effort}`) : undefined;
     if (advertised) {
       targetModel = advertised;
-    } else if (effort && ['low', 'medium', 'high'].includes(effort) && !/-(low|medium|high)$/.test(targetModel)) {
+    } else if (effort && (GEMINI_EFFORT_LEVELS as readonly string[]).includes(effort) && !geminiEffortValueSuffix.test(targetModel)) {
       targetModel = `${targetModel}-${effort}`;
     }
   }
@@ -847,6 +907,7 @@ async function applyNativeCliModel(input: {
     : input.runtimeId === "cli:omp"
       ? `/switch ${input.model.id}${input.effort && input.effort !== 'none' ? `:${input.effort}` : ''}`
       : `/model ${targetModel}${input.runtimeId === "cli:hermes" ? " --session" : ""}`;
+  // eslint-disable-next-line no-control-regex -- control characters in a typed command are what this refuses
   if (/[\u0000-\u001f\u007f]/.test(command)) throw new SpaceConflictError("The CLI model label contains unsupported control characters.");
   // Droid opens its selector whatever /model names: filter it by the advertised name, move to the match's row, then
   // to the requested level in the reasoning menu that follows ("> High (current)").
@@ -926,7 +987,16 @@ async function applyNativeCliModel(input: {
     if (/can't be selected|only Auto mode is available/i.test(newLines)) {
       throw new SpaceConflictError("This CLI account does not allow the selected model. Choose Auto or check your plan.");
     }
-    if (/unknown command|unrecognized command|invalid (?:slash command|model)|model (?:not found|unavailable)|error:\s*unknown model/i.test(newLines)) {
+    if (/unknown command|unrecognized command|invalid (?:slash command|model)|model (?:not found|unavailable)|error:\s*unknown model|unknown model key/i.test(newLines)) {
+      // Daily Nous errors 18/11 (space_set_pane_model ×2 on cli:gemini): Space's catalog lists what the account's pool serves, but a running
+      // agy lists only the models its account offered when it started ("Resolving model claude-sonnet-5-5-high" with no label after it).
+      // That is this pane's account lacking the model now: a clear refusal at set time, Esc so nothing half-typed stays, never a placeholder key.
+      if (input.runtimeId === 'cli:gemini' && !/unknown command|unrecognized command|invalid slash command/i.test(newLines)) {
+        await input.assertCurrent();
+        await input.write("\u001b");
+        throw new SpaceConflictError(`This model is not available in the CLI's current model menu: this pane's Antigravity account does not offer ${geminiLabel ?? targetModel} in its running session `
+          + "(agy reads its account's models when it starts). Choose a model this pane lists, or give the step to a pane whose account offers it.");
+      }
       throw new SpaceConflictError("The CLI rejected the model selection. Check its model menu.");
     }
     if (input.runtimeId === 'cli:droid' && await droidSelectorStep(after.text)) continue;
@@ -1037,12 +1107,12 @@ async function applyQoderSessionModel(input: { model: Model; read: () => Promise
 
 export async function switchNativeCliModel(input: Parameters<typeof applyNativeCliModel>[0]): Promise<void> {
   try { await applyNativeCliModel(input); }
-  catch (error) { try { await cleanupNativeSettingsMenu(input); } catch {} throw error; }
+  catch (error) { try { await cleanupNativeSettingsMenu(input); } catch { /* best-effort menu cleanup: report the switch error */ } throw error; }
 }
 
 export async function switchNativeCliReasoning(input: Parameters<typeof applyNativeCliReasoning>[0]): Promise<void> {
   try { await applyNativeCliReasoning(input); }
-  catch (error) { try { await cleanupNativeSettingsMenu(input); } catch {} throw error; }
+  catch (error) { try { await cleanupNativeSettingsMenu(input); } catch { /* best-effort menu cleanup: report the switch error */ } throw error; }
 }
 
 /** The pane host's live root process of each CLI session. */

@@ -186,7 +186,7 @@ export function getCodexAppServerStatus(config: SpaceApiConfig, options?: Status
     });
   }
   if (keyFile) {
-    let key = "";
+    let key: string;
     try {
       key = readCodexAppServerKeyFile(keyFile);
     } catch {

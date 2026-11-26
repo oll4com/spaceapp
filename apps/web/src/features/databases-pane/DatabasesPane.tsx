@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import type {
-  CreateDatabaseConnectionInput,
   DatabaseCatalog,
   DatabaseConnection,
   DatabaseDiscoveryItem,
@@ -33,6 +32,14 @@ export interface DatabasesPaneProps {
 const STORAGE_MODE_KEY = "space.dbManager.mode";
 const STORAGE_CONN_KEY = "space.dbManager.lastConnectionId";
 const STORAGE_TABLE_KEY_PREFIX = "space.dbManager.lastTable.";
+
+/** Remembers the last connection or table (null forgets it). */
+function remember(key: string, value: string | null): void {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch { /* storage full or blocked (private mode): only the remembered choice is lost */ }
+}
 
 export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPaneProps) {
   const language = useUiLanguage();
@@ -69,7 +76,6 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
   const [searchQuery, setSearchQuery] = useState<string>("");
 
   // Loading & Error State
-  const [isLoadingConnections, setIsLoadingConnections] = useState(true);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
   const [isLoadingTableData, setIsLoadingTableData] = useState(false);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
@@ -158,7 +164,6 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
 
   // Load connections
   const loadConnections = useCallback(async (opts?: { preserveSelection?: boolean }) => {
-    setIsLoadingConnections(true);
     try {
       const res = await api.databasesListConnections({
         projectPath: effectiveProjectPath,
@@ -185,8 +190,6 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
       }
     } catch (err) {
       setErrorNotice(err instanceof Error ? err.message : "Failed to load database connections");
-    } finally {
-      setIsLoadingConnections(false);
     }
   }, [effectiveProjectPath, mode]);
 
@@ -518,16 +521,12 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
             setSelectedConnection(null);
             setSelectedTable(null);
             setTableData(null);
-            try {
-              localStorage.removeItem(STORAGE_CONN_KEY);
-            } catch {}
+            remember(STORAGE_CONN_KEY, null);
           } else if (level === "connection") {
             setSelectedTable(null);
             setTableData(null);
             if (selectedConnection) {
-              try {
-                localStorage.setItem(`${STORAGE_TABLE_KEY_PREFIX}${selectedConnection.id}`, "none");
-              } catch {}
+              remember(`${STORAGE_TABLE_KEY_PREFIX}${selectedConnection.id}`, "none");
             }
           } else if (level === "schema") {
             setSelectedTable(null);
@@ -573,19 +572,15 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
             setSelectedConnection(conn);
             setSelectedTable(null);
             setTableData(null);
-            try {
-              localStorage.setItem(STORAGE_CONN_KEY, conn.id);
-              localStorage.removeItem(`${STORAGE_TABLE_KEY_PREFIX}${conn.id}`);
-            } catch {}
+            remember(STORAGE_CONN_KEY, conn.id);
+            remember(`${STORAGE_TABLE_KEY_PREFIX}${conn.id}`, null);
           }}
           onSelectTable={(schema, tableName) => {
             setSelectedSchema(schema);
             setSelectedTable(tableName);
             setPage(1);
             if (selectedConnection) {
-              try {
-                localStorage.setItem(`${STORAGE_TABLE_KEY_PREFIX}${selectedConnection.id}`, tableName);
-              } catch {}
+              remember(`${STORAGE_TABLE_KEY_PREFIX}${selectedConnection.id}`, tableName);
             }
           }}
           onNewConnection={() => {
@@ -651,24 +646,18 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
                         setSelectedTable(tableName);
                         setPage(1);
                         if (selectedConnection) {
-                          try {
-                            localStorage.setItem(`${STORAGE_TABLE_KEY_PREFIX}${selectedConnection.id}`, tableName);
-                          } catch {}
+                          remember(`${STORAGE_TABLE_KEY_PREFIX}${selectedConnection.id}`, tableName);
                         }
                       }}
                     />
                   ) : (
                     <DataTab
                       tableName={selectedTable}
-                      sidebarVisible={sidebarVisible}
-                      onToggleSidebar={handleToggleSidebar}
                       onBrowseTables={() => {
                         setSelectedTable(null);
                         setTableData(null);
                         if (selectedConnection) {
-                          try {
-                            localStorage.setItem(`${STORAGE_TABLE_KEY_PREFIX}${selectedConnection.id}`, "none");
-                          } catch {}
+                          remember(`${STORAGE_TABLE_KEY_PREFIX}${selectedConnection.id}`, "none");
                         }
                       }}
                       tableData={tableData}
@@ -737,10 +726,8 @@ export function DatabasesPane({ pane, mobile = false, projectPath }: DatabasesPa
                 setSelectedConnection(conn);
                 setSelectedTable(null);
                 setTableData(null);
-                try {
-                  localStorage.setItem(STORAGE_CONN_KEY, conn.id);
-                  localStorage.removeItem(`${STORAGE_TABLE_KEY_PREFIX}${conn.id}`);
-                } catch {}
+                remember(STORAGE_CONN_KEY, conn.id);
+                remember(`${STORAGE_TABLE_KEY_PREFIX}${conn.id}`, null);
               }}
               onNewConnection={() => {
                 setEditingConnection(null);

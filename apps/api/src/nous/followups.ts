@@ -4,6 +4,7 @@ import type { NousFollowup, NousFollowupsRepository, NousFollowupTrigger } from 
 import { defaultDeployQueueRoot, readDeployQueueTicket } from "../deploy-queue.js";
 import { defaultReleasesOptions } from "../instance-releases.js";
 import { execGit } from "../worktrees/worktree-service.js";
+import { deferralHold, deferralHolds, REQUEST_IDS, requestKey } from "./daily-review.js";
 
 /**
  * Nous's follow-ups (plan clipboard:8s0ZNiO3q5ZT S3): "remind me when ..." back into its own inbox. A follow-up waits for a
@@ -14,6 +15,8 @@ import { execGit } from "../worktrees/worktree-service.js";
 /** A merge-queue ticket id inside free words (a note, a wait). */
 export const TICKET_IN_WORDS = /\bq-\d{8}-\d{6}-[0-9a-f]{4}\b/;
 const ENDED = new Set<DeployQueueTicket["status"]>(["DEPLOYED", "FAILED", "CONFLICT", "CANCELLED"]);
+/** The reason tools.ts appends to a follow-up the run-now gate let through on it. */
+const WAIT_REASON_TAIL = /\s*\(wait reason: ([^]+)\)\s*$/;
 
 export const nousFollowupArgsSchema = z.object({
   op: z.enum(["add", "list", "cancel"]),
@@ -23,7 +26,8 @@ export const nousFollowupArgsSchema = z.object({
   ticket: z.string().trim().regex(/^q-\d{8}-\d{6}-[0-9a-f]{4}$/).optional().describe("add: when this merge-queue ticket ends (DEPLOYED, FAILED, CONFLICT, CANCELLED)."),
   room: z.string().trim().min(1).max(200).optional().describe("add, on a pane: the pane's room."),
   pane: z.string().trim().min(1).max(160).optional().describe("add: when this pane finishes its turn."),
-  followup: z.string().trim().regex(/^nous_followup:[A-Za-z0-9_-]{6,80}$/).optional().describe("cancel: the follow-up's id.")
+  followup: z.string().trim().regex(/^nous_followup:[A-Za-z0-9_-]{6,80}$/).optional().describe("cancel: the follow-up's id."),
+  replaces: z.string().trim().regex(/^nous_followup:[A-Za-z0-9_-]{6,80}$/).optional().describe("add: the open follow-up on the same request this one replaces (it is cancelled).")
 });
 export type NousFollowupArgs = z.infer<typeof nousFollowupArgsSchema>;
 
@@ -57,7 +61,31 @@ export async function ticketMergedOnMain(ticketId: string, root: string): Promis
 export const readTicketStatus = async (ticketId: string, roots?: string[]): Promise<DeployQueueTicket["status"] | null> => (await readTicket(ticketId, roots))?.status ?? null;
 
 /** R44-2: the ids a follow-up's note waits on; two open follow-ups never name the same one. R47-2: every copilot item a decision decides too. */
-const FOLLOWED_IDS = /\b(?:nous_decision|review|mailrev|mktpost|mcamp|mktcamp|flmsg|fllead):[A-Za-z0-9_-]{6,80}/g;
+// 2026-11-16 REVIEW (15/11: nous_msg:a6bd8d9a ×8 follow-ups, INBOX turn cost $0.61 → $1.02): an operator message and a plan too.
+const FOLLOWED_IDS = /\b(?:nous_decision|review|mailrev|mktpost|mcamp|mktcamp|flmsg|fllead|nous_msg|clipboard):[A-Za-z0-9_-]{6,80}/g;
+
+/** 17/11 REVIEW (16/11: chains rewritten ×22 on nous_msg:b3744e80, ×21, ×11): a note's dates, times and "Re-checked …" words, which a rewrite alone changes. */
+const NOTE_DATES = /(?:\b\d{4}-\d{2}-\d{2}(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)?|\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b|\b\d{1,2}:\d{2}(?::\d{2})?|\b\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b(?:today|tonight|tomorrow)\b)(?:\s*(?:UTC|BKK|Z)\b)?/gi;
+const RECHECKED = /\bre-?checked\b[^.;\n]*[.;]?/gi;
+export const noteCore = (note: string) => note.replace(RECHECKED, " ").replace(NOTE_DATES, " ").replace(/[\s,;:()\-–]+/g, " ").trim().toLowerCase();
+/** The holds a dated wait may keep the push lines quiet on: an operator order or a date (deferralHold's labels). */
+const QUIET_HOLDS = new Set(["the operator's hands", "a real date"]);
+/**
+ * 17/11 REVIEW (follow-up churn): the requests and plans (requestKey) an open time follow-up with a future dueAt holds on the operator or a date
+ * named in its wait reason, and "utilization" when its note is about Utilization: the push lines leave them out until it fires.
+ */
+export function datedHolds(items: readonly NousFollowup[], at: number): Set<string> {
+  const held = new Set<string>();
+  for (const item of items) {
+    // 22/11 (operator nous_msg:0e499daa, load 15-36 % overnight): the note's own words (its re-check date, "operator", "approve") are no wait; the
+    // trigger's dueAt is the time, and only a hold named in the "(wait reason: …)" the run-now gate kept counts, its plain dates stripped.
+    const reason = item.note.match(WAIT_REASON_TAIL)?.[1]?.replace(NOTE_DATES, " ") ?? "";
+    if (item.status !== "OPEN" || item.trigger.kind !== "TIME" || Date.parse(item.trigger.dueAt) <= at || !deferralHolds(reason).some((hold) => QUIET_HOLDS.has(hold))) continue;
+    for (const id of item.note.match(REQUEST_IDS) ?? []) held.add(requestKey(id));
+    if (/\butili[sz]ation\b/i.test(item.note)) held.add("utilization");
+  }
+  return held;
+}
 
 /** 1045: a note that is a check after a reboot or host restart; the pane it waits on closes at that reboot. */
 const POST_REBOOT = /\breboot|\bpost-?boot\b|\brestart(?:s|ing)?\s+(?:of\s+)?(?:the\s+)?(?:vm|host|pane host|server)\b|επανεκκίνηση/i;
@@ -113,12 +141,32 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
       if (!args.note) return fail("Give the note: what to do when it fires.");
       const triggers = [args.at !== undefined || args.inMinutes !== undefined, args.ticket !== undefined, pane !== null].filter(Boolean).length;
       if (triggers !== 1 || (args.at !== undefined && args.inMinutes !== undefined)) return fail("Give exactly one trigger: at or inMinutes, ticket, or room and pane.");
+      // 17/11 REVIEW (churn): a replacement that only moves its dates or adds "Re-checked" words is the open one; it stays.
+      const replaced = args.replaces ? await deps.repository.get(owner, args.replaces) : null;
+      if (replaced?.status === "OPEN" && noteCore(replaced.note) === noteCore(args.note)) return fail(`no change, keep ${replaced.id}: its note differs from this one only in dates `
+        + `or "Re-checked" words, and it already waits ${describe(replaced.trigger)}. Nothing was set; when its wait changes, say what changed in the note.`);
+      // 21/11 REVIEW: the same guard without `replaces` (an id-less wait such as Utilization's was set again beside the open one each turn): a new
+      // time note equal to an open time follow-up's but for dates is that follow-up. shortcut: exact equality of noteCore, a reworded wait still adds; an identical note is left to the wait-reason rules below.
+      const core = noteCore(args.note);
+      const twin = core && args.ticket === undefined && pane === null
+        ? (await deps.repository.list(owner, 0)).find((item) => item.status === "OPEN" && item.trigger.kind === "TIME" && item.id !== args.replaces && item.note !== args.note && noteCore(item.note) === core) : undefined;
+      if (twin) return fail(`no change, keep ${twin.id}: it already holds this note, ${describe(twin.trigger)}, and this one differs only in dates or "Re-checked" words. `
+        + `Nothing was set; to move its time pass replaces: ${twin.id} with a note that says what changed.`);
       // R44-2 (2/11: four follow-ups for one Temu approval): an open follow-up whose note names the same decision or review is that follow-up.
+      // Token audit 21/11 (51 refusals in 3 days, nearly all on a nous_msg, each retried): one operator request sent to several panes waits on
+      // each of them, so for a nous_msg only a wait of the same kind is that follow-up (a wake on another pane or a ticket is set at once).
       const named = new Set(args.note.match(FOLLOWED_IDS) ?? []);
-      const same = named.size ? (await deps.repository.list(owner, 0)).find((item) => item.status === "OPEN" && (item.note.match(FOLLOWED_IDS) ?? []).some((id) => named.has(id))) : undefined;
-      if (same) {
+      const samePane = (item: NousFollowup) => !!pane && item.trigger.kind === "PANE" && item.trigger.paneId === pane.paneId;
+      const sameWait = (item: NousFollowup, id: string) => !id.startsWith("nous_msg:") || samePane(item)
+        || (!pane && args.ticket === undefined && item.trigger.kind === "TIME");
+      const same = named.size ? (await deps.repository.list(owner, 0)).find((item) => item.status === "OPEN"
+        && (item.note.match(FOLLOWED_IDS) ?? []).some((id) => named.has(id) && sameWait(item, id))) : undefined;
+      if (same && args.replaces === same.id) await deps.repository.close(owner, same.id, "CANCELLED", "Replaced by Nous");
+      // The same pane again already wakes Nous: nothing to retry.
+      else if (same && samePane(same)) return { ok: true, display: `${same.id} already waits on ${pane!.paneLabel}`, result: `Nothing added: ${same.id} already wakes you when ${pane!.paneLabel} finishes: ${lineOf(same)}` };
+      else if (same) {
         const id = (same.note.match(FOLLOWED_IDS) ?? []).find((each) => named.has(each))!;
-        return { ok: false, refused: true, display: `${same.id} already follows ${id}`, result: `${same.id} is already open on ${id}; nothing added. Use it (op cancel ${same.id} first to set another): ${lineOf(same)}` };
+        return { ok: false, refused: true, display: `${same.id} already follows ${id}`, result: `${same.id} is already open on ${id}; nothing added. Keep it, or pass replaces: ${same.id} to set this one in its place: ${lineOf(same)}` };
       }
       // 1057 (13/11 REVIEW: deferrals that could have run): a time wait whose note names a merge-queue ticket still running fires when that
       // ticket ends instead. shortcut: tickets only; a wait on a pane's or plan's job named in the note still keeps its time.
@@ -141,6 +189,17 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
       else {
         const due = args.at !== undefined ? Date.parse(args.at) : now() + args.inMinutes! * 60_000;
         if (due <= now()) return fail("The time must be in the future.");
+        // 15/11 REVIEW (nous_followup:51563d56 → e77e225f, "else re-arm 12 h" twice): a time wait held only by a reason that names no hold
+        // (deferralHold: date, person, ticket, reset, ...) gets one wait; the same note again after it fired runs now. 2026-11-15 REVIEW 6 (A):
+        // so does the same note with its reason unchanged, whatever the reason names.
+        const reason = args.note.match(WAIT_REASON_TAIL)?.[1]?.trim();
+        const base = args.note.replace(WAIT_REASON_TAIL, "").replace(/\s+/g, " ").trim();
+        const held = reason ? deferralHold(reason) : undefined;
+        const again = reason ? (await deps.repository.list(owner, 40)).find((item) => item.status === "FIRED"
+          && item.note.replace(WAIT_REASON_TAIL, "").replace(/\s+/g, " ").trim() === base && (!held || item.note.match(WAIT_REASON_TAIL)?.[1]?.trim() === reason)) : undefined;
+        if (again) return fail(`${again.id} already waited on this note and fired ${again.closedAt?.slice(0, 16) ?? ""} with nothing new; its reason ("${reason}") `
+          + `${held ? "is unchanged" : "names no date, person or ticket"}, so waiting again only re-arms it. Do the check in this turn; to wait again, name what really holds it `
+          + "(a date, the operator or a third party, a ticket, a reset), or give room and pane to be woken when that pane finishes. Nothing was set.");
         trigger = { kind: "TIME", dueAt: new Date(due).toISOString() };
       }
       const added = await deps.repository.add({ ownerUserId: owner, note: args.note, trigger });
@@ -149,6 +208,11 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
       // R22-5: a time follow-up is a deferral the daily REVIEW weighs (tool row meta).
       return { ok: true, display: `Set a follow-up ${describe(trigger)}`, result: `${lineOf(added)}${moved}${rearm}`,
         ...(trigger.kind === "TIME" ? { meta: { deferral: { kind: "FOLLOWUP", id: added.id, until: trigger.dueAt, what: args.note } } } : {}) };
+    },
+
+    /** What the owner's dated follow-ups hold now (datedHolds). */
+    async held(owner: string): Promise<Set<string>> {
+      return datedHolds(await deps.repository.list(owner, 0), now());
     },
 
     /** Every minute: due times and ended tickets fire. */

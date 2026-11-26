@@ -41,6 +41,15 @@ function operatorWaitMs(reported: Array<{ endedAt: string; items: NousTurnOutcom
   return total + (start ? Date.parse(to) - Date.parse(start) : 0);
 }
 const textOf = (content: string) => { const at = content.indexOf(NOUS_ATTACHMENTS_MARKER); return (at < 0 ? content : content.slice(0, at)).trim(); };
+// Speed audit 21/11: operator messages are immutable once written; cache titleWords() per message to avoid re-running Unicode NFD on ~2,000 rows every derive.
+const messageTitleWords = new Map<string, { content: string; words: Set<string> }>();
+function wordsOfMessage(message: NousMessage): Set<string> {
+  const hit = messageTitleWords.get(message.id);
+  if (hit && hit.content === message.content) return hit.words;
+  const words = titleWords(textOf(message.content));
+  messageTitleWords.set(message.id, { content: message.content, words });
+  return words;
+}
 // Search (operator 6/11 13:02 BKK): case and accents folded, so «αιτηματα» finds «αιτήματα».
 const fold = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 const open = (plan: PlanInfo | undefined) => Boolean(plan && !plan.isCompleted && plan.executionStatus !== "COMPLETED" && plan.progressPercentage < 100);
@@ -167,6 +176,7 @@ export function deriveNousRequests(messages: NousMessage[], links: NousRequestLi
   }
   let byWords: ReturnType<typeof wordMatcher> | undefined;
   const answerOf = firstAnswers(links.answers);
+  const openDecisionPlans = new Set(links.openDecisions.map((decision) => decision.refs.planId).filter((planId): planId is string => Boolean(planId)));
   return messages.map((message) => {
     const id = message.id;
     const turns = messageTurns.get(id) ?? [];
@@ -186,7 +196,7 @@ export function deriveNousRequests(messages: NousMessage[], links: NousRequestLi
     const reported = outcomes.get(id) ?? [];
     if (!done && !since && !reported.length && !linkedPlans.length) {
       byWords ??= wordMatcher(links.done, claimed);
-      done = byWords(titleWords(textOf(message.content)), message.createdAt);
+      done = byWords(wordsOfMessage(message), message.createdAt);
     }
     const receipted = !done && [id, ...turns, ...donePlans].some((value) => { const at = receipts.get(requestDoneReceiptKey(value)); return at !== undefined && at >= message.createdAt && (!since || at > since); });
     const last = reported.at(-1);
@@ -195,7 +205,7 @@ export function deriveNousRequests(messages: NousMessage[], links: NousRequestLi
     const asked = last !== undefined && latest.includes("OPERATOR") && (latestOperatorAt === null || latestOperatorAt > last.endedAt
       ? links.openDecisions.some((decision) => decision.createdAt >= message.createdAt && decision.createdAt <= last.endedAt) : true);
     const plan = linkedPlans.find((planId) => open(planInfo.get(planId))) ?? linkedPlans.find((planId) => planInfo.get(planId));
-    const waits = links.openDecisions.some((decision) => decision.refs.planId !== undefined && linkedPlans.includes(decision.refs.planId));
+    const waits = openDecisionPlans.size > 0 && linkedPlans.some((planId) => openDecisionPlans.has(planId));
     // In progress only through its open request (every operator PENDING opens one since 31/10; a close or Done ends it): a PENDING never tracked reads
     // Not done (operator 31/10 16:12 BKK: 99 messages read In progress, 11 open requests existed; 6/11: never Answered). HELPER without a Done record is Not done too.
     const closed = closedAt.get(id);
@@ -229,16 +239,25 @@ export function createNousRequests(deps: {
   notifications: Pick<NotificationService, "list">;
   plan(owner: string, id: string): Promise<ClipboardItem | null>;
 }) {
+  // Speed audit 21/11: REQUEST_DONE records are immutable for request matching; keep each owner's list and re-read only since the newest kept record minus 10 minutes.
+  const keptDone = new Map<string, { since: string; rows: SpaceNotification[] }>();
   /** The Done records written since `since`, newest first (paged 200 at a time). */
   async function doneSince(owner: string, since: string): Promise<SpaceNotification[]> {
-    const records: SpaceNotification[] = [];
+    const old = keptDone.get(owner);
+    const newest = old?.since === since ? old.rows[0] : undefined;
+    const back = newest ? new Date(Date.parse(newest.createdAt) - 600_000).toISOString() : since;
+    const from = back > since ? back : since;
+    const fresh: SpaceNotification[] = [];
+    const seen = new Set<string>();
     for (let before: string | undefined, page = 0; page < 20; page += 1) {
-      const batch = await deps.notifications.list(owner, { status: "ALL", source: "NOUS", kind: "REQUEST_DONE", limit: 200, ...(before ? { before } : {}) });
-      records.push(...batch.filter((record) => record.createdAt >= since));
-      if (batch.length < 200 || batch.at(-1)!.createdAt < since) break;
+      const batch = await deps.notifications.list(owner, { status: "ALL", source: "NOUS", kind: "REQUEST_DONE", limit: 200, since: from, ...(before ? { before } : {}) });
+      for (const record of batch) if (record.createdAt >= from && !seen.has(record.id)) { seen.add(record.id); fresh.push(record); }
+      if (batch.length < 200 || batch.at(-1)!.createdAt < from) break;
       before = batch.at(-1)!.createdAt;
     }
-    return records;
+    const rows = newest ? [...fresh, ...old!.rows.filter((record) => record.createdAt < from && !seen.has(record.id))] : fresh;
+    keptDone.set(owner, { since, rows });
+    return rows;
   }
   // CPU report 12/11: every derive read all ~1,900 operator messages again. They never change once written (inserted DONE, never updated or
   // deleted), so each owner's stay here, newest first, and a derive reads only those written since the newest kept one.
@@ -258,8 +277,27 @@ export function createNousRequests(deps: {
     kept.set(owner, messages);
     return messages;
   }
+  // Speed audit 14/11: answers and turn outcomes never change once written either (answers inserted DONE, turn facts ON CONFLICT DO NOTHING; no
+  // update, no delete) and every derive read them all again (stable: 3,840 answers at 245 ms and 2,945 outcomes at 38 ms, every 20 s per open
+  // dock). Each owner's stay here, oldest first; a derive reads again only the 10 minutes before the newest kept one (a row that commits late).
+  function keptRows<T>(read: (owner: string, since: string) => Promise<T[]>, at: (row: T) => string) {
+    const owners = new Map<string, { since: string; rows: T[] }>();
+    return async (owner: string, since: string): Promise<T[]> => {
+      const old = owners.get(owner);
+      const last = old?.since === since ? old.rows.at(-1) : undefined;
+      const back = last ? new Date(Date.parse(at(last)) - 600_000).toISOString() : since;
+      const from = back > since ? back : since;
+      const rows = [...(last ? old!.rows.filter((row) => at(row) < from) : []), ...await read(owner, from)];
+      owners.set(owner, { since, rows });
+      return rows;
+    };
+  }
+  const answerLinks = keptRows((owner, since) => deps.repository.listAnswerLinks(owner, since), (row) => row.createdAt);
+  const turnOutcomes = keptRows((owner, since) => deps.repository.listTurnOutcomes(owner, since), (row) => row.endedAt);
   // The dock's badge and tab poll every 20 s and Nous reads the counts each turn: calls that meet share one derive.
   const running = new Map<string, Promise<NousOperatorRequest[]>>();
+  // Speed audit 21/11: memoize derived requests by exact input fingerprint so unchanged 20 s polls skip the ~820 ms synchronous derive.
+  const lastDerived = new Map<string, { preFp: string; planIds: string[]; fp: string; requests: NousOperatorRequest[] }>();
   /** Every operator message, newest first; `withOpen` false judges them without their open requests. */
   function derive(owner: string, withOpen = true): Promise<NousOperatorRequest[]> {
     const key = `${owner}|${withOpen}`;
@@ -274,12 +312,34 @@ export function createNousRequests(deps: {
     const messages = await operatorMessages(owner);
     if (!messages.length) return [];
     const since = messages.at(-1)!.createdAt;
-    const [answers, turns, done, notes, openDecisions] = await Promise.all([deps.repository.listAnswerLinks(owner, since), deps.repository.listTurnOutcomes(owner, since),
+    const [answers, turns, done, notes, openDecisions] = await Promise.all([answerLinks(owner, since), turnOutcomes(owner, since),
       doneSince(owner, since), deps.repository.listNotes(owner), deps.repository.listDecisions(owner, { statuses: ["OPEN"] })
         .then((open) => open.filter((decision) => !nousDecisionRunsWhen(decision)))]);
-    const links = { answers, turns, done, notes: withOpen ? notes : notes.filter((note) => !note.key.startsWith(OPEN_REQUEST_PREFIX)), openDecisions };
-    const plans: NousRequestPlans = new Map(await Promise.all(requestPlanIds(messages, links).map(async (id) => [id, await deps.plan(owner, id).catch(() => null)] as const)));
-    return deriveNousRequests(messages, links, plans, messages[0]!.createdAt, !withOpen);
+    const activeNotes = withOpen ? notes : notes.filter((note) => !note.key.startsWith(OPEN_REQUEST_PREFIX));
+    const links = { answers, turns, done, notes: activeNotes, openDecisions };
+    const reqNotesFp = activeNotes.filter((note) => note.key.startsWith(REQUEST_DONE_NOTE_PREFIX))
+      .map((note) => `${note.key}\u0000${note.updatedAt}\u0000${note.text}`).join("\u0002");
+    const preFp = [
+      `${messages.length}:${messages[0]!.id}:${messages[0]!.createdAt}:${messages.at(-1)!.id}`,
+      `${answers.length}:${answers.at(-1)?.turnId ?? ""}:${answers.at(-1)?.createdAt ?? ""}`,
+      `${turns.length}:${turns.at(-1)?.turnId ?? ""}:${turns.at(-1)?.endedAt ?? ""}:${turns.reduce((sum, turn) => sum + turn.outcomes.length, 0)}`,
+      `${done.length}:${done[0]?.id ?? ""}:${done[0]?.createdAt ?? ""}`,
+      reqNotesFp,
+      openDecisions.map((decision) => `${decision.id}:${decision.createdAt}:${decision.refs.planId ?? ""}`).join(",")
+    ].join("\u0001");
+    const cacheKey = `${owner}|${withOpen}`;
+    const cached = lastDerived.get(cacheKey);
+    const planIds = cached?.preFp === preFp ? cached.planIds : requestPlanIds(messages, links);
+    const plans: NousRequestPlans = new Map(await Promise.all(planIds.map(async (id) => [id, await deps.plan(owner, id).catch(() => null)] as const)));
+    const planFp = planIds.map((id) => {
+      const info = plans.get(id);
+      return info ? `${id}:${info.progressPercentage}:${info.isCompleted}:${info.executionStatus}` : `${id}:null`;
+    }).join(",");
+    const fp = `${preFp}\u0003${planFp}`;
+    if (cached?.fp === fp) return cached.requests;
+    const derived = deriveNousRequests(messages, links, plans, messages[0]!.createdAt, !withOpen);
+    lastDerived.set(cacheKey, { preFp, planIds, fp, requests: derived });
+    return derived;
   }
   return {
     /**
@@ -302,6 +362,12 @@ export function createNousRequests(deps: {
 
     /** The operator's messages written since `since`, as the tab reads them (the Score's response times). */
     since: async (owner: string, since: string) => (await derive(owner)).filter((request) => request.createdAt >= since),
+
+    /** These messages as the tab reads them, oldest first (a superior Nous's reports, Space Link v2 step 9b). */
+    async ofMessages(owner: string, ids: string[]): Promise<NousOperatorRequest[]> {
+      const wanted = new Set(ids);
+      return (await derive(owner)).filter((request) => wanted.has(request.messageId)).reverse();
+    },
 
     /** These messages' status as the tab reads it, without their own open requests (request-done.ts's one-time cleanup, 31/10). */
     async statuses(owner: string, ids: string[]): Promise<Map<string, NousRequestStatus>> {

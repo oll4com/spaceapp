@@ -172,28 +172,6 @@ interface CodexNativeTurn {
   durationMs: number | null;
 }
 
-interface NativeAggregate {
-  source: "codex" | "opencode";
-  runtimeId: string;
-  providerId: string;
-  modelId: string;
-  roomId: string | null;
-  paneId: string | null;
-  sessionId: string | null;
-  status: "RUNNING" | "COMPLETED" | "ABORTED";
-  coverage: "NATIVE";
-  turnCount: number;
-  startedAt: string;
-  endedAt: string | null;
-  tokensIn: number;
-  tokensOut: number;
-  tokensReasoning: number;
-  ttftSum: number;
-  ttftCount: number;
-  durationSum: number;
-  durationCount: number;
-}
-
 export interface SystemAnalyticsServiceOptions {
   repository: SystemAnalyticsRepository;
   store: SpaceStore;
@@ -239,6 +217,7 @@ function nonNegativeInt(value: unknown): number {
 }
 
 function safeText(value: string, fallback = "unknown", max = 120): string {
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point
   const normalized = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
   return (normalized || fallback).slice(0, max);
 }
@@ -1149,7 +1128,7 @@ export class SystemAnalyticsService {
           join(profilesDir, name, "home", ".gemini", "antigravity", "brain")
         );
       }
-    } catch {}
+    } catch { /* profiles not listable: the default brain folders still count */ }
 
     const seenTurns = new Set<string>();
     for (const baseDir of searchDirs) {
@@ -1191,7 +1170,7 @@ export class SystemAnalyticsService {
                   if (parsed.thinking) totalTokensOut += Math.ceil(parsed.thinking.length * 0.25);
                   if (parsed.content) totalTokensOut += Math.ceil(parsed.content.length * 0.25);
                 }
-              } catch {}
+              } catch { /* a malformed transcript line is skipped */ }
             }
             if (turnCount > 0) {
               const matchedSession = sessions.find((s) => {
@@ -1229,9 +1208,9 @@ export class SystemAnalyticsService {
                 durationMs
               }));
             }
-          } catch {}
+          } catch { /* an unreadable conversation folder is skipped */ }
         }
-      } catch {}
+      } catch { /* a missing brain folder adds no events */ }
     }
     return events;
   }
@@ -1296,7 +1275,7 @@ export class SystemAnalyticsService {
           durationMs
         }));
       }
-    } catch {}
+    } catch { /* no or unreadable Hermes state.db: no Hermes events */ }
 
     const baseDir = join(this.hermesHome, "sessions");
     try {
@@ -1335,9 +1314,9 @@ export class SystemAnalyticsService {
             ttftMs: null,
             durationMs: null
           }));
-        } catch {}
+        } catch { /* an unreadable or malformed Hermes request dump is skipped */ }
       }
-    } catch {}
+    } catch { /* no Hermes request-dump folder: no events from it */ }
 
     return events;
   }
@@ -1389,11 +1368,11 @@ export class SystemAnalyticsService {
                 ttftMs: null,
                 durationMs: null
               }));
-            } catch {}
+            } catch { /* a malformed DeepSeek stats line is skipped */ }
           }
-        } catch {}
+        } catch { /* an unreadable DeepSeek stats file is skipped */ }
       }
-    } catch {}
+    } catch { /* no DeepSeek stats folder: no DeepSeek events */ }
     return events;
   }
 

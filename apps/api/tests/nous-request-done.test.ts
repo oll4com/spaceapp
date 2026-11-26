@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { needsYou, notificationListQuerySchema, type ClipboardItem, type NousRequestStatus } from "@space/contracts";
+import { needsYou, notificationListQuerySchema, nousTurnOutcomeSchema, type ClipboardItem, type NousRequestStatus } from "@space/contracts";
 import { InMemoryNousRepository, InMemorySpaceNotificationsRepository } from "@space/db";
 import { SpaceEventBus } from "@space/runtime";
 import { createNotificationService } from "../src/notifications/service.js";
 import { createNousRequests, deriveNousRequests } from "../src/nous/requests.js";
-import { createNousRequestDone, dispatchedAnswerOnly, priorityPanesOf, quietRequestsOf } from "../src/nous/request-done.js";
+import { checkableEvidence, createNousRequestDone, createReleaseShipped, uiProofMissing, dispatchedAnswerOnly, priorityPanesOf, quietRequestsOf } from "../src/nous/request-done.js";
 import { createNousTools, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
 import { nousSubagentTools } from "../src/nous/subagents.js";
 import { itemActed } from "../src/nous/turn-items.js";
+import { turnOutcome } from "../src/nous/service.js";
 import { createNousFiles } from "../src/nous/files.js";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,10 +20,10 @@ import { DONE_WAITS_ON_OPERATOR, paneProgressSchema } from "../src/pane-reports.
 
 const owner = "user:operator";
 const ctx = { owner, turnId: "turn:operator001", callId: "call:done0001", traceId: "trace:done0001", turn: { reason: "OPERATOR", operatorMessage: { id: "nous_msg:operator001", content: "Build a Done tab", person: true } } };
-const args = { plan: "clipboard:done0001", request: "Πρόσθεσε Done στο Nous", summary: "Προστέθηκε η καρτέλα Done με επιβεβαίωση.", where: "dev" as const, verified: "Read the Done tab route on dev: the record shows", tickets: ["q-20261029-060000-abcd"] };
+const args = { plan: "clipboard:done0001", request: "Πρόσθεσε Done στο Nous", summary: "Προστέθηκε η καρτέλα Done με επιβεβαίωση.", where: "dev" as const, verified: "Read the Done tab /nous/done on dev: the record shows", tickets: ["q-20261029-060000-abcd"] };
 
 const PROMOTE_TICKET = "q-20261030-203351-eb04";
-function fixture(quiet = false, evidence: { pane?: () => string | null; ticket?: () => boolean; statuses?: Record<string, NousRequestStatus>; open?: (paneId: string) => boolean | null; derived?: boolean } = {}) {
+function fixture(quiet = false, evidence: { pane?: (since: string) => string | null; ticket?: (id: string) => boolean; statuses?: Record<string, NousRequestStatus>; open?: (paneId: string) => boolean | null; derived?: boolean; sessions?: Record<string, string> } = {}) {
   const notes = new InMemoryNousRepository();
   const repository = new InMemorySpaceNotificationsRepository(() => "2026-10-29T12:00:00.000Z", true);
   const push = { send: vi.fn(async () => "SENT" as const) };
@@ -38,13 +39,25 @@ function fixture(quiet = false, evidence: { pane?: () => string | null; ticket?:
   const requests = evidence.derived ? createNousRequests({ repository: notes, notifications, plan: async () => null }) : undefined;
   const done = createNousRequestDone({ notes, notifications, plan: async (who, id) => who === owner && id === plan.id ? plan : null, notice, now: () => clock.now,
     ticketSummary: async (id) => id === PROMOTE_TICKET ? "Promote dev a6a234ec0d to stable" : "Nous: a Done tab beside Needs you",
-    paneFinished: async () => evidence.pane?.() ?? null, paneOpen: async (paneId) => evidence.open?.(paneId) ?? true, ticketOnStable: async () => evidence.ticket?.() ?? false,
+    paneFinished: async (_who, _pane, since) => evidence.pane?.(since) ?? null, paneOpen: async (paneId) => evidence.open?.(paneId) ?? true,
+    sessionPane: async (paneId) => evidence.sessions?.[paneId.replace(/^pane:/, "cli_session:")] ?? null, ticketOnStable: async (id) => evidence.ticket?.(id) ?? false, releaseShipped: createReleaseShipped(notes),
     requestStatus: async (who, ids) => requests ? requests.statuses(who, ids) : new Map(ids.flatMap((id) => evidence.statuses?.[id] ? [[id, evidence.statuses[id]!] as const] : [])) });
-  const tools = createNousTools({ requestDone: done, requests, clipboard: { save: async () => plan } } as unknown as NousToolDeps);
+  const tools = createNousTools({ requestDone: done, requests, clipboard: { save: async () => plan },
+    ...(evidence.sessions ? { cliSessionPane: async (id: string) => evidence.sessions![id] ?? null } : {}) } as unknown as NousToolDeps);
   return { notes, repository, notifications, done, tools, notice, push, clock, complete: () => { plan = { ...plan, progressPercentage: 100, executionStatus: "COMPLETED" }; } };
 }
 
 describe("Nous Done", () => {
+  // Space Link v2 step 9b: a superior Nous's command is never dropped by this Nous; only its person or that Nous drop it.
+  it("refuses to drop a superior Nous's command", async () => {
+    const f = fixture();
+    const done = createNousRequestDone({ notes: f.notes, notifications: f.notifications, plan: async () => null, notice: f.notice,
+      requestStatus: async (_who, ids) => new Map(ids.map((id) => [id, "NOT_DONE" as const])), superiorCommands: async () => new Set(["nous_msg:superior0001"]) });
+    const drop = "the operator no longer wants this one, superseded by a newer request";
+    const result = await done.closeMany(owner, [{ messageId: "nous_msg:superior0001", outcome: "DROPPED", note: drop }, { messageId: "nous_msg:own00000001", outcome: "DROPPED", note: drop }]);
+    expect(result.counts.errors).toEqual(["nous_msg:superior0001: a superior Nous's order (Space Link): only this SpaceApp's person or that Nous drops it; nothing was closed"]);
+    expect(result.closed).toBe(1);
+  });
   it("records one completion, alerts once, and preserves acknowledgement across retries and restarts", async () => {
     const f = fixture();
     await f.repository.registerPushDevice(owner, { token: "android-token-0000000000", platform: "ANDROID", appVersion: null });
@@ -125,7 +138,7 @@ describe("Nous Done", () => {
     // Background turns are not checked.
     expect(await f.tools.execute("space_nous_outcome", { requests }, { ...ctx, turn: { reason: "INBOX", operatorMessage: null } })).toMatchObject({ ok: true });
     // Recorded with words that share 60 % of the outcome's: it passes, and the outcomes keep answerOnly for the Requests tab (plan clipboard:2NOOFNJDUIMO).
-    await f.tools.execute("space_request_done", { request: "φτιάξε το vault", summary: "Fixed the Vault inbox import: every waiting login imports on its own.", where: "stable", verified: "Checked on the surface the operator uses" }, ctx);
+    await f.tools.execute("space_request_done", { request: "φτιάξε το vault", summary: "Fixed the Vault inbox import: every waiting login imports on its own.", where: "stable", verified: "Checked /nous/done on the surface the operator uses" }, ctx);
     const passed = await f.tools.execute("space_nous_outcome", { requests }, ctx);
     expect(passed).toMatchObject({ ok: true });
     expect(passed.outcomes).toEqual(requests);
@@ -229,11 +242,23 @@ describe("Nous Done", () => {
       // Reported again in a later turn: the same open request, refreshed, never a second one.
       await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Build the Requests tab for the operator: tests left", outcome: "PENDING" }] }, turnCtx);
       expect((await byMessage()).map((entry) => entry.summary)).toEqual(["Build the Requests tab for the operator: tests left", "Move the Telegram buttons"]);
-      await f.tools.execute("space_request_done", { request: "tab με τα μηνύματα", summary: "Requests tab for the operator: built, the tests left are written.", where: "dev", verified: "Checked on the surface the operator uses" }, turnCtx);
+      await f.tools.execute("space_request_done", { request: "tab με τα μηνύματα", summary: "Requests tab for the operator: built, the tests left are written.", where: "dev", verified: "Checked /nous/done on the surface the operator uses" }, turnCtx);
       expect((await f.done.openList(owner)).map((entry) => entry.messageId)).toEqual([m2]);
       // Its real end in a later outcome closes it too (here: it is the operator's now).
       await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Move the Telegram buttons", outcome: "OPERATOR", id: `${m2}-2` }] }, turnCtx);
       expect(await f.done.openList(owner)).toEqual([]);
+    });
+
+    // 20/11 sixth pass (16/11 1a3e96a0 → 66ac312a): a second complaint while the first correction's work runs names it in repeats.
+    it("marks a request a correction opened, and holds a later correction without repeats once while it is open", async () => {
+      const f = fixture();
+      const correct = (request: object) => f.tools.execute("space_nous_outcome", { requests: [{ outcome: "PENDING", correction: true, ...request }] }, turnCtx);
+      expect(await correct({ summary: "Only very big free programs", id: m1 })).toMatchObject({ ok: true });
+      expect((await f.done.openList(owner)).map((entry) => [entry.messageId, entry.correction])).toEqual([[m1, true]]);
+      const held = await correct({ summary: "Small programs still in Finn's list", id: m2 }) as { ok: boolean; result: string };
+      expect(held.ok).toBe(false);
+      expect(held.result).toContain(m1);
+      expect(await correct({ summary: "Small programs still in Finn's list", id: m2 })).toMatchObject({ ok: true });
     });
 
     it("binds a request reported without id to the earlier message whose open request it is, not the one this turn answers (correction nous_msg:4258ef8d 13/11)", async () => {
@@ -243,7 +268,7 @@ describe("Nous Done", () => {
       const requests = [{ summary: "LiveKit voice for the Nous dock works on stable", outcome: "SELF" as const }];
       const held = await f.tools.execute("space_nous_outcome", { requests }, later);
       expect(held.result).toContain(`"id":"${m1}"`);
-      await f.tools.execute("space_request_done", { request: "LiveKit", summary: "LiveKit voice for the Nous dock works on stable.", where: "stable", id: m1, verified: "Checked on the surface the operator uses" }, later);
+      await f.tools.execute("space_request_done", { request: "LiveKit", summary: "LiveKit voice for the Nous dock works on stable.", where: "stable", id: m1, verified: "Checked /nous/done on the surface the operator uses" }, later);
       expect(await f.tools.execute("space_nous_outcome", { requests }, later)).toMatchObject({ ok: true, outcomes: [{ id: m1, messageIds: [m1] }] });
       expect(await f.done.openList(owner)).toEqual([]);
       // A request no open one matches still answers this turn's message.
@@ -278,6 +303,47 @@ describe("Nous Done", () => {
       await f.done.tick(owner);
       expect(lines(f)).toHaveLength(5);
       expect((await f.tools.execute("space_open_requests", {}, turnCtx)).result).toContain("Answer the accountant");
+    });
+
+    it("15/11 (plan OH_RK32of0w4, slow Dones): a pane's done on dev comes back when its ticket, bound or named in the report, reaches stable", async () => {
+      const live = new Set<string>();
+      const f = fixture(false, { pane: () => "pane:bob0000001 reported done 12:40 UTC: on dev, ticket q-20261115-015130-4db5 waits for promote", ticket: (id) => live.has(id) });
+      await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Bob fixes the pane board", outcome: "PENDING", pane: "pane:bob0000001", id: m2 },
+        { summary: "Bob ships the dock", outcome: "PENDING", pane: "pane:bob0000001", tickets: ["q-20261115-020000-abcd"] },
+        { summary: "Ship the plan for the dock", outcome: "PENDING", pane: "pane:bob0000001", plan: args.plan }] }, turnCtx);
+      const entries = await f.done.openList(owner);
+      const evidence = async (summary: string) => f.done.evidence(owner, entries.find((entry) => entry.summary === summary)!);
+      expect(await evidence("Bob fixes the pane board")).toMatch(/^pane:bob0000001 reported done/);
+      expect(await evidence("Bob ships the dock")).toMatch(/^pane:bob0000001 reported done/);
+      live.add("q-20261115-015130-4db5").add("q-20261115-020000-abcd");
+      expect(await evidence("Bob fixes the pane board")).toBe("ticket q-20261115-015130-4db5 is live on stable");
+      // A bound ticket is no longer hidden behind the pane's evidence (0093b06f waited 17 h).
+      expect(await evidence("Bob ships the dock")).toBe("ticket q-20261115-020000-abcd is live on stable");
+      // A plan's completion is its proof: a ticket its pane names is one step, not the request.
+      expect(await evidence("Ship the plan for the dock")).toMatch(/^pane:bob0000001 reported done/);
+    });
+
+    it("W47 step 2: a request waiting on an app release looks finished once the operator writes from that release or newer", async () => {
+      const f = fixture();
+      await f.tools.execute("space_nous_outcome", { requests: [{ summary: "The tablet gets the Nous app 0.5.0", outcome: "PENDING", id: m2, release: "NOUS_ANDROID 0.5.0" }] }, turnCtx);
+      const [entry] = await f.done.openList(owner);
+      expect(entry).toMatchObject({ release: "NOUS_ANDROID 0.5.0" });
+      const write = (app: string, version: string) => f.notes.addMessage({ ownerUserId: owner, turnId: null, kind: "OPERATOR", status: "DONE", content: "hi", meta: { client: { app, version, form: "TABLET" } } });
+      await write("NOUS_ANDROID", "0.4.9");
+      await write("SPACEAPP_ANDROID", "0.6.0");
+      await write("NOUS_ANDROID", "0.5.0-rc.1");
+      expect(await f.done.evidence(owner, entry!)).toBeNull();
+      const shipped = await write("NOUS_ANDROID", "0.5.1");
+      const said = `the operator wrote from NOUS_ANDROID 0.5.1 at ${shipped.createdAt.slice(0, 16).replace("T", " ")} UTC (${shipped.id})`;
+      expect(await f.done.evidence(owner, entry!)).toBe(said);
+      await f.done.tick(owner);
+      expect(lines(f).map(([, line]) => line)).toEqual([expect.stringContaining(`"The tablet gets the Nous app 0.5.0" (${m2}) looks finished: ${said}`)]);
+      expect((await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Nous on the tablet", outcome: "PENDING", id: m2, release: "NOUS 0.5" }] }, turnCtx)).ok).toBe(false);
+    });
+
+    it("20/11: an outcome with a release, a pane and tickets is kept in the turn's strict facts (34 turn rows lost 16-19/11)", () => {
+      const kept = turnOutcome({ summary: "Tablet app", outcome: "PENDING", id: m2, release: "NOUS_ANDROID 0.5.0", pane: "pane:bob0000001", tickets: ["q-20261115-015130-4db5"] }, []);
+      expect(nousTurnOutcomeSchema.parse(kept)).toEqual({ summary: "Tablet app", outcome: "PENDING", messageIds: [m2] });
     });
 
     it("hold A and D (plan clipboard:ZWJJdBgHm64Z): a looks-finished line carries its request as an item; an act on it restarts the 6-hour no-act count", async () => {
@@ -323,6 +389,28 @@ describe("Nous Done", () => {
         args: { room: "Alex", actions: [{ kind: "pane", operation: "reopen", target: { paneIds: ["pane:cody000001"] } }] } }])).toBe(true);
     });
 
+    it("17/11 (ten finished requests left 16 h behind an hourly low-mode follow-up): a follow-up naming a finished request does not move it; its Done does", () => {
+      const item = { key: "k", kind: "REQUEST" as const, line: "", messageId: m2, finished: true };
+      const followup = { name: "space_nous_followup", ok: true, subjects: [], args: { op: "add", note: `when the operator lifts low mode: close ${m2}` } };
+      expect(itemActed(item, [followup])).toBe(false);
+      expect(itemActed({ ...item, finished: undefined }, [followup])).toBe(true);
+      expect(itemActed(item, [{ name: "space_request_done", ok: true, subjects: [], args: { id: m2 } }])).toBe(true);
+    });
+
+    it("15/11 (nous_msg:fd6f134c bound to pane:3Ql8m-8SktBT, Andy's session): a session id given as a pane binds its real pane, and an old such binding moves there without \"lost its pane\"", async () => {
+      const sessions = { "cli_session:sess00000001": "pane:andy0000001" };
+      const f = fixture(false, { open: (paneId) => paneId === "pane:andy0000001", sessions });
+      await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Andy fixes the tool failures", outcome: "PENDING", pane: "pane:sess00000001", id: m2 }] }, turnCtx);
+      const [entry] = await f.done.openList(owner);
+      expect(entry!.pane).toBe("pane:andy0000001");
+      // A binding written before the fix: the tick moves it to the session's pane and raises no line.
+      const { key, ...rest } = entry!;
+      await f.notes.setNote(owner, key, JSON.stringify({ ...rest, pane: "pane:sess00000001" }));
+      await f.done.tick(owner);
+      expect(f.notice.mock.calls.filter(([, k]) => String(k).startsWith("request-pane:"))).toEqual([]);
+      expect((await f.done.openList(owner))[0]!.pane).toBe("pane:andy0000001");
+    });
+
     it("R22-4 (1/11: nous_msg:cc96… read \"lost its pane\" while its plan was COMPLETED and \"looks finished\" was said): a finished request never reads lost its pane", async () => {
       const panes: Record<string, boolean | null> = { "pane:bob0000001": true, "pane:cody000001": true };
       const f = fixture(false, { open: (paneId) => panes[paneId] ?? false });
@@ -341,6 +429,22 @@ describe("Nous Done", () => {
       await f.done.tick(owner);
       await f.done.tick(owner);
       expect(gone()).toEqual([expect.stringMatching(/^Request "Cody checks the dock on mobile" .+lost its pane: pane:cody000001 is closed or gone/)]);
+    });
+
+    it("decision 38050 (13/11 1ff7a8b3, a reused pane): only a done after the latest send naming the request says it looks finished", async () => {
+      const reports: Array<{ at: string; summary: string }> = [];
+      const f = fixture(false, { pane: (since) => reports.filter((report) => report.at >= since).map((report) => `pane:hector0001 reported done ${report.at.slice(11, 16)} UTC: ${report.summary}`).at(-1) ?? null });
+      await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Keep the server at 90 % utilization", outcome: "PENDING", pane: "pane:hector0001", id: m2 }] }, turnCtx);
+      // The reused pane finishes unrelated work, then Nous sends it this request: no line.
+      reports.push({ at: "2026-10-29T12:40:00.000Z", summary: "Space Link step 9 shipped" });
+      f.clock.now = Date.parse("2026-10-29T12:45:00.000Z");
+      await f.done.rebound(owner, [{ paneId: "pane:hector0001", text: `Work on ${m2.slice(0, "nous_msg:".length + 8)}: keep the server at 90 %.` }]);
+      await f.done.tick(owner);
+      expect(lines(f)).toEqual([]);
+      // Its done after the naming send: the line.
+      reports.push({ at: "2026-10-29T12:50:00.000Z", summary: "utilization at 90 %" });
+      await f.done.tick(owner);
+      expect(lines(f).map(([, line]) => line)).toEqual([expect.stringMatching(/looks finished: pane:hector0001 reported done 12:50 UTC: utilization at 90 %/)]);
     });
 
     it("queue 1002 (8/11: requests sat 6+ hours on panes of a closed room): a send naming the request moves it to that pane only when its own pane is closed", async () => {
@@ -372,7 +476,7 @@ describe("Nous Done", () => {
       for (const reason of ["DECISION", "INBOX", "STANDING"] as const) await f.notes.addTurnFacts({ turnId: `nous_turn:${reason.toLowerCase()}01`, ownerUserId: owner, reason, status: "DONE", tools: {},
         planPoints: 0, outcomes: [{ summary: `Inbox round: no action (${reason})`, outcome: "PENDING", messageIds: [asked.id] }], startedAt: "2026-10-28T08:00:00.000Z",
         endedAt: "2026-10-28T08:00:00.000Z", model: null, effort: null, costUsd: null, tokens: null, goalId: null, error: null });
-      await f.tools.execute("space_request_done", { request: "vault", summary: "Fixed the Vault inbox import: every waiting login imports.", where: "stable", verified: "Checked on the surface the operator uses" }, ctx);
+      await f.tools.execute("space_request_done", { request: "vault", summary: "Fixed the Vault inbox import: every waiting login imports.", where: "stable", verified: "Checked /nous/done on the surface the operator uses" }, ctx);
       await f.done.tick(owner);
       expect((await f.done.openList(owner)).map((entry) => [entry.messageId, entry.summary, entry.turnId])).toEqual([[asked.id, "Telegram buttons on decisions", "nous_turn:back001"]]);
       await facts("nous_turn:back002", "2026-10-28T11:00:00.000Z", [{ summary: "Another one after the backfill", outcome: "PENDING" }]);
@@ -458,19 +562,21 @@ describe("Nous Done", () => {
       const one = async (item: Record<string, unknown>) => (await read({ close: [item] })).result.result;
       expect(await one({ key: "000000000000000000000000", outcome: "DROPPED", note: "x" })).toMatch(/^Closed 0\.\n000000000000000000000000: DROPPED needs a note naming why/);
       expect(await one({ key: "000000000000000000000000", outcome: "DROPPED", note: drop })).toMatch(/^Closed 1\./);
-      expect(await one({ messageId: "nous_msg:bulk00000058", outcome: "SELF", note: "Done long ago" })).toMatch(/^Closed 1\./);
+      // Operator rule 31/10 (STRICT): "already done" with nothing checkable is held; naming what was checked closes it.
+      expect(await f.tools.execute("space_open_requests", { close: [{ messageId: "nous_msg:bulk00000058", outcome: "SELF", note: "Done long ago" }] }, ctx)).toMatchObject({ ok: false, refused: true, display: "Not closed: no proof" });
+      expect(await one({ messageId: "nous_msg:bulk00000058", outcome: "SELF", note: "Done long ago: q-20261029-060000-abcd is live on stable" })).toMatch(/^Closed 1\./);
       expect(await one({ messageId: "nous_msg:bulk00000057", outcome: "OPERATOR", note: "x", done: true })).toContain("nous_msg:bulk00000057: done takes SELF or HELPER");
-      expect(await one({ key: "request-done:open:000000000000000000000056", outcome: "SELF", note: "x", done: true })).toContain("done needs where");
-      expect(await one({ key: "000000000000000000000056", outcome: "SELF", note: "x", done: true, where: "dev", verified: "looked at it" })).toContain("done needs verified");
-      expect(await one({ key: "000000000000000000000056", outcome: "SELF", note: "x", done: true, where: "dev" })).toContain("done needs verified");
-      expect(await one({ messageId: "nous_msg:missing00001", outcome: "SELF", note: "x" })).toContain("nous_msg:missing00001: no open request");
+      expect(await one({ key: "request-done:open:000000000000000000000056", outcome: "SELF", note: "/nous/requests", done: true })).toContain("done needs where");
+      expect(await one({ key: "000000000000000000000056", outcome: "SELF", note: "/nous/requests", done: true, where: "dev", verified: "looked at it" })).toContain("done needs verified");
+      expect(await one({ key: "000000000000000000000056", outcome: "SELF", note: "/nous/requests", done: true, where: "dev" })).toContain("done needs verified");
+      expect(await one({ messageId: "nous_msg:missing00001", outcome: "SELF", note: "/nous/requests" })).toContain("nous_msg:missing00001: no open request");
       expect((await read({})).list).toMatchObject({ total: 58 });
       expect(await f.notifications.list(owner, { status: "ALL", limit: 50 })).toEqual([]);
       // done: its Done record, bound to its operator message.
-      const done = await read({ close: [{ key: "000000000000000000000057", outcome: "SELF", note: "Το bulk 57 έγινε.", done: true, where: "dev", verified: "Checked on the surface the operator uses" }] });
+      const done = await read({ close: [{ key: "000000000000000000000057", outcome: "SELF", note: "Το bulk 57 έγινε.", done: true, where: "dev", verified: "Checked /nous/done on the surface the operator uses" }] });
       expect(done.result.result).toMatch(/^Closed 1, 1 recorded in Done\./);
       const records = await f.notifications.list(owner, { status: "ALL", limit: 50 });
-      expect(records).toEqual([expect.objectContaining({ kind: "REQUEST_DONE", dedupeKey: "nous:done:nous_msg:bulk00000057", body: "Το bulk 57 έγινε.\nChecked: Checked on the surface the operator uses", payload: expect.objectContaining({ verified: "Checked on the surface the operator uses" }) })]);
+      expect(records).toEqual([expect.objectContaining({ kind: "REQUEST_DONE", dedupeKey: "nous:done:nous_msg:bulk00000057", body: "Το bulk 57 έγινε.\nChecked: Checked /nous/done on the surface the operator uses", payload: expect.objectContaining({ verified: "Checked /nous/done on the surface the operator uses" }) })]);
       expect(done.list.total).toBe(57);
     });
 
@@ -513,7 +619,7 @@ describe("Nous Done", () => {
       expect(list).toMatchObject({ total: 0, notDone: { total: 2, items: [{ messageId: b.id, createdAt: b.createdAt, text: "Τρέξε το backup" }, { messageId: a.id }] } });
       expect(list.notDone.items[1]!.text).toHaveLength(300);
       await f.tools.execute("space_open_requests", { close: [{ messageId: a.id, outcome: "DROPPED", note: "Ο operator το άφησε, δεν το θέλει πια" }] }, ctx);
-      await f.tools.execute("space_open_requests", { close: [{ messageId: b.id, outcome: "SELF", note: "Το backup έτρεξε.", done: true, where: "dev", verified: "Read the backup log on dev" }] }, ctx);
+      await f.tools.execute("space_open_requests", { close: [{ messageId: b.id, outcome: "SELF", note: "Το backup έτρεξε.", done: true, where: "dev", verified: "Read /var/log/space-backup.log on dev" }] }, ctx);
       expect(await read()).toBe("No open requests.");
     });
 
@@ -533,7 +639,7 @@ describe("Nous Done", () => {
       await symlink(join(base, "outside.jsonl"), join(root, "audit", "link.jsonl"));
       await writeFile(join(root, "audit", "many.jsonl"), [line({ messageId: ids[0], outcome: "DROPPED", note: drop }), "", line({ messageId: ids[1], outcome: "DROPPED", note: drop }), "{not json"].join("\n"));
       await writeFile(join(root, "audit", "unverified.jsonl"), line({ messageId: ids[1], outcome: "SELF", done: true, where: "stable", note: "Έγινε στο stable" }));
-      await writeFile(join(root, "audit", "one.jsonl"), `${line({ messageId: ids[2], outcome: "HELPER", done: false, where: "dev", note: "n".repeat(900) })}\n`);
+      await writeFile(join(root, "audit", "one.jsonl"), `${line({ messageId: ids[2], outcome: "HELPER", done: false, where: "dev", note: "n".repeat(900), verified: "Read /nous/requests on dev" })}\n`);
       const files = createNousFiles({ root, artifactRoot: base, rooms: async () => [], listArtifacts: async () => [], getArtifact: async () => { throw new Error("none"); } });
       const tools = createNousTools({ requestDone: f.done, files } as unknown as NousToolDeps);
       const run = async (closeFile: string, context = ctx) => tools.execute("space_open_requests", { closeFile }, context);
@@ -546,9 +652,7 @@ describe("Nous Done", () => {
       expect(await f.notes.listNotes(owner).then((notes) => notes.filter((note) => note.key.startsWith("request-done:open:")))).toHaveLength(1);
 
       // The old default "audit 6/11 results2" is gone: done with no verified is refused like a close item.
-      const unverified = JSON.parse((await run(`${root}/audit/unverified.jsonl`)).result) as { lines: number; closed: number; errors: string[] };
-      expect(unverified).toMatchObject({ lines: 1, closed: 0 });
-      expect(unverified.errors.join("\n")).toMatch(/nous_msg:file00000002: done needs verified/);
+      expect(await run(`${root}/audit/unverified.jsonl`)).toMatchObject({ ok: false, refused: true, display: "Not closed: no proof" });
 
       const first = await run(`${root}/audit/one.jsonl`);
       expect(first.ok).toBe(true);
@@ -577,7 +681,7 @@ describe("Nous Done", () => {
       const call = (args: Record<string, unknown>) => f.tools.execute("space_open_requests", args, ctx);
       const drop = "Ο operator το άφησε, δεν το θέλει πια";
       await call({ close: [{ messageId: a.id, outcome: "DROPPED", note: drop }] });
-      await call({ close: [{ messageId: b.id, outcome: "SELF", note: "Το backup έτρεξε.", done: true, where: "dev", verified: "Read the backup log on dev" }] });
+      await call({ close: [{ messageId: b.id, outcome: "SELF", note: "Το backup έτρεξε.", done: true, where: "dev", verified: "Read /var/log/space-backup.log on dev" }] });
       expect(await status(a.id)).toBe("ANSWERED");
       expect(await status(b.id)).toBe("DONE");
       const notesBefore = (await f.notes.listNotes(owner)).filter((note) => note.key.startsWith("request-done:sent:")).map((note) => note.key);
@@ -597,7 +701,7 @@ describe("Nous Done", () => {
       f.clock.now += 60_000;
 
       // It closes again, one at a time, with this turn's evidence.
-      expect((await call({ close: [{ messageId: a.id, outcome: "SELF", note: "Το Vault ανοίγει.", done: true, where: "stable", verified: "Opened the Vault on stable and read an item" }] })).result).toMatch(/^Closed 1, 1 recorded in Done\./);
+      expect((await call({ close: [{ messageId: a.id, outcome: "SELF", note: "Το Vault ανοίγει.", done: true, where: "stable", verified: "Opened http://127.0.0.1:4911/vault and read an item" }] })).result).toMatch(/^Closed 1, 1 recorded in Done\./);
       expect(await status(a.id)).toBe("DONE");
     });
   });
@@ -645,5 +749,56 @@ describe("Done never carries what waits on the operator (operator 13/11 14:39 BK
     expect(paneProgressSchema.safeParse({ status: "done", summary: "Done; two operator decisions pending in §7" }).success).toBe(false);
     expect(paneProgressSchema.safeParse({ status: "needs-you", summary: bob.summary, needs: "Αποφάσεις Α–ΣΤ", checked: ["file §7: the six decisions"] }).success).toBe(true);
     expect(paneProgressSchema.safeParse({ status: "done", summary: "Deployed; δεν υπάρχουν αποφάσεις δικές σου." }).success).toBe(true);
+  });
+});
+
+/** Operator rule 31/10 (STRICT), ~8 of the 59 corrections 11-14/11: no close or Done without proof, no several requests under one reason. */
+describe("close proof guard", () => {
+  it("knows checkable evidence from a claim", () => {
+    for (const text of ["q-20261114-142554-2a63 DEPLOYED on stable", "artifact:Ab12Cd34", "nous_msg:5d3c312e25ad", "http://127.0.0.1:4911/nous", "GET /api/nous/requests on stable: 11",
+      "commit fd52739ba6 on main", "screenshot of the Done tab", "reports/done.png"]) expect(checkableEvidence(text), text).toBe(true);
+    for (const text of ["Done long ago", "Checked on the surface the operator uses", "already done, verified", "stable: it works", "dev/stable both fine"]) expect(checkableEvidence(text), text).toBe(false);
+  });
+
+  it("holds a Done with nothing checkable, and a messageId close that would close several requests under one reason", async () => {
+    const f = fixture();
+    const bare = { ...args, plan: undefined, tickets: undefined };
+    expect(await f.tools.execute("space_request_done", { ...bare, verified: "Checked it, it is already done" }, ctx)).toMatchObject({ ok: false, refused: true, display: "Done needs proof" });
+    expect(await f.notifications.list(owner, { status: "ALL", limit: 50 })).toEqual([]);
+    for (const n of [1, 2]) await f.notes.setNote(owner, `request-done:open:${String(n).repeat(24)}`, JSON.stringify({ messageId: "nous_msg:shared000001", summary: `Part ${n}`,
+      turnId: "nous_turn:oper0001", openedAt: "2026-10-29T10:00:00.000Z", reportedAt: "2026-10-29T10:00:00.000Z" }));
+    await f.notes.setNote(owner, "request-done:open-backfill", "2026-10-28T00:00:00.000Z");
+    await f.notes.setNote(owner, "request-done:open-cleanup", "2026-10-28T00:00:00.000Z");
+    const drop = "The operator withdrew this in nous_msg:later00001";
+    expect(await f.tools.execute("space_open_requests", { close: [{ messageId: "nous_msg:shared000001", outcome: "DROPPED", note: drop }] }, ctx))
+      .toMatchObject({ ok: false, refused: true, display: "Not closed: 2 open requests of nous_msg:shared000001", result: expect.stringContaining("111111111111111111111111") });
+    expect(await f.done.openList(owner)).toHaveLength(2);
+    expect((await f.tools.execute("space_open_requests", { close: [{ key: "1".repeat(24), outcome: "DROPPED", note: drop }] }, ctx)).result).toMatch(/^Closed 1\./);
+    expect(await f.done.openList(owner)).toHaveLength(1);
+  });
+});
+
+describe("UI work needs its screenshot (Daily Nous errors 14/11, nous_msg:53161b99)", () => {
+  it("knows UI work and its proof", () => {
+    expect(uiProofMissing("Fix the unboxexpert product page", "q-20261114-142554-2a63 DEPLOYED")).toBe(true);
+    expect(uiProofMissing("Διόρθωσε τη σελίδα προϊόντος", "space_look https://unboxexpert.com/p/1: the price shows")).toBe(false);
+    expect(uiProofMissing("Fix the product page", "screenshot reports/p.png: the gallery loads")).toBe(false);
+    expect(uiProofMissing("Πρόσθεσε Done στο Nous", "q-20261114-142554-2a63 DEPLOYED")).toBe(false);
+  });
+
+  it("holds a UI Done and a UI close without a screenshot or space_look, and closes nothing", async () => {
+    const f = fixture();
+    const ui = { ...args, plan: undefined, request: "Fix the unboxexpert product page", summary: "The product page shows its gallery again." };
+    expect(await f.tools.execute("space_request_done", ui, ctx)).toMatchObject({ ok: false, refused: true, display: "Done needs a screenshot", result: expect.stringContaining("space_look") });
+    expect(await f.notifications.list(owner, { status: "ALL", limit: 50 })).toEqual([]);
+    await f.notes.setNote(owner, `request-done:open:${"5".repeat(24)}`, JSON.stringify({ messageId: "nous_msg:53161b99aaaa", summary: "Fix the unboxexpert product page",
+      turnId: "nous_turn:oper0001", openedAt: "2026-10-29T10:00:00.000Z", reportedAt: "2026-10-29T10:00:00.000Z" }));
+    await f.notes.setNote(owner, "request-done:open-backfill", "2026-10-28T00:00:00.000Z");
+    await f.notes.setNote(owner, "request-done:open-cleanup", "2026-10-28T00:00:00.000Z");
+    const close = { key: "5".repeat(24), outcome: "SELF" as const, note: "Fixed in q-20261114-142554-2a63", done: true, where: "dev" as const, verified: "q-20261114-142554-2a63 DEPLOYED on dev" };
+    expect(await f.tools.execute("space_open_requests", { close: [close] }, ctx)).toMatchObject({ ok: false, refused: true, display: "Not closed: no screenshot" });
+    expect(await f.done.openList(owner)).toHaveLength(1);
+    expect((await f.tools.execute("space_open_requests", { close: [{ ...close, verified: "space_look https://unboxexpert.com/p/1: the gallery and price show" }] }, ctx)).result).toMatch(/^Closed 1, 1 recorded in Done\./);
+    expect((await f.tools.execute("space_request_done", { ...ui, verified: "screenshot of https://unboxexpert.com/p/1: the gallery shows" }, ctx)).ok).toBe(true);
   });
 });

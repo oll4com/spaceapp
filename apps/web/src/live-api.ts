@@ -9,18 +9,34 @@ export interface MobilePairingOffer { offerId: string; qr: string; fingerprint: 
 export interface LiveDeviceSession { deviceId: string; app: string; name: string; ip: string; since: string; scopes: string[];
   last: { method: string; path: string; at: string } | null; rttMs: number | null }
 /** Who manages this SpaceApp now (Space Link lease) and whether its person took management back. */
-export interface LiveDevices { sessions: LiveDeviceSession[]; lease: { deviceId: string; name: string; since: string } | null; takenBackAt: string | null }
-export interface InstanceLink { id: string; label: string; origins: string[]; deviceId: string; scopes: string[]; access: InstanceLinkAccess | null; createdAt: string; lastSeenAt: string | null; connected: boolean }
+export interface LiveDevices { sessions: LiveDeviceSession[]; lease: { deviceId: string; name: string; since: string } | null; takenBackAt: string | null;
+  /** Space Link v2 step 9: the linked SpaceApp whose Nous this Nous answers to (absent on an older SpaceApp). */
+  superior?: { deviceId: string; label: string; host: string; since: string; scopes: string[] } | null }
+export interface InstanceLink { id: string; label: string; origins: string[]; deviceId: string; scopes: string[]; access: InstanceLinkAccess | null; createdAt: string; lastSeenAt: string | null; connected: boolean;
+  /** Plan step 6: this SpaceApp lends it its Claude accounts, and why that last failed (absent where this SpaceApp has no Gateway). */
+  ai?: boolean; aiError?: string | null;
+  /** Space Link v2 step 9: why its Nous last refused to answer to this one (absent without the hierarchy). */
+  nousError?: string | null;
+  /** Step 9b: its Nous's last report on this Nous's commands (the Requests tab's status and the command's words), null before any. */
+  nousReport?: { status: NousRequestStatus; text: string; at: string } | null;
+  /** Plan clipboard:TcX66vjNuZDv step 2: this Vault syncs to its Vault over the link (null while off; absent without a Vault broker). */
+  vault?: { syncedAt: string | null; error: string | null } | null;
+  /** Plan clipboard:TcX66vjNuZDv steps 3-6: settings, Space Memory and site sign-ins, each with whether both sides match (null: not compared yet). */
+  sync?: { syncedAt: string | null; error: string | null; waiting: boolean; settings?: InstanceLinkSyncCategory; memory?: InstanceLinkSyncCategory; signins?: InstanceLinkSyncCategory } | null }
+export interface InstanceLinkSyncCategory { at: string | null; same: boolean | null; error: string | null }
 /** The Vault key ids (never the values) of a Cloudflare Access service token in front of a linked SpaceApp's channel. */
 export interface InstanceLinkAccess { clientId: string; clientSecret: string }
 /** One row of a link's history (Space Link Λ4): its pairing, or an act through it with the trace id both SpaceApps audit it under. */
+/** Space Link version sync: what a linked SpaceApp runs and how its last update to this SpaceApp's commit went. */
+export interface InstanceLinkVersion { commit: string | null; version: string | null; error: string | null; checkedAt: string;
+  last: { state: "running" | "ok" | "refused" | "failed" | "rolled-back"; from: string | null; target: string; startedAt: string; finishedAt: string | null; reason: string | null } | null }
 export interface InstanceLinkEvent { id: string; action: string; requestId: string; createdAt: string; metadata: { method?: string; path?: string; status?: number | null } | null }
-import type { FreelanceEgressRoute } from "@space/contracts";
+import type { FreelanceEgressRoute, NousLinkDecision } from "@space/contracts";
 import type { ClientErrorReport } from "./client-error-reporter.js";
 import type { LiveHistorySnapshot, PersistedLiveTurn } from "./features/live-pane/live-history-sync.js";
 import type { SetupVoiceProvider } from "./features/setup-connections/SetupVoiceConnection.js";
 import type { SetupDraft, SetupPlan, SetupRun, SetupTask, SetupReadinessReceipt, SetupExecutionEvent, SetupFeature, SetupFeatureId, SetupAvailability } from "@space/contracts";
-import type { LiveRoomContext } from "@space/contracts";
+import type { ControlWatch, LiveRoomContext } from "@space/contracts";
 import type { DesignAsset, DesignBrandKit, DesignBrandKitInput, DesignEvent, DesignFormat, DesignNetwork, DesignPaneMetadata, DesignRequest, DesignRequestCreate, DesignTemplateId, DesignView } from "@space/contracts";
 import type { AppStudioEvent, AppStudioPaneMetadata, AppStudioPreview, AppStudioRunStatus } from "@space/contracts";
 import type { SecurityCopilotPaneMetadata, SecurityEvent, SecurityMemory } from "@space/contracts";
@@ -98,6 +114,7 @@ export interface GoogleBrowserCheckSummary {
 }
 import type { YouTubePlayback } from "./features/browser-pane/youtube-playback.js";
 import { learnServerClock } from "./server-clock.js";
+import { reportMissingPane } from "./pane-not-found.js";
 import type {
   Artifact,
   AgentPaneHistoryItem,
@@ -141,6 +158,7 @@ import type {
   BrowserFrame,
   BrowserFrameToken,
   BrowserRuntimeInput,
+  BrowserViewportDimensions,
   BrowserHandoffRequestResponse,
   JobApplication,
   JobApplicationCreate,
@@ -196,7 +214,7 @@ import type {
   MailCopilotFixRequest,
   MailFixRequestView,
   MailRuleDecision,
-  MailCampaign, MailCampaignCheck, MailCampaignPreview, MailCampaignPreviewMail, MailCampaignSend, MailCampaignStats, MailContact, MailList, MailListHealth, MailSender, MailSuppression,
+  MailCampaign, MailCampaignCheck, MailCampaignPreview, MailCampaignPreviewMail, MailCampaignSend, MailCampaignStats, MailContact, MailList, MailListHealth, MailSender, MailSuppression, MailTrackedMessage,
   MailTemplate, MailTemplateVersion,
   MailRuleProposal,
   MailCopilotView,
@@ -233,6 +251,7 @@ import type {
   NousRequestStatus,
   TaskRunListResponse,
   TaskRunStatus,
+  NousLinkedLoad,
   NousLoad,
   NousLoadRange,
   TokenUsageBreakdown,
@@ -261,9 +280,7 @@ import type {
   NousSettings,
   NousProviderOption,
   NousState,
-  ListSharedChatMessagesQuery,
   AuditChainEntry,
-  ListAuditChainQuery,
   AuditVerifyResponse,
   CreateClipboardItemRequest,
   UpdatePlanProgressRequest,
@@ -316,7 +333,6 @@ import type {
   ToolbarModelStats,
   CliTaskHistoryResponse,
   CodexEnvironment,
-  AgentSessionHistoryItem,
   AgentSessionHistoryResponse,
   SystemServicesResponse,
   SystemAnalyticsCliSessionsResponse,
@@ -484,7 +500,6 @@ import type {
   StreamingModerationAction,
   CreateStreamingBotMemoryInput,
   UpdateStreamingBotMemoryInput,
-  StreamingBotMcpExecuteResponse,
   StreamingBotSettings,
   StreamingBotStatus,
   StreamingBotTestInput,
@@ -523,7 +538,6 @@ import type {
   VoiceRealtimeSessionResponse,
   VoiceRealtimeHistoryItem,
   VoiceTranscriptionSettings,
-  VoiceTranscriptionDelay,
   VoiceTranscriptionLanguage,
   VoiceTranscriptionModel,
   VoiceTranscriptionResponse,
@@ -532,8 +546,7 @@ import type {
   FileListResponse,
   FileReadResponse,
   FileSearchResponse,
-  FileDiskUsageResponse,
-  DiskStats
+  FileDiskUsageResponse
 } from "@space/contracts";
 /** Which signature goes on each spot: a saved one's id or "drawn" (the `png` drawn now, kept under `label` when `remember`). */
 type SignatureChoice = { png?: string; remember?: boolean; label?: string; signatureId?: string; spotSignatures?: string[] };
@@ -739,7 +752,7 @@ export interface MemoryCalendarResponseEnvelope {
 
 export type { MemoryCalendarQuery, MemoryCalendarRecord, MemoryCalendarResponse };
 
-export interface MemoryGraphIssuesResponse extends Paginated<MemoryGraphIssue> {}
+export type MemoryGraphIssuesResponse = Paginated<MemoryGraphIssue>;
 
 export interface MemoryChangeSetListResponse {
   data: MemoryChangeSetSummary[];
@@ -905,7 +918,7 @@ function isUnsafeRequest(url: string, init?: RequestInit): boolean {
   const method = (init?.method ?? "GET").toUpperCase();
   return !["GET", "HEAD", "OPTIONS"].includes(method) &&
     url !== "/api/auth/login" &&
-    !url.startsWith("/api/auth/password-reset/") &&
+    url !== "/api/auth/password-reset/request" && url !== "/api/auth/password-reset/complete" &&
     url !== "/api/auth/google/credential" &&
     url !== "/api/setup/claim";
 }
@@ -984,7 +997,8 @@ async function fetchCsrfToken(): Promise<string> {
   try {
     response = await fetch("/api/auth/csrf", { credentials: "include" });
   } catch (error) {
-    reportCoreApiFailure(requestStartedAt);
+    // An abort (client timeout, caller cancel) says nothing about Space: a route still working for 40 s is no restart (nous_msg:ea2ef8e2).
+    if (!isAbortError(error)) reportCoreApiFailure(requestStartedAt);
     throw upstreamTransportError(error);
   }
   const payload = await readResponsePayload(response);
@@ -999,11 +1013,15 @@ async function fetchCsrfToken(): Promise<string> {
 }
 
 function reportCoreApiResponse(response: Response, payload: unknown, requestStartedAt: number) {
-  if (response.ok) {
+  // Any answer under 500 (a 404 for a gone room, a 429) came from the API itself: Space is up, so the notice goes (nous_msg:ea2ef8e2).
+  // The API's own JSON error at 5xx (a 502 for Google, the VPN broker or a file search timing out) is an answer too: only the web
+  // proxy's UPSTREAM_UNAVAILABLE or a front proxy's non-API 502 page means Space is away (goal 401b115b, desktop 0.1.29).
+  const apiAnswered = isApiErrorPayload(payload) && payload.error.code !== "UPSTREAM_UNAVAILABLE";
+  if (response.status < 500 || apiAnswered) {
     reportCoreApiSuccess();
     return;
   }
-  if (response.status === 502 || (isApiErrorPayload(payload) && payload.error.code === "UPSTREAM_UNAVAILABLE")) {
+  if (response.status === 502 || isApiErrorPayload(payload)) {
     reportCoreApiFailure(requestStartedAt);
   }
 }
@@ -1049,7 +1067,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
       headers,
     });
   } catch (error) {
-    reportCoreApiFailure(requestStartedAt);
+    // An abort (client timeout, caller cancel) says nothing about Space: a route still working for 40 s is no restart (nous_msg:ea2ef8e2).
+    if (!isAbortError(error)) reportCoreApiFailure(requestStartedAt);
     throw upstreamTransportError(error);
   }
   learnServerClock(response);
@@ -1062,6 +1081,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     if (isApiErrorPayload(payload)) {
+      reportMissingPane(url, response.status, payload.error.message);
       throw new SpaceApiError(formatApiError(payload, `Request failed: ${response.status}`), {
         code: payload.error.code,
         status: response.status,
@@ -1086,6 +1106,24 @@ async function requestWithTimeout<T>(url: string, timeoutMs: number, timeoutMess
     throw error;
   } finally {
     globalThis.clearTimeout(timeoutId);
+  }
+}
+
+/** A Control MCP JSON-RPC reply: its result shape differs per tool and live-session.ts reads it dynamically. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- one named escape hatch instead of four inline `any`s
+export type ControlMcpReply = any;
+
+/** Control MCP calls retry once after 1 s while the upstream is briefly unavailable. */
+async function retryOnceIfUpstreamUnavailable<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    const err = error as { code?: unknown; status?: unknown; message?: unknown } | null | undefined;
+    if (err?.code === "UPSTREAM_UNAVAILABLE" || err?.status === 502 || err?.status === 503 || String(err?.message).includes("UPSTREAM_UNAVAILABLE")) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      return await call();
+    }
+    throw error;
   }
 }
 
@@ -1419,8 +1457,8 @@ export type TransferStatus = {
 };
 
 export const api = {
-  healthPing: () => request<{ ok: boolean }>("/healthz", { cache: "no-store" }),
-  systemHealth: (userView = false) => request<SystemHealthSnapshot>(userView ? "/api/system-health" : "/api/admin/system-analytics/health", { cache: "no-store" }),
+  healthPing: (path = "/healthz") => request<{ ok: boolean }>(path, { cache: "no-store" }),
+  systemHealth: (userView = false) => request<SystemHealthSnapshot>(userView ? "/api/system-health" : "/api/admin/system-analytics/health", { cache: "no-cache" }),
   systemHealthHistory: (range: SystemHealthRange) => request<SystemHealthHistory>(`/api/admin/system-analytics/health/history?range=${encodeURIComponent(range)}`),
   systemTopology: () => request<SystemTopologySnapshot>("/api/admin/system-analytics/topology", { cache: "no-store" }),
   readyz: () => request<ReadyzPayload>("/readyz"),
@@ -1523,10 +1561,17 @@ export const api = {
       body: JSON.stringify({ email, password })
     }).then(noteServerModules).then(noteSignedInUser);
   },
-  requestPasswordReset: (email: string) =>
-    request<{ ok: true }>("/api/auth/password-reset/request", { method: "POST", body: JSON.stringify({ email }) }),
+  /** inApp: the desktop app's sign-in, where the mailed link is pasted back (its links open in another browser). */
+  requestPasswordReset: (email: string, inApp = false) =>
+    request<{ ok: true }>("/api/auth/password-reset/request", { method: "POST", body: JSON.stringify(inApp ? { email, inApp } : { email }) }),
+  /** Whether this server can mail reset links at all (a trusted origin and a sender); says nothing about any account. */
+  passwordResetAvailable: () => request<{ available: boolean }>("/api/auth/password-reset/available"),
   completePasswordReset: (token: string, newPassword: string) =>
     request<{ ok: true }>("/api/auth/password-reset/complete", { method: "POST", body: JSON.stringify({ token, newPassword }) }),
+  /** Signed in (Settings › Login password): mails the reset link for this account; the pasted link completes it in this session. */
+  requestOwnPasswordReset: () => request<{ ok: true }>("/api/auth/password-reset/mine/request", { method: "POST", body: "{}" }),
+  completeOwnPasswordReset: (token: string, newPassword: string) =>
+    request<{ ok: true }>("/api/auth/password-reset/mine/complete", { method: "POST", body: JSON.stringify({ token, newPassword }) }),
   logout: async () => {
     const result = await request<{ ok: true }>("/api/auth/logout", { method: "POST" });
     csrfToken = null;
@@ -1557,24 +1602,44 @@ export const api = {
   listAppDevices: () => request<{ devices: AppDeviceSession[] }>("/api/auth/devices"),
   revokeAppDevice: (id: string) => request<{ device: AppDeviceSession }>(`/api/auth/devices/${encodeURIComponent(id)}/revoke`, { method: "POST", body: JSON.stringify({}) }),
   allowAppDevice: (id: string) => request<{ device: AppDeviceSession }>(`/api/auth/devices/${encodeURIComponent(id)}/allow`, { method: "POST", body: JSON.stringify({}) }),
+  /** Space Link v2: what an allowed link may do beyond read and act (manage, upgrade, nous); widening answers STEP_UP_REQUIRED first. */
+  setLinkScopes: (id: string, scopes: string[]) => request<{ device: AppDeviceSession }>(`/api/auth/devices/${encodeURIComponent(id)}/scopes`, { method: "POST", body: JSON.stringify({ scopes }) }),
   mobileInstance: () => request<MobileInstanceStatus>("/api/mobile/instance"),
+  /** Settings › Login password: whether this account has a password, and until when this session's step-up spares the current one. */
+  passwordStatus: () => request<{ hasPassword: boolean; stepUpUntil: string | null; canMail?: boolean }>("/api/auth/password"),
   changePassword: async (newPassword: string, currentPassword?: string) => {
     const result = await request<{ ok: true }>("/api/auth/password", { method: "POST", body: JSON.stringify({ newPassword, ...(currentPassword ? { currentPassword } : {}) }) });
     csrfToken = null; // the answer carries a new session cookie, whose CSRF token differs
     return result;
   },
   stepUpWithPassword: (password: string) => request<{ steppedUp: true; until: string }>("/api/auth/step-up/password", { method: "POST", body: JSON.stringify({ password }) }),
+  /** Mails a one-time link that confirms it is you in this session (no password, no Google); sentTo is the account's address. */
+  requestStepUpMail: () => request<{ ok: true; sentTo: string }>("/api/auth/step-up/mail/request", { method: "POST", body: "{}" }),
+  /** The link from that mail, opened or pasted in the session that asked. */
+  stepUpWithMail: (token: string) => request<{ steppedUp: true; until: string }>("/api/auth/step-up/mail", { method: "POST", body: JSON.stringify({ token }) }),
   setUpMobileInstance: () => request<MobileInstanceStatus>("/api/mobile/instance", { method: "POST", body: JSON.stringify({}) }),
   rotateMobileInstance: (compromised: boolean) => request<MobileInstanceStatus>("/api/mobile/rotate", { method: "POST", body: JSON.stringify({ compromised }) }),
   createMobilePairing: () => request<MobilePairingOffer>("/api/mobile/pairing", { method: "POST", body: JSON.stringify({}) }),
   cancelMobilePairing: (offerId: string) => request<{ cancelled: boolean }>(`/api/mobile/pairing/${encodeURIComponent(offerId)}`, { method: "DELETE" }),
   listInstanceLinks: () => request<{ links: InstanceLink[] }>("/api/instance-links"),
-  linkedLoads: (range: NousLoadRange) => request<{ instances: Array<{ link: InstanceLink; load: NousLoad | null; error: string | null }> }>(`/api/instance-links/load?range=${range}`),
+  linkedLoads: (range: NousLoadRange) => request<{ instances: Array<{ link: InstanceLink; load: NousLoad | null; error: string | null; row: NousLinkedLoad }> }>(`/api/instance-links/load?range=${range}`),
   liveDeviceSessions: () => request<LiveDevices>("/api/auth/devices/live"),
   linkManagement: (action: "take-back" | "give-back") => request<LiveDevices>(`/api/auth/devices/live/${action}`, { method: "POST", body: "{}" }),
   linkInstance: (code: string, access?: InstanceLinkAccess) => request<{ link: InstanceLink; pending: string[] }>("/api/instance-links", { method: "POST", body: JSON.stringify({ code, access }) }),
   checkInstanceLink: (id: string) => request<{ link: InstanceLink; scopes: string[]; status: number; rttMs: number }>(`/api/instance-links/${encodeURIComponent(id)}/check`, { method: "POST", body: JSON.stringify({}) }),
   removeInstanceLink: (id: string) => request<{ ok: true }>(`/api/instance-links/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  instanceLinkVersions: () => request<{ local: { commit: string | null; version: string; syncing: boolean }; links: Record<string, InstanceLinkVersion> }>("/api/instance-links/versions"),
+  upgradeInstanceLink: (id: string) => request<InstanceLinkVersion>(`/api/instance-links/${encodeURIComponent(id)}/upgrade`, { method: "POST", body: JSON.stringify({}) }),
+  /** Space Link v2 step 9c: linked SpaceApps' open decisions this SpaceApp's person answers as their superior, signed by this SpaceApp. */
+  linkedNousDecisions: () => request<{ decisions: Array<{ linkId: string; label: string; decision: NousLinkDecision }> }>("/api/instance-links/decisions"),
+  answerLinkedNousDecision: (linkId: string, id: string, input: { answer: "APPROVE" | "DECLINE" | "ANSWER"; text?: string }) =>
+    request<{ decision: unknown }>(`/api/instance-links/${encodeURIComponent(linkId)}/decisions/${encodeURIComponent(id)}/answer`, { method: "POST", body: JSON.stringify(input) }),
+  syncInstanceLink: (id: string) => request<{ link: InstanceLink }>(`/api/instance-links/${encodeURIComponent(id)}/sync`, { method: "POST", body: JSON.stringify({}) }),
+  setInstanceLinkAi: (id: string, on: boolean) => request<{ ai: boolean; aiError: string | null }>(`/api/instance-links/${encodeURIComponent(id)}/ai`, { method: "POST", body: JSON.stringify({ on }) }),
+  instanceLinkVault: (id: string) => request<{ on: boolean; syncedAt: string | null; error: string | null; peer: { ownerUserId: string; vaultId: string | null; transportKey: string } | null;
+    peerError: string | null; signingKey: string | null; pinned?: boolean }>(`/api/instance-links/${encodeURIComponent(id)}/vault`),
+  setInstanceLinkVault: (id: string, body: { on: false } | { on: true } | { on: true; consent: { linkId: string; transportKey: string; signingKey: string; issuedAt: string; operatorSignature: string } }) =>
+    request<{ on: boolean; error: string | null }>(`/api/instance-links/${encodeURIComponent(id)}/vault`, { method: "POST", body: JSON.stringify(body) }),
   instanceLinkHistory: (id: string) => request<{ events: InstanceLinkEvent[] }>(`/api/instance-links/${encodeURIComponent(id)}/history`),
   checkGoogleAccountBrowser: (id: string) => request<{ account: GoogleAccountSummary; check: GoogleBrowserCheckSummary }>(`/api/auth/google/accounts/${encodeURIComponent(id)}/browser-check`, {
     method: "POST", body: JSON.stringify({})
@@ -1612,11 +1677,12 @@ export const api = {
       body: JSON.stringify({ token, password })
     }).then(noteServerModules).then(noteSignedInUser);
   },
-  clipboardItems: (query: { q?: string; source?: ClipboardSource; includeCompleted?: boolean; paneId?: string; page?: number; pageSize?: number } = {}) => {
+  clipboardItems: (query: { q?: string; source?: ClipboardSource; includeCompleted?: boolean; unfinished?: boolean; paneId?: string; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
     if (query.source) params.set("source", query.source);
     if (query.includeCompleted !== undefined) params.set("includeCompleted", String(query.includeCompleted));
+    if (query.unfinished !== undefined) params.set("unfinished", String(query.unfinished));
     if (query.paneId) params.set("paneId", query.paneId);
     if (query.page !== undefined) params.set("page", String(query.page));
     if (query.pageSize !== undefined) params.set("pageSize", String(query.pageSize));
@@ -1763,7 +1829,7 @@ export const api = {
   /** The Requests tab: every operator message, newest first, with how it ended; `before` a message id pages further back, `status` filters; `q` keeps those holding any of its words; `counts` cover every message `q` keeps. */
   nousRequests: (before?: string, status?: NousRequestStatus, limit?: number, q?: string) => {
     const query = new URLSearchParams({ ...(before ? { before } : {}), ...(status ? { status } : {}), ...(limit ? { limit: String(limit) } : {}), ...(q ? { q } : {}) }).toString();
-    return request<{ requests: NousOperatorRequest[]; hasMore: boolean; counts: Record<NousRequestStatus, number> }>(`/api/nous/requests${query ? `?${query}` : ""}`);
+    return request<{ requests: NousOperatorRequest[]; hasMore: boolean; counts: Record<NousRequestStatus, number> }>(`/api/nous/requests${query ? `?${query}` : ""}`, { cache: "no-cache" });
   },
   /** Signature from the phone (plan clipboard:2qSLIT_csvPm): the owner's saved signatures and phone, agents' requests, signing a PDF of Agent Files. */
   signatures: () => request<{ signatures: SavedSignature[] }>("/api/signatures"),
@@ -1807,11 +1873,11 @@ export const api = {
   updateNousSettings: (input: Partial<NousSettings>) => request<{ settings: NousSettings }>("/api/nous/settings", { method: "PATCH", body: JSON.stringify(input) }),
   /** Away mode's Settings switch (plan clipboard:B7eTUHTJYg3X): start or end it, or change its grant. */
   setNousAway: (input: { away: boolean; grant?: NousAwayGrant[] }) => request<{ away: NousAway | null }>("/api/nous/away", { method: "POST", body: JSON.stringify(input) }),
-  nousOverview: () => request<{ overview: NousOverview }>("/api/nous/overview"),
-  nousDecisions: () => request<{ decisions: NousDecision[] }>("/api/nous/decisions"),
+  nousOverview: () => request<{ overview: NousOverview }>("/api/nous/overview", { cache: "no-cache" }),
+  nousDecisions: () => request<{ decisions: NousDecision[] }>("/api/nous/decisions", { cache: "no-cache" }),
   nousEarlierDecisions: (before: string) => request<{ decisions: NousDecision[]; hasMore: boolean }>(`/api/nous/decisions?${new URLSearchParams({ before })}`),
   /** Nous's pane board (plan clipboard:Y9cgKVHFaHrr): every open pane by room with its live line, items and reply box. */
-  nousPaneBoard: () => request<{ board: NousPaneBoard }>("/api/nous/pane-board"),
+  nousPaneBoard: () => request<{ board: NousPaneBoard }>("/api/nous/pane-board", { cache: "no-cache" }),
   refreshNousPaneBoard: (paneId?: string) => request<{ started: boolean }>("/api/nous/pane-board/refresh", { method: "POST", body: JSON.stringify(paneId ? { paneId } : {}) }),
   answerNousPane: (paneId: string, input: NousPaneBoardAnswerInput) =>
     request<NousPaneBoardAnswerResult>(`/api/nous/pane-board/${encodeURIComponent(paneId)}/answer`, { method: "POST", body: JSON.stringify(input) }),
@@ -1917,14 +1983,13 @@ export const api = {
     if (query.ownerUserId !== undefined) params.set("ownerUserId", query.ownerUserId);
     const suffix = params.toString();
     return singleFlightRequest(`rooms:${suffix}`, () =>
-      request<Paginated<Room>>(`/api/rooms${suffix ? `?${suffix}` : ""}`)
+      request<Paginated<Room>>(`/api/rooms${suffix ? `?${suffix}` : ""}`, { cache: "no-cache" })
     );
   },
   dashboardAgents: (roomId: string) => requestWithTimeout<{
     data: Pane[];
     activity: Record<string, "working" | "waiting" | "done" | "idle">;
     details?: Record<string, { status: "working" | "waiting" | "done" | "idle"; reason?: string | null; since?: string | null; modelId?: string | null; source?: "native" | "screen" | "session" | "run" }>;
-    sampledAt?: string;
   }>(`/api/rooms/${encodeURIComponent(roomId)}/dashboard-agents`, 15_000, "Agent activity refresh timed out."),
   roomCliActivity: (query: { all?: boolean; ownerUserId?: string } = {}) => {
     const params = new URLSearchParams();
@@ -2031,7 +2096,14 @@ export const api = {
   /** Operator 9/11 13:31 BKK: where Go now lands, found again on the server against the live browsers (the card is rebound to it). */
   needsYouPlace: (id: string) => request<{ page: boolean; place: import("@space/contracts").NeedsYouBrowserPage | null; url: string | null }>(
     `/api/notifications/${encodeURIComponent(id)}/place`, { method: "POST" }),
-  readAllNotifications: () => request<{ read: number }>("/api/notifications/read-all", { method: "POST" }),
+  /** «Εισερχόμενα» v2 (plan clipboard:aE7U1J_gU9OV, spec §10): the Threads (what waits read whole, then closed pages), one Thread, one verb. */
+  inbox: (query: { cursor?: string; limit?: number; q?: string; tab?: "UPDATES" } = {}) =>
+    request<import("@space/contracts").InboxPage>(`/api/inbox?${new URLSearchParams(Object.entries(query).filter((entry) => entry[1] !== undefined && entry[1] !== "").map(([key, value]) => [key, String(value)]))}`, { cache: "no-cache" }),
+  inboxThread: (id: string) => request<{ thread: import("@space/contracts").InboxThreadView; events: import("@space/contracts").InboxEvent[] }>(`/api/inbox/threads/${encodeURIComponent(id)}`, { cache: "no-cache" }),
+  actInbox: (id: string, input: import("@space/contracts").InboxActInput) =>
+    request<import("@space/contracts").InboxActResult>(`/api/inbox/threads/${encodeURIComponent(id)}/act`, { method: "POST", body: JSON.stringify(input) }),
+  inboxDoneAll: (ids: string[]) => request<import("@space/contracts").InboxBadge & { done: string[]; skipped: string[] }>("/api/inbox/done-all", { method: "POST", body: JSON.stringify({ ids }) }),
+  readAllNotifications: (id?: string) => request<{ read: number }>("/api/notifications/read-all", { method: "POST", ...(id ? { body: JSON.stringify({ id }) } : {}) }),
   testNotification: () => request<{ notification: import("@space/contracts").SpaceNotification }>("/api/notifications/test", { method: "POST" }),
   // The Android app's FCM token while "Push notifications on this device" is on; `available` says whether the server can push.
   registerPushDevice: (device: import("@space/contracts").PushDeviceRegistration) => request<{ registered: true; available: boolean }>("/api/notifications/push-devices", { method: "POST", body: JSON.stringify(device) }),
@@ -2170,7 +2242,7 @@ export const api = {
   opencodeBench: (range: SystemAnalyticsRange = "7d", refresh = false) =>
     request<OpencodeBenchResponse>(`/api/admin/system-analytics/opencode-bench?range=${encodeURIComponent(range)}${refresh ? "&refresh=true" : ""}`),
   opencodeBenchProbe: (provider: string, model: string) =>
-    request<any>(`/api/admin/system-analytics/opencode-bench/probe/${encodeURIComponent(provider)}/${encodeURIComponent(model)}`),
+    request<unknown>(`/api/admin/system-analytics/opencode-bench/probe/${encodeURIComponent(provider)}/${encodeURIComponent(model)}`),
   reapToolbarCliSessions: () => request<CliSessionReapResponse>("/api/admin/cli-session-reaps", {
     method: "POST",
     body: JSON.stringify({})
@@ -2255,7 +2327,7 @@ export const api = {
     `/api/admin/gateway/accounts/${encodeURIComponent(accountId)}/usage`, { method: "POST", body: JSON.stringify({}) }),
   testGatewayAccount: (accountId: string, model?: string) => request<{ ok: boolean; model: string; status: number; latencyMs: number; error: string | null }>(
     `/api/admin/gateway/accounts/${encodeURIComponent(accountId)}/test`, { method: "POST", body: JSON.stringify(model ? { model } : {}) }),
-  useGatewayResetCredit: (accountId: string, idempotencyKey: string) => request<{ outcome: string; windowsReset: number }>(
+  useGatewayResetCredit: (accountId: string, idempotencyKey: string) => request<{ outcome: string; windowsReset: number | string[] }>(
     `/api/admin/gateway/accounts/${encodeURIComponent(accountId)}/reset-credit`, { method: "POST", body: JSON.stringify({ idempotencyKey }) }),
   deleteGatewayAccount: (accountId: string) => request<{ id: string; deleted: true }>(
     `/api/admin/gateway/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" }),
@@ -3052,6 +3124,9 @@ export const api = {
       headers: cliTerminalControlHeaders(paneId),
       body: JSON.stringify(input)
     }),
+  /** Resumes a pane the Sleeping-panes sweep stopped; false for any other pane (nothing starts). */
+  wakeCliPane: (paneId: string) =>
+    request<{ woke: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/cli/wake`, { method: "POST", body: "{}" }),
   interruptCliSession: (paneId: string, reason?: string) =>
     request<PaneCliSessionResponse>(`/api/panes/${encodeURIComponent(paneId)}/cli/interrupt`, {
       method: "POST",
@@ -3308,6 +3383,21 @@ export const api = {
     }),
   browserHandoff: (paneId: string) =>
     request<BrowserHandoffRequestResponse>(`/api/panes/${encodeURIComponent(paneId)}/browser/handoff`),
+  /** Teleport (docs/agents/browser-teleport.md): the pane as a phone, its frames long-polled, its input under the operator's lease. */
+  teleport: (paneId: string, input: { on: boolean; dimensions?: BrowserViewportDimensions; pageId?: string }) =>
+    request<{ on: boolean; viewportDimensions: BrowserViewportDimensions | null }>(`/api/panes/${encodeURIComponent(paneId)}/browser/teleport`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  teleportFrame: (paneId: string, after: number) =>
+    request<{ frame: { sequence: number; data: string; mimeType: string; width: number; height: number; capturedAt: string } | null }>(
+      `/api/panes/${encodeURIComponent(paneId)}/browser/teleport/frame?after=${after}`),
+  /** `at`: each input's own time (ms), for Captcha mode's timed replay. */
+  teleportInput: (paneId: string, inputs: BrowserRuntimeInput[], at?: number[]) =>
+    request<{ ok: boolean; dispatched: number }>(`/api/panes/${encodeURIComponent(paneId)}/browser/teleport/input`, {
+      method: "POST",
+      body: JSON.stringify(at ? { inputs, at } : { inputs })
+    }),
   createBrowserCapture: (paneId: string, input: CreateBrowserCaptureJobRequest) =>
     request<BrowserCaptureJobResponse>(`/api/panes/${encodeURIComponent(paneId)}/browser/captures`, {
       method: "POST",
@@ -3602,7 +3692,7 @@ export const api = {
     }),
   voiceTranscriptionSettings: () => request<VoiceTranscriptionSettings>("/api/voice/transcription/settings"),
   openAiModels: () => request<OpenAiModelsResponse>("/api/voice/openai-models"),
-  liveAudioProviders: () => request<{ providers: any[] }>("/api/voice/providers"),
+  liveAudioProviders: () => request<{ providers: Array<{ id: string; configured?: boolean; missingReason?: string }> }>("/api/voice/providers"),
   createVoiceRealtimeCall: (input: VoiceRealtimeSessionRequest) =>
     request<VoiceRealtimeSessionResponse>("/api/voice/realtime/calls", {
       method: "POST",
@@ -3945,23 +4035,15 @@ export const api = {
     }>("/api/admin"),
   callControlMcp: async (method: string, params?: Record<string, unknown>, id?: string | number) => {
     const doCall = () =>
-      request<any>("/api/control/v1/mcp", {
+      request<ControlMcpReply>("/api/control/v1/mcp", {
         method: "POST",
         body: JSON.stringify({ jsonrpc: "2.0", id: id ?? Date.now(), method, params })
       });
-    try {
-      return await doCall();
-    } catch (err: any) {
-      if (err?.code === "UPSTREAM_UNAVAILABLE" || err?.status === 502 || err?.status === 503 || String(err?.message).includes("UPSTREAM_UNAVAILABLE")) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        return await doCall();
-      }
-      throw err;
-    }
+    return retryOnceIfUpstreamUnavailable(doCall);
   },
-  executeControlMcp: async (roomId: string, actions: any[], expectedRevision?: string, waitForCompletion: boolean = true, requestId: string = `voice_${crypto.randomUUID()}`) => {
+  executeControlMcp: async (roomId: string, actions: unknown[], expectedRevision?: string, waitForCompletion: boolean = true, requestId: string = `voice_${crypto.randomUUID()}`) => {
     const doCall = () =>
-      request<any>("/api/control/v1/mcp", {
+      request<ControlMcpReply>("/api/control/v1/mcp", {
         method: "POST",
         body: JSON.stringify({
           jsonrpc: "2.0",
@@ -3979,15 +4061,7 @@ export const api = {
           }
         })
       });
-    try {
-      return await doCall();
-    } catch (err: any) {
-      if (err?.code === "UPSTREAM_UNAVAILABLE" || err?.status === 502 || err?.status === 503 || String(err?.message).includes("UPSTREAM_UNAVAILABLE")) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        return await doCall();
-      }
-      throw err;
-    }
+    return retryOnceIfUpstreamUnavailable(doCall);
   },
   inspectControlMcp: async (roomId: string, section: string = "STATE", paneId?: string) => {
     const args: Record<string, unknown> = {
@@ -3998,7 +4072,7 @@ export const api = {
       args.paneId = paneId.trim();
     }
     const doCall = () =>
-      request<any>("/api/control/v1/mcp", {
+      request<ControlMcpReply>("/api/control/v1/mcp", {
         method: "POST",
         body: JSON.stringify({
           jsonrpc: "2.0",
@@ -4010,19 +4084,11 @@ export const api = {
           }
         })
       });
-    try {
-      return await doCall();
-    } catch (err: any) {
-      if (err?.code === "UPSTREAM_UNAVAILABLE" || err?.status === 502 || err?.status === 503 || String(err?.message).includes("UPSTREAM_UNAVAILABLE")) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        return await doCall();
-      }
-      throw err;
-    }
+    return retryOnceIfUpstreamUnavailable(doCall);
   },
   callControlMcpTool: async (name: string, args: Record<string, unknown> = {}) => {
     const doCall = () =>
-      request<any>("/api/control/v1/mcp", {
+      request<ControlMcpReply>("/api/control/v1/mcp", {
         method: "POST",
         body: JSON.stringify({
           jsonrpc: "2.0",
@@ -4034,15 +4100,7 @@ export const api = {
           }
         })
       });
-    try {
-      return await doCall();
-    } catch (err: any) {
-      if (err?.code === "UPSTREAM_UNAVAILABLE" || err?.status === 502 || err?.status === 503 || String(err?.message).includes("UPSTREAM_UNAVAILABLE")) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        return await doCall();
-      }
-      throw err;
-    }
+    return retryOnceIfUpstreamUnavailable(doCall);
   },
   reportLiveVoiceLog: (payload: { roomId?: string; event: string; role?: string; text?: string; toolCall?: unknown; detail?: unknown; timestamp?: string }) =>
     request<{ ok: boolean }>("/api/voice/realtime/logs", {
@@ -4067,7 +4125,7 @@ export const api = {
       }
     ).catch(() => ({ ok: false, results: [] })),
   watchesControlMcp: async (roomId: string, operation: string = "list", params: Record<string, unknown> = {}) => {
-    return request<any>("/api/control/v1/mcp", {
+    return request<unknown>("/api/control/v1/mcp", {
       method: "POST",
       body: JSON.stringify({
         jsonrpc: "2.0",
@@ -4085,10 +4143,10 @@ export const api = {
     });
   },
   getPendingWatches: async (roomId?: string) => {
-    return request<any[]>(`/api/control/v1/watches/pending${roomId ? `?roomId=${encodeURIComponent(roomId)}` : ""}`);
+    return request<ControlWatch[]>(`/api/control/v1/watches/pending${roomId ? `?roomId=${encodeURIComponent(roomId)}` : ""}`);
   },
   ackWatch: async (roomId: string, id: string) => {
-    return request<any>("/api/control/v1/watches/ack", {
+    return request<unknown>("/api/control/v1/watches/ack", {
       method: "POST",
       body: JSON.stringify({ roomId, id })
     });
@@ -4187,8 +4245,11 @@ export const api = {
   resetJobApply: (expectedCampaignStartedAt: string | null) =>
     request<{ reset: JobApplyResetResult }>("/api/job-apply/reset", { method: "POST", body: JSON.stringify({ confirm: "RESET", expectedCampaignStartedAt }) }),
   jobApplyStats: (tz: string) => request<{ stats: JobApplyStats }>(`/api/job-apply/stats?tz=${encodeURIComponent(tz)}`, { cache: "no-store" }),
-  jobApplications: (status?: JobApplicationStatus) =>
-    request<{ applications: JobApplication[] }>(`/api/job-apply/applications${status ? `?status=${encodeURIComponent(status)}` : ""}`, { cache: "no-store" }),
+  /** `unless`: the version held; the answer's `applications` is null while the tracker is the same. */
+  jobApplications: (status?: JobApplicationStatus, unless?: string) => {
+    const text = new URLSearchParams({ ...(status ? { status } : {}), ...(unless ? { unless } : {}) }).toString();
+    return request<{ applications: JobApplication[] | null; version?: string }>(`/api/job-apply/applications${text ? `?${text}` : ""}`, { cache: "no-store" });
+  },
   createJobApplication: (input: JobApplicationCreate) =>
     request<{ application: JobApplication; created: boolean }>("/api/job-apply/applications", { method: "POST", body: JSON.stringify(input) }),
   updateJobApplication: (id: string, input: JobApplicationUpdate) =>
@@ -4494,6 +4555,7 @@ export const api = {
     request<{ contacts: MailContact[] }>(`/api/mail-campaigns/lists/${encodeURIComponent(id)}/contacts?${new URLSearchParams(Object.fromEntries(Object.entries({ limit: "100", ...query }).filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => [key, String(value)])))}`, { cache: "no-store" }),
   mailCampaignSuppressions: (q?: string) => request<{ suppressions: MailSuppression[] }>(`/api/mail-campaigns/suppressions${q ? `?${new URLSearchParams({ q })}` : ""}`, { cache: "no-store" }),
   mailCampaignSenders: () => request<{ senders: MailSender[] }>("/api/mail-campaigns/senders", { cache: "no-store" }),
+  mailOpens: () => request<{ messages: MailTrackedMessage[]; campaigns: Array<{ id: string; name: string; status: MailCampaign["status"]; stats: MailCampaignStats }> }>("/api/mail-campaigns/opens", { cache: "no-store" }),
   setMailSenderWarmup: (id: string, stage: number) => request<{ sender: MailSender }>(`/api/mail-campaigns/senders/${encodeURIComponent(id)}/warmup`, { method: "POST", body: JSON.stringify({ stage }) }),
   setMailSenderBulk: (id: string, bulk: boolean) => request<{ sender: MailSender }>(`/api/mail-campaigns/senders/${encodeURIComponent(id)}/bulk`, { method: "POST", body: JSON.stringify({ bulk }) }),
   forgetMailMemory: (id: string) => request<{ forgotten: boolean }>(`/api/mail-copilot/memory/${encodeURIComponent(id)}`, { method: "DELETE" }),

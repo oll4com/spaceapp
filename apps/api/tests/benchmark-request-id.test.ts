@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchModelTactics, loadArenaModelCatalog, registerBenchmarkRoutes } from "../src/benchmark-routes.js";
-import { ArenaBenchmarkRunner } from "../src/asteroids-arena/runner.js";
+import { ArenaBenchmarkRunner, isArenaModelId } from "../src/asteroids-arena/runner.js";
 import { createArenaFileStore } from "../src/asteroids-arena/store.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -63,6 +63,11 @@ describe("OBS-006 benchmark Gateway correlation", () => {
       expect(calls).toHaveLength(3);
       expect(calls.map((call) => call.headers.get("x-request-id"))).toEqual(Array(3).fill("req:benchmark-server"));
     } finally { await app.close(); }
+  });
+
+  it("accepts hyphenated arena model ids and refuses what the old /-@ range let in", () => {
+    for (const id of ["codex/test-model", "opencode/claude-opus-4-5", "gateway/@cf/meta+llama-3", "openrouter/x:free"]) expect(isArenaModelId(id)).toBe(true);
+    for (const id of ["a;b", "a<b", "a=b", "a?b", "-lead", "a b"]) expect(isArenaModelId(id)).toBe(false);
   });
 
   it("keeps the arena start request's server id on Gateway preflight and round decisions", async () => {

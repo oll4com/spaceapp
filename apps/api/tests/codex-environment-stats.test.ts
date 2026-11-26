@@ -5,8 +5,8 @@ describe("Codex environment stats", () => {
   it("leaves the host stats out and logs when they cannot be read", async () => {
     const log = { warn: vi.fn() };
     const error = new Error("proc unreadable");
-    const { readCodexEnvironmentHostStats } = createCodexEnvironmentStats({ log } as any, {
-      store: {} as any,
+    const { readCodexEnvironmentHostStats } = createCodexEnvironmentStats({ log } as never, {
+      store: {} as never,
       hostStatsProvider: async () => { throw error; }
     });
 

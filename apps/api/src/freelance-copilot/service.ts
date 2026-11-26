@@ -8,7 +8,7 @@ import {
 } from "@space/contracts";
 import type { FreelanceCopilotRepository } from "@space/db";
 import type { RailAnswerBy } from "@space/db";
-import { forbiddenByMemoryText, forbiddingMemory, MEMORY_HITS_NOTE, questionMemoryHits } from "@space/db";
+import { forbiddenByMemoryText, forbiddingMemory, MEMORY_HITS_NOTE, questionMemoryHits, reviewEditMemoryText } from "@space/db";
 import type { PinnedMemoryHit } from "../nous/operator-facts.js";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
 import { operatorOrder, operatorOrderOverride, type OperatorMessageRefs } from "../copilot-operator-order.js";
@@ -29,6 +29,8 @@ export interface FreelanceCopilotServiceOptions {
   operatorMemory?(question: string): Promise<PinnedMemoryHit[]>;
   /** The operator's messages to Nous: a review's operatorOrder is checked against them. */
   operatorMessages?: OperatorMessageRefs;
+  /** A line for Nous (its inbox): a standing block that stopped the job hunts, once per block. */
+  notice?(owner: string, key: string, line: string): Promise<void> | void;
 }
 
 /** The owner's own freelance sites, set per instance (stable: deploy/space-api.service; review EXT-C-F18 R2). */
@@ -47,6 +49,11 @@ const FOLLOW_UP_DAYS = [3, 4];
 const STOP_RULE_MS = 42 * DAY_MS;
 /** Where pollMail files DMARC reports (imapflow adds the server's namespace prefix). */
 const REPORT_FOLDER = "DMARC";
+/** Operator 14/11 11:19 BKK: with nothing waiting, a hunt brief at most this often (a constant: the Browser Host parses pane settings strictly). */
+const HUNT_EVERY_MS = 20 * 60_000;
+/** 21/11 (Dana: Upwork Connects 0, a hunt every 20 min ended "skipped" all day): after hunts ending without a job, the next waits this long or a new mail. */
+const HUNT_BLOCKED_BACKOFF_MS = 3 * 60 * 60_000;
+const HUNT_BRIEF = "Job hunt: scan Upwork Most Recent, Best Matches and the saved searches, then the other enabled channels, and apply to every job that passes the send gate, following the skill's \"Volume until the first 5 reviews\" rules. Report what you applied to and what you skipped and why.";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface EventInput { paneId?: string | null; runId?: string | null; leadId?: string | null; messageId?: string | null; type: FreelanceEventType; status?: "PENDING" | "TAKEN" | "DONE" | null; message: string; payload?: Record<string, unknown> }
@@ -110,8 +117,9 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     if (settings.paused) throw new SpaceConflictError("FREELANCE_PAUSED: the pane is paused; nothing is sent until the operator resumes it.");
     const channel = freelanceChannelSettings(settings, message.channel);
     if (!channel.enabled) throw new SpaceConflictError(`FREELANCE_CHANNEL_OFF: ${label} is off in this pane's Setup.`);
-    if (await repository.countSends(owner, message.channel, ago(DAY_MS)) >= channel.dailyCap) {
-      throw new SpaceConflictError(`FREELANCE_LIMIT: ${label} allows ${channel.dailyCap} proposal(s) and message(s) a day; wait until the oldest of the last 24 hours ages out.`);
+    // Operator 14/11: the cap is applications a day; follow-ups and client replies never wait on it.
+    if ((message.kind === "PROPOSAL" || message.kind === "APPLICATION") && await repository.countSends(owner, message.channel, ago(DAY_MS)) >= channel.dailyCap) {
+      throw new SpaceConflictError(`FREELANCE_LIMIT: ${label} allows ${channel.dailyCap} proposal(s) and application(s) a day; wait until the oldest of the last 24 hours ages out.`);
     }
     if (message.connects) {
       const { perDay, perMonth } = settings.connectsBudget;
@@ -162,7 +170,15 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
   async function followUpsDue(owner: string, pane: Pane | null): Promise<FreelanceLead[]> {
     const settings = settingsOf(pane);
     if (!settings.followUps) return [];
-    return (await repository.listLeads(owner, { status: ["PROPOSED"], dueBefore: now() })).filter((lead) => freelanceChannelSettings(settings, lead.channel).enabled);
+    const due: FreelanceLead[] = [];
+    for (const lead of await repository.listLeads(owner, { status: ["PROPOSED"], dueBefore: now() })) {
+      if (!freelanceChannelSettings(settings, lead.channel).enabled) continue;
+      // A follow-up written since its take (in review, approved, failed, rejected) goes its own way; only a take that wrote none comes back.
+      const takenAt = lead.payload.followUpTakenAt;
+      if (typeof takenAt === "string" && (await repository.listMessages(owner, { leadId: lead.id })).some((message) => message.kind === "FOLLOW_UP" && message.direction === "OUT" && message.createdAt >= takenAt)) continue;
+      due.push(lead);
+    }
+    return due;
   }
   async function approvedDue(owner: string, pane: Pane | null): Promise<FreelanceMessage[]> {
     const settings = settingsOf(pane);
@@ -184,6 +200,28 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
     async createBrief(owner: string, pane: Pane | null, input: { text: string; leadId?: string | null; channels?: FreelanceChannel[]; /** R10-13: a brief Nous wrote. */ from?: "NOUS" }) {
       if (input.leadId) await leadOf(owner, input.leadId);
       return record(owner, { paneId: pane?.id ?? null, leadId: input.leadId ?? null, type: "BRIEF", status: "PENDING", message: input.text, payload: { text: input.text, channels: input.channels ?? [], ...(input.from ? { from: input.from } : {}) } });
+    },
+    /** Operator 14/11: an idle pane hunts for jobs on its own. One open hunt at a time, HUNT_EVERY_MS after the last; null when none is due. */
+    async queueHunt(owner: string, pane: Pane) {
+      const hunts = (await repository.listEvents(owner, { paneId: pane.id, types: ["BRIEF"] })).filter((brief) => brief.payload.hunt === true);
+      if (hunts.some((hunt) => hunt.status === "PENDING" || hunt.status === "TAKEN") || (hunts[0] && Date.parse(now()) - Date.parse(hunts[0].createdAt) < HUNT_EVERY_MS)) return null;
+      // A standing block (no Connects, a site refusing): the last two hunts closed without a job ("skipped" or "needs_user").
+      const notes = hunts.length >= 2 ? await repository.listEvents(owner, { paneId: pane.id, types: ["NOTE", "NEEDS_USER"] }) : [];
+      const closed = (hunt: FreelanceEvent) => notes.find((note) => note.payload.itemId === hunt.id);
+      const failed = (hunt: FreelanceEvent) => ["skipped", "needs_user"].includes(String(closed(hunt)?.payload.outcome));
+      if (hunts.length >= 2 && failed(hunts[0]!) && failed(hunts[1]!)
+        && !(await repository.listEvents(owner, { paneId: pane.id, types: ["MAIL"] })).some((mail) => mail.createdAt > hunts[0]!.createdAt)) {
+        const since = hunts[hunts.findIndex((hunt) => !failed(hunt)) - 1] ?? hunts[hunts.length - 1]!;
+        if (!notes.some((note) => note.payload.huntBlockedSince === since.id)) {
+          const line = `${pane.title}'s job hunts end without a job since ${since.createdAt}: ${closed(hunts[0]!)?.message ?? ""}`.trim();
+          await record(owner, { paneId: pane.id, type: "NOTE", message: `Job hunts wait ${HUNT_BLOCKED_BACKOFF_MS / 3_600_000} h or a new job mail: ${line}`, payload: { huntBlockedSince: since.id } });
+          await options.notice?.(owner, `freelance-hunt-blocked:${since.id}`, `${line}. Space holds the next hunt ${HUNT_BLOCKED_BACKOFF_MS / 3_600_000} h or until a new job mail (pane ${pane.id}); the block itself needs a decision.`);
+        }
+        if (Date.parse(now()) - Date.parse(hunts[0]!.createdAt) < HUNT_BLOCKED_BACKOFF_MS) return null;
+      }
+      const settings = settingsOf(pane);
+      const channels = FREELANCE_CHANNELS.filter((id) => freelanceChannelSettings(settings, id).enabled);
+      return record(owner, { paneId: pane.id, type: "BRIEF", status: "PENDING", message: HUNT_BRIEF, payload: { text: HUNT_BRIEF, channels, hunt: true } });
     },
     // ---- leads --------------------------------------------------------------------------------
     listLeads: (owner: string, filter: Parameters<FreelanceCopilotRepository["listLeads"]>[1]) => repository.listLeads(owner, filter),
@@ -293,7 +331,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
       const label = FREELANCE_CHANNEL_LABELS[message.channel];
       if (input.decision === "edit" && message.body !== current.body) {
         await repository.upsertMemory({ ownerUserId: owner, kind: "LESSON", key: null, channel: message.channel, tags: ["review-edit"], source: "LEARNED", pinned: false,
-          text: `On ${label} the operator changed a ${message.kind.toLowerCase()}. Copilot draft:\n${current.body.slice(0, 1500)}\n\nOperator's version:\n${message.body.slice(0, 1500)}`.slice(0, 4000) });
+          text: reviewEditMemoryText(`On ${label} the operator changed a ${message.kind.toLowerCase()}`, current.body.slice(0, 1500), message.body.slice(0, 1500)).slice(0, 4000) });
       }
       if (input.decision === "reject" && input.note) {
         await repository.upsertMemory({ ownerUserId: owner, kind: "LESSON", key: null, channel: message.channel, tags: ["review-reject"], source: "LEARNED", pinned: false,
@@ -365,7 +403,10 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
       const opening = message.kind === "PROPOSAL" || message.kind === "APPLICATION";
       const waiting = opening || message.kind === "FOLLOW_UP";
       const nextActionAt = waiting && settingsOf(pane).followUps && followUps < FOLLOW_UP_DAYS.length ? later(FOLLOW_UP_DAYS[followUps]! * DAY_MS) : null;
-      await repository.updateLead(owner, lead.id, { ...(opening && ["NEW", "QUALIFIED"].includes(lead.status) ? { status: "PROPOSED" as const } : {}), nextActionAt, payload: { ...lead.payload, followUps } });
+      // A sent message ends the take: the next round is due on its own.
+      const payload: Record<string, unknown> = { ...lead.payload, followUps };
+      delete payload.followUpTakenAt;
+      await repository.updateLead(owner, lead.id, { ...(opening && ["NEW", "QUALIFIED"].includes(lead.status) ? { status: "PROPOSED" as const } : {}), nextActionAt, payload });
       const runId = await bumpRun(owner, pane.id, "sent");
       await record(owner, { paneId: pane.id, runId, leadId: lead.id, messageId: message.id, type: "SENT", message: `Sent a ${describe(message)} for "${lead.title}"`, payload: { url: input.url, connects: message.connects } });
       return sent;
@@ -639,8 +680,9 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
           if (approved) return { done: false as const, kind: "SEND" as const, message: approved, lead: await repository.getLead(owner, approved.leadId) };
           const [followUp] = await followUpsDue(owner, pane);
           if (followUp) {
-            // Taken off the due list while the agent writes it; finishSend sets the next one.
-            await repository.updateLead(owner, followUp.id, { nextActionAt: null });
+            // Off the due list while the agent writes it; finishSend sets the next one. A take that writes nothing comes back after
+            // TAKEN_STALE_MS (12/11: 7 Upwork follow-ups taken while the Browser Host was down were never sent and never came back).
+            await repository.updateLead(owner, followUp.id, { nextActionAt: later(TAKEN_STALE_MS), payload: { ...followUp.payload, followUpTakenAt: now() } });
             return { done: false as const, kind: "FOLLOW_UP" as const, lead: followUp, messages: (await repository.listMessages(owner, { leadId: followUp.id })).reverse(),
               memories: await service.recallMemory(owner, { kinds: ["TEMPLATE", "CHANNEL_RULE", "LESSON"], channel: followUp.channel }) };
           }

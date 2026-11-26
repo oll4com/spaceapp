@@ -8,7 +8,7 @@ import { createMailCampaignsService } from "../src/mail-campaigns/service.js";
 import type { MailTransports } from "../src/mail-campaigns/transports.js";
 import { copilotActionProblem } from "../src/nous/copilot-actions.js";
 import { NOUS_SUBAGENT_EXCLUDED } from "../src/nous/subagents.js";
-import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
+import { createNousTools, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
 import { passingDns, stubMailSite } from "./fixtures/mail-campaigns-dns.js";
 
 stubMailSite();
@@ -47,6 +47,9 @@ describe("Nous tools for Mail Campaigns", () => {
     expect((await mail.events(owner, {})).map((row) => row.message)).toEqual(expect.arrayContaining(["Warm-up of ntheo@brand.example set to stage 1 by nous.",
       "Bulk turned off for ntheo@brand.example by nous."]));
     expect((await nous.execute("space_mail_sender", { sender: sender.id }, ctx)).ok).toBe(false);
+    // nous_msg:832a500e: a wrong SMTP password is Nous's to fix, bound to the kept key with the right one.
+    expect((await nous.execute("space_mail_sender", { sender: sender.id, vaultKeyId: "vault_key:mailboxonly" }, ctx)).ok).toBe(true);
+    expect((await mail.senders(owner)).find((row) => row.id === sender.id)!.config).toMatchObject({ route: "SMTP", vaultKeyId: "vault_key:mailboxonly" });
   });
 
   it("gives helpers the read only, and lets a decision only cancel", () => {
@@ -55,5 +58,11 @@ describe("Nous tools for Mail Campaigns", () => {
     const action = (decision: string) => ({ type: "COPILOT", copilot: "MAIL", item: "CAMPAIGN", itemId: "mcamp:abcdefgh", decision }) as unknown as NousDecisionAction;
     expect(copilotActionProblem(action("approve"))).toMatch(/use cancel/);
     expect(copilotActionProblem(action("cancel"))).toBeNull();
+  });
+
+  it("names the decisions each copilot item takes before space_ask_operator is called (slice 22, 15/11 14:09Z: \"revise\" on a Mail review)", () => {
+    const ask = nousToolDefinitions({ copilots: true }).find((tool) => tool.name === "space_ask_operator")!;
+    expect(JSON.stringify(ask.inputSchema)).toContain("MAIL:REVIEW approve|edit|reject; MAIL:RULE");
+    expect(JSON.stringify(ask.inputSchema)).toContain("MAIL:CAMPAIGN cancel");
   });
 });

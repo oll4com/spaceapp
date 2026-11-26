@@ -139,10 +139,14 @@ export function collectExportableApiKeys(): Record<string, string> {
               if (content && !keys[providerName]) {
                 keys[providerName] = content;
               }
-            } catch {}
+            } catch {
+              // An unreadable key file is skipped; the other providers' keys still load.
+            }
           }
         }
-      } catch {}
+      } catch {
+        // An unreadable secrets directory adds no keys; the env files and environment below still do.
+      }
     }
   }
 
@@ -167,7 +171,9 @@ export function collectExportableApiKeys(): Record<string, string> {
             }
           }
         }
-      } catch {}
+      } catch {
+        // An unreadable providers.env is skipped like a missing one.
+      }
     }
   }
 
@@ -212,7 +218,9 @@ export function writeImportedApiKeys(
 
   try {
     mkdirSync(targetDir, { recursive: true });
-  } catch {}
+  } catch {
+    // A directory that cannot be made fails each write below, which leaves it out of the imported count.
+  }
 
   let imported = 0;
   for (const [provider, key] of Object.entries(apiKeys)) {
@@ -222,7 +230,9 @@ export function writeImportedApiKeys(
       try {
         writeFileSync(filePath, key.trim() + "\n", { mode: 0o600 });
         imported++;
-      } catch {}
+      } catch {
+        // A key that cannot be written is not counted as imported.
+      }
     }
   }
   return { imported, targetDir };

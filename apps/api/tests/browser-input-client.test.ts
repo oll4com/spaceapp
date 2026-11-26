@@ -35,9 +35,9 @@ describe("operator browser input on the host-bound client", () => {
       const slow = [before, after].map(manager => manager.dispatchInput!({ id: `a-${manager === after}` } as Pane, input, "trace"));
       await until(4_800);
       const other = [before, after].map(manager => manager.dispatchInput!({ id: `b-${manager === after}` } as Pane, input, "trace"));
-      // The proxy's 5 s input client dropped its socket and failed the other pane too.
+      // The proxy's 5 s input client fails the slow pane; since 482f8cdd4a its timeout keeps the socket, so the other pane lands.
       await expect(slow[0]).rejects.toMatchObject({ errorCode: "BROWSER_HOST_UNAVAILABLE" });
-      await expect(other[0]).rejects.toMatchObject({ errorCode: "BROWSER_HOST_UNAVAILABLE" });
+      await expect(other[0]).resolves.toBeUndefined();
       await expect(Promise.all([slow[1], other[1]])).resolves.toEqual([undefined, undefined]);
     } finally {
       await before.closeAll();

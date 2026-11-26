@@ -93,6 +93,24 @@ describe("held copilot questions are never lost by a Nous turn (plan clipboard:7
     expect(f.requests).toHaveLength(2);
   }, 30_000);
 
+  it("holds the outcome report once per card, not once per turn that shows it (Daily Nous errors 22/11: one card held 13 turns' outcomes)", async () => {
+    const outcome = { requests: [{ summary: "Answered the operator", outcome: "SELF", answerOnly: true }] };
+    const f = fixture([async (input, service) => {
+      expect(await service.callTool(owner, input.turnId, "space_nous_outcome", outcome, "toolu_o1")).toMatchObject({ ok: false, refused: true });
+      expect((await service.callTool(owner, input.turnId, "space_nous_outcome", outcome, "toolu_o2")).ok).toBe(true);
+      return { text: "Here is your answer.", isError: false };
+    }, async (input, service) => {
+      // The next turn shows the same card: its outcome is not held for it again.
+      expect((await service.callTool(owner, input.turnId, "space_nous_outcome", outcome, "toolu_o3")).ok).toBe(true);
+      await service.callTool(owner, input.turnId, "space_copilot_answer", answer, "toolu_answer");
+      return { text: "NOTHING_NEW", isError: false };
+    }]);
+    await f.service.send(owner, "πώς πάμε;");
+    await vi.waitFor(() => expect(f.requests).toHaveLength(2), { timeout: 15_000 });
+    await f.service.idle(owner);
+    expect(f.execute.mock.calls.filter(([name]) => name === "space_nous_outcome")).toHaveLength(2);
+  }, 30_000);
+
   it("counts only an answer, a forward, a close or a held reason that names the question", () => {
     const item = heldQuestionItem(card);
     expect(item).toMatchObject({ key: `question:${card.id}`, kind: "QUESTION", refs: [card.id, "jobq:Tcoa0D_0Vp3t"] });

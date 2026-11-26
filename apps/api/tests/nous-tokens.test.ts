@@ -48,7 +48,7 @@ describe("Nous automatic low-spend policy", () => {
     const settings = nousSettingsSchema.parse({ provider: "space", models: Object.fromEntries(NOUS_TURN_KINDS.map((kind) => [kind, { model: "auto", effort: "auto" }])) });
     const stored = structuredClone(settings);
     for (const mode of ["NORMAL", "LOW"] as const) expect(nousTokenModel(settings, "GOAL", mode)).toEqual({ model: "auto-balanced", effort: "auto" });
-    expect(nousTokenModel(settings, "OPERATOR", "NORMAL")).toEqual({ model: "auto", effort: "auto" });
+    expect(nousTokenModel(settings, "OPERATOR", "NORMAL")).toEqual({ model: "auto", effort: "high" });
     expect(settings).toEqual(stored);
     settings.models.goal = { model: "claude:claude-opus-5-5", effort: "xhigh" };
     expect(nousTokenModel(settings, "GOAL", "NORMAL")).toEqual(settings.models.goal);
@@ -58,10 +58,11 @@ describe("Nous automatic low-spend policy", () => {
     expect(compute([account("main", 90), account("other", 90)]).mode).toBe("NORMAL");
     // Operator 13/11 23:03 BKK: other's 5-hour window is full but 90% of its week is left: a wait, not a hold.
     expect(compute([account("main", 90, spentWeek), account("other", 90.01)]).mode).toBe("NORMAL");
-    // Both weeks spent (88% with 25 hours left): one account with room is LOW; at the 5-hour reset both weeks reset within 24 h: NORMAL.
+    // Both weeks spent (88% with 25 hours left): one account with room is LOW; the pool's week runs out before its reset, so it stays LOW
+    // through the 5-hour reset until the weeks reset (operator 19/11 14:46 BKK: the advice's 0% at the reset outranks a week resetting within 24 h).
     const accounts = [account("main", 90, spentWeek), account("other", 90.01, spentWeek)];
-    expect(compute(accounts)).toMatchObject({ mode: "LOW", max: { withRoom: 1, total: 2 }, servingAccountId: "main", resetAt: reset });
-    expect(compute(accounts, { now: Date.parse(reset) })).toMatchObject({ mode: "NORMAL" });
+    expect(compute(accounts)).toMatchObject({ mode: "LOW", max: { withRoom: 1, total: 2 }, servingAccountId: "main", resetAt: weeklyReset });
+    expect(compute(accounts, { now: Date.parse(reset) })).toMatchObject({ mode: "LOW" });
     expect(compute([account("a", 100), account("b", 100)], { settings: { ...config, mode: "OFF" }, budget: budget(99) }).mode).toBe("NORMAL");
     expect(compute([account("a"), account("b")], { settings: { ...config, mode: "ON" } })).toMatchObject({ mode: "LOW", resetAt: null });
   });
@@ -72,8 +73,8 @@ describe("Nous automatic low-spend policy", () => {
     expect(compute(full, { budget: budget(99) }).mode).toBe("NORMAL");
     // At the 5-hour reset a has room and a week it would not use up: NORMAL again then (operator 5/11).
     expect(compute([account("a", 100)], { budget: budget(0) })).toMatchObject({ mode: "CRITICAL", resetAt: reset });
-    // With a week it runs out, its week resets within 24 h of the 5-hour reset: week room, NORMAL then (operator 13/11 23:03 BKK).
-    expect(compute([account("a", 100, spentWeek)], { budget: budget(0) })).toMatchObject({ mode: "CRITICAL", resetAt: reset });
+    // With a week it runs out, it is LOW until that week resets (operator 19/11 14:46 BKK), not NORMAL at the 5-hour reset.
+    expect(compute([account("a", 100, spentWeek)], { budget: budget(0) })).toMatchObject({ mode: "CRITICAL", resetAt: weeklyReset });
     expect(compute([account("a", 100)]).mode).toBe("CRITICAL");
     const recover = compute([account("a", 100), account("b", 100)], { budget: budget(20) });
     expect(recover).toMatchObject({ mode: "CRITICAL", resetAt: reset });
@@ -85,17 +86,30 @@ describe("Nous automatic low-spend policy", () => {
     expect(compute([account("a", 10, week(null)), account("b", 10, week(80))]).mode).toBe("NORMAL");
   });
 
+  // Operator 19/11 14:46 BKK (nous_msg:e5325de1): four weeks spent (dev and lab reset within 24 h), ntheo 16% used 3% into its week; the advice said
+  // 0% at the reset, yet ntheo's week room and dev/lab's spent weeks resetting soon kept the pool NORMAL. A weekly reset credit is a fresh week.
+  it("is LOW when the Claude pool's week runs out before its reset, whatever an account's week room", () => {
+    const week = (usedPercent: number, hours: number) => ({ secondaryWindow: { usedPercent, resetAt: new Date(now + hours * 3_600_000).toISOString(), windowMinutes: 10080 } });
+    const accounts = [account("crew", 0, week(100, 72)), account("dev", 0, week(100, 12)), account("lab", 0, week(100, 20)), account("ops", 0, week(100, 96)),
+      account("ntheo", 10, week(16, 163))];
+    expect(nousProviderRooms(accounts, null, now).find((room) => room.key === "claude")?.atReset?.percent).toBe(0);
+    expect(compute(accounts)).toMatchObject({ mode: "LOW", max: { withRoom: 1, total: 5 } });
+    expect(compute(accounts.map((entry) => entry.id === "crew" ? { ...entry, resetCreditGrants: [{ kind: "weekly", left: 1 }] } as GatewayAccount : entry)).mode).toBe("NORMAL");
+    expect(compute(accounts.map((entry) => entry.id === "crew" ? { ...entry, resetCreditGrants: [{ kind: "fable", left: 1 }] } as GatewayAccount : entry)).mode).toBe("LOW");
+  });
+
   it.each([
     { withRoom: 5, spentUsd: 365, mode: "NORMAL", resetAt: null },
-    { withRoom: 1, spentUsd: 365, mode: "LOW", resetAt: reset },
-    { withRoom: 0, spentUsd: 100, mode: "CRITICAL", resetAt: reset }
+    { withRoom: 1, spentUsd: 365, mode: "LOW", resetAt: weeklyReset },
+    { withRoom: 0, spentUsd: 100, mode: "CRITICAL", resetAt: weeklyReset }
   ])("returns $mode with $withRoom/5 Max accounts with room and $spentUsd/$500 spent", ({ withRoom, spentUsd, mode, resetAt }) => {
     // The accounts with room run their weeks out by the reset (88% with 25 hours left), so their count decides; with all five the weeks have room.
     // (Every week spent: an account with 20% of its week left would hold the pool NORMAL by itself, operator 13/11 23:03 BKK.)
     const accounts = Array.from({ length: 5 }, (_, index) => account(String(index), index < withRoom ? 5 : 100, withRoom < 5 ? spentWeek : {}));
     const state = compute(accounts, { budget: { budgetUsd: 500, spentUsd } });
     expect(state).toMatchObject({ mode, max: { withRoom, total: 5 }, resetAt });
-    expect(compute(accounts, { now: Date.parse(reset), budget: { budgetUsd: 500, spentUsd } })).toMatchObject({ mode: "NORMAL", resetAt: null });
+    // Spent weeks run out before their reset: LOW past the 5-hour reset (operator 19/11 14:46 BKK).
+    expect(compute(accounts, { now: Date.parse(reset), budget: { budgetUsd: 500, spentUsd } })).toMatchObject({ mode: withRoom === 5 ? "NORMAL" : "LOW" });
   });
 
   it("estimates recovery at the Max reset that restores enough room, even beyond the month boundary", () => {
@@ -137,7 +151,7 @@ describe("Nous automatic low-spend policy", () => {
     const state = compute([account("ntheo", 10, week(54)), prolite, plus, paused]);
     const text = renderNousTokens(state, "Asia/Bangkok", now);
     expect(text).toContain("Codex 5-hour niggmopai none, ntheogr 49%;");
-    expect(text).toContain("weekly pace (7-day used/week passed, points, reset in Asia/Bangkok; today used/allowance, background work HELD at it): Claude ntheo 54%/71% -17 UNDER 26 Oct, 16:00; Codex niggmopai 8%/71% -63 UNDER 26 Oct, 16:00, ntheogr 80%/71% +9 AHEAD 26 Oct, 16:00;");
+    expect(text).toContain("weekly pace (7-day used/week passed, points, reset in Asia/Bangkok; today used/allowance, a guide only: the pace cap is off, nothing is held by it): Claude ntheo 54%/71% -17 UNDER 26 Oct, 16:00; Codex niggmopai 8%/71% -63 UNDER 26 Oct, 16:00, ntheogr 80%/71% +9 AHEAD 26 Oct, 16:00;");
     expect(text).toContain("- CODEX niggmopai · ACTIVE: 7-day: 8% used; reset 26 Oct 2026, 16:00 Asia/Bangkok; week passed 71%, pace -63 UNDER");
     expect(text).not.toContain("niggmopai · ACTIVE: 5-hour");
     expect(text).toContain("- CLAUDE ntheo · ACTIVE: 5-hour: 10% used; reset 24 Oct 2026, 17:00 Asia/Bangkok; 7-day: 54% used; reset 26 Oct 2026, 16:00 Asia/Bangkok; week passed 71%, pace -17 UNDER");
@@ -150,12 +164,13 @@ describe("Nous automatic low-spend policy", () => {
   });
 
   // Plan clipboard:DotwYXVD2N3n: today's allowance = (100 - used % when the day began) / days left; 2 days left, so the day began now.
-  it("shows each account's use today against today's allowance, HELD once it is used", () => {
+  it("shows each account's use today against today's allowance, \"over\" once it is used, never HELD (the pace cap is off)", () => {
     const inTwoDays = new Date(now + 2 * 86_400_000).toISOString();
     const week = (usedPercent: number, startedAt: number) => ({ secondaryWindow: { usedPercent, resetAt: inTwoDays, windowMinutes: 10080 }, paceDayStart: { at: now, usedPercent: startedAt } });
     const text = renderNousTokens(compute([account("ntheo", 10, week(54, 50)), account("ntheogr", 49, { provider: "CODEX", planType: "plus", ...week(80, 40) })]), "Asia/Bangkok", now);
-    expect(text).toContain("Claude ntheo 54%/71% -17 UNDER 26 Oct, 16:00 today 4%/25%; Codex ntheogr 80%/71% +9 AHEAD 26 Oct, 16:00 today 40%/30% HELD;");
-    expect(text).toContain("week passed 71%, pace +9 AHEAD; today used/allowance 40%/30% HELD");
+    expect(text).toContain("Claude ntheo 54%/71% -17 UNDER 26 Oct, 16:00 today 4%/25%; Codex ntheogr 80%/71% +9 AHEAD 26 Oct, 16:00 today 40%/30% over;");
+    expect(text).toContain("week passed 71%, pace +9 AHEAD; today used/allowance 40%/30% over");
+    expect(text).not.toContain("HELD");
   });
 
   it("shows account windows, local resets, API spend/budget and last-hour cost", () => {
@@ -374,9 +389,9 @@ describe("Nous low-spend mode and the Claude Max pool's weekly pace", () => {
     // Operator 13/11 23:03 BKK: no account with 20% of its week left (crew 15%, ops 18%), so the pace may hold the pool.
     const accounts = sample({ crew: 85, ops: 82 }).map((entry) => entry.provider === "CLAUDE" ? { ...entry, secondaryWindow: { ...entry.secondaryWindow, resetAt: "2026-11-08T19:00:00Z" } } : entry);
     const rooms = nousProviderRooms(accounts, null, at);
-    expect(rooms.find((room) => room.key === "claude")).toMatchObject({ nowLeft: 15, atReset: { percent: 0 }, pace: "AHEAD" });
-    // With crew's 40% of the week the pool has week room: NORMAL, whatever the pace says.
-    expect(tokens(sample().map((entry) => entry.provider === "CLAUDE" ? { ...entry, secondaryWindow: { ...entry.secondaryWindow, resetAt: "2026-11-08T19:00:00Z" } } : entry), "claude").mode).toBe("NORMAL");
+    expect(rooms.find((room) => room.key === "claude")).toMatchObject({ nowLeft: 15, bestAccount: "crew", atReset: { percent: 0 }, pace: "AHEAD" });
+    // Crew's 40% of the week no longer holds it NORMAL while the pace runs the pool out before its reset (operator 19/11 14:46 BKK).
+    expect(tokens(sample().map((entry) => entry.provider === "CLAUDE" ? { ...entry, secondaryWindow: { ...entry.secondaryWindow, resetAt: "2026-11-08T19:00:00Z" } } : entry), "claude").mode).toBe("LOW");
     expect(rooms.find((room) => room.key === "gemini")).toMatchObject({ nowLeft: 100, atReset: null });
     expect(nousProviderAdvice(rooms).avoid.map(({ room, why }) => [room.key, why])).toContainEqual(["claude", "runs out before its reset"]);
     // Two Max accounts still have 5-hour and weekly room (crew, ops): room alone said NORMAL.
@@ -462,10 +477,10 @@ describe("Nous low-spend mode and the Claude Max pool's weekly pace", () => {
     ];
     const mode = (pool: GatewayAccount[]) => computeNousTokens({ accounts: pool, profiles, settings: config, now: at5, provider: "claude" });
     expect(nousProviderRooms(accounts, null, at5).find((room) => room.key === "claude")!.atReset!.percent).toBe(0);
-    // Operator 13/11 23:03 BKK: ntheo has 52% of its week and dev's and lab's weeks reset within 24 h, so the pool has week room: NORMAL.
-    expect(mode(accounts)).toMatchObject({ mode: "NORMAL", max: { withRoom: 1, total: 5 } });
+    // Operator 19/11 14:46 BKK: ntheo's 52% of its week and dev's and lab's spent weeks resetting within 24 h no longer hold it NORMAL at 0% at the reset.
+    expect(mode(accounts)).toMatchObject({ mode: "LOW", max: { withRoom: 1, total: 5 } });
     const hot = accounts.map((entry) => entry.id === "ntheo" ? { ...entry, primaryWindow: { ...entry.primaryWindow, usedPercent: 90 } } : entry);
-    expect(mode(hot)).toMatchObject({ mode: "NORMAL", max: { withRoom: 1, total: 5 } });
+    expect(mode(hot)).toMatchObject({ mode: "LOW", max: { withRoom: 1, total: 5 } });
     // Only with no week room anywhere (ntheo 85% used, no other week resetting within 24 h) does the pace hold it LOW.
     const spent = accounts.map((entry) => ({ ...entry, secondaryWindow: { ...entry.secondaryWindow, usedPercent: Math.max(85, entry.secondaryWindow.usedPercent ?? 0), resetAt: "2026-11-12T02:00:00Z" } }));
     expect(mode(spent).mode).toBe("LOW");
@@ -480,7 +495,26 @@ describe("Nous low-spend mode and the Claude Max pool's weekly pace", () => {
     expect(tokens(accounts, "claude").mode).toBe("NORMAL");
     const state = tokens(accounts, "space");
     expect(state.mode).toBe("NORMAL");
-    for (const reason of background) expect(nousTokenModel(space, reason, state.mode)).toEqual({ model: "auto", effort: "high" });
+    // Plan clipboard:VypZ4sl7NR04 (20/11): a background turn's Auto runs the balanced class, the best class only after a failed turn of its kind.
+    for (const reason of background) expect(nousTokenModel(space, reason, state.mode)).toEqual({ model: "auto-balanced", effort: "high" });
+    for (const reason of background) expect(nousTokenModel(space, reason, state.mode, true)).toEqual({ model: "auto", effort: "high" });
+  });
+
+  it("runs Auto by turn kind in NORMAL: background on the balanced class at medium, operator and decision at most high, explicit choices kept", () => {
+    const auto = nousSettingsSchema.parse({ provider: "space", models: Object.fromEntries(NOUS_TURN_KINDS.map((kind) => [kind, { model: "auto", effort: "auto" }])) });
+    for (const reason of ["INBOX", "STANDING", "HEARTBEAT", "REVIEW", "HELPER"] as const) {
+      expect(nousTokenModel(auto, reason, "NORMAL")).toEqual({ model: "auto-balanced", effort: "medium" });
+      expect(nousTokenModel(auto, reason, "NORMAL", true)).toEqual({ model: "auto", effort: "high" });
+      // Goal 5acd171d (22/11): an unmet 90 % push lifts the effort only; Opus met it less often than Sonnet.
+      expect(nousTokenModel(auto, reason, "NORMAL", "push")).toEqual({ model: "auto-balanced", effort: "high" });
+    }
+    for (const reason of ["OPERATOR", "DECISION"] as const) for (const escalate of [false, true]) expect(nousTokenModel(auto, reason, "NORMAL", escalate)).toEqual({ model: "auto", effort: "high" });
+    expect(nousTokenModel(auto, "GOAL", "NORMAL", true)).toEqual({ model: "auto-balanced", effort: "auto" });
+    // Escalation is NORMAL's only: LOW keeps its own models.
+    expect(nousTokenModel(auto, "INBOX", "LOW", true)).toEqual({ model: "auto-balanced", effort: "medium" });
+    const explicit = nousSettingsSchema.parse({ provider: "space", models: { inbox: { model: "claude:claude-opus-5-5", effort: "xhigh" }, operator: { model: "auto", effort: "xhigh" } } });
+    expect(nousTokenModel(explicit, "INBOX", "NORMAL")).toEqual({ model: "claude:claude-opus-5-5", effort: "xhigh" });
+    expect(nousTokenModel(explicit, "OPERATOR", "NORMAL")).toEqual({ model: "auto", effort: "xhigh" });
   });
 });
 
@@ -538,8 +572,8 @@ describe("Nous provider room and advice", () => {
     expect(summary).toContain("Providers (left now, at this pace at the weekly reset in UTC, pace): Claude Max 12% left now, 0% at the weekly reset 25 Oct, 10:00, pace ON; Codex 80% left now, 77%");
     expect(summary).toContain("OpenRouter $12.30 left (41%)");
     expect(summary).toContain("Provider advice: use now Claude · GPT on Antigravity (100% would reset unused 25 Oct, 10:00), Codex (77% would reset unused 25 Oct, 10:00), Gemini (Antigravity) (41%");
-    expect(summary).toContain("avoid Claude Max (runs out before its reset), DeepSeek (no balance left). Non-code work (research, reading, mail drafts, checks, summaries) goes by default "
-      + "to a Gemini (Antigravity) pane (pane type gemini, a Claude or GPT model there for the Claude · GPT pool), not to Claude Max. Code changes in any app: Claude Opus or GPT-6 Astra only, never a Sol model.");
+    expect(summary).toContain("avoid DeepSeek (no balance left). Ahead of its week pace (a guide only: its accounts still run and take panes, helpers and background work): Claude Max (runs out before its reset). Non-code work (research, reading, mail drafts, checks, summaries) goes by default "
+      + "to a Gemini (Antigravity) pane (pane type gemini, a Claude or GPT model there for the Claude · GPT pool), not to Claude Max. Code changes in any app: Claude Opus, Antigravity Gemini 4 Neon (gemini-4-neon) when Claude models are unavailable, or GPT-6 Astra only; never a Sol model.");
     const detail = renderNousTokens(tokens, "UTC", now);
     expect(detail).toContain("- ANTIGRAVITY agy · ACTIVE: gemini models: 5-hour: 10% used");
     expect(detail).toContain("- API OpenRouter · CONNECTED: balance $12.30; 41% left");
@@ -561,5 +595,58 @@ describe("Nous provider room and advice", () => {
     expect(["gateway-adaption", "gateway-amd_token_lab", "gateway-nvidia"].map(text)).toEqual(Array(3).fill("Space Gateway key pool"));
     expect([text("gateway-groq"), text("openai")]).toEqual(["Space Gateway key pool · out of credits", "no balance left"]);
     expect(nousProviderAdvice(rooms).avoid.map((entry) => entry.room.name)).toEqual(["OpenAI API", "Groq"]);
+  });
+});
+
+describe("Antigravity pool with unsampled accounts (22/11)", () => {
+  it("counts no window without a reset as room, so a pool whose sampled accounts are all at 100% has no room", async () => {
+    const { noRoomPools, quotaPool } = await import("../src/nous/quota-handover.js");
+    const w = (usedPercent: number, resetAt: string | null, windowMinutes: number) => ({ usedPercent, resetAt, windowMinutes });
+    const agy = (id: string, planType: string, claude: [number, string | null], gemini: [number, number]) => account(id, 0, { provider: "ANTIGRAVITY", planType,
+      quotaGroups: [{ key: "claude", primaryWindow: w(claude[0], claude[1], 300), secondaryWindow: w(claude[0], claude[1], 10080) },
+        { key: "gemini", primaryWindow: w(gemini[0], reset, 300), secondaryWindow: w(gemini[1], weeklyReset, 10080) }] });
+    const accounts = [
+      ...["paid-a", "paid-b", "paid-c"].map((id, i) => agy(id, "google-ai-pro", [100, weeklyReset], [23 + 30 * i, 40 + 7 * i])),
+      ...["free-a", "free-b", "free-c", "free-d", "free-e"].map((id) => agy(id, "free", [100, weeklyReset], [100, 10])),
+      // Google omits the reset of an unused bucket: 0% used, reset unknown, which is no sample.
+      ...["free-f", "free-g"].map((id) => agy(id, "free", [0, null], [100, 10]))
+    ];
+    const rooms = nousProviderRooms(accounts, null, now);
+    const claude = rooms.find((room) => room.key === "antigravity-claude")!;
+    // Only the three paid accounts serve Claude 5 models (the Gateway's antigravityModelRequiresPaidPlan).
+    expect(claude).toMatchObject({ accounts: 3, nowLeft: 0, atReset: { percent: 0 } });
+    const { use, avoid } = nousProviderAdvice(rooms);
+    expect(avoid).toContainEqual({ room: claude, why: "no room now" });
+    expect(use.map((room) => room.key)).not.toContain("antigravity-claude");
+    // New panes, sends, model switches and the idle filler refuse the pools noRoomPools lists.
+    expect(noRoomPools(rooms).map((room) => room.key)).toContain(quotaPool("cli:gemini", "claude-opus-5-5"));
+    expect(noRoomPools(rooms).map((room) => room.key)).not.toContain(quotaPool("cli:gemini", "gemini-3.8-flash"));
+    expect(rooms.find((room) => room.key === "gemini")!.nowLeft).toBeGreaterThan(10);
+  });
+
+  it("calls a pool whose accounts were never sampled quota unknown, never use now, and judges Argon by its own group", async () => {
+    const { noRoomPools, quotaPool } = await import("../src/nous/quota-handover.js");
+    const w = (usedPercent: number, resetAt: string | null, windowMinutes: number) => ({ usedPercent, resetAt, windowMinutes });
+    const agy = (id: string, argon: [number, string | null]) => account(id, 0, { provider: "ANTIGRAVITY", planType: "google-ai-pro",
+      quotaGroups: [{ key: "claude", primaryWindow: w(0, null, 300), secondaryWindow: w(0, null, 10080) },
+        { key: "argon", primaryWindow: w(argon[0], argon[1], 300), secondaryWindow: w(argon[0], argon[1], 10080) },
+        { key: "gemini", primaryWindow: w(20, reset, 300), secondaryWindow: w(20, weeklyReset, 10080) }] });
+    const rooms = nousProviderRooms([agy("paid-a", [100, weeklyReset]), agy("paid-b", [100, weeklyReset])], null, now);
+    const claude = rooms.find((room) => room.key === "antigravity-claude")!;
+    expect(claude.nowLeft).toBeNull();
+    expect(nousProviderAdvice(rooms).avoid).toContainEqual({ room: claude, why: "quota unknown" });
+    expect(nousProviderAdvice(rooms).use.map((room) => room.key)).toEqual(["gemini"]);
+    expect([quotaPool("cli:gemini", "gemini-4-argon"), quotaPool("cli:gemini", "gemini-4-neon")]).toEqual(["antigravity-argon", "gemini"]);
+    expect(noRoomPools(rooms).map((room) => room.key)).toEqual(expect.arrayContaining(["antigravity-claude", "antigravity-argon"]));
+    expect(noRoomPools(rooms).map((room) => room.key)).not.toContain("gemini");
+  });
+
+  it("counts a free account's Claude room as none: Claude 5 runs only on paid Antigravity accounts", () => {
+    const w = (usedPercent: number, windowMinutes: number) => ({ usedPercent, resetAt: windowMinutes === 300 ? reset : weeklyReset, windowMinutes });
+    const agy = (id: string, planType: string, used: number) => account(id, 0, { provider: "ANTIGRAVITY", planType,
+      quotaGroups: [{ key: "claude", primaryWindow: w(used, 300), secondaryWindow: w(used, 10080) }] });
+    const claude = (accounts: GatewayAccount[]) => nousProviderRooms(accounts, null, now).find((room) => room.key === "antigravity-claude")!;
+    expect(claude([agy("paid-a", "google-ai-pro", 100), agy("free-a", "free", 0)])).toMatchObject({ accounts: 1, nowLeft: 0, bestAccount: "paid-a" });
+    expect(claude([agy("paid-a", "google-ai-pro", 40), agy("free-a", "free", 0)])).toMatchObject({ accounts: 1, nowLeft: 60 });
   });
 });

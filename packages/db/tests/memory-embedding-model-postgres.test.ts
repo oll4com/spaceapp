@@ -7,7 +7,7 @@ import { createSpacePgPool, PostgresSpaceStore } from "../src/space-store.js";
 import { loadMigrations } from "../src/migrations.js";
 import { PostgresDotMemoryRepository } from "../src/dot-memory-repository.js";
 import { PostgresDotsRepository } from "../src/dots-repository.js";
-import { disposablePostgresUnavailableReason } from "./support/disposable-postgres.js";
+import { disposablePostgresUnavailableReason, trackDisposableContainer } from "./support/disposable-postgres.js";
 
 const postgresUnavailable = disposablePostgresUnavailableReason();
 
@@ -23,11 +23,12 @@ it.skipIf(postgresUnavailable)("marks old vectors as OpenAI's, lists rows to re-
   const socket = `${root}/socket`;
   await mkdir(socket); await chmod(socket, 0o777);
   const name = `space-memory-embedding-${randomUUID()}`;
+  const untrack = trackDisposableContainer(name, root);
   const docker = (args: string[]) => execFileSync("docker", args, { encoding: "utf8", timeout: 90_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
   const pool = createSpacePgPool(`postgresql://postgres@localhost/postgres?host=${encodeURIComponent(socket)}`, { max: 4 });
   let created = false;
   try {
-    docker(["run", "--tmpfs", "/var/lib/postgresql/data", "--detach", "--rm", "--pull=never", "--name", name, "--network", "none", "--mount", `type=bind,source=${socket},target=/var/run/postgresql`,
+    docker(["run", "--tmpfs", "/var/lib/postgresql/data", "--detach", "--rm", "--pull=never", "--name", name, "--label", "space.disposable-test=1", "--network", "none", "--mount", `type=bind,source=${socket},target=/var/run/postgresql`,
       "--env", "POSTGRES_HOST_AUTH_METHOD=trust", "pgvector/pgvector:0.8.7-pg17-trixie", "-c", "listen_addresses="]);
     created = true;
     let ready = false;
@@ -85,7 +86,7 @@ it.skipIf(postgresUnavailable)("marks old vectors as OpenAI's, lists rows to re-
     expect(await dots.countEmbeddings()).toMatchObject({ total: 3, withoutEmbedding: 0 });
   } finally {
     await pool.end();
-    if (created) docker(["stop", "--time", "5", name]);
+    untrack(); if (created) { try { docker(["stop", "--time", "2", name]); } catch { try { docker(["rm", "--force", "--volumes", name]); } catch { /* ignore */ } } }
     await rm(root, { recursive: true, force: true });
   }
 }, 180_000);

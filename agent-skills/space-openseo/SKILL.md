@@ -1,6 +1,6 @@
 ---
 name: space-openseo
-description: OpenSEO (every-app/open-seo) SEO workflows - keyword research and clustering, competitor and competitive-landscape analysis, site audits, link prospecting, local SEO, AI prompt research and AI visibility audits, project setup, coaching and HTML reports - driven by the hosted OpenSEO MCP server, which needs the operator's OpenSEO account. Use when the operator asks for SEO research, an SEO audit or an SEO report.
+description: "SEO research, audits and reports with OpenSEO (keywords, competitors, site audits, links, local SEO, AI visibility). Needs the operator's OpenSEO account."
 metadata:
   category: TOOL_ADAPTER
 ---

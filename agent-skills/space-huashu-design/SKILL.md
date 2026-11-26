@@ -1,6 +1,6 @@
 ---
 name: space-huashu-design
-description: Huashu Design (alchaincyf/huashu-design) for high-fidelity HTML design work - clickable prototypes and app mockups, slide decks with PDF/PPTX export, motion design and MP4/GIF export, infographics, design-direction variants and a five-dimension design critique. Use for design, UI/UX, mockup, visual-direction, redesign or design-review tasks; the operator's design policy pairs it with space-impeccable (impeccable for structure and the final polish/audit, huashu-design for the high-fidelity execution and variants). Not for production web apps or backends.
+description: "High-fidelity HTML design: clickable prototypes, slide decks (PDF/PPTX), motion (MP4/GIF), infographics, design variants and critique. Pairs with space-impeccable."
 metadata:
   category: WORKFLOW
 ---

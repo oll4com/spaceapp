@@ -47,6 +47,8 @@ export function createStepTranslations(deps: { translate: CardTranslate; languag
     }
     return messages.map((message) => {
       const found = message.kind === "TOOL" ? kept.get(keyOf(language, message.content)) : undefined;
+      // Least recently read goes first when the memory is full: a step still on screen stays translated.
+      if (found) { kept.delete(keyOf(language, message.content)); kept.set(keyOf(language, message.content), found); }
       return found ? { ...message, meta: { ...message.meta, translation: { language, ...found } } } : message;
     });
   };

@@ -133,7 +133,7 @@ export function readStoredCustomDocks(): string[] {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) return parsed;
     }
-  } catch {}
+  } catch { /* unreadable storage falls back below */ }
   return readHiddenDockIds();
 }
 
@@ -145,7 +145,7 @@ export function readStoredCustomPanes(): string[] {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) return parsed;
     }
-  } catch {}
+  } catch { /* unreadable storage falls back below */ }
   return readHiddenPaneIds();
 }
 
@@ -157,7 +157,7 @@ export function readStoredCustomWidgets(): DesktopWidgetId[] {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) return parsed as DesktopWidgetId[];
     }
-  } catch {}
+  } catch { /* unreadable storage falls back below */ }
   return readHiddenWidgetIds();
 }
 
@@ -169,7 +169,7 @@ export function readStoredCustomCliDisabled(): string[] {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) return parsed;
     }
-  } catch {}
+  } catch { /* unreadable storage falls back below */ }
   return [];
 }
 
@@ -339,11 +339,11 @@ export function useEnvironmentPreset(options?: {
       let disabledCliIds: string[] = [];
       if (options?.canManageCliRuntimes) {
         try {
-          const cliSettings = (api as any).cliRuntimeSettingsSnapshot?.()
+          const cliSettings = api.cliRuntimeSettingsSnapshot?.()
             ?? await withTimeout(api.cliRuntimeSettings(), 3000);
           disabledCliIds = (cliSettings?.settings ?? [])
-            .filter((s: any) => !s.enabled)
-            .map((s: any) => s.runtimeId);
+            .filter((s) => !s.enabled)
+            .map((s) => s.runtimeId);
           const toSave = disabledCliIds.length > 0 ? disabledCliIds : [...DEFAULT_CUSTOM_DISABLED_CLIS];
           storage?.setItem(CUSTOM_CLI_DISABLED_STORAGE_KEY, JSON.stringify(toSave));
           saveUserSettingDebounced("customCliDisabled", toSave);
@@ -377,11 +377,11 @@ export function useEnvironmentPreset(options?: {
       if (options?.canManageCliRuntimes) {
         let clisToEnable: string[] = CANONICAL_CLI_ORDER.map((brand) => `cli:${brand}`);
         try {
-          const snapshot = (api as any).cliRuntimeSettingsSnapshot?.()
-            ?? await withTimeout((api as any).cliRuntimeSettings?.(), 3000).catch(() => null);
+          const snapshot = api.cliRuntimeSettingsSnapshot?.()
+            ?? await withTimeout(api.cliRuntimeSettings?.(), 3000).catch(() => null);
           if (snapshot?.settings && Array.isArray(snapshot.settings)) {
-            const enabledSet = new Set(
-              snapshot.settings.filter((s: any) => s.enabled).map((s: any) => s.runtimeId)
+            const enabledSet = new Set<string>(
+              snapshot.settings.filter((s) => s.enabled).map((s) => s.runtimeId)
             );
             clisToEnable = clisToEnable.filter((id) => !enabledSet.has(id));
           }
@@ -412,7 +412,7 @@ export function useEnvironmentPreset(options?: {
         }
 
         try {
-          (api as any).invalidateCliRuntimeSettings?.();
+          api.invalidateCliRuntimeSettings?.();
         } catch {
           // Ignore if runtime not installed
         }
@@ -490,11 +490,11 @@ export function useEnvironmentPreset(options?: {
       if (options?.canManageCliRuntimes && clisToDisable.length > 0) {
         let targets = [...clisToDisable];
         try {
-          const snapshot = (api as any).cliRuntimeSettingsSnapshot?.()
-            ?? await withTimeout((api as any).cliRuntimeSettings?.(), 3000).catch(() => null);
+          const snapshot = api.cliRuntimeSettingsSnapshot?.()
+            ?? await withTimeout(api.cliRuntimeSettings?.(), 3000).catch(() => null);
           if (snapshot?.settings && Array.isArray(snapshot.settings)) {
-            const disabledSet = new Set(
-              snapshot.settings.filter((s: any) => !s.enabled).map((s: any) => s.runtimeId)
+            const disabledSet = new Set<string>(
+              snapshot.settings.filter((s) => !s.enabled).map((s) => s.runtimeId)
             );
             targets = targets.filter((id) => !disabledSet.has(id));
           }
@@ -520,7 +520,7 @@ export function useEnvironmentPreset(options?: {
             try {
               await withTimeout(
                 (async () => {
-                  const preview = await (api as any).cliRuntimeDisablePreview?.(runtimeId);
+                  const preview = await api.cliRuntimeDisablePreview?.(runtimeId);
                   // A preset never closes open panes or stops running work; that CLI stays enabled.
                   if (
                     (preview?.openPaneCount ?? 0) + (preview?.activeSessionCount ?? 0) +
@@ -550,7 +550,7 @@ export function useEnvironmentPreset(options?: {
         }
 
         try {
-          (api as any).invalidateCliRuntimeSettings?.();
+          api.invalidateCliRuntimeSettings?.();
         } catch {
           // Ignore if runtime not installed
         }

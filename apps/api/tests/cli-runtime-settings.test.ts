@@ -749,8 +749,8 @@ describe("CLI runtime settings API", () => {
     expect(activity.statusCode).toBe(200);
     // Room activity also reports open panes (7929588575); disabled runtimes stay hidden.
     expect(activity.json().data).toEqual(expect.arrayContaining([
-      { roomId: deepseek.room.id, paneCount: 1, runningCliCount: 0, runtimeIds: [] },
-      { roomId: codex.room.id, paneCount: 1, runningCliCount: 1, runtimeIds: ["cli:codex"] }
+      { roomId: deepseek.room.id, paneCount: 1, runningCliCount: 0, runtimeIds: [], paneModes: ["TERMINAL"] },
+      { roomId: codex.room.id, paneCount: 1, runningCliCount: 1, runtimeIds: ["cli:codex"], paneModes: ["TERMINAL"] }
     ]));
 
     store.updateCliRuntimeSetting("cli:deepseek", { enabled: true }, "user:admin");

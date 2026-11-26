@@ -8,6 +8,7 @@ import type { SideSurface } from "./dock-types.js";
 import { sideSurfaceMeta } from "./side-surface-meta.js";
 import { DOCK_DEFINITIONS } from "./use-docks-visibility.js";
 import { useLeaveDuringNousFocus } from "../nous-focus/nous-focus-events.js";
+import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 
 // Which dock (side surface) is active and whether it is shown: inline beside the
 // board on desktop, as a modal drawer on compact shells.
@@ -92,7 +93,7 @@ export function useSideSurfaces({
     () => setRetainCompactSideSurface(false));
 
   useEffect(() => {
-    writeDockSession(runtime.platform.sessionStorage, { surface: activeSideSurface, desktopOpen: isDesktopSideSurfaceOpen, compactOpen: isCompactSideSurfaceOpen });
+    writeDockSession([runtime.platform.sessionStorage, runtime.platform.localStorage], { surface: activeSideSurface, desktopOpen: isDesktopSideSurfaceOpen, compactOpen: isCompactSideSurfaceOpen });
   }, [activeSideSurface, isDesktopSideSurfaceOpen, isCompactSideSurfaceOpen]);
 
   const isCompactShell = shellMode !== "desktop";
@@ -113,11 +114,12 @@ export function useSideSurfaces({
   if (showInlineSideSurface && !inlineSideSurfaceRetained) setInlineSideSurfaceRetained(true);
   const mountInlineSideSurface = !isCompactShell && (showInlineSideSurface || inlineSideSurfaceRetained);
 
+  const language = useUiLanguage(Boolean(isAuthenticated));
   function sideSurfaceToggleLabel(surface: SideSurface) {
     const verb = isSideSurfaceOpen && activeSideSurface === surface
       ? (isCompactShell ? "Close" : "Hide")
       : (isCompactShell || surface === "agent-files" ? "Open" : "Show");
-    return `${verb} ${sideSurfaceMeta[surface].label}`;
+    return surface === "nous" ? uiText(language, `${verb} nous`) : `${verb} ${sideSurfaceMeta[surface].label}`;
   }
 
   function closeCompactSideSurface() {

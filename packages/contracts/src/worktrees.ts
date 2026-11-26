@@ -22,7 +22,7 @@ export interface SpaceWorktree {
 export const createWorktreeSchema = z.object({
   repoPath: z.string().min(1).max(4096),
   roomId: z.string().min(1).max(160),
-  branchName: z.string().regex(/^[A-Za-z0-9._\/-]{1,100}$/).optional(),
+  branchName: z.string().regex(/^[A-Za-z0-9._/-]{1,100}$/).optional(),
   baseBranch: z.string().min(1).max(100).default("main"),
   paneId: z.string().min(1).max(160).nullable().optional(),
   linkModules: z.boolean().default(true)

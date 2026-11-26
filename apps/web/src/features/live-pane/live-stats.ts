@@ -125,7 +125,7 @@ export function updateLiveSessionStats(
   listeners.forEach((listener) => {
     try {
       listener(currentStats);
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
   });
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("space-live-stats-changed", { detail: currentStats }));
@@ -192,7 +192,7 @@ export function recordMcpDiagnostic(diagnostic: Record<string, unknown>): void {
   });
 }
 
-export function recordMcpTestResults(results: any[]): void {
+export function recordMcpTestResults(results: NonNullable<LiveSessionStats["mcpTestResults"]>): void {
   updateLiveSessionStats({
     mcpTestResults: results
   });

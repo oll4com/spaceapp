@@ -18,7 +18,9 @@ export function createRoomRoutedActions(options: {
       return options.control(roomId,command,requestId,actor);
     }
     if (command.type === "CLARIFY") return { summary: command.reason };
-    if ((command as any).type === "CHAT") return { summary: (command as any).reason };
+    // CHAT is excluded by type but still answered if one arrives at runtime.
+    const route = command as RoomMiniRoute;
+    if (route.type === "CHAT") return { summary: route.reason };
     if (command.type === "OPEN_PANES") {
       if (!actor || actor.holderType !== "OPERATOR") throw new SpaceConflictError("An authenticated operator is required to open room panes.");
       const result = await options.panes.execute(roomId, actor.holderId, {

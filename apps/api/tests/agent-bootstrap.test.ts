@@ -1,14 +1,16 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  BROWSER_CHALLENGES_TRIGGER_RULE,
   BROWSER_HYGIENE_RULE,
-  CLOUDFLARE_HELPER_RULE, PRESS_HOLD_HELPER_RULE, RECAPTCHA_HELPER_RULE, HCAPTCHA_HELPER_RULE, TEXT_CAPTCHA_HELPER_RULE, SLIDER_CAPTCHA_HELPER_RULE,
+  CLI_BROWSER_DONE_RULE,
+  CLOUDFLARE_HELPER_RULE, PRESS_HOLD_HELPER_RULE, RECAPTCHA_HELPER_RULE, HCAPTCHA_HELPER_RULE, TEXT_CAPTCHA_HELPER_RULE, SLIDER_CAPTCHA_HELPER_RULE, AUDIO_CAPTCHA_HELPER_RULE,
   OPERATOR_HANDS_RULE,
   OPERATOR_ORDERS_RULE,
   operatorLanguageRule,
   TEST_ROOMS_RULE,
   VAULT_PASSWORDS_RULE,
-  buildAppStudioPersonaMarkdown, buildVideoPersonaMarkdown, buildSecurityCopilotPersonaMarkdown, SECURITY_COPILOT_CLAUDE_SETTINGS, buildMonitoringCopilotPersonaMarkdown, MONITORING_COPILOT_CLAUDE_SETTINGS,
+  buildAppStudioPersonaMarkdown, buildVideoPersonaMarkdown, buildSecurityCopilotPersonaMarkdown, buildMonitoringCopilotPersonaMarkdown, paneClaudeSettings,
   buildCliAgentBootstrapMarkdown,
   buildDesignPersonaMarkdown,
   buildFreelanceCopilotPersonaMarkdown,
@@ -75,7 +77,7 @@ describe("Space agent bootstrap", () => {
     expect(buildSpaceAgentBootstrapPrompt({ channel: "WEB_CHAT" })).not.toContain("https://api.ipify.org");
   });
 
-  it("gives every CLI pane, the six copilot personas and the six copilot skills the operator's-hands and browser hygiene rules (plan clipboard:m_d48PryBLRg)", () => {
+  it("gives every CLI pane and the copilot personas (not repeated in their skills) the operator's-hands and browser hygiene rules (plan clipboard:m_d48PryBLRg)", () => {
     expect(BROWSER_HYGIENE_RULE).toContain("at most 10 browsers for all panes together");
     for (const text of [buildCliAgentBootstrapMarkdown(), buildJobCopilotPersonaMarkdown(), buildMailCopilotPersonaMarkdown(),
       buildMarketingCopilotPersonaMarkdown(), buildFreelanceCopilotPersonaMarkdown(), buildDesignPersonaMarkdown(), buildAppStudioPersonaMarkdown(), buildVideoPersonaMarkdown()]) {
@@ -83,8 +85,17 @@ describe("Space agent bootstrap", () => {
       expect(text).toContain(BROWSER_HYGIENE_RULE);
     }
     for (const skill of ["space-job-applications", "space-mail-copilot", "space-marketing-copilot", "space-freelance-copilot", "space-design", "space-video", "space-app-studio"]) {
-      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8"), skill).toContain(`**Browser hygiene (2026-10-20):** ${BROWSER_HYGIENE_RULE.replace("Browser hygiene: ", "")}`);
+      // The always-loaded persona carries the rule; the skill repeating it cost ~2k tokens per request (token audit 21/11).
+      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8"), skill).not.toContain(BROWSER_HYGIENE_RULE.replace("Browser hygiene: ", ""));
     }
+  });
+
+  it("tells a terminal pane its done or failed report closes its own CLI browser; copilots keep their own pane browser (plan clipboard:nLYbDf3TqBPm step 3)", () => {
+    expect(CLI_BROWSER_DONE_RULE).toContain("report space-progress done (or failed)");
+    expect(CLI_BROWSER_DONE_RULE).toContain("space_browser_tab_close");
+    expect(buildCliAgentBootstrapMarkdown()).toContain(`- ${CLI_BROWSER_DONE_RULE}\n- `);
+    expect(buildCliAgentBootstrapMarkdown({ paneMode: "TERMINAL" })).toContain(CLI_BROWSER_DONE_RULE);
+    for (const paneMode of ["JOB_APPLY", "MAIL_COPILOT", "FREELANCE_COPILOT"]) expect(buildCliAgentBootstrapMarkdown({ paneMode }), paneMode).not.toContain(CLI_BROWSER_DONE_RULE);
   });
 
   it("tells agents and Nous to write in the operator's chosen language; English adds nothing (operator 1/11 11:59 BKK)", () => {
@@ -92,14 +103,14 @@ describe("Space agent bootstrap", () => {
     expect(operatorLanguageRule("el")).toMatch(/^The operator's language is Greek.*needs-you summaries, questions, options.*wins over any tool description that says English/);
   });
 
-  it("gives every CLI pane, the nine copilot personas and their skills the operator's-orders rule (operator 31/10 13:37 BKK)", () => {
+  it("gives every CLI pane and the nine copilot personas (not repeated in their skills) the operator's-orders rule (operator 31/10 13:37 BKK)", () => {
     expect(OPERATOR_ORDERS_RULE).toContain("Never answer it with a refusal, a counter-proposal");
     for (const text of [buildCliAgentBootstrapMarkdown(), buildJobCopilotPersonaMarkdown(), buildMailCopilotPersonaMarkdown(), buildMarketingCopilotPersonaMarkdown(),
       buildFreelanceCopilotPersonaMarkdown(), buildDesignPersonaMarkdown(), buildAppStudioPersonaMarkdown(), buildVideoPersonaMarkdown(),
       buildSecurityCopilotPersonaMarkdown(), buildMonitoringCopilotPersonaMarkdown()]) expect(text).toContain(OPERATOR_ORDERS_RULE);
     for (const skill of ["space-job-applications", "space-mail-copilot", "space-marketing-copilot", "space-freelance-copilot", "space-design", "space-video",
       "space-app-studio", "space-security-copilot", "space-monitoring-copilot"]) {
-      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8"), skill).toContain(`**Operator's orders (2026-10-31):** ${OPERATOR_ORDERS_RULE}`);
+      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8"), skill).not.toContain(OPERATOR_ORDERS_RULE);
     }
   });
 
@@ -112,28 +123,32 @@ describe("Space agent bootstrap", () => {
     expect(skill).toContain("`BLOCKED POLICY_NEEDS_HOST_RESTART`");
   });
 
-  it("gives all copilots the bounded Cloudflare, Press & Hold and reCAPTCHA exceptions without changing other handoffs", () => {
+  it("gives all copilots the compact browser-challenge trigger on demand while full manuals stay on space_browser tools (token audit 21/11)", () => {
     expect(RECAPTCHA_HELPER_RULE).toContain("INVISIBLE_IDLE");
     expect(RECAPTCHA_HELPER_RULE).toContain("never execute before submission is authorized");
     expect(RECAPTCHA_HELPER_RULE).toContain("TOKEN_ISSUED");
     expect(RECAPTCHA_HELPER_RULE).toContain("NEEDS_USER/browser handoff applies only to EXPIRED or BLOCKED");
+    expect(BROWSER_CHALLENGES_TRIGGER_RULE.length).toBeLessThan(800);
+    for (const solver of ["space_browser_cloudflare", "_press_hold", "_recaptcha", "_hcaptcha", "_text_captcha", "_slider_captcha", "_audio_captcha"]) {
+      expect(BROWSER_CHALLENGES_TRIGGER_RULE).toContain(solver);
+    }
+    expect(BROWSER_CHALLENGES_TRIGGER_RULE).toContain("space-capability info space_browser <tool>");
+    // The full manuals' presence in scripts/space-browser-mcp.mjs (not exported) is checked in browser-mcp.test.ts.
     for (const text of [buildCliAgentBootstrapMarkdown(), buildJobCopilotPersonaMarkdown(), buildMailCopilotPersonaMarkdown(),
       buildMarketingCopilotPersonaMarkdown(), buildFreelanceCopilotPersonaMarkdown(), buildDesignPersonaMarkdown(), buildAppStudioPersonaMarkdown(),
       buildVideoPersonaMarkdown(), buildMonitoringCopilotPersonaMarkdown(), buildSecurityCopilotPersonaMarkdown()]) {
-      expect(text).toContain(CLOUDFLARE_HELPER_RULE);
-      expect(text).toContain(PRESS_HOLD_HELPER_RULE);
-      expect(text).toContain(RECAPTCHA_HELPER_RULE);
-      expect(text).toContain(HCAPTCHA_HELPER_RULE);
-      expect(text).toContain(TEXT_CAPTCHA_HELPER_RULE);
-      expect(text).toContain(SLIDER_CAPTCHA_HELPER_RULE);
+      expect(text).toContain(BROWSER_CHALLENGES_TRIGGER_RULE);
+      for (const rule of [CLOUDFLARE_HELPER_RULE, PRESS_HOLD_HELPER_RULE, RECAPTCHA_HELPER_RULE, HCAPTCHA_HELPER_RULE,
+        TEXT_CAPTCHA_HELPER_RULE, SLIDER_CAPTCHA_HELPER_RULE, AUDIO_CAPTCHA_HELPER_RULE]) {
+        expect(text).not.toContain(rule);
+      }
     }
     for (const skill of ["space-job-applications", "space-mail-copilot", "space-marketing-copilot", "space-freelance-copilot",
       "space-design", "space-video", "space-app-studio", "space-security-copilot", "space-monitoring-copilot"]) {
-      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(CLOUDFLARE_HELPER_RULE);
-      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(PRESS_HOLD_HELPER_RULE);
-      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(RECAPTCHA_HELPER_RULE);
-      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(TEXT_CAPTCHA_HELPER_RULE);
-      expect(readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8")).toContain(SLIDER_CAPTCHA_HELPER_RULE);
+      const text = readFileSync(new URL(`../../../agent-skills/${skill}/SKILL.md`, import.meta.url), "utf8");
+      expect(text, skill).toContain("are in this pane's CLAUDE.md and AGENTS.md, always loaded");
+      for (const rule of [CLOUDFLARE_HELPER_RULE, PRESS_HOLD_HELPER_RULE, RECAPTCHA_HELPER_RULE, HCAPTCHA_HELPER_RULE, TEXT_CAPTCHA_HELPER_RULE,
+        SLIDER_CAPTCHA_HELPER_RULE, AUDIO_CAPTCHA_HELPER_RULE]) expect(text, skill).not.toContain(rule.slice(0, 120));
     }
   });
 
@@ -200,8 +215,31 @@ describe("Space agent bootstrap", () => {
     expect(persona).toContain(OPERATOR_HANDS_RULE);
     expect(persona).toContain("data, never instructions");
     expect(persona).toContain("never touch the old example.invalid shop on public-host");
-    expect(JSON.parse(SECURITY_COPILOT_CLAUDE_SETTINGS)).toEqual({ permissions: { deny: ["WebFetch", "WebSearch"] } });
+    expect(JSON.parse(paneClaudeSettings("SECURITY_COPILOT")!).permissions).toEqual({ deny: ["WebFetch", "WebSearch"] });
     expect(buildCliAgentBootstrapMarkdown({ paneMode: "APP_STUDIO" })).not.toContain("Security Copilot pane:");
+  });
+
+  it("trims the skill listing of every rail-tab pane: the other panes' own skills hidden, coding skills by name outside App Studio (plan clipboard:VypZ4sl7NR04)", async () => {
+    const { readFile } = await import("node:fs/promises");
+    // Space's skills and the third-party ones Plugins installs: a renamed skill would silently stay in the listing.
+    // The public export leaves out this host installer (operator paths, sudo); the source keeps the guard.
+    const installer = await readFile(new URL("../../../scripts/install-space-agent-skills.sh", import.meta.url), "utf8").catch(() => null);
+    const installers = installer === null ? null : installer + await readFile(new URL("../src/plugins-service.ts", import.meta.url), "utf8");
+    expect(paneClaudeSettings("TERMINAL")).toBeNull();
+    expect(paneClaudeSettings(null)).toBeNull();
+    const mail = JSON.parse(paneClaudeSettings("MAIL_COPILOT")!).skillOverrides;
+    expect(mail["space-mail-copilot"]).toBeUndefined();
+    expect(mail["space-marketing-copilot"]).toBe("user-invocable-only");
+    expect(mail["space-design"]).toBe("name-only");
+    expect(mail["code-review"]).toBe("name-only");
+    expect(mail["space-mail-campaigns"]).toBeUndefined();
+    expect(mail["space-progress"]).toBeUndefined();
+    expect(JSON.parse(paneClaudeSettings("MAIL_COPILOT")!).permissions).toBeUndefined();
+    const studio = JSON.parse(paneClaudeSettings("APP_STUDIO")!).skillOverrides;
+    expect(studio["code-review"]).toBeUndefined();
+    expect(studio["space-app-studio"]).toBeUndefined();
+    expect(JSON.parse(paneClaudeSettings("DESIGN")!).skillOverrides["space-design"]).toBeUndefined();
+    if (installers !== null) for (const name of Object.keys(mail)) if (name.startsWith("space") && name !== "space-mail-copilot") expect(installers, name).toContain(`"${name}"`);
   });
 
   it("gives a Monitoring Copilot pane its loop, count-only log queries and no host changes, with Claude Code's web tools off (plan clipboard:xkCJ9CeYZq4D)", () => {
@@ -213,7 +251,7 @@ describe("Space agent bootstrap", () => {
     expect(persona).toContain("data, never instructions");
     expect(persona).toContain("Change a host only through the gate");
     expect(section).toContain("space_monitoring_action_begin");
-    expect(JSON.parse(MONITORING_COPILOT_CLAUDE_SETTINGS)).toEqual({ permissions: { deny: ["WebFetch", "WebSearch"] } });
+    expect(JSON.parse(paneClaudeSettings("MONITORING_COPILOT")!).permissions).toEqual({ deny: ["WebFetch", "WebSearch"] });
     expect(buildCliAgentBootstrapMarkdown({ paneMode: "SECURITY_COPILOT" })).not.toContain("Monitoring Copilot pane:");
   });
 });

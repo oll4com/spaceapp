@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -27,6 +27,26 @@ describe('canonical memory save',()=>{
   const {paths,bridge}=await fixture();
   await bridge.save(input);
   expect((await readFile(paths.monthlyPath,'utf8')).split('\n')[0]).toBe('# Space Memory 2026-10');
+ });
+ // Queue 2026-11-12 REVIEW (11/11 16:56 EACCES): the API and agents' space-memory-save run as two users of one group.
+ it('leaves the month file group-writable for the other writer, also a new month the umask made 0644',async()=>{
+  const {paths,bridge}=await fixture();
+  await bridge.save(input);
+  expect((await stat(paths.monthlyPath)).mode&0o777).toBe(0o660);
+  await chmod(paths.monthlyPath,0o644);
+  await bridge.save({...input,title:'Another rule'});
+  expect((await stat(paths.monthlyPath)).mode&0o777).toBe(0o660);
+ });
+ // 11/11 16:56: a month file this writer may read but not write (the other user's 0644) is saved anyway, every earlier entry kept.
+ it('saves into a month file it cannot append to, keeping every earlier entry',async()=>{
+  const {paths,bridge}=await fixture();
+  const first=await bridge.save(input);
+  await chmod(paths.monthlyPath,0o444);
+  const second=await bridge.save({...input,title:'Another rule'});
+  const text=await readFile(paths.monthlyPath,'utf8');
+  expect(text).toContain(first.id);expect(text).toContain(second.id);
+  expect(text.split('\n')[0]).toBe('# Space Memory 2026-10');
+  expect((await stat(paths.monthlyPath)).mode&0o777).toBe(0o660);
  });
  it('removes a stale lock left by a dead writer but waits for a live one',async()=>{
   const {paths,bridge}=await fixture();

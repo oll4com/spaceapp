@@ -64,7 +64,7 @@ function wire(input: { modules?: string[]; jobs?: Record<string, boolean>; optio
     eventBus: { publish: (event: unknown) => { published.push(event); } },
     options: { mailCopilotRepository: { dispose: () => { disposed.push("mail"); } }, mailCopilotKickoff: "options-kickoff", ...input.options },
     defaultRouteRateLimitOptions: { config: { rateLimit: 1 } }, connectorCrypto: { crypto: true }, connectorServiceRef: { current: "connector" },
-    notificationsRepository: { dispose: async () => { disposed.push("notifications"); } }, notificationService: { resolve: () => {} },
+    notificationsRepository: { dispose: async () => { disposed.push("notifications"); } }, notificationService: { resolve: () => {}, setMail: () => {} },
     notificationPrune: setInterval(() => {}, 3_600_000).unref(), stopMorningBatches: () => { disposed.push("morning"); }, stopNotificationProducers: () => { disposed.push("producers"); },
     roomOwner: async (roomId: string) => roomId === "room:owned01" ? "user:owner01" : null, telegramIntegrationManager: { notify: () => {} },
     roomPaneController: { inspect: async () => ({}), start: async () => ({}) }, cliTerminalManager: { terminal: true },

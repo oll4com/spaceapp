@@ -5,6 +5,9 @@ import { needsYouCardTexts, needsYouPlace, type Pane, type Room, type SpaceNotif
 import type { SideSurface } from "../src/features/docks/dock-types.js";
 import { BROWSER_PANE_ACTION_EVENT, publishBrowserPaneControl, registerBrowserPaneEventTarget, type BrowserPaneActionDetail } from "../src/features/browser-pane/events.js";
 import { REVEAL_TRIES_MS, useNousFocus } from "../src/features/nous-focus/NousFocus.js";
+import { CAPTCHA_LANES, clampBounds, coalesceMoves, FLOAT_BOUNDS_KEY, readFloatBounds, resizeBounds, toPage } from "../src/features/nous-focus/NousFloat.js";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { NotificationToastHost } from "../src/features/notifications/NotificationToastHost.js";
 import { dropNeedsYouPeek } from "../src/features/needs-you/needs-you-view.js";
 import { PEEK_MS, PEEK_SENT_MS } from "../src/features/needs-you/NeedsYouPeek.js";
@@ -48,6 +51,8 @@ let emmaClosed = false;
 let emmaLoaded = true;
 let records: SpaceNotification[] = [];
 let visibility = "visible";
+/** Nous's dock is fullscreen on this screen. */
+let nousFullscreen = false;
 
 function Harness() {
   const [selectedRoomId, setRoom] = useState<string | null>("room:home000001");
@@ -75,6 +80,7 @@ function Harness() {
       {emmaMode === "TERMINAL" ? <textarea className="xterm-helper-textarea" aria-label="Emma terminal" /> : null}
     </section>
     <section data-space-pane-id={CODY} />
+    {nousFullscreen ? <section className="dock-panel nous-dock is-fullscreen" aria-label="Nous" /> : null}
     <input aria-label="Elsewhere" />
   </>;
 }
@@ -104,6 +110,7 @@ beforeEach(() => {
   records = [];
   place = {};
   visibility = "visible";
+  nousFullscreen = false;
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
   writeNousFocusEnabled(true);
   resetNotificationStore("user:operator");
@@ -114,6 +121,8 @@ beforeEach(() => {
     if (url.endsWith("/browser/handoff")) {
       return handoffStatus ? Response.json({ handoff: { status: handoffStatus, expiresAt: "2099-01-01T00:00:00.000Z" } }) : Response.json({ error: "none" }, { status: 404 });
     }
+    // One frame, then the long poll waits.
+    if (url.includes("/teleport/frame")) return url.endsWith("after=0") ? Response.json({ frame: { sequence: 1, data: "AAAA", mimeType: "image/jpeg", width: 412, height: 800, capturedAt: at } }) : new Promise<Response>(() => undefined);
     if (url.endsWith("/reveal")) return Response.json({ revealed: "recaptcha" });
     if (url.endsWith("/place")) return Response.json(place);
     if (/\/notifications\/notification:[^/]+\/answer$/.test(url)) return Response.json({ routed: "NOUS", display: "Going to Emma.", notification: null });
@@ -609,6 +618,190 @@ describe("Needs you brings the operator to a pane", () => {
     await advance(300);
     expect(within(peek()!).getByRole("article", { name: "Emma needs you" })).toBeTruthy();
     expect(calls).toEqual([]);
+  });
+
+  it("nous_msg:8596b29a: in Nous fullscreen Go opens the pane in a floating window and never leaves fullscreen; Open the pane is his click", async () => {
+    nousFullscreen = true;
+    const phases: string[] = [];
+    const onPhase = (event: Event) => phases.push((event as CustomEvent<string>).detail);
+    window.addEventListener(NOUS_FOCUS_PHASE_EVENT, onPhase);
+    render(<Harness />);
+    const posts = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/browser/teleport")).map(([, init]) => JSON.parse(String(init?.body)));
+    // A browser pane: its live Teleport.
+    await act(async () => requestNousFocus({ roomId: "room:work000001", paneId: CODY, immediate: true }));
+    await advance(0);
+    const float = screen.getByRole("dialog", { name: "Cody" });
+    expect(calls).toEqual([]);
+    expect(phases).toEqual([]);
+    expect(posts()[0]).toMatchObject({ on: true });
+    expect(within(float).getByRole("img", { name: "Live page" })).toBeTruthy();
+    fireEvent.click(within(float).getByRole("button", { name: "Close" }));
+    await advance(0);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(posts().at(-1)).toEqual({ on: false });
+    // Any other pane: its card, and Open the pane goes there (leaving fullscreen, which Back restores).
+    const card = there("float", { payload: { ask: { question: "Which colour?", options: ["Go now", "Red"], recommended: "Go now", answer: { kind: "NOUS" } } } });
+    records = [card];
+    await act(async () => requestNousFocus({ roomId: "room:work000001", paneId: EMMA, immediate: true, notification: card }));
+    await advance(0);
+    const other = screen.getByRole("dialog", { name: "Emma" });
+    expect(within(other).queryByRole("img")).toBeNull();
+    expect(within(other).getByRole("button", { name: "Red" })).toBeTruthy();
+    expect(fetched(`/notifications/${card.id}/answer`)).toBe(true);
+    expect(calls).toEqual([]);
+    fireEvent.click(within(other).getByText("Open the pane", { selector: "button" }));
+    await advance(300);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(phases).toEqual(["go"]);
+    expect(calls).toEqual(["room room:work000001", `max ${EMMA}`, `select ${EMMA}`]);
+    window.removeEventListener(NOUS_FOCUS_PHASE_EVENT, onPhase);
+  });
+
+  it("nous_msg:6345d547: Captcha mode puts more frame polls out and sends every move of a drag with its own time, uncoalesced", async () => {
+    nousFullscreen = true;
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input).endsWith("/browser/control/acquire")
+      ? Response.json({ lease: { leaseId: "browser_lease:1", status: "ACTIVE" } }) : base(input, init));
+    const polls = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/teleport/frame")).length;
+    const inputs = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/teleport/input")).map(([, init]) => JSON.parse(String(init?.body)));
+    render(<Harness />);
+    await act(async () => requestNousFocus({ roomId: "room:work000001", paneId: CODY, immediate: true }));
+    await advance(0);
+    const float = screen.getByRole("dialog", { name: "Cody" });
+    const before = polls();
+    fireEvent.click(within(float).getByRole("switch", { name: "Captcha mode" }));
+    await advance(0);
+    expect(polls() - before).toBe(CAPTCHA_LANES - 1);
+    const page = within(float).getByRole("img", { name: "Live page" });
+    page.getBoundingClientRect = () => ({ left: 0, top: 0, width: 412, height: 800, right: 412, bottom: 800, x: 0, y: 0, toJSON: () => ({}) });
+    fireEvent.pointerDown(page, { clientX: 10, clientY: 100, button: 0, buttons: 1, pointerId: 1 });
+    for (const x of [20, 30, 40]) fireEvent.pointerMove(page, { clientX: x, clientY: 100, buttons: 1, pointerId: 1 });
+    fireEvent.pointerUp(page, { clientX: 40, clientY: 100, pointerId: 1 });
+    await advance(0);
+    const sent = inputs();
+    expect(sent.flatMap((body) => body.inputs.map((item: { eventType: string; touchPoints: Array<{ x: number }> }) => `${item.eventType}:${item.touchPoints[0]?.x ?? ""}`)))
+      .toEqual(["touchStart:10", "touchMove:20", "touchMove:30", "touchMove:40", "touchEnd:"]);
+    for (const body of sent) expect(body.at).toHaveLength(body.inputs.length);
+    fireEvent.click(within(float).getByRole("button", { name: "Close" }));
+    await advance(0);
+  });
+
+  it("nous_msg:154cee76: the float resizes from all 8 edges and corners and its presets, keeps x/y/width/height across opens, and the page takes the stage's shape", async () => {
+    window.localStorage.removeItem(FLOAT_BOUNDS_KEY);
+    nousFullscreen = true;
+    const observers: Array<() => void> = [];
+    vi.stubGlobal("ResizeObserver", class { constructor(callback: () => void) { observers.push(callback); } observe() {} disconnect() {} });
+    const posts = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/browser/teleport")).map(([, init]) => JSON.parse(String(init?.body)));
+    const view = render(<Harness />);
+    const open = async () => { await act(async () => requestNousFocus({ roomId: "room:work000001", paneId: CODY, immediate: true })); await advance(0); return screen.getByRole("dialog", { name: "Cody" }); };
+    const box = (element: HTMLElement) => ({ x: parseFloat(element.style.left), y: parseFloat(element.style.top), width: parseFloat(element.style.width), height: parseFloat(element.style.height) });
+    const pull = (element: Element, from: [number, number], to: [number, number]) => {
+      fireEvent.pointerDown(element, { clientX: from[0], clientY: from[1], button: 0, pointerId: 1 });
+      fireEvent.pointerMove(element, { clientX: to[0], clientY: to[1], buttons: 1, pointerId: 1 });
+      fireEvent.pointerUp(element, { clientX: to[0], clientY: to[1], pointerId: 1 });
+    };
+    const saved = () => JSON.parse(window.localStorage.getItem(FLOAT_BOUNDS_KEY) ?? "null");
+    // jsdom's window is 1024x768: Normal at the bottom right, 12 px in.
+    let float = await open();
+    expect(box(float)).toEqual({ x: 612, y: 12, width: 400, height: 744 });
+    expect(float.querySelectorAll(".nous-float-edge")).toHaveLength(8);
+    const edge = (name: string) => float.querySelector(`[data-edge="${name}"]`)!;
+    // Saved on every change, before the pointer lets go.
+    fireEvent.pointerDown(edge("w"), { clientX: 612, clientY: 300, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(edge("w"), { clientX: 562, clientY: 300, buttons: 1, pointerId: 1 });
+    expect(saved()).toEqual({ x: 562, y: 12, width: 450, height: 744 });
+    fireEvent.pointerMove(edge("w"), { clientX: 512, clientY: 300, buttons: 1, pointerId: 1 });
+    fireEvent.pointerUp(edge("w"), { clientX: 512, clientY: 300, pointerId: 1 });
+    expect(box(float)).toEqual({ x: 512, y: 12, width: 500, height: 744 });
+    expect(saved()).toEqual({ x: 512, y: 12, width: 500, height: 744 });
+    pull(edge("nw"), [512, 12], [612, 212]);
+    expect(box(float)).toEqual({ x: 612, y: 212, width: 400, height: 544 });
+    // Each gesture starts where the last one left it: no jump.
+    pull(float.querySelector(".nous-float-bar")!, [700, 230], [400, 130]);
+    expect(box(float)).toEqual({ x: 312, y: 112, width: 400, height: 544 });
+    expect(saved()).toEqual({ x: 312, y: 112, width: 400, height: 544 });
+    // Never smaller than 360x320, never off screen.
+    pull(edge("se"), [712, 656], [100, 100]);
+    expect(box(float)).toEqual({ x: 312, y: 112, width: 360, height: 320 });
+    pull(edge("e"), [672, 300], [5000, 300]);
+    expect(box(float).x + box(float).width).toBe(1012);
+    // The page follows the stage once the resize settles; the poll is not reopened.
+    const stage = float.querySelector<HTMLElement>(".nous-teleport-page")!;
+    Object.defineProperty(stage, "clientWidth", { configurable: true, value: 640 });
+    Object.defineProperty(stage, "clientHeight", { configurable: true, value: 260 });
+    const opened = posts().length;
+    act(() => observers.forEach((callback) => callback()));
+    await advance(300);
+    expect(posts().slice(opened)).toEqual([{ on: true, dimensions: { width: 640, height: 260 } }]);
+    // The stream reconnecting or the page resizing never moves the window.
+    const chosen = box(float);
+    expect(saved()).toEqual(chosen);
+    // A rotate to a smaller screen shows it clamped without saving that; back to the old size it is exactly his again.
+    const screenSize = (width: number, height: number) => act(() => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
+      window.dispatchEvent(new Event("resize"));
+    });
+    screenSize(600, 1000);
+    expect(box(float)).toEqual({ x: 12, y: 112, width: 576, height: 320 });
+    expect(saved()).toEqual(chosen);
+    screenSize(1024, 768);
+    expect(box(float)).toEqual(chosen);
+    // Another pane's float opens where he left this one.
+    await act(async () => requestNousFocus({ roomId: "room:work000001", paneId: EMMA, immediate: true }));
+    await advance(0);
+    expect(box(screen.getByRole("dialog", { name: "Emma" }))).toEqual(chosen);
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Emma" })).getByRole("button", { name: "Close" }));
+    await advance(0);
+    float = await open();
+    // Close and come back (a reload reads the same key): the same place and size.
+    const before = box(float);
+    fireEvent.click(within(float).getByRole("button", { name: "Close" }));
+    await advance(0);
+    view.unmount();
+    render(<Harness />);
+    float = await open();
+    expect(box(float)).toEqual(before);
+    fireEvent.click(within(float).getByRole("button", { name: "Full" }));
+    expect(box(float)).toEqual({ x: 12, y: 12, width: 1000, height: 744 });
+    expect(saved()).toEqual({ x: 12, y: 12, width: 1000, height: 744 });
+    const lit = () => within(float).getAllByRole("button", { pressed: true }).map((button) => button.dataset.nousFloatSize);
+    expect(lit()).toEqual(["Full"]);
+    fireEvent.click(within(float).getByRole("button", { name: "Normal" }));
+    expect(box(float)).toEqual({ x: 12, y: 12, width: 400, height: 744 });
+    expect(lit()).toEqual(["Normal"]);    window.localStorage.removeItem(FLOAT_BOUNDS_KEY);
+  });
+
+  it("nous_msg:154cee76: saved bounds come back clamped on screen; a resize keeps the opposite edge", () => {
+    const view = { width: 1024, height: 768 };
+    window.localStorage.setItem(FLOAT_BOUNDS_KEY, JSON.stringify({ x: 5000, y: -50, width: 9999, height: 100 }));
+    expect(readFloatBounds(view)).toEqual({ x: 12, y: 12, width: 1000, height: 320 });
+    window.localStorage.setItem(FLOAT_BOUNDS_KEY, "{not json");
+    expect(readFloatBounds(view)).toEqual({ x: 612, y: 12, width: 400, height: 744 });
+    window.localStorage.removeItem(FLOAT_BOUNDS_KEY);
+    // A phone narrower than 384 px: the screen wins over the 360 px minimum.
+    expect(clampBounds({ x: 0, y: 0, width: 400, height: 400 }, { width: 360, height: 700 })).toEqual({ x: 12, y: 12, width: 336, height: 400 });
+    expect(resizeBounds({ x: 300, y: 200, width: 400, height: 400 }, "n", 0, 300, view)).toEqual({ x: 300, y: 280, width: 400, height: 320 });
+    expect(resizeBounds({ x: 300, y: 200, width: 400, height: 400 }, "w", -1000, 0, view)).toEqual({ x: 12, y: 200, width: 688, height: 400 });
+  });
+
+  it("nous_msg:154cee76: the card is a compact bar above the Teleport, whose stage fills the rest of the window", () => {
+    const css = readFileSync(resolve(__dirname, "../src/features/nous-focus/nous-focus.css"), "utf8").replace(/\s+/g, " ");
+    expect(css).toMatch(/\.nous-teleport \{[^}]*flex: 1 1 auto;[^}]*min-height: 0;/);
+    expect(css).toMatch(/\.nous-teleport-page \{ flex: 1 1 auto; min-height: 0; height: 100%;/);
+    expect(css).toMatch(/\.nous-float\.is-teleport > \.nous-focus-card \{ flex: 0 1 auto; max-height: 35%;/);
+    expect(css).not.toMatch(/\.nous-float\.is-teleport \{[^}]*height: min\(/);
+  });
+
+  it("maps a click on the letterboxed teleport frame to the page's CSS pixels and drops stale moves", () => {
+    // A 412x800 page shown contained in a 400x1000 box: scale 400/412, 111.65 px bars above and below.
+    expect(toPage(200, 500, { left: 0, top: 0, width: 400, height: 1000 }, { width: 412, height: 800 })).toEqual({ x: 206, y: 400 });
+    expect(toPage(200, 50, { left: 0, top: 0, width: 400, height: 1000 }, { width: 412, height: 800 })).toBeNull();
+    // A first screenshot labelled 412x800 whose picture is 800x400: the letterbox is the picture's, the point the page's.
+    expect(toPage(200, 500, { left: 0, top: 0, width: 400, height: 1000 }, { width: 412, height: 800 }, { width: 800, height: 400 })).toEqual({ x: 206, y: 400 });
+    expect(toPage(200, 300, { left: 0, top: 0, width: 400, height: 1000 }, { width: 412, height: 800 }, { width: 800, height: 400 })).toBeNull();
+    const move = (x: number) => ({ type: "TOUCH" as const, eventType: "touchMove" as const, touchPoints: [{ x, y: 0 }] });
+    expect(coalesceMoves([move(1), move(2), { type: "TOUCH", eventType: "touchEnd", touchPoints: [] }, move(3)]).map((input) => input.type === "TOUCH" ? input.touchPoints[0]?.x ?? "end" : null)).toEqual([2, "end", 3]);
   });
 
   it("forwards the pane board's updates from the server stream", () => {

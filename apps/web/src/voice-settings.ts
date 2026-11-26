@@ -1,6 +1,4 @@
 import {
-  voiceModelVoiceSchema,
-  voiceTranscriptionModelSchema,
   isLiveAudioProviderId,
   inferProviderFromModel,
   type LiveAudioProviderId,
@@ -82,8 +80,6 @@ export const defaultVoiceComposerSettings: VoiceComposerSettings = {
   terminalHiddenShortcuts: []
 };
 
-const voiceModels = new Set<string>(voiceTranscriptionModelSchema.options);
-const voiceVoices = new Set<VoiceModelVoice>(voiceModelVoiceSchema.options);
 const voiceLanguages = new Set<VoiceTranscriptionLanguage>(["auto", "el", "en"]);
 const voiceInsertModes = new Set<VoiceInsertMode>(["append", "replace"]);
 const delegatedReasoningEfforts = new Set(["minimal", "low", "medium", "high", "xhigh"]);

@@ -81,7 +81,7 @@ export function NeedsYouChoices({ choices, recommended, busy, onChoose, onStudio
   const answer = (choice: NeedsYouChoice) => {
     const isRecommended = choice.option === recommended;
     return choice.option === null ? null
-      : <DockButton tone={isRecommended ? "primary" : "default"} disabled={busy} data-sensitive-masked="manual" onClick={() => onChoose(choice.option!)}>
+      : <DockButton tone={isRecommended ? "primary" : "default"} disabled={busy} onClick={() => onChoose(choice.option!)}>
         {nameOf(choice) || choice.option}{isRecommended ? <RecommendedBadge /> : null}
       </DockButton>;
   };
@@ -98,15 +98,15 @@ export function NeedsYouChoices({ choices, recommended, busy, onChoose, onStudio
               {meta === undefined ? <span className="ny-choice-media" aria-hidden="true" />
                 : meta === "missing" ? <span className="ny-choice-media is-missing">{t("No longer available")}</span>
                 : kind ? (
-                  <button type="button" className="ny-choice-media" aria-label={t("Preview {name}", { name: nameOf(choice) })} data-sensitive-masked="manual"
+                  <button type="button" className="ny-choice-media" aria-label={t("Preview {name}", { name: nameOf(choice) })}
                     onClick={() => setViewing(media.indexOf(choice))}>
                     {kind === "IMAGE" ? <img src={url} alt={nameOf(choice)} loading="lazy" />
                       : <><video src={url} muted playsInline preload="metadata" aria-hidden="true" /><Play className="ny-choice-play" aria-hidden="true" /></>}
                   </button>
                 )
-                : <a className="ny-choice-file" href={url} target="_blank" rel="noopener noreferrer" data-sensitive-masked="manual">{meta.artifact.filename}</a>}
+                : <a className="ny-choice-file" href={url} target="_blank" rel="noopener noreferrer">{meta.artifact.filename}</a>}
               {/* A gone file the option does not name keeps only "No longer available": its id says nothing. */}
-              {answer(choice) ?? (nameOf(choice) ? <figcaption data-sensitive-masked="manual">{nameOf(choice)}</figcaption> : null)}
+              {answer(choice) ?? (nameOf(choice) ? <figcaption>{nameOf(choice)}</figcaption> : null)}
             </figure>
           );
         })}

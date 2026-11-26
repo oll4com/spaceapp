@@ -167,6 +167,14 @@ function names(panes: Pane[]): string {
   return list.length <= 1 ? list.join("") : `${list.slice(0, -1).join(", ")} and ${list.at(-1)}`;
 }
 
+/** Slice 17 (14/11: held model changes for closed panes failed "No panes match this selection." with paneId null): say so instead. */
+function closedPanes(panes: Pane[], verb: string): RoomAgentToolOutcome | null {
+  const closed = panes.filter((pane) => pane.isClosed);
+  if (!closed.length) return null;
+  const which = `${names(closed)} ${closed.length === 1 ? "is" : "are"} closed`;
+  return { ok: false, display: which, result: `${which}: reopen ${closed.length === 1 ? "it" : "them"} first, then ${verb} again.` };
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? `${error.message.slice(0, 1_000)}${errorCause(error.message)}` : "The action failed.";
 }
@@ -348,9 +356,19 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
     async send_to_pane(args, ctx) {
       const { panes, problem } = await resolvePanes(ctx, args.panes);
       if (problem) return fail(`Could not find ${args.panes.join(", ")}`, problem);
-      const operation = await deps.controlExecute(ctx.actorId!, { roomId: ctx.roomId, requestId: ctx.requestId, ...(ctx.confirmed ? { userExplicitlyAuthorized: true } : {}),
-        actions: [{ kind: "pane", operation: "prompt", target: { paneIds: panes.map((pane) => pane.id), state: "OPEN" }, text: args.text,
-          when: args.when === "now" ? "NOW" : "AFTER_TURN" }] });
+      const closed = closedPanes(panes, "send the text");
+      if (closed) return closed;
+      let operation: ControlOperation;
+      try {
+        operation = await deps.controlExecute(ctx.actorId!, { roomId: ctx.roomId, requestId: ctx.requestId, ...(ctx.confirmed ? { userExplicitlyAuthorized: true } : {}),
+          actions: [{ kind: "pane", operation: "prompt", target: { paneIds: panes.map((pane) => pane.id), state: "OPEN" }, text: args.text,
+            when: args.when === "now" ? "NOW" : "AFTER_TURN" }] });
+      } catch (error) {
+        // 15/11 01:40 (Bob closed itself after "save and close" between the check above and the send): name the pane that closed, a refusal.
+        const now = /No panes match this selection/.test(errorText(error)) ? closedPanes((await deps.listPanes(ctx.roomId)).filter((pane) => panes.some((entry) => entry.id === pane.id)), "send the text") : null;
+        if (now) return { ...now, refused: now.result };
+        throw error;
+      }
       // A text delivered to a pane that waited on a question or a stop answers that wait.
       const delivered = new Set(operation.results.filter((result) => result.status === "COMPLETED" && result.paneId).map((result) => result.paneId!));
       for (const paneId of delivered) notePaneReached(paneId);
@@ -463,6 +481,8 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
     async set_pane_model(args, ctx) {
       const { panes: [pane], problem } = await resolvePanes(ctx, [args.pane]);
       if (!pane) return fail(`Could not find ${args.pane}`, problem!);
+      const closed = closedPanes([pane], "set the model");
+      if (closed) return closed;
       // A just-opened CLI reads UNKNOWN until it shows its prompt (stable 2026-10-19: 32 "Native state is unknown" in 7 days).
       if (pane.mode === "TERMINAL") {
         for (let waited = 0; waited < SET_MODEL_READY_WAIT_MS && (await deps.inspectPane(pane).catch(() => null))?.state === "UNKNOWN"; waited += 1_000) {

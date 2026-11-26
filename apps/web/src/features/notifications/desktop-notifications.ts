@@ -95,7 +95,7 @@ export function showDesktopNotification(input: { title: string; body: string; ta
 export function subscribeNativeNotificationOpen(handler: (id: string) => void): () => void {
   const app = android();
   if (app) {
-    const take = () => { let id: string | null = null; try { id = app.takePendingNotification(); } catch { id = null; } if (id) handler(id); };
+    const take = () => { let id: string | null; try { id = app.takePendingNotification(); } catch { id = null; } if (id) handler(id); };
     (window as unknown as { __spaceOpenNotification?: () => void }).__spaceOpenNotification = take;
     take();
     return () => { delete (window as unknown as { __spaceOpenNotification?: () => void }).__spaceOpenNotification; };
@@ -117,7 +117,7 @@ export function pushNotificationsEnabled(): boolean {
 }
 function pushDevice(): PushDeviceRegistration | null {
   const app = android();
-  let token = "";
+  let token: string;
   let appVersion: string | null = null;
   try { token = app?.pushToken?.() ?? ""; appVersion = app?.appVersion?.() || null; } catch { token = ""; }
   return token ? { token, platform: "ANDROID", appVersion } : null;

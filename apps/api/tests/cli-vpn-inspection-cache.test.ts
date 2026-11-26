@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CLI_VPN_INSPECTION_CACHE_MS, CliVpnBrokerClient, type CliVpnInspectionResult } from "../src/cli-vpn.js";
+import { CLI_VPN_INSPECTION_CACHE_MS, CLI_VPN_INSPECTION_STALE_MS, CliVpnBrokerClient, type CliVpnInspectionResult } from "../src/cli-vpn.js";
 
 const result = { selectedRoute: "direct", runtimes: [] } as unknown as CliVpnInspectionResult;
 const harness = (pids: number[]) => [{ runtimeId: "cli:harness" as const, pids }];
@@ -56,10 +56,47 @@ describe("CLI VPN status inspection cache", () => {
     let release!: (value: CliVpnInspectionResult) => void;
     inspect.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
     const pending = client.inspectRuntimesCached(harness([1]));
+    await Promise.resolve(); // the shared cache starts its load on the next microtask
     client.invalidateInspections();
     release(result);
     await pending;
     await client.inspectRuntimesCached(harness([1]));
     expect(inspect).toHaveBeenCalledTimes(2);
+  });
+
+  it("serves the last settled inspection while a slow broker refresh runs, and waits once it is too old", async () => {
+    const { client, inspect, advance } = fixture();
+    await client.inspectRuntimesCached(harness([1]));
+    const fresh = { ...result } as CliVpnInspectionResult;
+    let release!: (value: CliVpnInspectionResult) => void;
+    inspect.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    advance(CLI_VPN_INSPECTION_CACHE_MS);
+    // The broker waits behind a launch's lock: both readers get the previous answer at once and share one refresh.
+    await expect(client.inspectRuntimesCached(harness([1]))).resolves.toBe(result);
+    await expect(client.inspectRuntimesCached(harness([1]))).resolves.toBe(result);
+    expect(inspect).toHaveBeenCalledTimes(2);
+
+    advance(CLI_VPN_INSPECTION_STALE_MS - CLI_VPN_INSPECTION_CACHE_MS);
+    const waiting = client.inspectRuntimesCached(harness([1]));
+    release(fresh);
+    await expect(waiting).resolves.toBe(fresh);
+    expect(inspect).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the last settled inspection when a background refresh fails, and never one from before a mutation", async () => {
+    const { client, inspect, advance } = fixture();
+    await client.inspectRuntimesCached(harness([1]));
+    advance(CLI_VPN_INSPECTION_CACHE_MS);
+    inspect.mockRejectedValueOnce(new Error("lock timeout"));
+    await expect(client.inspectRuntimesCached(harness([1]))).resolves.toBe(result);
+    await new Promise((resolve) => setImmediate(resolve));
+    await expect(client.inspectRuntimesCached(harness([1]))).resolves.toBe(result);
+    expect(inspect).toHaveBeenCalledTimes(3);
+
+    advance(CLI_VPN_INSPECTION_CACHE_MS);
+    await client.removeProfile("mullvad").catch(() => undefined);
+    const after = { ...result } as CliVpnInspectionResult;
+    inspect.mockResolvedValueOnce(after);
+    await expect(client.inspectRuntimesCached(harness([1]))).resolves.toBe(after);
   });
 });

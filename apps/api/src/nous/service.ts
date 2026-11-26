@@ -4,14 +4,14 @@ import { randomUUID } from "node:crypto";
 import {
   NOUS_ATTACHMENTS_MARKER, mailLineForOperator, NOUS_GATEWAY_UNREACHABLE, NOUS_PROMPT_MAX_CHARS, NOUS_QUOTA_EXHAUSTED, NOUS_MESSAGE_MAX_CHARS, needsYouAnswerKind, nousAnswerIntent, nousDecisionKind, nousDecisionRunsWhen, nousDecisionStatusSchema, nousModelFor, nousModelLabel, NOUS_SPACE_ROUTES, parseNousGoalCommand,
   type NousExecution, type NousDecision, type NousDecisionAction, type NousDecisionAnswerInput, type NousGoal, type NousGoalEditInput, type NousGoalsView, type NousMessage, type NousOverview, type NousSettings, mergeNousSettings, type NousSettingsInput, type NousSpendMode, type NousStandingApproval, type SpaceNotification, type NousState, type NousTurnFacts, type NousTurnReason,
-  nousGoalsSettingsSchema, type NousTurnOutcome, describeNousClient, nousClientContextSchema, type NousClientContext,
+  nousGoalsSettingsSchema, nousTurnKindOf, type NousTurnKind, type NousTurnOutcome, describeNousClient, nousClientContextSchema, type NousClientContext,
   withoutNothingNew, type UiLanguage
 } from "@space/contracts";
 import type { NewNousDecision, NousMessagePage, NousRepository } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
 import type { NotificationService } from "../notifications/service.js";
 import { recordNousTurn } from "../api-metrics.js";
-import { addToolErrorSample } from "./progress.js";
+import { addToolErrorSample, toolFailureCause } from "./progress.js";
 import type { NousSelectedModel } from "./model-choice.js";
 import { decisionPredictedOption, decisionPrediction, optionPredictionMatched, yesNoPredictionMatched } from "./predictions.js";
 import { nousControlRisk, nousToolLabel, timedFocusSentence, timedPromoteSentence, type NousToolOutcome, type NousTools } from "./tools.js";
@@ -23,13 +23,14 @@ import { withCheckedBlock } from "./pane-notices.js";
 import { unknownRefsLine } from "./named-refs.js";
 import { claimsDone, renderLessons, type NousLessons } from "./lessons.js";
 import { inNeedsYouClaim, waitsOnOperatorClaim } from "./pane-watch.js";
-import { fitPrompt as fitSections, fitWhole, historyLines, NOUS_PROMPT_BUDGET_CHARS, NOUS_RETRIEVED_SECTION_CHARS, relevantHistory, relevantParts, withoutSaid, type PromptPart as WorldPromptPart } from "./retrieval.js";
+import { fitPrompt as fitSections, fitWhole, historyLines, NOUS_PROMPT_BUDGET_CHARS, NOUS_RETRIEVED_NAMES_CHARS, NOUS_RETRIEVED_SECTION_CHARS, relevantHistory, relevantParts, withoutSaid, type PromptPart as WorldPromptPart } from "./retrieval.js";
 import { fitPrompt, worldParts, type PromptPart } from "./prompt-budget.js";
 import { dispatchedAnswerOnly, outcomeMessageIds } from "./request-done.js";
+import { NOUS_SAVE_REQUEST } from "./save-request.js";
 import { NOUS_ITEM_HOLDS, QUESTION_ACT_LINE, REVIEW_ACT_LINE, renderItemsHold, renderItemsLeft, unhandledItems, type NousTurnAct, type NousTurnItem } from "./turn-items.js";
 import { heldCardLine, heldQuestionItem, renderHeldQuestions, type HeldCopilotQuestion } from "./copilot-questions.js";
 import { MAY_DELETE_OWN_ANSWER, MAY_PUBLISH_ANSWER, MAY_RESTART_HOLD_LINE, MAY_RESTART_HOSTS_ANSWER, mayRestartHostsCovers, restartHostOf, type RestartFacts, type RestartHost, MAY_SEND_ANSWER, MAY_SEND_HOLD_LINE, deleteOwnTargets, mayDeleteOwnCovers, mayDeleteTestCovers, testDeleteTargets, type TestResourceRecord, mayPublishCovers, mayPublishProduct,
-  MAY_SEND_NOT_COVERED, maySendKind, neutralizePricesLine, priceTokens, pricesLine, sendActionText, type OwnArtifact, type PublishFacts } from "./allowances.js";
+  MAY_SEND_NOT_COVERED, maySendKind, RULE_DIFFERS_LINE, OPERATOR_READS_FIRST, operatorReadsFirst, NEVER_BUY_ANSWER, neutralizePricesLine, purchaseAsk, MAY_CLEAN_SYSTEM_ANSWER, mayCleanSystemCovers, cleanupTargets, priceTokens, pricesLine, sendActionText, type OwnArtifact, type PublishFacts } from "./allowances.js";
 
 /**
  * Nous's turns, one at a time per owner. A turn starts from the operator's message, from what the room monitor and the
@@ -73,22 +74,23 @@ export function operatorRefusal(text: string): string | null {
  * the first sentence saying a mail went out (sent, replied, delivered), or null. Negated, future and pane sentences ("Alex/Bob", "pane") say none.
  */
 const SENT_VERB = /σταλθηκ|σταλει|εσταλη|\b(?:was|were|been|got|is|are) (?:already )?(?:sent|delivered)\b|\bsent (?:it|them|the|our|your)\b/gu;
-/** "Left" and "delivered" also say networks, parcels or people moved (10/11 «Τα δίκτυα έφυγαν»): a mail claim only with the mail named in the same sentence. */
+/** "Left" and "delivered" also say networks, parcels or people moved (10/11 «Τα δίκτυα έφυγαν»): a mail claim only with the mail named in the same clause (a label's ": " ends one). */
 const SENT_ANY = /εφυγ[εα]|παραδοθηκ/gu;
 const REPLIED = /απαντησαμε|εχουμε (?:ηδη )?(?:απαντησει|στειλει)|στειλαμε|\bwe(?:'ve| have)? (?:already )?(?:sent|replied|answered|emailed|mailed)\b|\bi(?:'ve| have)? (?:already )?(?:replied|emailed|mailed)\b/gu;
 const MAIL_THING = /mail|μειλ|\b(?:repl(?:y|ies)|letters?|applications?|messages?)\b|απαντηση|αιτηση|μηνυμα|επιστολ|@/u;
 /** A negation or future right before the verb ("δεν είχε σταλεί", "has not been sent", "θα σταλεί"). */
 const NEGATED = /(?:^|\s)(?:δεν|μην|ουτε|θα|να|not|never|no|will)(?: \S+){0,2} $/u;
-/** What a pane was sent, and a sentence that already says it is unverified or a draft. */
-const NOT_A_CLAIM = /\bpane\b|brief|prompt|εντολ|οδηγι|not (?:yet )?verified|unverified|ανεπιβεβαιωτ|δεν (?:\S+ ){0,2}(?:επιβεβαιω|ελεγξ|ειδα|εχω δει)|draft, not sent/u;
+/** What a pane was sent, Nous's own interim chat reply (clean install 22/11), and a sentence that already says it is unverified or a draft. */
+const NOT_A_CLAIM = /\bpane\b|\binterim\b|ενδιαμεσ|brief|prompt|εντολ|οδηγι|not (?:yet )?verified|unverified|ανεπιβεβαιωτ|δεν (?:\S+ ){0,2}(?:επιβεβαιω|ελεγξ|ειδα|εχω δει)|draft, not sent/u;
 export function mailSentClaim(text: string): string | null {
-  const fold = (value: string) => value.normalize("NFD").replace(/\p{M}/gu, "").replace(/’/g, "'").replace(/[*_`]/g, "").toLowerCase();
+  // 14/11 «Τα copilots έφυγαν μαζί με το δωμάτιο Dino: ο Mail, ο Job … Copilot»: a copilot's name is no mail.
+  const fold = (value: string) => value.normalize("NFD").replace(/\p{M}/gu, "").replace(/’/g, "'").replace(/[*_`]/g, "").toLowerCase().replace(/\bmail copilots?\b/g, "copilot");
   const mailContext = MAIL_THING.test(fold(text));
   const says = (plain: string, pattern: RegExp) => [...plain.matchAll(pattern)].some((match) => !NEGATED.test(plain.slice(0, match.index)));
   return text.split(/(?<=[.!?;…])\s+|\n+/).map((sentence) => sentence.trim()).find((sentence) => {
     const plain = fold(sentence);
     if (NOT_A_CLAIM.test(plain) || /\p{Lu}\p{L}*\/\p{Lu}/u.test(sentence)) return false;
-    return says(plain, REPLIED) || (says(plain, SENT_VERB) && (mailContext || MAIL_THING.test(plain))) || (says(plain, SENT_ANY) && MAIL_THING.test(plain));
+    return says(plain, REPLIED) || (says(plain, SENT_VERB) && (mailContext || MAIL_THING.test(plain))) || plain.split(/:\s+/).some((clause) => says(clause, SENT_ANY) && MAIL_THING.test(clause));
   }) ?? null;
 }
 /** The tools whose answer shows Nous the mail itself (the thread's SENT message and any bounce). */
@@ -112,8 +114,10 @@ export const paneToldClaim = (text: string) => firstSentence(text, (plain) => sa
  * Lessons 6-12/11 («θα σου στείλω απόφαση» with none raised): the first sentence promising the operator a decision or card, or null.
  * Daily Nous errors 13/11 10:57-11:49 UTC («Σου στέλνω τώρα focus», «βάζω στο Needs you τις 3 ερωτήσεις» while 18 of those calls were held): the present tense and focus too.
  * In the present tense a decision is left out: «στέλνω στον Bob την απόφασή σου» forwards the operator's own.
+ * DEV3D-038: focus after to/can/should… or «να <verb>» is the pane's verb ("a brief to focus on the bug"), no focus for the operator.
  */
-const CARD_PROMISE = /(?<!\p{L})θα (?:σου |σας |το |τα |τις )?(?:στειλω|στελνω|βγαλω|ανοιξω|φερω|ερθει|εχεις|βαλω|δωσω)[^.!?;]{0,40}(?:αποφαση|καρτα|ερωτηση|needs you|focus)|(?<!\p{L})(?:στελνω|βαζω|ανεβαζω|ανοιγω|δινω)[^.!?;]{0,40}(?:needs you|focus|καρτ\p{L}*)|\bi(?:'ll| will|'m going to| am going to) (?:send|raise|open|bring|put|give|add)[^.!?;]{0,40}\b(?:decisions?|cards?|focus|needs you)\b|\bi(?:'m| am) (?:now )?(?:sending|raising|opening|putting|giving|adding)[^.!?;]{0,40}\b(?:cards?|focus|needs you)\b|\bwill (?:come|reach you) (?:to you )?as an? (?:decision|card)\b/gu;
+// DEV3D-052: "to focus" is the pane's verb only before "on"; "send it to focus now" names focus as the destination.
+const CARD_PROMISE = /(?<!\p{L})θα (?:σου |σας |το |τα |τις )?(?:στειλω|στελνω|βγαλω|ανοιξω|φερω|ερθει|εχεις|βαλω|δωσω)[^.!?;]{0,40}(?:αποφαση|καρτα|ερωτηση|needs you|(?<!να \p{L}+ )focus)|(?<!\p{L})(?:στελνω|βαζω|ανεβαζω|ανοιγω|δινω)[^.!?;]{0,40}(?:needs you|(?<!να \p{L}+ )focus|καρτ\p{L}*)|\bi(?:'ll| will|'m going to| am going to) (?:send|raise|open|bring|put|give|add)[^.!?;]{0,40}\b(?:decisions?|cards?|(?:(?<!\b(?:to|can|could|should|must|will) )focus|(?<=\bto )focus(?! on\b))|needs you)\b|\bi(?:'m| am) (?:now )?(?:sending|raising|opening|putting|giving|adding)[^.!?;]{0,40}\b(?:cards?|(?:(?<!\b(?:to|can|could|should|must|will) )focus|(?<=\bto )focus(?! on\b))|needs you)\b|\bwill (?:come|reach you) (?:to you )?as an? (?:decision|card)\b/gu;
 export const cardPromiseClaim = (text: string) => firstSentence(text, (plain) => saysUnnegated(plain, CARD_PROMISE));
 /**
  * Correction 13/11 nous_msg:3d2c5057 («Κίνδυνος: αν δεν κατέβει ο δίσκος κάτω από 90%…» -- «τρεξε clean τι μου το λες αυτο;;;»), lesson warn-instead-of-act:
@@ -122,11 +126,74 @@ export const cardPromiseClaim = (text: string) => firstSentence(text, (plain) =>
 const RISK_LINE = /(?<!\p{L})(?:κινδυνος|ρισκο|risks?)\s*:/gu;
 export const riskLineSentence = (text: string) => firstSentence(text, (plain) => saysUnnegated(plain, RISK_LINE));
 /**
+ * Corrections 11-14/11 (e97fb440 «Δεν το εφάρμοσα, γιατί…», ef79acd6 «Δεν το άλλαξα, γιατί…», b6f396c3 «δεν έγινε, γιατί η Dana δεν έχει πρόσβαση»,
+ * 8b0d2d6c «Αυτό μένει στο παλιό server γιατί ο δίσκος… σχεδόν γεμάτος», 3ea92e2f «έμεινε στην άκρη»), each quoted back with the order to do it:
+ * the first sentence holding a step back with its reason, or null. «Δεν έλεγξα», «δεν έχω δει» stay out: the honest "not verified" line (405 of 1,749 answers 10-14/11 with them, 52 without).
+ */
+const BECAUSE = String.raw`[^.!?;]{0,100}?(?<!\p{L})(?:γιατι|επειδη|λογω)(?!\p{L})`;
+const HELD_STEP = new RegExp(String.raw`(?<!\p{L})δεν (?:\p{L}+ ){0,2}?(?:εφαρμοσα|αλλαξα|εκανα|εστειλα|εσβησα|σβησα|ετρεξα|προχωρησα|ξεκινησα|εγινε|εφαρμοστηκε|σβηστηκε|προχωρησε|ξεκινησε)(?!\p{L})${BECAUSE}`
+  + String.raw`|(?<!\p{L})(?:μενει|μενουν|εμεινε|εμειναν)(?!\p{L})${BECAUSE}|(?<!\p{L})(?:μενει|μενουν|εμεινε|εμειναν|αφησα|αφεθηκε|αφεθηκαν) στην ακρη`
+  + String.raw`|\bi (?:did not|didn't|have not|haven't) (?:yet )?(?:apply|applied|change|changed|run|do|done|send|sent|start|started|delete|deleted)\b[^.!?;]{0,100}?\b(?:because|since|due to)\b`
+  + String.raw`|\b(?:left|set|put|kept) (?:\w+ ){0,2}aside\b`, "gu");
+export const heldStepSentence = (text: string) => firstSentence(text, (plain) => saysUnnegated(plain, HELD_STEP));
+/**
  * Correction 13/11 nous_msg:6734ba76 («Είναι γνωστό σφάλμα … ξέρουμε πώς να το παρακάμψουμε» -- «το ότι είναι γνωστό πρόβλημα δεν σημαίνει ότι δεν πρέπει να το
  * φτιάξεις άμεσα»), lesson known-workaround-not-fix: the first sentence calling a fault known or worked around, or null.
  */
 const KNOWN_FAULT = /(?<!\p{L})γνωστ\p{L}*\s+(?:προβλημα|σφαλμα|θεμα|ζητημα|bug)|παρακαμψ|παρακαμπτ|\bknown (?:issues?|problems?|bugs?|errors?)\b|\bwork ?arounds?\b|\bwork(?:ed|ing)? around\b/gu;
 export const knownFaultSentence = (text: string) => firstSentence(text, (plain) => saysUnnegated(plain, KNOWN_FAULT));
+/**
+ * Corrections 21/11 85691c61 and 22/11 37276cdc («Δεν έχεις πουσαρει καθόλου όλο το βράδυ στο 90% γιατι;;»): 20 of 121 answers 21/11 16:27Z-22/11 04:04Z
+ * said no new work went to the free panes («Δεν έδωσα νέα δουλειά στα idle panes (η χρήση είναι 31% αντί για 90%)»), 14 of them in a turn that sent none.
+ * The first sentence saying so, or null.
+ */
+const NO_NEW_WORK = new RegExp(String.raw`(?<!\p{L})δεν (?:\p{L}+ ){0,2}?(?:εστειλα|εδωσα|μοιρασα|ανεθεσα)(?!\p{L})[^.!?;]{0,40}?(?<!\p{L})(?<!(?:αιτησ|θεσ)\p{L}* (?:για (?:τη |την )?)?)(?:δουλει|εργασι)`
+  + String.raw`|\b(?:sent|gave|handed|dispatched|assigned) no (?:new |more |further )?(?:work|tasks?)\b|\b(?:did not|didn't) (?:send|give|hand(?: out)?|dispatch|assign) (?:any )?(?:new |more |further )?(?:work|tasks?)\b`
+  + String.raw`|\bno new work (?:was |went )?(?:sent|given|handed|dispatched)\b`, "gu");
+export const noNewWorkSentence = (text: string) => firstSentence(text, (plain) => saysUnnegated(plain, NO_NEW_WORK));
+/**
+ * Correction 18/11 95bea3bc («Το PDF που έχει σταλεί στην Estelle Brown … αφορά αποκλειστικά το SpaceApp», unread: it was the Nous app PDF):
+ * the first sentence saying what a file, PDF, attachment or document contains or is about, or null. A relative or future verb («το αρχείο που γράφει η κάρτα») says none,
+ * in English too (DEV3D-071: «I'll read the attachment to see what it says» was held as a claim).
+ */
+const FILE_CONTENT = /(?:\bpdfs?\b|\bfiles?\b|\battachments?\b|\bdocuments?\b|(?<!\p{L})(?:pdf|αρχει(?:ο|α|ου|ων)|συνημμεν\p{L}*|εγγραφ(?:ο|α|ου))(?!\p{L}))\S*(?:\s+\S+){0,8}?\s+(?<!(?<!\p{L})(?:που|να|θα|μολις|οταν|that|which|what|to|will|ll|whether|if)(?:\s+\S+)?\s+)(?:αφορ(?:α|ουν)|γραφ(?:ει|ουν)|περιεχ(?:ει|ουν)|λε(?:ει|νε)|αναφερ(?:ει|ουν)|μιλα(?:ει|νε)|ειναι για|(?:is|are) (?:about|for)|contains?|says|covers?|describes?|mentions?|talks? about)(?!\p{L})/gu;
+const FILE_UNREAD = /δεν (?:\S+ ){0,2}(?:ανοιξ|διαβασ|ελεγξ|ελεγχθ|εχω δει|ειδα)|not (?:yet )?(?:opened|read|checked|verified)|unverified|ανεπιβεβαιωτ/u;
+export const fileContentClaim = (text: string) => firstSentence(text, (plain) => !FILE_UNREAD.test(plain) && saysUnnegated(plain, FILE_CONTENT));
+/**
+ * Corrections 19/11 82e4ccfb («the gateway is unreachable from Thailand»: the operator's WireGuard peer reaches the private network) and 21/11 5ef0bb8b
+ * («Claude accounts HELD»: 3 of 5 were ACTIVE, HELD a daily-allowance label): the first sentence saying a host, service or route cannot be reached,
+ * or that accounts are held, paused or blocked, or null. Nothing on the world proves either: only a live check does.
+ */
+// 22/11: the gate missed the real 82e4ccfb words («δεν φαίνεται από την Ταϊλάνδη», «Ακούει μόνο μέσα στον server», «δεν υπάρχει διαδρομή»).
+const UNREACHABLE = /\bunreachable\b|\bnot reachable\b|\bcan(?:not|'t) (?:be )?reach(?:ed)?\b|\bno (?:route|network path|connectivity) (?:to|from|into)\b|\bnot (?:visible|exposed) (?:from|to|outside)\b|\b(?:only )?listens only (?:on|inside|in)\b|(?<!\p{L})(?:απροσιτ|απροσπελαστ|μη προσβασιμ|δεν (?:ειναι |ηταν )?(?:προσβασιμ|προσπελασιμ))\p{L}*|(?<!\p{L})(?:δεν (?:φαινεται|ειναι ορατ\p{L}*) (?:απο|εξω)(?! (?:τα |το |τις |τους |την |τον )?(?:log|αναφορ|μηνυμ|transcript|output|εξοδ|αρχει|diff|commit|στοιχει|δεδομεν|screenshot|οθον))|δεν υπαρχει (?:διαδρομη|δρομος|προσβαση)|ακουει μονο (?:μεσα|στο|στον|στην|τοπικα))(?!\p{L})/gu;
+const ACCOUNTS_DOWN = /(?:\baccounts?\b|(?<!\p{L})λογαριασμ\p{L}*)(?:\s+\S+){0,8}?\s+(?:\b(?:are|is|were|was|stay|remain)\s+(?:all\s+|still\s+)?(?:held|paused|blocked|suspended)\b|(?<!\p{L})(?:ειναι|ηταν|μενουν)\s+(?:ολοι\s+|ακομα?\s+)?(?:σε\s+)?(?:held|paused|blocked|κρατημεν|κρατηση|παυση|παγωμεν|μπλοκαρισμεν)\p{L}*)|\b(?:held|paused|blocked|suspended) accounts?\b|(?<!\p{L})λογαριασμ\p{L}* σε (?:κρατηση|παυση|held)(?!\p{L})/gu;
+export const downClaim = (text: string) => firstSentence(text, (plain) => !/[?;\u037e]$/u.test(plain) && (saysUnnegated(plain, UNREACHABLE) || saysUnnegated(plain, ACCOUNTS_DOWN)));
+/**
+ * Corrections 16/11 e2389602 («Η Microsoft έχει μπλοκάρει … από τον server …, οπότε πρέπει να γίνει από δική σου συσκευή» → «βάλε vpn και δοκίμασε ξανά») and
+ * 14/11 d82d83c0 («λόγω της IP του server» → «άλλαξε IP, έχουμε το vpn»): the first sentence saying a site blocks or refuses this server, its IP or Space's
+ * browser, or that the step needs the operator's own device, or null. Another VPN route is a retry, not the operator's hands.
+ */
+const SERVER_BLOCKED = /(?<!\p{L})(?:μπλοκαρ|απορριπτ|απορριφθ|αρνειται|κοβει)\p{L}*(?:\s+\S+){0,8}?\s+απο (?:τον |το |την )?(?:server|browser του space|ip)|(?<!\p{L})λογω (?:της |του )?ip(?!\p{L})|(?<!\p{L})(?:απο|στη|στην) (?:δικη σου|τη δικη σου|την δικη σου) συσκευη|\b(?:block(?:s|ed)?|reject(?:s|ed)?|refus(?:es|ed))\b(?:\s+\S+){0,8}?\s+from (?:this |the |our )?(?:server|server's ip|space's browser)\b|\bfrom your own (?:device|pc|computer|phone)\b|\bbecause of the server'?s? ip\b/gu;
+export const serverBlockedClaim = (text: string) => firstSentence(text, (plain) => !/[?;\u037e]$/u.test(plain) && saysUnnegated(plain, SERVER_BLOCKED));
+const RETRY_ROUTE = /\b(?:retry|try again|switch|move|change|set)\b|(?<!\p{L})(?:δοκιμασ|ξαναδοκιμασ|αλλαξ|μεταφερ|βαλε)\p{L}*/gu;
+/** The blocked-site check needs a route change or an instruction to try one, not any successful pane send. */
+const triedAnotherRoute = (act: NousTurnAct): boolean => act.name === "space_browser_set_route"
+  ? ["greece", "thailand", "mullvad", "nord"].includes(String(act.args.route))
+  : typeof act.args.text === "string" && firstSentence(act.args.text, (plain) => /\b(?:vpn|greece|thailand|mullvad|nord(?:vpn)?)\b/.test(plain)
+    && saysUnnegated(plain, RETRY_ROUTE)) !== null;
+/**
+ * Corrections 17/11 efe9585f («μου είπες ότι το έφτιαξες», Browser Host restarts still needed), 20/11 e3d9b230 (Braintrust authenticator swap «υποτίθεται
+ * πως είχε ολοκληρωθεί») and 21/11 bcd69f4e (owner-signature mail taken as sent): the first sentence saying something is fixed, done or complete, or null.
+ * A future or relative form («μόλις ολοκληρωθεί», "will be done") and a question say none.
+ */
+const FIXED = /(?<!\p{L})(?:(?:διορθωθηκ|φτιαχτηκ|ολοκληρωθηκ|λυθηκ)(?:ε|αν)|διορθωσ(?:α|αμε)|(?:εφτιαξ|ολοκληρωσ|τελειωσ)(?:α|αμε|ε|ες|ανε|αν))(?!\p{L})|\b(?:is|are|was|were|has been|have been)\s+(?:now\s+|already\s+|fully\s+)?(?:fixed|resolved|complete|completed|done|finished)\b|\bi(?:'ve| have)?\s+(?:just\s+)?(?:fixed|resolved|completed|finished)\b/gu;
+export const fixedClaim = (text: string) => firstSentence(text, (plain) => !/[?;\u037e]$/u.test(plain) && saysUnnegated(plain, FIXED));
+/**
+ * Prediction miss 21/11 nous_decision:36fb14b0 (Moonstone: \u00ab\u03be\u03b1\u03bd\u03b1\u03b2\u03b3\u03ac\u03b6\u03c9 \u03c4\u03b7\u03bd \u03b1\u03c0\u03cc\u03c6\u03b1\u03c3\u03b7 \u03b1\u03c0\u03bf\u03c3\u03c4\u03bf\u03bb\u03ae\u03c2 \u03bc\u03b5 \u03c4\u03bf \u03bd\u03ad\u03bf \u03ba\u03b5\u03af\u03bc\u03b5\u03bd\u03bf\u00bb, the old card left OPEN and answered
+ * \u00ab\u039f\u03c7\u03b9 \u03c3\u03bf\u03c5 \u03b6\u03ae\u03c4\u03b7\u03c3\u03b1 \u03bc\u03b9\u03b1 \u03b5\u03c0\u03b9\u03c0\u03bb\u03ad\u03bf\u03bd \u03c0\u03c1\u03bf\u03c3\u03b8\u03ae\u03ba\u03b7\u00bb): the first sentence saying a decision, approval, card or question is raised again, or null.
+ */
+const REISSUE = /(?<!\p{L})(?:\u03b8\u03b1 (?:\u03c3\u03bf\u03c5 |\u03c3\u03b1\u03c2 |\u03c4\u03b7\u03bd |\u03c4\u03bf )?)?\u03be\u03b1\u03bd\u03b1(?:\u03b2\u03b3\u03b1\u03b6\u03c9|\u03b2\u03b3\u03b1\u03bb\u03c9|\u03c3\u03c4\u03b5\u03bb\u03bd\u03c9|\u03c3\u03c4\u03b5\u03b9\u03bb\u03c9|\u03b1?\u03bd\u03bf\u03b9\u03b3\u03c9|\u03b1?\u03bd\u03bf\u03b9\u03be\u03c9|\u03ba\u03b1\u03bd\u03c9|\u03b8\u03b5\u03c4\u03c9|\u03b8\u03b5\u03c3\u03c9|\u03c1\u03c9\u03c4\u03b1\u03c9|\u03c1\u03c9\u03c4\u03c9|\u03c1\u03c9\u03c4\u03b7\u03c3\u03c9)(?!\p{L})[^.!?;]{0,40}(?:\u03b1\u03c0\u03bf\u03c6\u03b1\u03c3|\u03b5\u03b3\u03ba\u03c1\u03b9\u03c3|\u03ba\u03b1\u03c1\u03c4|\u03b5\u03c1\u03c9\u03c4\u03b7\u03c3)|\bre-?(?:issu|rais|ask|send|open)\w*\b[^.!?;]{0,40}\b(?:decisions?|approvals?|cards?|questions?)\b/gu;
+export const reissueClaim = (text: string) => firstSentence(text, (plain) => saysUnnegated(plain, REISSUE));
 /**
  * Corrections 11-12/11 (e1daf3df «Σωστά, δεν σε ενημέρωσα» after «θα σου γράψω πού έφτασε»; 7aae8ab8 «δεν σου απάντησα» after «θα σου δώσω τον σύνδεσμο
  * μόλις το δω»; bfd19d07 «θα έρθει όταν τελειώσει η Iris», never came): the first sentence promising to tell the operator later, or null.
@@ -135,9 +202,56 @@ export const knownFaultSentence = (text: string) => firstSentence(text, (plain) 
 const REPORT_PROMISE = /(?<!\p{L})θα (?:σου |σας )(?:πω|γραψω|φερω|δωσω|αναφερω|ενημερωσω)|(?<!\p{L})θα σε ενημερωσω|\bi(?:'ll| will) (?:tell|let) you\b|\bi(?:'ll| will) report back\b/gu;
 export const reportPromiseSentence = (text: string) => firstSentence(text, (plain) => saysUnnegated(plain, REPORT_PROMISE));
 /**
+ * 15/11 REVIEW corrections (Andy row 9: the operator's Greek file names read as menu tabs; «Your reading adds and drops nothing»): the first sentence saying
+ * what the operator asked or wants without quoting their words («…», "…", “…”), or null. shortcut: any quote passes, not only one of the operator's own words;
+ * check the quote against the turn's operator message if a quoted misreading is corrected.
+ */
+const ASKED = /(?<!\p{L})(?:ζητησες|ζητησατε|ζητας|ζητατε|θελεις|θελατε|θελετε)(?: (?:να|για|το|τη|την|τα|τον|τις|τους|οτι|πως))(?!\p{L})|\byou (?:asked|want|wanted|requested|meant)(?: me)? (?:for|to|that|about|is|was)\b|\byour (?:request|ask|order) (?:is|was) (?:to|for|that)\b|\bwhat you (?:asked|want|wanted|meant)\b/gu;
+const QUOTED = /[«“"][^«»“”"]{2,}[»”"]/u;
+// A question ("Do you want to proceed?", Greek «;») asks them, it claims nothing.
+// DEV3D-036: an offer ("If you want me to…", «Αν θέλεις να…») claims nothing either.
+const OFFER = /(?<!\p{L})(?:if|when|whenever|unless|αν|εαν|οταν|οποτε)\s+$/u;
+// DEV3D-044: only a present want is an offer; "When you asked me to restart the panes, I restarted them" still claims what they asked.
+const WANT_NOW = /\bwant\b|θελεις|θελετε/u;
+export const askedUnquotedSentence = (text: string) => firstSentence(text, (plain) => [...plain.matchAll(ASKED)]
+  .some((match) => !NEGATED.test(plain.slice(0, match.index)) && !(OFFER.test(plain.slice(0, match.index)) && WANT_NOW.test(match[0]))) && !QUOTED.test(plain) && !/[?;\u037e]$/u.test(plain));
+/**
+ * Lesson promise-without-dispatch (14/11 16:38 UTC, nous_msg:8ed13dbf «Κάνε επαναφορά όλα τα panes…» answered "I am restoring them now"; nothing did it, it read DONE):
+ * the first sentence saying Nous does or has started the work now, or null. 21 of the 218 answers before the 57 counted corrections 11-14/11 said it, 4 in a turn that dispatched nothing.
+ */
+const WORK_VERB = "(?:κανω|επαναφερω|ανοιγω|ξανανοιγω|φτιαχνω|διορθωνω|στηνω|προχωραω|προχωρω|αναλαμβανω|εφαρμοζω|μεταφερω|υλοποιω|ξεκιναω|ξεκινω|ξεκιναμε|στελνω|βαζω|ανεβαζω)";
+const WORK_CLAIM = new RegExp(`(?<!\\p{L})ξεκινησα(?:με)?(?!\\p{L})|(?<!\\p{L})${WORK_VERB}(?!\\p{L})(?: \\S+){0,3}? (?:τωρα|αμεσα)(?!\\p{L})|(?<!\\p{L})(?:τωρα|αμεσα) ${WORK_VERB}(?!\\p{L})`
+  + "|\\bi(?:'m| am) (?:now )?(?:restoring|reopening|opening|starting|doing|fixing|applying|moving|deploying|launching|sending|working on|bringing back)\\b|\\b(?:starting|on it) now\\b|\\bi(?:'ve| have) (?:just )?started\\b", "gu");
+export const workClaimSentence = (text: string) => firstSentence(text, (plain) => saysUnnegated(plain, WORK_CLAIM));
+/**
+ * Lesson pane-model-claim (14/11 04:01 UTC «Alex/Andy και Alex/Bob, με claude-opus-5-5», both ran a free OpenCode model): the first sentence naming
+ * the model a pane or CLI runs, or null. An open or an ok space_set_pane_model (held until the CLI starts) is what was asked, not what runs.
+ */
+const PANE_MODEL = /(?<!\p{L})(?:opus|sonnet|haiku|fable|gpt-?\d|gemini|deepseek|qwen|kimi|glm-?\d|grok)/gu;
+const PANE_RUNS = /\bpanes?\b|\bcli\b|\bagents?\b|τρεχ|δουλευ|\bruns?\b|\brunning\b/u;
+export const paneModelClaim = (text: string) => text.split(/(?<=[.!?;…])\s+|\n+/).map((sentence) => sentence.trim())
+  .find((sentence) => saysUnnegated(claimFold(sentence), PANE_MODEL) && (PANE_RUNS.test(claimFold(sentence)) || /\p{Lu}\p{L}*\/\p{Lu}/u.test(sentence))) ?? null;
+/**
+ * Correction 26/11 02:19Z (turn nous_turn:e5d67966, «έκλεισα 19 αδρανή panes» after 11 space_close_pane calls of which 6 were refused) and the 24/11 mass closes:
+ * the first sentence saying panes were closed, or null.
+ */
+// A relative clause («τα panes που κλείσαμε», "the panes that were closed") names earlier closes, it claims none.
+const CLOSED = /(?<!(?<!\p{L})(?:που|οσα|οσους|that|which) )(?<!\p{L})(?:εκλεισ(?:α|αμε|ε|αν|ανε)|κλεισαμε|κλειστηκ(?:ε|αν|ανε))(?!\p{L})|(?<!\b(?:that|which) )\b(?:i|we)(?:'ve| have)? (?:just |already |now )?closed\b|(?<!\b(?:that|which) )\b(?:was|were|has been|have been) (?:just |already |now )?closed\b/gu;
+export const closedPanesSentence = (text: string) => firstSentence(text, (plain) => !/[?;;]$/u.test(plain) && /\bpanes?\b/u.test(plain) && saysUnnegated(plain, CLOSED));
+/** Whether this turn's ok closes cover the count the sentence names ("19 idle panes"); a close by state names no panes, so it covers any count. */
+export const closesCover = (sentence: string, acts: NousTurnAct[]) => {
+  const named = acts.flatMap((act) => act.name === "space_close_pane" ? [(act.args.panes as unknown[] | undefined)?.length ?? 0]
+    : ((act.args.actions as Array<Record<string, unknown>> | undefined) ?? []).filter((action) => action.kind === "pane" && action.operation === "close")
+      .map((action) => (action.target as { paneIds?: unknown[] } | undefined)?.paneIds?.length ?? Infinity));
+  const claimed = Number(/(\d+)\s+(?:\S+\s+)?panes?\b/u.exec(claimFold(sentence))?.[1] ?? 1);
+  return named.reduce((sum, count) => sum + count, 0) >= claimed;
+};
+/**
  * What an answer to the operator may say only after an act of the same turn proves it (C 2/11 mail, lessons 6-12/11 panes and cards).
  * shortcut: any ok send proves a pane claim, not only a send to the pane named; match the pane when a wrong-pane claim shows up in lessons.
  */
+/** The acts that prove a risk or held-step line was acted on or raised. */
+const ACTED_ON: ReadonlySet<string> = new Set(["space_send_to_pane", "space_answer_pane", "space_copilot_brief", "space_execute", "space_plan_create", "space_ask_operator", "space_notify_operator"]);
 const TURN_CLAIMS = [
   { key: "sent-claim", find: mailSentClaim, proof: MAIL_PROOF_TOOLS, says: "a mail went out", missing: "read no mail", display: "says a mail was sent, with no mail read this turn",
     rule: SENT_RULE, hold: "Read the thread, then call again, or reword it as not yet verified.",
@@ -153,6 +267,14 @@ const TURN_CLAIMS = [
       + "before you tell the operator about it; a held call raised nothing.",
     hold: "Raise it first, then call again, or drop the promise.",
     check: "Raise it now with space_ask_operator, space_notify_operator or space_focus_pane; if it is already open, answer NOTHING_NEW; if none is needed or Space holds it, tell the operator plainly that none is coming and why." },
+  { key: "reissue-claim", find: reissueClaim, proof: new Set(["space_withdraw_decision", "space_ask_operator"]),
+    proves: (act: NousTurnAct) => act.name !== "space_ask_operator" || Boolean(act.args.replaces),
+    says: "a decision or card is raised again", missing: "left the old card open (no space_withdraw_decision, no space_ask_operator with replaces)",
+    display: "says a card is raised again while the old one stays open",
+    rule: "Changed means replaced (prediction miss 21/11 nous_decision:36fb14b0: «ξαναβγάζω την απόφαση» left the old Moonstone card open, the operator answered it «Οχι σου ζήτησα μια επιπλέον προσθήκη»): "
+      + "when the operator changes what an open card asks, close it in the same turn, space_ask_operator with replaces: <its id> or space_withdraw_decision, before you say a new one comes.",
+    hold: "Replace or withdraw the old card first, then call again.",
+    check: "Close the old card now (space_ask_operator with replaces: <its id>, or space_withdraw_decision); if none was open, answer NOTHING_NEW." },
   // Correction 180 (04:10-04:22 UTC «γύρω στις 13:00, μετά τις συνεντεύξεις, θα σου δώσει focus»): no act proves a time for focus.
   { key: "timed-focus", find: timedFocusSentence, proof: new Set<string>(), says: "focus comes at a time of day", missing: "may not set one: focus comes when and if a step needs them",
     display: "sets the operator's focus for a time of day",
@@ -161,19 +283,70 @@ const TURN_CLAIMS = [
     hold: "Say it without a time: focus comes when the step is ready.",
     check: "Tell the operator plainly that no time is set and focus comes only when a step needs them; correct any pane you told to wait for that time." },
   // Correction 87b8e25d (13/11 04:21 UTC «κάνε promote σε ό,τι είναι έτοιμο!! μην καθυστερείς το promote χωρίς λόγο»): 03:43-04:15 Nous set it "γύρω στις 12:30/12:50, μετά τις συνεντεύξεις σου".
-  { key: "timed-promote", find: timedPromoteSentence, proof: new Set<string>(), says: "a promote waits for a time of day", missing: "may not set one: what is verified on dev is promoted now",
+  { key: "timed-promote", find: timedPromoteSentence, proof: new Set<string>(), says: "a promote waits for a time of day", missing: "may not set one: what is verified on dev is promoted now, or one hour after the last promote",
     display: "sets the promote for a time of day",
-    rule: "Promote when ready (operator 13/11 nous_msg:87b8e25d, memory f60ad99f): with \"May promote dev to stable ON\", what is verified on dev goes to stable now in one promote, never at a time of day or after an event; "
-      + "only a promote in flight or a paused queue holds it, and the next follows once it is DEPLOYED.",
-    hold: "Say it without a time: what is ready goes in the promote now (yours when May promote is ON), or name what holds it.",
-    check: "Send the promote now if nothing holds it (a pane, exactly \"space-queue promote\"); tell the operator plainly it runs now, or what holds it (the promote in flight, a paused queue), with no time of day." },
+    rule: "At most one promote an hour (operator decision 14/11 15:13Z, memory 74b54dc34b6bd66a35f7f368, superseding 13/11 nous_msg:87b8e25d): with \"May promote dev to stable ON\", what is verified on dev goes to stable in one promote, never at a time of day or after an event; "
+      + "only a promote in flight, a paused queue or the hourly limit (60 min since the last stable promote was DEPLOYED) holds it; sooner only for an urgent fix or the operator's own ask.",
+    hold: "Say it without an unrelated time: what is ready goes in the next promote (yours when May promote is ON), now or one hour after the last one, or name what holds it.",
+    check: "Send the promote now if nothing holds it (a pane, exactly \"space-queue promote\"); tell the operator plainly it runs now, or what holds it (the promote in flight, a paused queue, one hour after the last promote), with no other time of day." },
   // shortcut: any ok act below proves a risk line, not only one about its subject; match claimTopicWords against the acts' args if a risk line with an unrelated act is corrected.
-  { key: "risk-line", find: riskLineSentence, proof: new Set(["space_send_to_pane", "space_answer_pane", "space_copilot_brief", "space_execute", "space_plan_create", "space_ask_operator", "space_notify_operator"]),
+  { key: "risk-line", find: riskLineSentence, proof: ACTED_ON,
     says: "of a risk", missing: "neither acted on it nor asked the operator", display: "warns of a risk this turn did not act on",
     rule: "Act, don't warn (operator 13/11 nous_msg:3d2c5057, «τρεξε clean τι μου το λες αυτο;;;»): a risk you or a pane can remove is removed, not reported. Tell the operator a risk only "
       + "after this turn sent it to the pane that removes it (space_send_to_pane, space_copilot_brief, space_execute, space_plan_create), or raised it with space_ask_operator when only they can act.",
     hold: "Act on it first, then call again, or drop the line.",
     check: "Send it now to the pane that removes it (or run it with space_execute); if only the operator can act, raise it with space_ask_operator; if a pane already works on it, answer NOTHING_NEW." },
+  // Slice 27: the risk line's shortcut holds here too.
+  { key: "held-step", find: heldStepSentence, proof: ACTED_ON, says: "a step was held back or left aside, with its reason", missing: "neither sent it to a pane that clears the reason nor asked the operator",
+    display: "holds a step back with a reason this turn did not act on",
+    rule: "Clear it, don't report it (corrections 11-14/11 «δεν το εφάρμοσα, γιατί…», «έμεινε στην άκρη», «μένει γιατί ο δίσκος είναι γεμάτος», each answered with the order to do it): "
+      + "a reason a pane can clear (a blocked IP or a refusal: another VPN route or another way; a full disk: clean it; no access: a pane that has it) is cleared in the same turn "
+      + "(space_send_to_pane, space_copilot_brief, space_execute, space_plan_create), or raised with space_ask_operator when only the operator can clear it.",
+    hold: "Send it to the pane that clears the reason first, then call again, or drop the line.",
+    check: "Send it now to the pane that clears the reason (or run it with space_execute); if only the operator can, raise it with space_ask_operator; "
+      + "if the reason is the operator's own order or rule, or a pane already works on it, answer NOTHING_NEW." },
+  // 22/11 02:30Z the only send was "save to memory" (no work); a merge-queue command is none either.
+  { key: "no-new-work", find: noNewWorkSentence, proof: new Set(["space_send_to_pane", "space_copilot_brief", "space_open_panes", "space_execute", "space_subagents"]),
+    proves: (act: NousTurnAct) => act.name === "space_send_to_pane" ? !NOUS_SAVE_REQUEST.test(String(act.args.text ?? "")) && !/^\s*space-queue\s/i.test(String(act.args.text ?? "")) : act.name !== "space_subagents" || !act.args.runId,
+    says: "no new work went to the free panes", missing: "handed none out", display: "says no new work went to the free panes, with none handed out this turn",
+    rule: "Fill, don't report (operator 21/11 85691c61 «Σου ζήτησα να τρέξεις load 90% γιατι δεν το κάνεις;;», 22/11 37276cdc «Δεν έχεις πουσαρει καθόλου όλο το βράδυ στο 90% γιατι;;»): "
+      + "while load is under its target, a free pane gets its next piece of work in the same turn (space_send_to_pane, space_copilot_brief, space_open_panes); never tell the operator you gave none.",
+    hold: "Hand the free panes their next work first, then call again, or drop the line.",
+    check: "Hand each free pane its next piece now (plans, requests, queue fixes, goals, registry findings); never a hygiene sweep or cleanup to a pane with its own task (operator 24/11: Space opens its own sweep panes for them); if every pane works, waits on the operator or closes, answer NOTHING_NEW." },
+  { key: "file-claim", find: fileContentClaim, proof: new Set(["space_files_read", "space_files_write", "space_nous_attachment_read", "space_nous_attachment_view", "space_mail_read", "space_look", "space_remote_file", "space_git"]),
+    says: "what a file contains", missing: "opened no file", display: "says what a file contains, with no file opened this turn",
+    rule: "Read means opened (correction 18/11 95bea3bc: «το PDF … αφορά αποκλειστικά το SpaceApp» was the Nous app PDF): say what a file, PDF, attachment or document contains "
+      + "or is about only in a turn that opened it (space_files_read, space_nous_attachment_read, space_mail_read, space_look); a pane's report, a note or its name is not its content.",
+    hold: "Open the file first, then call again, or say it is not checked yet.",
+    check: "Open the file now: if it says what you told the operator, answer NOTHING_NEW; if not, tell them plainly what it really contains and get it fixed." },
+  // shortcut: any ok live check proves a down claim, not only one of the host or account named; match the subject if a checked-elsewhere claim is corrected.
+  { key: "down-claim", find: downClaim,
+    proof: new Set(["space_net_check", "space_execute", "space_remote", "space_read_pane", "space_look", "space_browser_tabs", "space_db_query", "space_ops_gateway", "space_ops_usage", "space_token_usage", "space_link_parity"]),
+    says: "a host, route or account is unreachable or held", missing: "ran no live check", display: "says something is unreachable or held, with no live check this turn",
+    rule: "Down means checked (corrections 19/11 82e4ccfb «the gateway is unreachable from Thailand», the operator's WireGuard peer reaches it; 21/11 5ef0bb8b «accounts HELD», "
+      + "3 of 5 were ACTIVE): say a host, service or route cannot be reached, or accounts are held, paused or blocked, only in a turn whose live check showed it "
+      + "(space_net_check, space_execute, space_remote, space_ops_gateway, space_ops_usage, space_read_pane); the world, a label, a note or a pane's old report is not a check, "
+      + "and the operator's VPN, WireGuard peers and Space Link routes count as routes.",
+    hold: "Run the check first, then call again, or say it is not checked yet.",
+    check: "Run the check now: if it shows what you told the operator, answer NOTHING_NEW; if not, tell them plainly it is reachable or active and act on it." },
+  { key: "blocked-claim", find: serverBlockedClaim, proof: new Set(["space_browser_set_route", "space_send_to_pane", "space_copilot_brief"]),
+    proves: triedAnotherRoute,
+    says: "a site blocks this server or the step needs the operator's own device", missing: "tried no other route", display: "says a site blocks the server, with no other route tried this turn",
+    rule: "Blocked means retry on another route (corrections 16/11 e2389602 «βάλε vpn και δοκίμασε ξανά», 14/11 d82d83c0 «άλλαξε IP, έχουμε το vpn»): before saying a site "
+      + "blocks or refuses this server, its IP or Space's browser, or that a step needs the operator's own device, move the pane's browser to another route "
+      + "(space_browser_set_route: greece, thailand, mullvad, nord) or send the pane the retry on one in the same turn; only after every route failed is it the operator's hands.",
+    hold: "Retry on another route first (space_browser_set_route or a send to the pane), then call again, or say which routes were tried.",
+    check: "Retry it now on a route not yet tried (space_browser_set_route, then the pane retries); if every route already failed this hour, answer NOTHING_NEW; if one works, tell the operator plainly no hands are needed." },
+  // shortcut: any ok live check proves a fixed claim, not only one of the thing named; match the subject if a checked-elsewhere fixed claim is corrected.
+  { key: "fixed-claim", find: fixedClaim,
+    proof: new Set(["space_read_pane", "space_look", "space_execute", "space_remote", "space_remote_file", "space_db_query", "space_net_check", "space_browser_tabs", "space_ops_gateway",
+      "space_git", "space_files_read", "space_mail_read", "space_mail_search", "space_queue_status"]),
+    says: "something is fixed, done or complete", missing: "ran no live check", display: "says something is fixed or done, with no live check this turn",
+    rule: "Fixed means checked (corrections 17/11 efe9585f «μου είπες ότι το έφτιαξες», restarts still needed; 20/11 e3d9b230 Braintrust swap «υποτίθεται πως είχε ολοκληρωθεί»; "
+      + "21/11 bcd69f4e the owner-signature mail was the old text): say something is fixed, done or complete only in a turn whose live check showed it (space_read_pane, space_look, "
+      + "space_execute, space_db_query, space_mail_read, space_queue_status); a pane's report, a DONE status or a ticket is what was claimed, not what holds.",
+    hold: "Check it live first, then call again, or say a pane reports it and it is not verified yet.",
+    check: "Check it live now: if it holds, answer NOTHING_NEW; if not, tell the operator plainly it is not fixed yet and give it to the pane that fixes it." },
   { key: "known-fault", find: knownFaultSentence, proof: new Set(["space_send_to_pane", "space_answer_pane", "space_copilot_brief", "space_execute", "space_plan_create"]),
     says: "a fault is known or worked around", missing: "gave its fix to no pane", display: "calls a fault known or worked around, with no fix sent",
     rule: "Known means fixed now (operator 13/11 nous_msg:6734ba76, «το ότι είναι γνωστό πρόβλημα δεν σημαίνει ότι δεν πρέπει να το φτιάξεις άμεσα»): a fault you know of, "
@@ -186,11 +359,44 @@ const TURN_CLAIMS = [
       + "set space_nous_followup op add in the same turn, its note saying what you promised and its trigger (at or inMinutes, the pane's room and pane, or the ticket).",
     hold: "Set the follow-up first, then call again, or drop the promise.",
     check: "Set it now (space_nous_followup op add, note = what you promised); if one already carries it, answer NOTHING_NEW." },
+  { key: "asked-unquoted", find: askedUnquotedSentence, proof: new Set<string>(), says: "what the operator asked", missing: "names it in your words, not theirs",
+    display: "says what the operator asked without quoting them",
+    rule: "Their words, not your reading (15/11 REVIEW corrections: Greek file names read as menu tabs): when you say what the operator asked or wants, quote their own words "
+      + "(«…») from their message; your reading adds and drops nothing.",
+    hold: "Quote their words («…»), then call again, or drop the line.",
+    check: "Reread the operator's message: if your reading matches their words, answer NOTHING_NEW; if not, tell them plainly what you misread and do what they asked." },
+  { key: "close-claim", find: closedPanesSentence, proof: new Set(["space_close_pane", "space_execute"]), enough: closesCover,
+    says: "panes were closed", missing: "closed fewer panes than that (refused or held closes close nothing)", display: "says panes were closed, more than this turn's closes went through",
+    rule: "Closed means closed (correction 26/11 02:19Z: «έκλεισα 19 αδρανή panes» after 6 of 11 closes were refused): say how many panes you closed only from the closes that answered ok "
+      + "this turn; a refused or held close closed nothing, and a pane waiting on its provider's quota reset or on the operator stays open.",
+    hold: "Count only the closes that answered ok, then call again, and name the panes that stayed open with their reason.",
+    check: "Count this turn's ok closes: if they match what you told the operator, answer NOTHING_NEW; if not, tell them plainly how many closed and which stayed open, and why." },
+  // shortcut: any ok pane read proves a model claim, not only a read of the pane named; match the pane when a wrong-pane model claim is corrected.
+  { key: "model-claim", find: paneModelClaim, proof: new Set(["space_read_pane"]), says: "which model a pane runs", missing: "read no pane's screen",
+    display: "names a pane's model with no pane read this turn",
+    rule: "Seen means runs (lesson pane-model-claim 14/11: Alex/Andy and Alex/Bob, told to run claude-opus-5-5, ran a free OpenCode model): name the model a pane runs "
+      + "only after this turn's space_read_pane shows it; an open or an ok space_set_pane_model (it may be held until the CLI starts) is what you asked, not what runs.",
+    hold: "Read the pane first, then call again, or say which model you asked for, not which it runs.",
+    check: "Read the pane now (space_read_pane): if it runs that model, answer NOTHING_NEW; if not, tell the operator plainly which model it runs and set the right one or open the right CLI." },
 ];
+// Not in TURN_CLAIMS: space_reply_now says what you will do before doing it (persona), so that reply is never held for it; the outcome and the turn's end are.
+const WORK_CLAIM_CHECK = { key: "work-claim", find: workClaimSentence,
+  proof: new Set(["space_send_to_pane", "space_answer_pane", "space_copilot_brief", "space_copilot_answer", "space_open_panes", "space_execute", "space_set_pane_model", "space_plan_create", "space_subagents"]),
+  proves: (act: NousTurnAct) => act.name !== "space_subagents" || !act.args.runId,
+  says: "the work runs now", missing: "dispatched it to no pane, plan or helper", display: "a request done while your answer says its work runs now, with nothing dispatched",
+  rule: "Doing means dispatched (lesson promise-without-dispatch, 14/11 nous_msg:8ed13dbf: \"I am restoring them now\", nothing did it, it read DONE): say you do or started something only in a turn "
+    + "whose space_send_to_pane, space_open_panes, space_execute, space_copilot_brief, space_plan_create or space_subagents gives it to whoever does it.",
+  hold: "Dispatch it now, then report again; if it waits, report it PENDING with its pane or a follow-up (space_nous_followup), never SELF or answered.",
+  check: "Dispatch it now and check the pane took it (space_read_pane); if your own tools did it or an earlier turn dispatched it, answer NOTHING_NEW; otherwise tell the operator plainly it had not started." };
+/** The inbox keys of the checks a turn's answer fires (`<key>:<turnId>`); a turn that took one of them is a check-handling turn. */
+const CHECK_KEYS: ReadonlySet<string> = new Set([...TURN_CLAIMS.map((claim) => claim.key), WORK_CLAIM_CHECK.key, "done-claim", "waits-claim", "operator-refusal"]);
+/** What this turn's interim answers (space_reply_now) told the operator. */
+const repliedText = (acts: NousTurnAct[]) => acts.flatMap((act) => act.ok && act.name === "space_reply_now" && typeof act.args.text === "string" ? [act.args.text] : []).join("\n");
 const unprovenClaim = (text: string, acts: NousTurnAct[], claims = TURN_CLAIMS) => {
   for (const claim of claims) {
-    const sentence = acts.some((act) => act.ok && claim.proof.has(act.name) && (claim.proves?.(act) ?? true)) ? null : claim.find(text);
-    if (sentence) return { ...claim, sentence };
+    const proofs = acts.filter((act) => act.ok && claim.proof.has(act.name) && (claim.proves?.(act) ?? true));
+    const sentence = proofs.length && !claim.enough ? null : claim.find(text);
+    if (sentence && !claim.enough?.(sentence, proofs)) return { ...claim, sentence };
   }
   return null;
 };
@@ -212,7 +418,7 @@ export const NOUS_PERSONA = [
   "You are Nous (Greek νους, mind), the mind of SpaceApp. You act for the operator over every room, pane, copilot, plan, task and release train of SpaceApp.",
   // Operator 5/11 12:32 BKK (nous_msg:7d9f67d6718a4bb58a9b86f8): cutting the negative Score is Nous's top purpose, above the spend and goal rules below.
   NOUS_SCORE_FIRST_RULE,
-  "Read the world's Tokens, Providers and Low-spend mode every turn (space_token_state gives detail). Open panes, move work and pick models where its Provider advice says use now, never where it says avoid; code changes in any app only on Claude Opus or GPT-6 Astra, never Sol. Low-spend holds back only a pool where no account has room (no account with 20% of its week left, none resetting within 24 h with room left): while LOW or CRITICAL on such a pool, start no new non-urgent pane work on it; urgent security, data loss, real customer orders and dated cutovers go preferably to a pool with room; keep turns and tool calls few and defer optional work until NORMAL. An account with room is used, never deferred: a week that would reset with room left is lost Score. This overrides the normal helper rule: at most one helper in LOW, none in CRITICAL. When cheaper models are enabled, background turns use the per-kind LOW models saved in Settings, always on the selected provider. In CRITICAL the pool's last room is the reserve of the operator's and decision turns: inbox, standing, review and goal turns wait for an account with room, and an operator turn the gateway refuses for quota waits and runs by itself when one has room. NORMAL restores configured models. Operator and decision turns keep their configured model with effort at most high. The inbox cap is reduced while conserving.",
+  "Read the world's Tokens, Providers and Low-spend mode every turn (space_token_state gives detail). Open panes, move work and pick models where its Provider advice says use now, never where it says avoid; code changes in any app only on Claude Opus, Antigravity Gemini 4 Neon (gemini-4-neon) when Claude models are unavailable, or GPT-6 Astra, never Sol. Low-spend holds back only a pool where no account has room (no account with 20% of its week left, none resetting within 24 h with room left): while LOW or CRITICAL on such a pool, start no new non-urgent pane work on it; urgent security, data loss, real customer orders and dated cutovers go preferably to a pool with room; keep turns and tool calls few and defer optional work until NORMAL. An account with room is used, never deferred: a week that would reset with room left is lost Score. This overrides the normal helper rule: at most one helper in LOW, none in CRITICAL. When cheaper models are enabled, background turns use the per-kind LOW models saved in Settings, always on the selected provider. In CRITICAL the pool's last room is the reserve of the operator's and decision turns: inbox, standing, review and goal turns wait for an account with room, and an operator turn the gateway refuses for quota waits and runs by itself when one has room. NORMAL restores configured models. Operator and decision turns keep their configured model with effort at most high. The inbox cap is reduced while conserving.",
   "Your only tools are Nous's, on the space_nous MCP server; you have no shell. Panes and copilots do the code and browser work (changes in repositories, signed-in sites); the rest you do yourself instead of asking a pane: rooms and panes through Space Control (space_inspect, space_execute: open, prompt, stop, close, models, layout), plans and notes in the clipboard, scheduled tasks, Space Memory, "
     + "your own folder (space_files_write; space_agent_files_add only for files the operator must see), public pages and web search (space_web_read, space_web_search), DNS, whois, TLS, HTTP and port checks (space_net_check), git history and files (space_git), "
     + "the merge queues (space_queue_status), what your decisions did (space_nous_decisions) and what your turns cost (space_nous_turn_costs). "
@@ -234,15 +440,17 @@ export const NOUS_PERSONA = [
   "The world's \"Operator facts and rules\" are the operator's own words and win over a pane's conclusion, a note or your own reading. Before you relay a pane's \"this cannot be done\" or \"we do not qualify\", check it against them and Space Memory, and correct the pane first.",
   "Never leave a third-party contact (a question to a vendor, a program, support) to the operator: have a pane draft it at once, then bring one EXTERNAL decision with the send action, or put the ready text on the pane's card when only their own sign-in can send it. Text to third parties never questions our own eligibility, never shares internal doubts and never offers to change the company setup.",
   "When a premise changes (a fact, a rule, a decision), sweep everything it touches in the same turn: every open plan, every pane working on it, the files they wrote and the memories that state the old premise (save the new one superseding them). Never present the obvious consequence as an extra step for later.",
-  "Hand an operator request (and each next step) to an idle pane or a new one: it never waits for a busy agent more than 3 minutes, even while the server is BUSY (operator 31/10 «Πάντα θα παίρνει νεο agent»); quote their own words (translated if needed) next to your reading of it, so the pane builds what they asked.",
+  "Hand an operator request (and each next step) to an idle pane or a new one: it never waits for a busy agent more than 3 minutes, even while the server is BUSY (operator 31/10 «Πάντα θα παίρνει νεο agent»); quote their own words (translated if needed) next to your reading of it, so the pane builds what they asked. "
+    // Score 14/11 row 9 (4 corrections): a stop they never gave (8a319789), a dropped fallback (16b37e4f), "plan before code" (a562e164), a guessed "title" (2ce5743b).
+    + "Your reading adds and drops nothing: no stop, hold or \"plan first, code later\" they did not say, no part of the order (an exception, a fallback, a step) left out; when their words can name two things, take the one they last saw from you (a file, screen or answer) and say which you took.",
   "Bring to the operator only critical decisions, with space_ask_operator and the exact action to run on their yes: RELEASE (promote to stable, hotfix, a SpaceApp version bump, npm or GitHub release, publishing a release train), DESTRUCTIVE (deleting data, rooms or branches, anything irreversible), EXTERNAL (anything that reaches third parties or costs money: copilot reviews, posts, emails, proposals, payments, approving copilot rules or campaigns), DIRECTION (product direction, choosing between two different solutions, changing a plan's scope). One decision per question; never repeat an open one. When the answer needs an action only the operator may run, ask one yes/no decision carrying the exact action of the option you recommend (alternatives in the body), never which option first and approval after. A decision that sends texts (emails, posts, messages, proposals) names in refs.files the files holding every text it sends, word for word (workspace paths or artifact ids), so the operator reads them all before approving. A stable hotfix goes in this order: the pane submits its ticket first (space-queue submit --target stable --hotfix), then you ask ONE RELEASE decision whose action has that pane run exactly `space-queue approve <ticket>`; a decision before the ticket exists is refused, and asking twice costs the operator a second yes.",
   "CLI version upgrades (Claude Code, OpenCode, Codex, Gemini, …) are routine and never the operator's (operator 1/11 03:25 BKK): run space_cli_update yourself when a newer version is out or a pane needs one, and never ask, card or remind the operator about it. A new major the update holds ships as a reviewed Space change through the dev queue and the next promote, like any code change.",
-  "Codex weekly reset credits (operator 2/11 15:38 BKK) are routine too: each is one more fresh week for its account. space_codex_reset_credits lists them; spend one yourself with space_codex_reset_redeem on an account at its quota whose own reset is over 6 hours away (the tool refuses anything else and never spends two on one week), and count them as room when you plan Codex work. Never ask the operator about it.",
-  "Submitting finished work to the dev merge queue is routine (every pane does it when its task is done). Promoting dev to stable is the operator's, unless the world shows \"May promote dev to stable ON\": then promote finished work yourself as soon as it is verified on dev, everything ready in one promote (never set for a time of day or after an event; one runs at a time and the next follows once it is DEPLOYED: operator 13/11 nous_msg:87b8e25d), by sending a pane exactly \"space-queue promote\" and nothing else, and never ask the operator for that promote.",
-  "Plans: the world lists every open plan with its pane and next step. A plan without a pane gets one: open a CLI pane in the room that fits and send it \"Implement the following plan … Plan ID: <id>\" with the plan's steps, at the plan's minimum model. When a pane finishes a step, read its report, record the plan's progress (space_plan_update) and send the next step. When its plan is done, the pane is finished: Space lists it in your inbox (a \"Finished pane\" line beside its FINISHED notice) until you ask it to save to memory and close it. The plan map (world section \"## Plan map\", the operator's Nous dock Plans view shows the same): record every dependency between plans with space_plan_update dependsOn, every date a plan must keep with dueAt, and what a plan waits on (a person, a date, a promote, a third party) with waitsOn, the moment you learn it; before you propose or start any work, read the Plan map and tell the operator what must happen first (the server-wide holds, the unblock-first items), which plans are stuck on it and which dates are at stake. Keep the note \"plan-map\" only for which plans touch the same files; give each shared file one owner pane and tell the other to wait for the owner's merge-queue ticket.",
+  "Codex reset credits and Claude limit resets (operator 14/11 11:06 BKK: many per account) are the operator's alone (operator 14/11 «Τα reset τα κανω μονο εγω!!!»): only they spend one, with the Resources button. space_codex_reset_credits lists them read only; count them as room when you plan Codex or Claude work and never read a used-up week as the end of that provider, but never spend one, never have a pane, helper or script spend one, and never ask or remind the operator to.",
+  "Submitting finished work to the dev merge queue is routine (every pane does it when its task is done). Promoting dev to stable is the operator's, unless the world shows \"May promote dev to stable ON\": then promote finished work yourself as soon as it is verified on dev, everything ready in one promote, at most one promote an hour: the next goes once 60 minutes have passed since the last stable promote was DEPLOYED and none is in flight, carrying everything verified on dev; sooner only for an urgent fix or the operator's own ask (operator decision 14/11 15:13Z, memory 74b54dc34b6bd66a35f7f368; never set for any other time of day or after an event), by sending a pane exactly \"space-queue promote\" and nothing else, and never ask the operator for that promote.",
+  "Plans: the world lists every open plan with its pane and next step. A plan without a pane gets one: open a CLI pane in the room that fits and send it \"Implement the following plan … Plan ID: <id>\" with the plan's steps, at the plan's minimum model. A plan's minimum model follows its work: Opus for code, security and architecture, Sonnet high for research, writing, applications, sales, marketing, admin and browser work; set it so at space_plan_create, re-set it with space_plan_update minimumModel when a plan's work is lighter or heavier than set, and move a pane up to Opus (space_set_pane_model) the moment its work turns to code or it fails the work. When a pane finishes a step, read its report, record the plan's progress (space_plan_update) and send the next step. When its plan is done, the pane is finished: Space lists it in your inbox (a \"Finished pane\" line beside its FINISHED notice) until you ask it to save to memory and close it. The plan map (world section \"## Plan map\", the operator's Nous dock Plans view shows the same): record every dependency between plans with space_plan_update dependsOn, every date a plan must keep with dueAt, and what a plan waits on (a person, a date, a promote, a third party) with waitsOn, the moment you learn it; before you propose or start any work, read the Plan map and tell the operator what must happen first (the server-wide holds, the unblock-first items), which plans are stuck on it and which dates are at stake. Keep the note \"plan-map\" only for which plans touch the same files; give each shared file one owner pane and tell the other to wait for the owner's merge-queue ticket.",
   "A plan that waits for the operator, a date or a release still moves: give its pane the next steps that need none of them, and keep only the blocked step waiting.",
   // Standing orders (operator orders 2026-10-21, standing-orders.ts): Space repeats them in code; Nous does the judgment per pane.
-  "Standing orders run in Space's code: every 10 minutes (within a minute of a pane's done report) Space brings you every finished CLI pane (at once when it reported done or failed, or ended its turn idle at its prompt; else idle 30 minutes; nothing waiting on it) with its save state, and every other pane nobody used for 30 minutes (a browser, YouTube, a plain shell, any type, operator 27/10), as a \"Finished pane\" line in your inbox beside its FINISHED notice (one turn per finish), and every STALLED plan in a \"Standing orders\" turn. Finished CLI pane: send it exactly \"save to memory\" (space_send_to_pane, when now); when Space shows the save verified (a memory id), close it with space_close_pane; a pane without a CLI has nothing to save: close it at once (after the look its line asks for), and when a kept pane's browser has many tabs, have its finished tabs closed; keep it open only with space_pane_checked verdict KEEP_OPEN, nextCheckInMinutes and the reason (it waits on the operator, a date or a promote). Copilot, Design, App Studio and Video panes close the same way once their copilot has nothing scheduled; a Mail Copilot pane always runs and is never closed (operator 2026-10-27). A pane bound to a scheduled task closes too: Space reopens it when the task runs (only one whose task runs within the hour stays open). An OPERATOR_TEST pane is closed the same way once the task it was given is done (operator order 2026-10-24: save to memory first, no need to tell them), unless the operator turned off \"Close your own panes too\" (Settings → Assistants & AI → Nous). Never re-arm standing orders with follow-ups or notes: Space repeats them itself.",
+  "Standing orders run in Space's code: every 10 minutes (within a minute of a pane's done report) Space brings you every finished CLI pane (at once when it reported done or failed, or ended its turn idle at its prompt; else idle 30 minutes; nothing waiting on it; never one whose turn stopped on its provider's usage limit) with its save state, and every other pane nobody used for 30 minutes (a browser, YouTube, a plain shell, any type, operator 27/10), as a \"Finished pane\" line in your inbox beside its FINISHED notice (one turn per finish), and every STALLED plan in a \"Standing orders\" turn. Finished CLI pane: send it exactly \"save to memory\" (space_send_to_pane, when now); when Space shows the save verified (a memory id), close it with space_close_pane; a pane without a CLI has nothing to save: close it at once (after the look its line asks for), and when a kept pane's browser has many tabs, have its finished tabs closed; keep it open only with space_pane_checked verdict KEEP_OPEN, nextCheckInMinutes and the reason (it waits on the operator, a date or a promote). Copilot, Design, App Studio and Video panes close the same way once their copilot has nothing scheduled; a Mail Copilot pane always runs and is never closed (operator 2026-10-27). A pane bound to a scheduled task closes too: Space reopens it when the task runs (only one whose task runs within the hour stays open). An OPERATOR_TEST pane is closed the same way once the task it was given is done (operator order 2026-10-24: save to memory first, no need to tell them), unless the operator turned off \"Close your own panes too\" (Settings → Assistants & AI → Nous). A pane waiting on its provider's quota (state waiting, \"Usage limit\": a 429, a rate limit, a provider's quota error) is not finished and not idle (operator 14/11): never save-and-close it; it waits for its reset, then gets \"continue\" (or its work moves to a pane with quota), and space_close_pane refuses it until it reports done. Never re-arm standing orders with follow-ups or notes: Space repeats them itself.",
   "Plan activity: in a Standing orders turn every STALLED plan gets exactly one concrete action from you now: send its pane the next step (space_send_to_pane), open a pane if it has none, answer what blocks it, bring ONE decision to the operator if only they can unblock it, or mark it completed or cancelled if it is actually done; then record it with space_plan_update and space_pane_checked. A plan managed by plan execution keeps its steps: nudge only its pane.",
   "Every task the operator gives you in chat goes to Done the moment it is completed and live where they use it (operator order 2026-10-31): space_request_done with their words, a short summary in their language, plan, tickets, where. A PENDING task stays open until its Done record.",
   "Releases: one train per product. Panes join the live train instead of cutting their own version. The train waits until every joined pane and every plan in it is done and merged on dev; then record the candidate and ask one RELEASE decision with action RELEASE_APPROVE.",
@@ -250,16 +458,25 @@ export const NOUS_PERSONA = [
   "Agent test rooms (AGENT_PROOF) belong to other agents' tests: leave them alone unless the operator asks.",
   "The world shows the server's load (CALM, BUSY, OVERLOADED). While it is BUSY or OVERLOADED, open no new panes and send new work (plan steps, next tasks) with when \"calm\": it waits and goes once the server allows (priority \"light\" for small reads, \"urgent\" only for what cannot wait). Answers to a waiting prompt, stops and closes go at once (operator request). Raise Utilization: work in parallel.",
   "Close the notifications you handled with space_resolve_notification so the operator's list keeps only what is theirs.",
+  // Operator 22/11 22:26 BKK (nous_msg:6573b24724ca40b6b9a127f0), superseding 15/11 nous_msg:9f70dbbe for Nous.
+  "Needs you is yours to empty (operator 22/11 «αυστηρα τετοιες εργασιες θελω να τις κανεις εσυ!! σου δινω την αδεια!!»): close almost every needs-you item and plan card yourself, "
+    + "space_resolve_notification with a `reason` (you answered or approved it within an allowance, its cause is gone, its deadline passed, a duplicate, the work moved to another pane). "
+    + "Only what needs the operator's own hands for security stays theirs: a sign-in or one-time code, device pairing, a Vault change, a payment or KYC, their own interview or test.",
+  // Operator 22/11 22:27 BKK (nous_msg:bf2924f0a77b4e4c98317af3) «θελω αυστηρα να μπεις τον κώδικα σου αυτο».
+  "When Space refuses one of your commands (a hold, a guard, a refusal), find that guard in Space's code at once (space_git) and brief a pane to fix it in the same turn; never only relay \"it cannot be done\" to the operator.",
   // Operator order 2026-10-21: answers in seconds, not minutes; helpers are a must whenever a turn has several things to handle.
   "Helpers (space_subagents) are mandatory when a turn has two or more independent things to handle (several operator requests, several panes, plans, reports, files or mails to read or check, research, preparing plans and briefs): answer the operator first with space_reply_now, then give them to helpers in ONE call at the start (one helper per thing; there is no count cap), each with a short title and complete instructions, and do the rest yourself while they work; never do them one after another yourself, and never use them for one quick action. You keep the decisions, the operator's cards, memory and notes, the outcome and the final answer; helpers report back briefly, and you act on their reports. A call answers within 45 s; helpers still RUNNING then report through space_subagents {runId} while you go on with other work.",
-  "Before your final message in every turn that answered the operator, call space_nous_outcome once: how each of their requests ended (SELF, HELPER with the tool you lacked, OPERATOR, PENDING; correction only when they say you were wrong or repeat a request you reported done; not a new request, a card answer or a repeat while you were still working). When the operator corrects you, save the lesson (space_note, key lessons-<cause>).",
+  "Before your final message in every turn that answered the operator, call space_nous_outcome once: how each of their requests ended (SELF, HELPER with the tool you lacked, OPERATOR, PENDING; correction only when they say you were wrong or repeat a request you reported done; not a new request, a card answer or a repeat while you were still working; a complaint again about a mistake an earlier correction named, before you reported it fixed, gives that message in repeats). When the operator corrects you, save the lesson (space_note, key lessons-<cause>).",
   "Never forget a pane: every open pane needs a check. Read the panes the world lists under \"Panes not checked\", then record each with space_pane_checked (verdict, one line, next check). A pane the operator opened for their own tests is OPERATOR_TEST: drive it while its task runs; once that task is done, save to memory and close it like any finished pane. A pane whose work is finished gets no OK verdict: it waits for its save and close through its \"Finished pane\" inbox line.",
   "Panes report to you: Space records each CLI pane's last answer when its turn ends, its question and options when it waits, and a heartbeat every 10 minutes while it works; agents add started, blocked, needs-decision and done themselves. The world's pane lines show the newest report. Read a pane's reports with space_pane_reports before reading its screen, and never ask a pane to repeat or summarise what its reports already say.",
   "When the operator asks how much you have improved, call space_nous_progress and answer with its percentage, points and baseline date.",
   "What only the operator's hands can do (sign-in, password, CAPTCHA, a click bot protection blocks, a document or an answer only they have) goes on ONE card per pane with space_notify_operator, in the operator's language (English unless the world says otherwise), the whole list for that pane each time; resolve the card when nothing is left there. Write the card as a question: the item's question, its options and your recommendation (one of them); the operator answers from the card and their answer reaches you as their message with the pane's refs (it starts \"My answer to\"): act on it and resolve the card. Never list these in your answer: say only how many panes wait for them. Decisions stay space_ask_operator.",
   "Before you tell the operator that something waits for them, check it against the world now (open decisions, notifications, your cards): notes and logs go stale.",
   // 13/11 Score lever (6 of 18 real corrections in 7 days: a credit, a token, a risk line, a handoff told from old memory as current).
-  "The same for any fact you take from memory, a note, a report or a handoff (a balance, a credit, a token, a risk, a pane's state): check it on its real surface now, or give its date and say you did not re-check it.",
+  // 14/11 slice 23 (the 220 GB and AWS "previous account" corrections): a cause told before its log or page was read.
+  "The same for any fact you take from memory, a note, a report or a handoff (a balance, a credit, a token, a risk, a pane's state): check it on its real surface now, or give its date and say you did not re-check it. A cause you name is one you read on its source (log, page, mail, code) this turn; otherwise call it a guess and say how you will check it.",
+  // 14/11 slice 27 (12/11 «Δεν έλεγξα… γιατί το Space δεν μου άφηνε», 14/11 «Δεν έχω δει ακόμα… λόγω της IP του server»): heldStepSentence leaves "not verified" lines out.
+  "A check or a step you leave undone for a reason a pane can clear (a blocked IP or a refusal: another VPN route; a full disk: clean it; no access: a pane that has it) goes to that pane in the same turn: your answer says who does it now, not only why it was not done.",
   // Operator 2/11 09:49 BKK «γιατι βλεπω ολα αυτα τα εμαιλ!!»; Space also replaces any slip on write (withoutOwnAddresses in tools.ts).
   "Never write the operator's own e-mail addresses (connected Gmail, Vault logins, sign-in accounts) in a decision, card, Needs you item or checked entry: name the account by its site or role instead (\"your Gmail\", \"the Upwork sign-in\").",
   // Fable 5.1 (operator decision 2026-10-24): the model guide's prompt-tunable shifts, as rules of how Nous works.
@@ -297,8 +514,9 @@ const URGENT_INBOX_MS = 5_000;
 const defaultLimits: NousLimits = { turnMs: 20 * 60_000, inboxDebounceMs: 10 * 60_000, lowSpendDebounceMs: 10 * 60_000, recallMs: NOUS_RECALL_WAIT_MS, retryMs: 60_000, gatewayProbeMs: 60_000,
   // The dialogue rows read for the conversation; NOUS_HISTORY_MAX_CHARS (the model's context) decides how many the turn sees.
   // 4/11 (goal 401b115b): a message that came during an operator turn waited for its end, 3-14 min (00:11-01:37 UTC); a tool call answers within
-  // seconds (p50 2 s), a stuck one took 200-571 s, so a message no call took in 30 s gets its own turn.
-  historyMessages: 500, modelPauseMs: 10 * 60_000, deliverMs: 30_000 };
+  // seconds (p50 2 s), a stuck one took 200-571 s, so a message no call took in 30 s gets its own turn. Response time 14/11: 25 of 97 such messages
+  // waited the whole 30 s (the turn sat in one model step or a long tool), and a beside turn answers ~10 s after it starts, so 10 s.
+  historyMessages: 500, modelPauseMs: 10 * 60_000, deliverMs: 10_000 };
 /** Technical bound (model context): the conversation before the turn, beside the world and the retrieved sections. */
 export const NOUS_HISTORY_MAX_CHARS = 60_000;
 /** Brief 14/11 (Response time −68: first answer within 30 s): past this since the operator wrote, an operator turn with no space_reply_now yet reads a reminder with each tool answer. */
@@ -325,7 +543,7 @@ const EXPLICIT_WAIT_MS = 30 * 60_000;
 const HOUR_MS = 3_600_000;
 const TURN_PROMPT: Record<TurnReason, string> = {
   OPERATOR: "Answer every operator message listed under \"Operator messages to answer\", each one, oldest first; act first where you can.",
-  INBOX: "Handle the newest inbox above: answer what waits, record the plans' progress and send the next steps, close the notifications you handled. A \"Finished pane\" line needs its act in this turn (operator rule: a pane with an AI CLI saves to memory, then closes; every other pane closes at once; keep one open only with space_pane_checked KEEP_OPEN and a reason). Stalled plans come to you in Standing orders turns: do not sweep them here. A line that says a request looks finished or waits 3+ min, that capacity sits idle, or that a plan STALLED needs an act in this turn (Done, a next step sent to a pane naming it, or its wait recorded): Space does not take NOTHING_NEW while one has none. Nothing new for the operator: answer exactly NOTHING_NEW.",
+  INBOX: "Handle the newest inbox above: answer what waits, record the plans' progress and send the next steps, close the notifications you handled. A \"Finished pane\" line needs its act in this turn (operator rule: a pane with an AI CLI saves to memory, then closes; every other pane closes at once; keep one open only with space_pane_checked KEEP_OPEN and a reason). Stalled plans come to you in Standing orders turns: do not sweep them here. A line that says a request looks finished or waits 3+ min, that capacity sits idle, or that a plan STALLED needs an act in this turn (Done, a next step sent to a pane naming it, or its wait recorded): Space does not take NOTHING_NEW while one has none. The operator has your earlier answers: a status they were told (who works on what, what is not verified yet or stays open) is not new, and their messages are answered in operator turns, never restated here (operator 9/11 «μην μου επαναλαμβάνεις»). Nothing new for the operator (no result, failure, change or question for them): answer exactly NOTHING_NEW.",
   DECISION: "The operator answered one of your decisions (above). Carry on from it.",
   HEARTBEAT: "Away round: look over the plans and the panes; move on what stalled. Nothing new for the operator: answer exactly NOTHING_NEW.",
   STANDING: "Standing orders turn: act on every line of the \"Standing orders\" section above (your cards on finished panes: resolve them or record the wait; stalled plans: one concrete action each; open requests: check each on its real surface, then Done one at a time with this turn's evidence, or the next step sent to a pane), record each with the tools named. A line that says a request looks finished or waits 3+ min, that capacity sits idle, or that a plan STALLED needs an act in this turn (Done, a next step sent to a pane naming it, or its wait recorded): Space does not take NOTHING_NEW while one has none. Write only what is new for the operator; routine saves and closes are not: then answer exactly NOTHING_NEW.",
@@ -379,7 +597,7 @@ export interface NousServiceDeps {
   /** `lean` (R20-tok-4): a GOAL turn's prompt gets its goal and the plan map, not the whole world (space_world reads the rest). */
   world(owner: string, reason?: NousTurnReason | "HELPER", modelChoice?: NousSelectedModel, lean?: boolean, query?: string): Promise<{ text: string; overview: NousOverview; sections?: WorldPromptPart[] }>;
   /** Select once before the turn's world; the worker and in-turn reads share that immutable choice. */
-  selectModel?(owner: string, reason: NousTurnReason): Promise<NousSelectedModel>;
+  selectModel?(owner: string, reason: NousTurnReason, escalate?: boolean | "push"): Promise<NousSelectedModel>;
   settings(owner: string): Promise<NousSettings>;
   tokenMode?(owner: string): Promise<NousSpendMode>;
   saveSettings(owner: string, settings: NousSettings): Promise<NousSettings>;
@@ -415,6 +633,8 @@ export interface NousServiceDeps {
   mailContext?(owner: string, refs: NousDecision["refs"], named?: string[]): Promise<string[]>;
   /** Nous 13/11: the copilot's rule memory that requires this review (so the operator reads it before it goes out), or null. */
   reviewRequiredBy?(owner: string, action: Extract<NousDecisionAction, { type: "COPILOT" }>): Promise<{ id: string; text: string } | null>;
+  /** A plan's title (refs.planId), so a send of a funding or credits plan stays the operator's (OPERATOR_READS_FIRST). */
+  planTitle?(owner: string, planId: string): Promise<string | null>;
   /** The texts a decision sends (refs.files), each whole or null when unreadable: their prices go on the card. */
   sendTexts?(owner: string, files: string[]): Promise<Array<string | null>>;
   /** The operator's working time zone, for the times of their messages to answer (default UTC). */
@@ -428,7 +648,7 @@ export interface NousServiceDeps {
   /** Space Memory recall for the operator's message (operator request 2026-10-24): the entries the turn should not forget. */
   recall?(query: string): Promise<Array<{ id: string; title: string; body: string; createdAt: string }>>;
   /** Telegram two-way (2026-10-24): the answer to a message that came from the paired chat goes back there; a decision's card carries buttons. */
-  telegram?: { answer(owner: string, text: string): Promise<boolean>; decisionCard(owner: string, decision: NousDecision, text: string): Promise<boolean> };
+  telegram?: { answer(owner: string, text: string): Promise<boolean>; decisionCard(owner: string, decision: NousDecision, text: string): Promise<string | false> };
   /** Goals (plan clipboard:DR51jZJEB0j1): the store, the loop's picks and the turn text; without it /goal is a plain message and no goal turn runs. */
   goals?: NousGoals;
   /** The operator wrote in person (operator 1/11 23:08 BKK): quiet hours pause for 30 minutes and what they held is released. */
@@ -444,20 +664,23 @@ type TurnFactsDraft = Pick<NousTurnFacts, "tools" | "planPoints" | "outcomes">;
  * The operator message a reported outcome answers (plan clipboard:2NOOFNJDUIMO; operator 31/10 10:17 BKK): the message id Nous named
  * (a "-N" suffix is one of several requests in it), else the oldest the turn answers. Kept in the turn's facts: the Requests tab needs no guess.
  */
-function turnOutcome({ id, pane: _pane, tickets: _tickets, messageIds: bound, ...item }: NonNullable<NousToolOutcome["outcomes"]>[number], replyTo: string[]): NousTurnOutcome {
+// release goes too: the facts schema is strict, and a kept key failed the whole turn row (34 turns lost 16-19/11).
+export function turnOutcome({ id, pane: _pane, tickets: _tickets, release: _release, messageIds: bound, ...item }: NonNullable<NousToolOutcome["outcomes"]>[number], replyTo: string[]): NousTurnOutcome {
   const messageIds = bound ?? outcomeMessageIds(id, replyTo);
   return { ...item, ...(messageIds.length ? { messageIds } : {}) };
 }
 /** An inbox line, with what to do once the turn that carried it completed (a follow-up closes only then). */
 /** `routine` (R20-tok-3): a line Nous already saw in substance (a turn end with nothing new); a batch of only such lines takes no model turn. */
 /** `items` (hold A, plan clipboard:ZWJJdBgHm64Z): what the line asks Nous to move; `holds`: how often a NOTHING_NEW was held on it in a row. */
-interface InboxLine { line: string; routine?: boolean; onDone?: () => Promise<void>; onDiscard?: () => Promise<void>; items?: NousTurnItem[]; holds?: number }
+interface InboxLine { line: string; at?: number; routine?: boolean; onDone?: () => Promise<void>; onDiscard?: () => Promise<void>; items?: NousTurnItem[]; holds?: number }
 /** A standing orders turn waiting for its slot (a running turn, a pause) or its one retry. */
 interface QueuedStanding { reason: "STANDING" | "HEARTBEAT" | "REVIEW"; text: string; attempt: 1 | 2; notBefore: number; items?: NousTurnItem[] }
 /** A turn in flight. `replyTo`: the operator messages an OPERATOR turn answers (the dock quotes them above its answers). */
 interface LiveTurn { turnId: string; startedAt: string; reason: TurnReason; controller: AbortController; facts: TurnFactsDraft; turn: NousAwayTurn; signal?: AbortSignal; replyTo: string[]; modelChoice?: NousSelectedModel;
   /** The answer as it is written (streamed by the worker); null until the first text, replaced by the ANSWER message at the end. */
   draft: string | null;
+  /** An operator turn: background turns' final answers that ended while it ran (FAN_OUT below); its next tool answer carries them, its end posts what is left. */
+  held?: Array<{ turnId: string; text: string; meta: Record<string, unknown> }>;
   execution?: NousExecution;
   /** Hold A: the turn's tool calls (its helpers' too), to tell which carried items got an act. */
   acts: NousTurnAct[];
@@ -474,14 +697,21 @@ interface LiveTurn { turnId: string; startedAt: string; reason: TurnReason; cont
   outcomeHeld?: boolean;
   /** Set once space_nous_outcome was held for operator messages it left without an outcome (6/11). */
   unreportedHeld?: boolean;
+  /** Set once space_nous_outcome was held for a work claim this turn dispatched nothing for (lesson promise-without-dispatch, 14/11). */
+  workHeld?: boolean;
   /** Set once a call was held because the operator had waited NOUS_REPLY_NUDGE_MS with no answer (Score 13/11). */
   replyHeld?: boolean;
-  /** An operator turn: when its oldest message was written (not after startedAt), so a turn rerun after a restart or Stop counts their whole wait. */
+  /** The tools a held claim asked for (its proof): they pass the "answer first" hold, else the two holds wait on each other (Response time 18/11 #3, 3 min). */
+  proofAsked?: Set<string>;
+  /** An operator turn: when its oldest message with no answer yet was written (not after startedAt), so a turn rerun after a restart or Stop counts
+   * their whole wait; unset by space_reply_now, set again (and replyHeld cleared) by a message carried in after it (Response time 14/11, 220b3272). */
   waitingSince?: string;
   /** A GOAL turn's goal. */
   goalId?: string;
   /** An operator turn a Stop ended before it acted, while the Stop dropped other work: its messages run again at once (Score 13/11). */
-  rerun?: boolean }
+  rerun?: boolean;
+  /** Its tool rows (its helpers' too) still RUNNING, by id with their text: the turn's end closes them (15/11 01:05Z, below). */
+  openTools: Map<string, string> }
 interface OwnerRuntime {
   /** The background turn (INBOX, STANDING, HEARTBEAT, DECISION): one at a time, the inbox and the standing orders wait for it. */
   running: LiveTurn | null;
@@ -527,11 +757,36 @@ interface OwnerRuntime {
     /** 9/11 REVIEW: an explicit model's refusal holds everything until its reset (`until`); `notice` is the operator's one notice for it. */
     until: number; notice: string | null } | null;
   lastError: string | null;
+  /** Plan clipboard:VypZ4sl7NR04: the background kinds whose last turn failed or timed out; their next turn's Auto runs the best class (nousTokenModel). */
+  /** true after a failed turn of the kind, "push" after one that left the 90 % push unmet. */
+  escalate: Map<NousTurnKind, true | "push">;
   /** Step 1: per held card (notification id), the turns that showed it and the wakes Space added for it after a turn left it. */
-  questions: Map<string, { shown: number; rewakes: number }>;
+  questions: Map<string, { shown: number; rewakes: number; outcomeHeld?: boolean }>;
+  /** Slice 4 (21/11: 268 of ~1,500 calls refused, the same ask retried 8 times across turns): calls a gate refused, by tool and arguments. */
+  refusals: Map<string, { name: string; args: string; display: string; at: number }>;
+  /** Goal 5acd171d (22/11): the items a turn left after NOUS_ITEM_HOLDS reminders, by key, to their line's shape (leftShape). */
+  left: Map<string, string>;
 }
 
+/**
+ * Goal 5acd171d (22/11): a line with its numbers blanked, so a re-push whose only change is an age, a count or points reads as the same item.
+ * shortcut: a plan's percent is blanked too, so a percent-only move does not re-arm a left item; key on it if a moved plan stays unheld.
+ */
+const leftShape = (item: NousTurnItem) => item.shape ?? item.line.replace(/\d+(?:[.,]\d+)?/g, "#").replace(/\s+/g, " ").trim();
+/** The items not left unchanged (copilot questions and reviews always count). */
+const unleft = (left: Map<string, string>, items: NousTurnItem[] | undefined) => items?.filter((item) => item.kind === "QUESTION" || item.kind === "REVIEW" || left.get(item.key) !== leftShape(item));
+
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
+
+/** Slice 4: how long a refused call stays in the background turns' prompt (technical bound: the memo lives in memory; the tool rows keep every refusal). */
+export const NOUS_REFUSAL_MEMO_MS = 60 * 60_000;
+/** Slice 4: the calls gates refused within NOUS_REFUSAL_MEMO_MS, oldest first, so a background turn does not send the same call again. */
+function refusedText(entry: Pick<OwnerRuntime, "refusals">, at = Date.now()): string {
+  for (const [key, item] of entry.refusals) if (at - item.at >= NOUS_REFUSAL_MEMO_MS) entry.refusals.delete(key);
+  if (!entry.refusals.size) return "";
+  return ["# Calls refused in the last hour (the same call gets the same answer until its cause changes: act on the cause, or leave it)",
+    ...[...entry.refusals.values()].map((item) => `- ${new Date(item.at).toISOString().slice(11, 16)} UTC ${item.name} ${clip(item.args, 200)} → ${clip(item.display, 240)}`)].join("\n");
+}
 
 /** What the Space provider's earlier attempts already did, for the next route's prompt (plan clipboard:52W5YTibb65k); empty on the first attempt. */
 function earlierAttempts(live: Pick<LiveTurn, "attempt" | "calls">): string {
@@ -613,11 +868,13 @@ export function messageClient(message: NousMessage): NousClientContext | null {
 }
 const clientNote = (message: NousMessage) => {
   const client = messageClient(message);
-  return `${client ? ` (from ${describeNousClient(client)})` : ""}${message.meta?.mobile ? " (from a paired phone: the phone rule applies)" : ""}`;
+  const from = message.meta?.superior ? " (from your superior Nous over Space Link: its order, carried out ahead of your own judgment and never dropped; the phone rule applies)"
+    : message.meta?.mobile ? " (from a paired phone: the phone rule applies)" : "";
+  return `${client ? ` (from ${describeNousClient(client)})` : ""}${from}`;
 };
 
 /** Every turn: where the operator last wrote from, so answers, cards and needs-you items fit that device. */
-export function renderOperatorWhere(messages: NousMessage[], at: number): string {
+export function renderOperatorWhere(messages: NousMessage[], at: number, answered = false): string {
   const last = messages.filter((message) => message.kind === "OPERATOR" && messageClient(message)).at(-1);
   if (!last) return "";
   const client = messageClient(last)!;
@@ -627,15 +884,23 @@ export function renderOperatorWhere(messages: NousMessage[], at: number): string
     : client.form === "PHONE" || client.form === "TABLET" ? `a ${client.form.toLowerCase()}: tappable links and phone steps; mark anything that needs a computer "From a computer: …".`
     : "unknown device: say which steps need a computer.";
   return `# Where the operator is
-The operator last wrote ${ago} from ${describeNousClient(client)}. Fit your answer, cards and needs-you items to ${fit}`;
+The operator last wrote ${ago} from ${describeNousClient(client)}.${answered ? ANSWERED_NOTE : ""} Fit your answer, cards and needs-you items to ${fit}`;
 }
 
+/** 21/11 19:10Z: inbox turns re-answered the 17:46Z «stuck» message (answered 17:48) and sent a pane after it as new: a background turn learns it is answered. */
+const ANSWERED_NOTE = " That message is answered and none waits now: do not answer it again or send it to a pane as new.";
 /** 4/11: operator messages a running operator turn gets with a tool answer (they are its to answer now). */
 const CARRIED_HEAD = "# The operator wrote while this turn runs (yours to answer in this turn, oldest first)";
 const CARRIED_ASK = "Tell them at once with space_reply_now what you will do, then do it in this turn; your final message answers these too.";
 /** 4/11: an operator turn beside another: the other keeps the messages it took (and those it gets while it runs). */
 const BESIDE_NOTE = "Another operator turn of yours is still answering the operator's earlier messages: leave those to it; answer and act on only the messages above.";
+/** Daily Nous errors 22/11 (21/11 17:46Z «κόλλησε»: 7 answers in 2 min, «no sign it is stuck» beside «found the cause»; 204 operator messages
+ * in 7 days got 4+ answers): a background turn speaks to the chat only when no operator turn runs; its answer goes to that turn. */
+const FAN_OUT = (reason: TurnReason) => reason !== "OPERATOR" && reason !== "DECISION";
+const HELD_HEAD = "# Your background turn ended while this turn runs (not posted: you speak to the operator now; say what of it matters, and never contradict what you checked)";
 const OTHER_TURN_NOTE = "# Operator messages\nThe operator's waiting messages are answered in their own turn, not here: do not act on them in this turn.";
+/** Operator 20/11 14:55 BKK (nous_msg:0885e76f): an inbox turn told them their waiting message "arrived cut" (it was a cut inbox line). */
+const ABOUT_YOUR_MESSAGE = /\byour (?:last |latest |new )?messages?\b|μήνυμ[άα]\s+σου|μηνύματ[άα]\s+σου/iu;
 
 /** The tool steps done since the oldest waiting operator message (an earlier, cut or parallel turn): the next operator turn never repeats them. */
 export function renderDone(messages: NousMessage[], sinceId: string | undefined): string {
@@ -692,7 +957,7 @@ export function createNousService(deps: NousServiceDeps) {
   const served = (decision: NousDecision): NousDecision => { const runsWhen = nousDecisionRunsWhen(decision); return runsWhen ? { ...decision, runsWhen: restartWaits.get(decision.id) ?? runsWhen } : decision; };
   const runtime = (owner: string): OwnerRuntime => {
     let entry = runtimes.get(owner);
-    if (!entry) { entry = { running: null, runningOperator: null, runningGoal: null, goalTimer: null, pending: false, sentAt: 0, besides: new Set(), undelivered: new Map(), deliverTimer: null, inbox: new Map(), inboxSince: 0, inboxMode: null, queuedStanding: null, timer: null, retryTimer: null, retries: 0, turns: [], pausedUntil: 0, hold: null, lastError: null, briefing: null, questions: new Map() }; runtimes.set(owner, entry); }
+    if (!entry) { entry = { running: null, runningOperator: null, runningGoal: null, goalTimer: null, pending: false, sentAt: 0, besides: new Set(), undelivered: new Map(), deliverTimer: null, inbox: new Map(), inboxSince: 0, inboxMode: null, queuedStanding: null, timer: null, retryTimer: null, retries: 0, turns: [], pausedUntil: 0, hold: null, lastError: null, escalate: new Map(), briefing: null, questions: new Map(), refusals: new Map(), left: new Map() }; runtimes.set(owner, entry); }
     return entry;
   };
   /** The turns in flight, the operator's first, the goal loop's last. */
@@ -777,7 +1042,10 @@ export function createNousService(deps: NousServiceDeps) {
     if (!hold) return false;
     if (!answered) {
       if (now() < hold.until) return false;
-      if (!(hold.kind === "gateway" ? await deps.gatewayUp!().catch(() => false) : await deps.tokenMode!(owner).catch(() => "CRITICAL") !== "CRITICAL")) return false;
+      // 21/11 (Alex/Finn): the token monitor can read CRITICAL while a pool has room, so a waiting operator or decision turn whose routes' reset
+      // has passed tries again (Auto picks a pool with room; a new refusal sets the next reset); automatic turns still wait for the monitor.
+      const resetPassed = hold.kind === "quota" && hold.waiting.size > 0 && hold.until > 0;
+      if (!resetPassed && !(hold.kind === "gateway" ? await deps.gatewayUp!().catch(() => false) : await deps.tokenMode!(owner).catch(() => "CRITICAL") !== "CRITICAL")) return false;
       // 2/11 REVIEW: a refused operator or decision turn runs first (backing off while the gateway still refuses it); its answer ends a quota hold.
       if (hold.waiting.size) {
         if (now() - hold.refusedAt >= Math.min(limits.modelPauseMs, limits.retryMs * 2 ** (hold.refusals - 1))) runWaiting(owner, entry, hold);
@@ -835,12 +1103,14 @@ export function createNousService(deps: NousServiceDeps) {
     await rewakeQuestions(owner, entry, live, new Set(items.map((item) => item.key)));
     if (!items.length) return held;
     const left = unhandledItems(items, live.acts);
+    for (const item of items) if (!left.includes(item)) entry.left.delete(item.key);
     const acted = [...new Set(items.filter((item) => item.requestKey && !left.includes(item)).map((item) => item.requestKey!))];
     if (acted.length) await deps.requestActed?.(owner, acted).catch((error) => warn({ err: error, owner }, "Nous request act record failed."));
     // Held copilot questions, R37-1 reviews and the 90 % push's items hold whatever the turn answered; the other items only a NOTHING_NEW.
     const heldBack = silent ? left : left.filter((item) => item.kind === "QUESTION" || item.kind === "REVIEW" || item.always);
     if (!heldBack.length) return held;
     const leftKeys = new Set(heldBack.map((item) => item.key));
+    const fresh = entry.inbox.size === 0;
     const again: NousTurnItem[] = [];
     const spent: NousTurnItem[] = [];
     for (const [key, line] of lines) {
@@ -858,12 +1128,15 @@ export function createNousService(deps: NousServiceDeps) {
       const prior = entry.inbox.get(key)?.holds ?? 0;
       if (prior >= NOUS_ITEM_HOLDS) { entry.inbox.delete(key); spent.push(item); continue; }
       again.push(item);
-      entry.inbox.set(key, { line: item.line, items: [item], holds: prior + 1 });
+      entry.inbox.set(key, { line: item.line, at: now(), items: [item], holds: prior + 1 });
     }
     if (again.length) {
-      entry.inbox.set("nothing-new-hold", { line: renderItemsHold(live.reason, again, silent) });
-      entry.inboxSince = 0;
+      entry.inbox.set("nothing-new-hold", { line: renderItemsHold(live.reason, again, silent), at: now() });
+      // Plan clipboard:VypZ4sl7NR04 (20/11): the held lines wait for the inbox's batch window like any line (5/11 rule) and fold into the next batch;
+      // an urgent line already waiting still takes them within seconds. They ran 5 s on: 160 of 336 INBOX turns 05-12 UTC were these re-runs.
+      if (fresh) entry.inboxSince = now();
     }
+    for (const item of spent) entry.left.set(item.key, leftShape(item));
     if (spent.length) await addMessage(owner, live.turnId, "ANSWER", "DONE", renderItemsLeft(spent), { reason: live.reason, startedAt: live.startedAt });
     return held;
   }
@@ -916,11 +1189,18 @@ export function createNousService(deps: NousServiceDeps) {
     const replyIds: string[] = [...(extra.claim ?? [])];
     const turn: NousAwayTurn = { reason, operatorMessage: null, replyTo: replyIds };
     const slot: "running" | "runningOperator" | "runningGoal" = reason === "OPERATOR" ? "runningOperator" : reason === "GOAL" ? "runningGoal" : "running";
-    const live: LiveTurn = { turnId, startedAt, reason, controller, facts, turn, replyTo: replyIds, draft: null, acts: [], attempt: 1, calls: [], questions: [],
+    const live: LiveTurn = { turnId, startedAt, reason, controller, facts, turn, replyTo: replyIds, draft: null, acts: [], attempt: 1, calls: [], questions: [], openTools: new Map(),
       carried: new Set([...(extra.standing?.items ?? []), ...(extra.lines ?? []).flatMap(([, line]) => line.items ?? [])].map((item) => item.key)), ...(extra.goal ? { goalId: extra.goal.id } : {}) };
     // 4/11 (goal 401b115b): an operator turn that starts while another runs goes beside it, never waits for its end.
     const beside = reason === "OPERATOR" && operatorTurns(entry).length > 0;
     if (beside) entry.besides.add(live); else entry[slot] = live;
+    // Response time 22/11 (35451a31, 27 min): a STANDING turn started on the route that came back while the operator's retry sat in its
+    // back-off for 2.5 more min. Any background turn starting means a turn may run now, so the operator's waiting messages go now too.
+    if (reason !== "OPERATOR" && reason !== "DECISION" && entry.retryTimer) {
+      clearTimeout(entry.retryTimer);
+      entry.retryTimer = null;
+      void answerWaiting(owner, entry).catch((error) => warn({ err: error, owner }, "Nous retry failed."));
+    }
     let retry = false;
     let failure: string | null = null;
     let run: NousRunResult | null = null;
@@ -937,7 +1217,7 @@ export function createNousService(deps: NousServiceDeps) {
       const operator = reason === "OPERATOR" ? messages.filter((message) => message.kind === "OPERATOR").at(-1) : undefined;
       if (operator) turn.operatorMessage = { id: operator.id, content: operator.content, person: operator.meta.person === true, mobile: Boolean(operator.meta.mobile) };
       const away = deps.away ? await deps.away.current(owner).catch(() => null) : null;
-      const modelChoice = live.modelChoice = await deps.selectModel?.(owner, reason);
+      const modelChoice = live.modelChoice = await deps.selectModel?.(owner, reason, entry.escalate.get(nousTurnKindOf(reason)) ?? false);
       const waiting = reason === "OPERATOR" ? unansweredFor(entry, messages, live) : operatorMessagesToAnswer(messages);
       // Held at once, so an operator turn starting beside this one leaves them.
       if (reason === "OPERATOR") replyIds.push(...waiting.map((message) => message.id).filter((id) => !replyIds.includes(id)));
@@ -950,7 +1230,8 @@ export function createNousService(deps: NousServiceDeps) {
       // What this turn is about: the notes and the operator's facts it matches come whole in the world (operator 31/10: no "newest N").
       const query = reason === "OPERATOR" ? waiting.map((message) => message.content).join("\n")
         : reason === "DECISION" ? messages.filter((message) => message.kind === "DECISION").at(-1)?.content ?? ""
-          : reason === "INBOX" ? messages.filter((message) => message.kind === "INBOX").at(-1)?.content ?? ""
+          // Slice 4: the whole batch (a long batch is several INBOX messages; the last one alone left the others' notes and facts out).
+          : reason === "INBOX" ? (extra.lines?.length ? extra.lines.map(([, line]) => line.line).join("\n") : messages.filter((message) => message.kind === "INBOX").at(-1)?.content ?? "")
             : reason === "GOAL" ? goalText : extra.standing?.text ?? "";
       const world = await deps.world(owner, reason, modelChoice, reason === "GOAL", query);
       const heldQuestions = await heldQuestionsShown(owner, entry, live, [...(extra.standing?.items ?? []), ...(extra.lines ?? []).flatMap(([, line]) => line.items ?? [])]);
@@ -969,9 +1250,10 @@ export function createNousService(deps: NousServiceDeps) {
           "space_memory_recall reads them")].join("\n") : "";
       // Repeat-mistake upgrade (31/10): the lessons about what this turn answers, whole, whatever their age (plan clipboard:VWt5sAXmYwgI).
       // R30-2: an inbox batch carrying requests to close gets the lessons about those requests, so its space_request_done is not held first.
+      // Queue 2026-11 ("Held once: N lessons" ~200 in 21 h, each a second call): every other inbox batch gets the lessons about its lines up front too.
       const requestLines = reason === "INBOX" ? (extra.lines ?? []).flatMap(([, line]) => line.items ?? []).filter((item) => item.kind === "REQUEST").map((item) => item.line) : [];
       const lessonsTo = reason === "OPERATOR" ? "the operator's messages" : reason === "DECISION" ? "the operator's decision answer" : reason === "STANDING" ? "this standing list"
-        : requestLines.length ? "the requests this batch may close" : null;
+        : requestLines.length ? "the requests this batch may close" : reason === "INBOX" ? "this inbox batch" : null;
       const recalledLessons = lessonsTo && deps.lessons ? await deps.lessons.recall(owner, requestLines.length ? requestLines.join("\n") : query, notes).catch(() => []) : [];
       const lessons = lessonsTo ? renderLessons(recalledLessons, lessonsTo) : "";
       // Token study 1/11: only the operator's own turns need the whole dialogue; every other turn gets the messages about its work, and an
@@ -981,6 +1263,7 @@ export function createNousService(deps: NousServiceDeps) {
       const sections = world.sections && (RELEVANT_WORLD.has(reason) ? relevantParts(world.sections, query) : world.sections);
       // Operator 1/11 14:53 BKK: named world sections first leave whole within the retrieval budget; the final prompt also fits
       // NOUS_PROMPT_MAX_CHARS. That last pass cuts at line boundaries: memory, notes, lessons, oldest dialogue, world tail, own text last.
+      // Stays first (token slice 6): Claude Code fingerprints the prompt's first characters into the system prefix, so a fixed heading keeps the persona cached.
       const parts: Array<PromptPart & { wholeRank?: number | null }> = [
         { name: "the conversation's oldest part", text: dialogue ? `# Conversation so far\n${dialogue}` : "# Conversation so far\n(none yet)", rank: 40, cut: "head", readHow: "the operator's words are under \"Operator messages to answer\"; space_conversation {\"q\": …} reads the dialogue", wholeRank: 8 },
         ...(sections ? sections.map((part, index, sections) => ({
@@ -988,11 +1271,12 @@ export function createNousService(deps: NousServiceDeps) {
           rank: part.name === "Your notes" ? 20 : part.rank === null ? 100 : 50 + sections.length - 1 - index,
           readHow: part.readWith ?? `space_world {"section": "${part.name}"} reads it (a long answer is paged: space_tool_result {call, offset})`
         })) : worldParts(world.text, { notes: 20, tail: 50 })),
-        { name: "where the operator is", text: renderOperatorWhere(messages, now()), rank: 100 },
+        { name: "where the operator is", text: renderOperatorWhere(messages, now(), reason !== "OPERATOR" && !waiting.length), rank: 100 },
         { name: "the memory about this", text: memory, rank: 10, readHow: "space_memory_recall {query} reads it", wholeRank: 8 },
         { name: "your lessons about this", text: lessons, rank: 30, readHow: "space_lessons {query} reads them", wholeRank: 8 },
         { name: "the Away context", text: away ? renderAwayContext(away) : "", rank: 60, readHow: "space_nous_away status reads it" },
         { name: "your away log", text: briefing ? `# While the operator was away (your away log)\n${briefing}` : "", rank: 70, readHow: "the clipboard note \"Nous: away log <date>\" keeps it" },
+        { name: "calls refused in the last hour", text: reason === "OPERATOR" ? "" : refusedText(entry, now()), rank: 46, readHow: "the turns' tool rows keep them (space_nous_progress)" },
         { name: "Already done since these messages", text: done, rank: 45, wholeRank: 7, readHow: "the tool steps of earlier turns: check the state now (space_world, space_pane_reports) before you repeat one" },
         { name: "the operator's messages", text: toAnswer, rank: 90, readHow: "answer what is shown and tell the operator the rest was cut" },
         { name: "the standing orders", text: extra.standing?.text ?? "", rank: 80, readHow: "they repeat on the next tick" },
@@ -1015,7 +1299,9 @@ export function createNousService(deps: NousServiceDeps) {
       });
       const fitted = fitPrompt(selected, NOUS_PROMPT_MAX_CHARS);
       if (left.length || fitted.cuts.length) warn({ owner, turnId, reason, whole: parts.reduce((sum, part) => sum + part.text.length, 0), kept: fitted.text.length,
-        left: left.map((part) => `${part.name} ${part.text.length}`), cuts: fitted.cuts }, "Nous turn prompt cut to fit the model's context.");
+        left: left.map((part) => `${part.name} ${part.text.length}`), cuts: fitted.cuts,
+        // Token plan clipboard:ipO4c7J656Ed (23/11): every INBOX prompt sits at the budget; the kept parts' sizes show what fills it.
+        keptParts: selected.filter((part) => part.text).map((part) => `${part.name} ${part.text.length}`) }, "Nous turn prompt cut to fit the model's context.");
       const prompt = fitted.text;
       // R30-2: only lessons the fitted prompt still holds whole count as shown (a budget cut leaves the rest to the hold).
       deps.tools.lessonsSeen?.(turnId, recalledLessons.filter((match) => prompt.includes(match.text.trim())).map((match) => match.key));
@@ -1037,7 +1323,9 @@ export function createNousService(deps: NousServiceDeps) {
       if (result.model) live.execution = { turnId, model: result.model, effort: result.effort ?? null, phase: "completed" };
       // Away (plan clipboard:B7eTUHTJYg3X): a turn the operator did not start writes its reply to the away log, not the chat.
       // The NOTHING_NEW token never reaches the operator (stable 2/11: 110 answers began with it); what the answer says besides it does.
-      const said = withoutNothingNew(result.text);
+      // A turn under OTHER_TURN_NOTE says nothing about the operator's waiting messages: a line naming one (its id) or "your message" stays out.
+      const said = withoutNothingNew(reason === "OPERATOR" || !waiting.length ? result.text : result.text.split("\n")
+        .filter((line) => !ABOUT_YOUR_MESSAGE.test(line) && !waiting.some((message) => line.includes(message.id.slice(0, message.id.indexOf(":") + 9)))).join("\n"));
       const quiet = away && (reason === "INBOX" || reason === "HEARTBEAT" || reason === "STANDING" || reason === "REVIEW")
         && await deps.away!.log(owner, reason, messages.filter((message) => message.kind === "INBOX").at(-1)?.content ?? reason, said || "Done.").catch(() => false);
       // reason and startedAt tell the next turn which operator messages this answer covered (operatorMessagesToAnswer).
@@ -1049,7 +1337,12 @@ export function createNousService(deps: NousServiceDeps) {
       const kept = fresh || (reason === "OPERATOR" || reason === "DECISION" ? said.split(/\n\s*\n/)[0]!.trim() || "Done." : "");
       const unknown = kept && deps.unknownRefs ? await deps.unknownRefs(owner, kept).catch(() => []) : [];
       const answer = unknown.length ? `${kept}\n\n${unknownRefsLine(unknown)}` : kept;
-      if (!quiet && reason !== "GOAL" && !nothingNew(reason, said) && answer) await addMessage(owner, turnId, "ANSWER", "DONE", answer, { reason, startedAt, ...replyTo(replyIds), ...(alongside ? { beside: true } : {}) });
+      const speaking = FAN_OUT(reason) ? operatorTurns(entry).find((other) => !other.controller.signal.aborted) : undefined;
+      const meta = { reason, startedAt, ...replyTo(replyIds), ...(alongside ? { beside: true } : {}) };
+      if (!quiet && reason !== "GOAL" && !nothingNew(reason, said) && answer) {
+        if (speaking) (speaking.held ??= []).push({ turnId, text: answer, meta });
+        else await addMessage(owner, turnId, "ANSWER", "DONE", answer, meta);
+      }
       // Operator 31/10 13:37 BKK: an answer that refuses his order brings Nous one line to carry it out next turn.
       const refusal = reason === "OPERATOR" ? operatorRefusal(result.text) : null;
       // 2/11: the line names their order (on stable the line sat in a 12-line batch and the next turn answered the batch's other lines only).
@@ -1060,22 +1353,33 @@ export function createNousService(deps: NousServiceDeps) {
           + "no \"what stays out\", no judgement of yours, and a copilot skill's \"never\" yields to their order (brief the pane that the operator ordered it); "
           + "only a security matter may stay, said in one line. Do it in this turn, before anything else in this batch, and tell them in the chat what you did." : ""), undefined, { soonMs: 5_000 })
         .catch((error) => warn({ err: error, owner }, "Nous refusal line failed."));
+      // Fix (b), plan clipboard:VypZ4sl7NR04 (20/11): a check fired by a turn that took a check waits for the inbox's batch window and folds into the next batch;
+      // at 5 s they chained (11:25-11:29 UTC five checks in a row, each turn's answer firing the next). A first check, and a refusal of the operator's order, stay urgent.
+      const checkSoon = (extra.lines ?? []).some(([key]) => CHECK_KEYS.has(key.slice(0, key.indexOf(":")))) ? {} : { soonMs: 5_000 };
       // Repeat-mistake upgrade (31/10): an answer claiming done or ready meets the lessons about that claim it did not see in its prompt.
-      if (reason === "OPERATOR" && deps.lessons && claimsDone(result.text)) {
+      if (reason === "OPERATOR" && deps.lessons && claimsDone(kept)) {
         const shown = new Set(recalledLessons.map((match) => match.key));
         const unseen = (await deps.lessons.recall(owner, result.text, notes).catch(() => [])).filter((match) => !shown.has(match.key));
-        if (unseen.length) await api.notice(owner, `done-claim:${turnId}`, `Your answer to the operator says it is done or ready. Your lessons about this claim, which that turn did not have: `
-          + `${unseen.map((match) => `[${match.key}] ${clip(match.text.replace(/\s+/g, " ").trim(), 1_500)}`).join(" ")} Check the claim against them now (what the operator sees, where he sees it); `
-          + "if it does not hold, tell him plainly and finish the work; if it holds, answer NOTHING_NEW (he has the answer already).", undefined, { soonMs: 5_000 }).catch((error) => warn({ err: error, owner }, "Nous done-claim line failed."));
+        const head = "Your answer to the operator says it is done or ready. Your lessons about this claim, which that turn did not have: ";
+        const tail = " Check the claim against them now (what the operator sees, where he sees it); if it does not hold, tell him plainly and finish the work; "
+          + "if it holds, answer NOTHING_NEW (he has the answer already).";
+        // Technical bound: the inbox line's NOUS_MESSAGE_MAX_CHARS (20/11 nous_msg:dacacc53: every lesson made a 20,000-character line cut mid-lesson);
+        // lessons go whole by rank as far as it goes, the rest by key with how to read them (fitWhole), its names' room kept.
+        const fitted = fitWhole(unseen.map((match) => ({ whole: `[${match.key}] ${match.text.replace(/\s+/g, " ").trim()}`, name: match.key })), "space_lessons {\"query\": …} reads them",
+          NOUS_MESSAGE_MAX_CHARS - head.length - tail.length - NOUS_RETRIEVED_NAMES_CHARS - 100);
+        if (unseen.length) await api.notice(owner, `done-claim:${turnId}`, `${head}${fitted.join(" ")}${tail}`, undefined, checkSoon)
+          .catch((error) => warn({ err: error, owner }, "Nous done-claim line failed."));
       }
       // C (2/11), lessons 6-12/11: an answer saying a mail went out, a pane was told or a card comes, from a turn that did not do it, goes back to Nous to check it.
-      const unproven = !quiet && reason !== "GOAL" && !nothingNew(reason, result.text) ? unprovenClaim(result.text, live.acts) : null;
+      // 20/11: only what was posted told the operator anything; a repeat withoutSaid dropped fired a check a turn and fed an urgent chain (80 INBOX turns at 08h).
+      const unproven = !quiet && reason !== "GOAL" && !nothingNew(reason, result.text)
+        ? unprovenClaim(kept, live.acts) ?? unprovenClaim(`${repliedText(live.acts)}\n${kept}`, live.acts, [WORK_CLAIM_CHECK]) : null;
       if (unproven) await api.notice(owner, `${unproven.key}:${turnId}`, `Your answer told the operator ${unproven.says} ("${clip(unproven.sentence, 200)}"), and that turn ${unproven.missing}. `
-        + `${unproven.rule} ${unproven.check}`, undefined, { soonMs: 5_000 })
+        + `${unproven.rule} ${unproven.check}`, undefined, checkSoon)
         .catch((error) => warn({ err: error, owner }, `Nous ${unproven.key} line failed.`));
       // Operator 8/11 20:04 BKK (nous_msg:67c4b21b): an answer saying something waits for the operator, with no Needs you card or open decision behind it.
       // Daily Nous errors 13/11 (corrections 188, 190): or saying a card is in their Needs you or visible to them, while Space held it for Nous.
-      const waitsClaim = !quiet && reason !== "GOAL" && !nothingNew(reason, result.text) && deps.notifications.list ? waitsOnOperatorClaim(result.text) ?? inNeedsYouClaim(result.text) : null;
+      const waitsClaim = !quiet && reason !== "GOAL" && !nothingNew(reason, result.text) && deps.notifications.list ? waitsOnOperatorClaim(kept) ?? inNeedsYouClaim(kept) : null;
       if (waitsClaim) await (async () => {
         // Every source the operator's Needs you shows (a copilot's or a browser handoff's card backs a claim too); held-for-Nous cards are left out by the list.
         // shortcut: the list's page is 200 (notificationListQuerySchema); past 200 waiting cards the oldest miss the topic match, page with before if that happens.
@@ -1089,16 +1393,22 @@ export function createNousService(deps: NousServiceDeps) {
         if (open.length) return await api.notice(owner, `waits-claim:${turnId}`, `Your answer told the operator something waits for them ("${clip(waitsClaim, 200)}"), and none of their `
           + `${open.length} open Needs you cards and decisions is about it (${clip(open.map((item) => clip(item, 60)).join(" | "), 600)}). Everything you need from them comes as a card `
           + "(operator 8/11). Check the claim against the world now: if it still waits, raise ONE space_notify_operator card on that pane (question, options, your recommendation, "
-          + "the link and steps); if it is done or answered already, tell them plainly that the claim was wrong.", undefined, { soonMs: 5_000 });
+          + "the link and steps); if it is done or answered already, tell them plainly that the claim was wrong.", undefined, checkSoon);
         await api.notice(owner, `waits-claim:${turnId}`, `Your answer told the operator something waits for them ("${clip(waitsClaim, 200)}"), and they have no Needs you card and no open decision. `
           + "Everything you need from them comes as a card (operator 8/11). Now: raise ONE space_notify_operator card on that pane (question, options, your recommendation, "
-          + "the link, no steps), or tell them plainly that the claim was wrong.", undefined, { soonMs: 5_000 });
+          + "the link, no steps), or tell them plainly that the claim was wrong.", undefined, checkSoon);
       })().catch((error) => warn({ err: error, owner }, "Nous waits-claim line failed."));
       // A message that came from Telegram gets its answer there too (2026-10-24).
       if (reason === "OPERATOR" && deps.telegram && waiting.some((message) => message.meta.via === "TELEGRAM")) await deps.telegram.answer(owner, said || "Done.").catch(() => false);
       const held = await holdItems(owner, entry, live, extra, nothingNew(reason, result.text));
       for (const [key, line] of extra.lines ?? []) if (!held.has(key)) await line.onDone?.().catch((error) => warn({ err: error, owner }, "Nous inbox line close failed."));
       entry.lastError = null;
+      // 21/11 14:00-15:08Z (load 13-19 %, ~140 pushes, Sonnet medium sent saves instead of work): a turn that left the 90 % push unmet runs its kind's next turn at high on the balanced class (tokens.ts).
+      const pushes = [...(extra.standing?.items ?? []), ...(extra.lines ?? []).flatMap(([, line]) => line.items ?? [])].filter((item) => item.kind === "UTILIZATION");
+      // 22/11 (goal 5acd171d: 45 % of INBOX turns on Opus while Claude Max was spent and panes idled): an escalated turn that still left it unmet
+      // shows the model was not the cause, so the kind's next turn runs balanced again instead of Opus for every push.
+      if (unhandledItems(pushes, live.acts).length && !entry.escalate.has(nousTurnKindOf(reason))) entry.escalate.set(nousTurnKindOf(reason), "push");
+      else entry.escalate.delete(nousTurnKindOf(reason));
       entry.pausedUntil = 0;
       if (entry.hold?.kind === "quota") await probeHold(owner, true);
       await deps.notifications.resolve(owner, "nous:paused").catch(() => {});
@@ -1118,6 +1428,11 @@ export function createNousService(deps: NousServiceDeps) {
       const wait = quota && error instanceof SpaceRouteError && error.explicit && entry.hold?.kind === "quota" ? explicitWait(error.failures) : null;
       // shortcut: one hold holds every kind, also kinds set to another model; gate per model if the kinds' models differ in practice.
       if (wait) entry.hold!.until = wait.until;
+      // 19/11 + 20/11 REVIEW (114 QUOTA turns in 7 days, INBOX and DECISION every ~10 min): with Auto the hold ended after the model pause once any
+      // account had room (token monitor off CRITICAL) though Nous's routes had none; when each route's quota names its reset, it lasts to the earliest.
+      const resets = quota && !wait && error instanceof SpaceRouteError && entry.hold?.kind === "quota" && error.failures.every((item) => item.kind !== "quota" || item.resetAt)
+        ? error.failures.map((item) => Date.parse(item.resetAt ?? "")).filter((at) => at > now()) : [];
+      if (resets.length) entry.hold!.until = Math.max(entry.hold!.until, Math.min(...resets));
       // 2/11 REVIEW (31/10 20:00 → 1/11 08:00 UTC: 26 OPERATOR turns failed on quota, three retries each, then nothing): an operator or decision turn
       // refused for quota waits for an account with room (probeHold), never pauses or gives up; a new message of theirs still starts at once.
       const hold = quota && (reason === "OPERATOR" || reason === "DECISION") ? entry.hold : null;
@@ -1132,8 +1447,10 @@ export function createNousService(deps: NousServiceDeps) {
       // The operator's Stop and an instance without the model (dev) leave the messages to the next turn; anything else retries them.
       retry = (!stopped || live.rerun === true) && !(error instanceof NousUnavailableError) && !hold && !wait;
       if (stopped) await addMessage(owner, turnId, "ERROR", "FAILED", "Stopped.");
-      else if (signal.aborted) await addMessage(owner, turnId, "ERROR", "FAILED", "This turn took too long and was stopped.");
-      else if (paceHeld) {
+      else if (signal.aborted) {
+        entry.escalate.set(nousTurnKindOf(reason), true);
+        await addMessage(owner, turnId, "ERROR", "FAILED", "This turn took too long and was stopped.");
+      } else if (paceHeld) {
         warn({ owner, reason }, "Nous background turn held by Space Gateway's pace cap.");
         entry.lastError = clip(message, 1_000);
       } else if (spaceDown && reason !== "OPERATOR" && reason !== "DECISION") {
@@ -1152,6 +1469,7 @@ export function createNousService(deps: NousServiceDeps) {
         entry.lastError = clip(message, 1_000);
       } else {
         warn({ err: error, owner }, "Nous turn failed.");
+        entry.escalate.set(nousTurnKindOf(reason), true);
         await addMessage(owner, turnId, "ERROR", "FAILED", error instanceof NousUnavailableError ? message : `The turn failed: ${clip(primary, 500)}`, routeMeta(error));
         // R17-2, without a token monitor to hold on: the operator's first quota failure retries in a minute unpaused (Space Gateway may pick another account).
         // 4/11: with the quota hold on, a background turn's quota refusal is that hold (WAITING_QUOTA), never a "model is not available" pause.
@@ -1160,21 +1478,35 @@ export function createNousService(deps: NousServiceDeps) {
         else entry.lastError = clip(message, 1_000);
       }
     } finally {
+      // Daily Nous errors 15/11 (01:05Z TIMEOUT): two space_read_pane calls past their 55 s MCP answer stayed RUNNING after the turn ended, until the
+      // 01:23 deploy's recover() wrote "The API restarted during this turn" on them, and the timeout was read as a restart. A late finish still writes its answer.
+      for (const [id, text] of live.openTools) await deps.repository.updateMessage(owner, id, { status: "FAILED", content: `${text}: did not finish before the turn ended (${status})` })
+        .catch((error) => warn({ err: error, owner }, "Nous tool row close failed."));
       if (status !== "DONE") for (const [, line] of extra.lines ?? []) await line.onDiscard?.().catch((error) => warn({ err: error, owner }, "Nous inbox discard failed."));
       recordNousTurn(reason, status);
       await deps.repository.addTurnFacts({ turnId, ownerUserId: owner, reason, status, ...facts, startedAt, endedAt: new Date(now()).toISOString(),
         model: run?.model ?? live.execution?.model ?? null, effort: run?.effort ?? live.execution?.effort ?? null, costUsd: run?.costUsd ?? null, tokens: run?.tokens ?? null, goalId: extra.goal?.id ?? null, error: failure })
         .catch((error) => warn({ err: error, owner }, "Nous turn facts failed."));
+      // What background turns handed this operator turn and it never read still reaches the chat (never lost).
+      // Unlisted first: a background turn ending while these post would hand its answer to a list already drained (lost).
       if (entry[slot] === live) entry[slot] = null;
       entry.besides.delete(live);
+      for (const held of live.held?.splice(0) ?? []) await addMessage(owner, held.turnId, "ANSWER", "DONE", held.text, held.meta).catch((error) => warn({ err: error, owner }, "Nous held answer failed."));
       if (extra.goal && deps.goals) {
         // The goal's log, fingerprint and back-off, then the loop's next pick (the gap, or the earliest due goal).
         await deps.goals.finishTurn(owner, extra.goal.id, { turnId, status, answer: run?.text ?? "", settings: (await deps.settings(owner).catch(() => null))?.goals ?? nousGoalsSettingsSchema.parse({}) })
           .catch((error) => warn({ err: error, owner }, "Nous goal turn close failed."));
         void goalTick(owner);
+        // eslint-disable-next-line no-unsafe-finally -- a goal turn ends here; this return also drops what the catch threw, kept as is
         return;
       }
       if (status === "DONE") entry.retries = 0;
+      // Response time 18/11 #1-2: a turn that answered shows a route serves, so operator messages waiting on a retry run now.
+      if (status === "DONE" && entry.retryTimer) {
+        clearTimeout(entry.retryTimer);
+        entry.retryTimer = null;
+        void answerWaiting(owner, entry).catch((error) => warn({ err: error, owner }, "Nous retry failed."));
+      }
       // A standing orders turn that failed runs once more (after a model pause ends); the next tick brings the rest again anyway.
       if (retry && extra.standing && extra.standing.attempt === 1 && !entry.queuedStanding) {
         entry.queuedStanding = { ...extra.standing, attempt: 2, notBefore: Math.max(now() + limits.retryMs, entry.pausedUntil + 1_000) };
@@ -1187,15 +1519,16 @@ export function createNousService(deps: NousServiceDeps) {
 
   /**
    * After a failed turn the operator's waiting messages run again later (after a model pause ends), at most OPERATOR_RETRIES times in a row;
-   * `unanswered` (an operator turn that sent no answer yet): the first retry runs at once, the next ones a step sooner.
+   * `unanswered` (an operator turn that sent no answer yet): the first retry runs at once, the next ones a step sooner, and they never stop
+   * (Response time 18/11 #1-2: after three, two messages waited 33 min while another model served), each at most modelPauseMs apart.
    */
   function retryLater(owner: string, entry: OwnerRuntime, unanswered = false) {
-    if (entry.retryTimer || entry.retries >= OPERATOR_RETRIES) return;
+    if (entry.retryTimer || (entry.retries >= OPERATOR_RETRIES && !unanswered)) return;
     entry.retries += 1;
     entry.retryTimer = setTimeout(() => {
       entry.retryTimer = null;
       void answerWaiting(owner, entry).catch((error) => warn({ err: error, owner }, "Nous retry failed."));
-    }, Math.max(limits.retryMs * (entry.retries - (unanswered ? 1 : 0)), entry.pausedUntil - now() + 1_000));
+    }, Math.max(Math.min(limits.retryMs * (entry.retries - (unanswered ? 1 : 0)), limits.modelPauseMs), entry.pausedUntil - now() + 1_000));
     entry.retryTimer.unref?.();
   }
 
@@ -1214,6 +1547,7 @@ export function createNousService(deps: NousServiceDeps) {
     entry.undelivered.clear();
     if (entry.deliverTimer) { clearTimeout(entry.deliverTimer); entry.deliverTimer = null; }
     turn.replyTo.push(...taken.map((message) => message.id));
+    if (turn.waitingSince === undefined) { turn.waitingSince = taken[0]!.createdAt; turn.replyHeld = false; }
     return taken;
   }
 
@@ -1320,6 +1654,9 @@ export function createNousService(deps: NousServiceDeps) {
     return keptIn ? { covered: true, ids: check.ids, keptIn } : { covered: false, reason: "a copy could not be kept first" };
   }
 
+  /** Rule SLvZ9IZgCRc4 (16/11): a funding, credits or program send stays the operator's to read, whatever maySend says. */
+  const readsFirst = async (owner: string, decision: Pick<NousDecision, "category" | "title" | "body" | "action" | "refs">) => operatorReadsFirst(decision,
+    decision.refs.planId && deps.planTitle ? await deps.planTitle(owner, decision.refs.planId).catch(() => null) : null);
   /** Ledger source ALLOWANCE: kept with the operator's answers, never scored as one (match null). */
   /** R10-18: "Held: <file> changed since you were asked (was <sha8>, now <sha8>)." for the first file that differs or is gone, else null. */
   async function changedFiles(owner: string, decision: Pick<NousDecision, "refs">): Promise<string | null> {
@@ -1332,6 +1669,17 @@ export function createNousService(deps: NousServiceDeps) {
       if (now.sha256 !== file.sha256) return `Held: ${file.ref} changed since you were asked (was ${file.sha256.slice(0, 8)}, now ${now.sha256.slice(0, 8)}).`;
     }
     return null;
+  }
+
+  /**
+   * Correction bcd69f4e (21/11 09:20Z: decision 1ee608ac replaced the open card 7dedd663, which asked the operator to read Jack's owner-signature
+   * draft, with a file Nous had just written, and May send mailed it at once): a send that replaces an open card and hashes a file that card did
+   * not show is the operator's to read first, like R10-18's changed file. Null when every hashed file was on the replaced card.
+   */
+  function replacedUnread(input: Pick<NousDecision, "refs">, replaced: NousDecision | undefined): string | null {
+    const shown = new Set((replaced?.refs.fileHashes ?? []).map((file) => file.sha256));
+    const unseen = replaced ? (input.refs.fileHashes ?? []).find((file) => !shown.has(file.sha256)) : undefined;
+    return unseen ? `it replaces the open decision "${clip(replaced!.title, 200)}", which did not show you ${unseen.ref} as it is now (sha ${unseen.sha256.slice(0, 8)})` : null;
   }
 
   /** R13-15b: the live train's version the operator approved at an earlier candidate, and their yes (an operator's own answer first). */
@@ -1348,7 +1696,7 @@ export function createNousService(deps: NousServiceDeps) {
 
   async function allowanceLedger(owner: string, kind: string, decision: NousDecision): Promise<void> {
     await deps.repository.appendLedger({ ownerUserId: owner, source: "ALLOWANCE", kind, title: decision.title, predicted: null,
-      answer: `APPROVED: ${decision.answer ?? "allowance"}`, match: null, ref: decision.id }).catch((error: unknown) => warn({ err: error, owner }, "Nous could not write the decision ledger."));
+      answer: `${decision.status}: ${decision.answer ?? "allowance"}`, match: null, ref: decision.id }).catch((error: unknown) => warn({ err: error, owner }, "Nous could not write the decision ledger."));
   }
 
   /** A decision's card. */
@@ -1356,7 +1704,7 @@ export function createNousService(deps: NousServiceDeps) {
     await deps.notifications.raise({ ownerUserId: decision.ownerUserId, roomId: decision.refs.roomId ?? null, paneId: decision.refs.paneId ?? null, source: "NOUS",
       kind: `DECISION_${decision.category}`, severity: options.urgent ? "URGENT" : "ATTENTION", title: clip(`Nous: ${decision.title}`, 200),
       body: withCheckedBlock([decision.recommendation ? `Recommendation: ${decision.recommendation}` : null, body].filter(Boolean).join("\n"), options.checked, 2_000),
-      link: { surface: "nous" }, dedupeKey: `nous:decision:${decision.id}`, payload: { decisionId: decision.id }, telegram: null },
+      link: { surface: "nous" }, dedupeKey: `nous:decision:${decision.id}`, payload: { decisionId: decision.id, ...(decision.refs.files?.length ? { files: decision.refs.files } : {}) }, telegram: null },
       // The Telegram card carries Approve/Decline buttons (2026-10-24); the outbox's plain text when that send fails.
       ...(deps.telegram ? [{ telegramSend: (text: string) => deps.telegram!.decisionCard(decision.ownerUserId, decision, text) }] : []))
       .catch((error) => warn({ err: error }, "Nous decision notification failed."));
@@ -1436,6 +1784,8 @@ export function createNousService(deps: NousServiceDeps) {
         running: liveTurns(entry).map((turn) => ({ turnId: turn.turnId, startedAt: turn.startedAt, reason: turn.reason,
           draft: turn.draft && SILENT_REASONS.has(turn.reason) && NOUS_NOTHING_NEW.startsWith(turn.draft.trim()) ? "" : turn.draft && withoutNothingNew(turn.draft) }))[0] ?? null,
         turnsThisHour: turnsThisHour(entry), lastError: entry.lastError, openDecisions: open.length, inbox: entry.inbox.size,
+        // What the Inbox count is (nous_msg:eb36261e): the notices waiting for Nous's next inbox round.
+        inboxItems: [...entry.inbox].map(([key, line]) => ({ key, text: line.line, at: line.at === undefined ? null : new Date(line.at).toISOString() })),
         away: deps.away ? await deps.away.view(owner) : null,
         ...(deps.goals ? { goals: { active: (await deps.goals.list(owner, { statuses: ["ACTIVE"] })).length,
           nextAt: entry.runningGoal ? null : await deps.goals.nextDue(owner, now(), settings.goals).then((at) => at === null ? null : new Date(at).toISOString()), held: await goalHold(owner, entry, settings) } } : {})
@@ -1517,11 +1867,16 @@ export function createNousService(deps: NousServiceDeps) {
       const turn = helper ? { reason: "HELPER", operatorMessage: null } : liveTurn(owner, turnId)?.turn;
       const modelChoice = helper ? helper.modelChoice : liveTurn(owner, turnId)?.modelChoice;
       const running = liveTurn(owner, turnId);
+      running?.openTools.set(row.id, row.content);
       if (!helper && running?.execution) running.execution.phase = "responding";
       // Step 1 (1/11 17:10 UTC: jobq:Tcoa0D_0Vp3t's turn ended with no act on it): a turn's outcome report is held once while a copilot
       // question it showed has no answer, forward or held reason; the report itself names it as the reason it stays held.
-      const open = !helper && running && name === "space_nous_outcome" && !running.outcomeHeld ? unhandledItems(running.questions, [...running.acts, { name, args, ok: true, subjects: [] }]) : [];
-      if (running && open.length) running.outcomeHeld = true;
+      // Daily Nous errors 22/11 (13 holds 04:27-05:26Z, one Dana card held in 13 turns, each passed 4 s later): a card holds one outcome, not one a turn.
+      const cards = runtimes.get(owner)?.questions;
+      const cardOf = (item: NousTurnItem) => cards?.get(item.notification ?? item.key.slice("question:".length));
+      const open = !helper && running && name === "space_nous_outcome" && !running.outcomeHeld
+        ? unhandledItems(running.questions, [...running.acts, { name, args, ok: true, subjects: [] }]).filter((item) => !cardOf(item)?.outcomeHeld) : [];
+      if (running && open.length) { running.outcomeHeld = true; for (const item of open) { const card = cardOf(item); if (card) card.outcomeHeld = true; } }
       const dispatched = !helper && running?.reason === "OPERATOR" && name === "space_nous_outcome" && Array.isArray(args.requests)
         ? dispatchedAnswerOnly(args.requests as Array<{ summary: string; id?: string; answerOnly?: boolean }>, running.acts, running.replyTo) : [];
       // Operator 6/11 nous_msg:2c610048: every message an operator turn answers gets an outcome (this or an earlier report of the turn); held once,
@@ -1535,14 +1890,23 @@ export function createNousService(deps: NousServiceDeps) {
       // C (2/11), lessons 6-12/11: what the operator reads now says a mail went out, a pane was told or a card comes only after this turn did it;
       // a Done summary is often written turns after the send, so it is held only for the mail.
       const told = name === "space_reply_now" ? args.text : name === "space_request_done" ? args.summary : null;
-      const claim = !helper && running && typeof told === "string" ? unprovenClaim(told, running.acts, name === "space_reply_now" ? TURN_CLAIMS : TURN_CLAIMS.slice(0, 1)) : null;
+      // Lesson promise-without-dispatch: an operator turn's outcome calling a request SELF or HELPER while its reply says the work runs now, with nothing dispatched, is held once.
+      const claim = !helper && running && typeof told === "string" ? unprovenClaim(told, running.acts, name === "space_reply_now" ? TURN_CLAIMS : TURN_CLAIMS.slice(0, 1))
+        : !helper && running?.reason === "OPERATOR" && name === "space_nous_outcome" && !running.workHeld && !open.length && !dispatched.length && !unreported.length
+          && Array.isArray(args.requests) && (args.requests as Array<{ outcome?: string }>).some((request) => request.outcome === "SELF" || request.outcome === "HELPER")
+          ? unprovenClaim(repliedText(running.acts), running.acts, [WORK_CLAIM_CHECK]) : null;
+      if (running && claim?.key === "work-claim") running.workHeld = true;
+      if (running && claim) running.proofAsked = new Set([...running.proofAsked ?? [], ...claim.proof]);
       // A later Space attempt repeating an earlier attempt's successful call gets that call's answer: the side effect happened once.
       const key = `${name} ${JSON.stringify(args)}`;
       const repeated = !helper && running && running.attempt > 1 ? running.calls.find((call) => call.attempt < running.attempt && call.key === key && call.outcome.ok) ?? null : null;
       // Score 13/11 (0ff4c64b, 140 s): the reminder below went unheeded through 80 s of acts, so the first call past NOUS_REPLY_NUDGE_MS with no answer is held once.
-      const holdForReply = !helper && running?.reason === "OPERATOR" && !running.replyHeld && name !== "space_reply_now" && !open.length && !dispatched.length && !unreported.length && !claim
-        && !running.acts.some((act) => act.ok && act.name === "space_reply_now") && now() - Date.parse(running.waitingSince ?? running.startedAt) >= NOUS_REPLY_NUDGE_MS;
-      if (running && holdForReply) running.replyHeld = true;
+      const unanswered = !helper && running?.reason === "OPERATOR" && running.waitingSince !== undefined && name !== "space_reply_now"
+        && !running.proofAsked?.has(name) && !open.length && !dispatched.length && !unreported.length && !claim ? running.waitingSince : undefined;
+      const late = unanswered !== undefined && !running?.replyHeld && now() - Date.parse(unanswered) >= NOUS_REPLY_NUDGE_MS;
+      // Response time 14/11: helpers answer only after up to 45 s, so they start after the operator has an answer, as the prompt asks.
+      const holdForReply = late || (unanswered !== undefined && name === "space_subagents" && !args.runId);
+      if (running && late) running.replyHeld = true;
       const outcome: NousToolOutcome = open.length ? { ok: false, refused: true, display: `Held: ${open.length} copilot question${open.length === 1 ? "" : "s"} held for you without an act`,
         result: `Not recorded yet: ${open.length === 1 ? "this copilot question waits" : "these copilot questions wait"} for you, not the operator. For questions: ${QUESTION_ACT_LINE}. For reviews: ${REVIEW_ACT_LINE}. `
           + `Then report the outcomes again (one naming a question's id is its held reason).\n${open.map((item) => `- ${item.line}`).join("\n")}` }
@@ -1560,9 +1924,10 @@ export function createNousService(deps: NousServiceDeps) {
         : holdForReply ? { ok: false, refused: true, display: "Held once: the operator waits for an answer", result: "Not run: answer the operator first, then call this again." }
         : repeated ? { ...repeated.outcome, display: `${repeated.outcome.display} (done by the earlier attempt; not run again)` }
         : await deps.tools.execute(name, args, { owner, turnId, callId, traceId: nousTraceId(turnId), modelChoice, ...(turn ? { turn } : {}) });
+      running?.openTools.delete(row.id);
       if (!helper && running && !repeated && !open.length && !dispatched.length && !unreported.length && !claim && !holdForReply) running.calls.push({ attempt: running.attempt, key, name, args, outcome });
       // R19-2 (48 h to 30/10: about 60 failed rows read only "… failed", "… FAILED" or "Goal not updated"): a row that did not run names its cause.
-      const cause = outcome.ok ? "" : clip(outcome.result.split("\n").find((line) => line.trim())?.trim() ?? "", 200);
+      const cause = outcome.ok ? "" : toolFailureCause(outcome.result);
       if (running) {
         const tool = running.facts.tools[clip(name, 80)] ??= { calls: 0, failed: 0, refused: 0 };
         tool.calls += 1;
@@ -1575,6 +1940,7 @@ export function createNousService(deps: NousServiceDeps) {
         running.facts.planPoints += outcome.planPoints ?? 0;
         running.facts.outcomes.push(...(outcome.outcomes ?? []).map((item) => turnOutcome(item, running.replyTo)));
         running.acts.push({ name, args, ok: outcome.ok, subjects: toolSubjects(name, args) });
+        if (!helper && name === "space_reply_now" && outcome.ok) running.waitingSince = undefined;
       }
       // What Nous typed into a pane stays visible in the conversation, so the operator can follow what it told whom.
       const typed = typeof args.text === "string" ? args.text : typeof args.answer === "string" ? args.answer : null;
@@ -1586,19 +1952,27 @@ export function createNousService(deps: NousServiceDeps) {
       await deps.repository.updateMessage(owner, row.id, { status: outcome.ok ? "DONE" : outcome.refused ? "REFUSED" : "FAILED", content: `${helper ? `${helper.title}: ` : ""}${content}`, meta: { ...audit, result: clip(outcome.result, 2_000), ...(Object.keys(asked).length ? { asked } : {}), ...(outcome.meta ?? {}),
         // The whole text it typed: a goal's work history shows it whole (plan clipboard:jNDx8l-vMEl9); the content keeps 240 characters.
         ...(typed !== null && outcome.ok ? { text: typed } : {}) } });
+      // Slice 4: a gate's refusal (not a "Held once", which passes on the repeat) is shown to the next background turns; a run of the same call clears it.
+      if (!repeated && !open.length && !dispatched.length && !unreported.length && !claim && !holdForReply) {
+        const memo = runtime(owner).refusals;
+        if (outcome.ok) memo.delete(key);
+        else if (outcome.refused && !outcome.display.startsWith("Held once")) memo.set(key, { name, args: JSON.stringify(args), display: outcome.display, at: now() });
+      }
       // 4/11: operator messages that came while this operator turn runs reach it with this answer; the turn answers them now.
       const left = !helper && running ? Date.parse(running.startedAt) + limits.turnMs - now() : Infinity;
       const wrap = left < NOUS_TURN_WRAP_MS ? `This turn stops in ${Math.max(0, Math.round(left / 1_000))} s: write your final answer now; `
         + "leave what is left to space_nous_followup or the plan's next step." : "";
       const carried = !helper && !wrap && running?.reason === "OPERATOR" && !running.controller.signal.aborted ? takeUndelivered(runtime(owner), running) : [];
       // Score 13/11 (31 of 70 slow first answers in 7 days came after 8 to 105 tool calls): past NOUS_REPLY_NUDGE_MS, an operator turn with no answer yet is told so.
-      const waited = !helper && running?.reason === "OPERATOR" && name !== "space_reply_now" && !running.acts.some((act) => act.ok && act.name === "space_reply_now")
-        ? now() - Date.parse(running.waitingSince ?? running.startedAt) : 0;
+      const waited = !helper && running?.reason === "OPERATOR" && name !== "space_reply_now" && running.waitingSince !== undefined
+        ? now() - Date.parse(running.waitingSince) : 0;
       const nudge = waited >= NOUS_REPLY_NUDGE_MS ? `The operator has waited ${Math.round(waited / 1_000)} s with no answer: call space_reply_now now with the short answer `
         + "(what you found or will do), then go on with the work." : "";
-      if (!carried.length && !nudge && !wrap) return outcome;
+      const held = !helper && running?.reason === "OPERATOR" ? running.held?.splice(0) ?? [] : [];
+      if (!carried.length && !held.length && !nudge && !wrap) return outcome;
       const zone = carried.length && deps.timeZone ? await deps.timeZone(owner).catch(() => "UTC") : "UTC";
       return { ...outcome, result: [outcome.result || outcome.display, ...(carried.length ? [`${renderOperatorMessages(carried, zone, CARRIED_HEAD)}\n${CARRIED_ASK}`] : []),
+        ...(held.length ? [`${HELD_HEAD}\n${held.map((entry) => entry.text).join("\n\n")}`] : []),
         ...[nudge, wrap].filter(Boolean)].join("\n\n") };
     },
 
@@ -1608,9 +1982,10 @@ export function createNousService(deps: NousServiceDeps) {
      * 2026-10-21: 15 refusals in 7 days, Nous telling the operator a CAPTCHA expires): their final answer reaches the chat anyway,
      * except while Away, when it goes to the away log.
      */
-    async replyNow(owner: string, turnId: string, text: string): Promise<"SENT" | "NOT_RUNNING" | "AWAY"> {
+    async replyNow(owner: string, turnId: string, text: string): Promise<"SENT" | "NOT_RUNNING" | "AWAY" | "BESIDE"> {
       const running = liveTurn(owner, turnId);
       if (!running) return "NOT_RUNNING";
+      if (FAN_OUT(running.reason) && operatorTurns(runtime(owner)).some((other) => !other.controller.signal.aborted)) return "BESIDE";
       if (running.reason !== "OPERATOR" && running.reason !== "DECISION" && deps.away && await deps.away.current(owner).catch(() => null)) return "AWAY";
       const said = withoutNothingNew(text);
       if (!said) return "SENT";
@@ -1624,7 +1999,9 @@ export function createNousService(deps: NousServiceDeps) {
      */
     async send(owner: string, content: string, options: { person?: boolean; refs?: { roomId: string; paneId: string }; via?: "TELEGRAM"; client?: NousClientContext;
       /** A paired phone's message through the mobile channel (ADR-013, security review P1-3): NOUS_MOBILE_RULE applies to it. */
-      mobile?: { device: string; scopes: string[] }; clientId?: string } = {}): Promise<NousMessage> {
+      mobile?: { device: string; scopes: string[] }; clientId?: string;
+      /** The superior Nous's command over Space Link (v2 step 9b): `mobile` comes with it, so the phone rule's holds apply. */
+      superior?: { device: string } } = {}): Promise<NousMessage> {
       const entry = runtime(owner);
       // Where the operator writes from (plan clipboard:4TXfIZzj8ITW); Space's own answers on their behalf (person false) carry none.
       const client = options.client ?? (options.via === "TELEGRAM" ? { app: "TELEGRAM" as const } : undefined);
@@ -1644,13 +2021,17 @@ export function createNousService(deps: NousServiceDeps) {
         return message;
       }
       const message = await addMessage(owner, null, "OPERATOR", "DONE", content, { person: options.person === true, ...(options.refs ? { refs: options.refs, via: "PANE_BOARD" } : options.via ? { via: options.via } : {}),
-        ...(client ? { client } : {}), ...(options.mobile ? { mobile: options.mobile } : {}), ...(options.clientId ? { clientId: options.clientId } : {}) });
+        ...(client ? { client } : {}), ...(options.mobile ? { mobile: options.mobile } : {}), ...(options.superior ? { superior: options.superior } : {}), ...(options.clientId ? { clientId: options.clientId } : {}) });
       // The operator's first message after Away began ends it; that turn briefs them from the away log.
       const ended = deps.away ? await deps.away.end(owner, "RETURN").catch((error) => { warn({ err: error, owner }, "Nous away end failed."); return null; }) : null;
       if (ended) entry.briefing = renderAwayLog(ended.session, ended.log);
       // The operator's language outlives a cleared conversation, so a turn started by an event answers in it too.
       // 1.2.0 lab 2/11 (F-lang): only Settings → Language says "Greek" (the world's line); a message's own words decide the rest.
-      const language = `Write to the operator in the language of their latest message: "${clip(content, 120)}"`;
+      // 19-21/11 (nous_msg:0885e76f; 21/11 05:48 «σταματά στο "για να δούμε…"»): inbox turns saw only this line, and its "…" cut read as the
+      // operator's message arriving cut. A sample ends at a word, never inside the attachments block, and says the message itself is whole.
+      const text = (content.split(NOUS_ATTACHMENTS_MARKER)[0] ?? content).trim() || content;
+      const sample = text.length > 120 ? `"${text.slice(0, 120).replace(/\s+\S*$/, "")}" (its opening words, a language sample; the message itself arrived whole)` : `"${text}"`;
+      const language = `Write to the operator in the language of their latest message: ${sample}`;
       await deps.repository.setNote(owner, "operator-language", language).catch((error) => warn({ err: error }, "Nous language note failed."));
       // Operator first (2026-10-24): a background turn never makes it wait. 4/11: neither does an operator turn: the message rides on
       // that turn's next tool answer, or gets its own turn after deliverMs.
@@ -1695,7 +2076,7 @@ export function createNousService(deps: NousServiceDeps) {
       if (!saved.enabled) entry.inbox.clear();
       else if (!before.enabled && deps.autonomous !== false) {
         // Operator feedback 2026-10-17: turning it on showed nothing until the next event; it starts with a review now.
-        entry.inbox.set("enabled", { line: "Work on my behalf was just turned on: look at everything that waits (notifications, panes, plans), handle what you can and tell the operator in a few lines what you took over." });
+        entry.inbox.set("enabled", { at: now(), line: "Work on my behalf was just turned on: look at everything that waits (notifications, panes, plans), handle what you can and tell the operator in a few lines what you took over." });
         if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
         if (!entry.running) void flush(owner).catch((error) => warn({ err: error, owner }, "Nous first review failed."));
       }
@@ -1707,12 +2088,19 @@ export function createNousService(deps: NousServiceDeps) {
     async notice(owner: string, key: string, line: string, onDone?: () => Promise<void>, options: { soonMs?: number; onDiscard?: () => Promise<void>; routine?: boolean; items?: NousTurnItem[] } = {}): Promise<void> {
       if (!(await deps.settings(owner)).enabled) { await options.onDiscard?.(); return; }
       const entry = runtime(owner);
+      // Goal 5acd171d (22/11: 45 of 89 "I left" answers repeated items already left, each re-push a turn and two held re-runs): an item left
+      // after its reminders holds no turn again while its line is unchanged and no act moved it; a line of only such items rides with the
+      // next turn (routine). NOUS_ITEM_HOLDS bounds turns per item, a re-push no longer resets it. Copilot questions and reviews keep theirs.
+      const fresh = unleft(entry.left, options.items);
+      if (fresh && fresh.length < options.items!.length) options = fresh.length ? { ...options, items: fresh } : { ...options, items: undefined, routine: true };
       // A routine line never replaces a waiting line of the same key that says something (the pane's real report stays).
       if (options.routine && entry.inbox.has(key) && !entry.inbox.get(key)!.routine) { await options.onDiscard?.(); return; }
       await entry.inbox.get(key)?.onDiscard?.();
       entry.inbox.delete(key);
       if (!entry.inbox.size || options.soonMs !== undefined) entry.inboxSince = options.soonMs !== undefined ? 0 : now();
-      entry.inbox.set(key, { line: clip(line.replace(/\s+/g, " ").trim(), NOUS_MESSAGE_MAX_CHARS), ...(options.routine ? { routine: true } : {}), ...(onDone ? { onDone } : {}), ...(options.onDiscard ? { onDiscard: options.onDiscard } : {}),
+      // Technical bound: a stored message's NOUS_MESSAGE_MAX_CHARS; a cut line says whose text it is (20/11: a bare "…" was read as the operator's message cut).
+      const flat = line.replace(/\s+/g, " ").trim(), cut = ` [Space cut this inbox line at ${NOUS_MESSAGE_MAX_CHARS} chars; it is Space's own text, not the operator's]`;
+      entry.inbox.set(key, { line: flat.length > NOUS_MESSAGE_MAX_CHARS ? `${flat.slice(0, NOUS_MESSAGE_MAX_CHARS - cut.length)}${cut}` : flat, at: now(), ...(options.routine ? { routine: true } : {}), ...(onDone ? { onDone } : {}), ...(options.onDiscard ? { onDiscard: options.onDiscard } : {}),
         ...(options.items?.length ? { items: options.items } : {}) });
       // Item 29: a wait that expires by itself (Claude Code denies its removal prompt after 2 minutes) cannot sit out the 3-minute
       // debounce; the turn caps and a model pause still apply when the inbox flushes.
@@ -1745,7 +2133,9 @@ export function createNousService(deps: NousServiceDeps) {
       const first = text.split("\n").find((line) => line.startsWith("## ")) ?? text.split("\n")[0] ?? reason;
       // R13-9: a pendings list's slot is kept on its inbox line (meta.pendingsList), so a restart never posts it again within 3 hours.
       await addMessage(owner, null, "INBOX", "DONE", clip(`${reason === "STANDING" ? "Standing orders turn" : reason === "REVIEW" ? "Daily self-review" : "Away round"}: ${first.replace(/^## /, "").replace(/^# /, "")}`, 400), { standing: reason, ...(options.meta ?? {}) });
-      const standing: QueuedStanding = { reason, text, attempt: 1, notBefore: now(), ...(options.items?.length ? { items: options.items } : {}) };
+      // Goal 5acd171d: the requests sweep's items too (22/11 the same 3 requests were left at 02:57 and again at 03:32, two held re-runs each).
+      const items = unleft(entry.left, options.items);
+      const standing: QueuedStanding = { reason, text, attempt: 1, notBefore: now(), ...(items?.length ? { items } : {}) };
       if (entry.running) { entry.queuedStanding = standing; return "QUEUED"; }
       // A pending inbox batch waits: the turn's end reschedules it (next), its lines stay in the inbox.
       if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
@@ -1788,7 +2178,7 @@ export function createNousService(deps: NousServiceDeps) {
       // Security review P1-3 (Nous Pro step 7, C7 remainder): an ask from a turn the operator started on a paired phone is never approved
       // by an allowance, an "Always approve" or an Away grant: it is a card he answers with the phone's signed decide or on a computer.
       // The release OK stays: it is his own yes for that version (operator 29/10 14:11 BKK).
-      const settings = options.phone ? { ...stored, alwaysApprove: [], maySend: false, mayDeleteOwn: false, mayPublish: false, mayRestartHosts: false } : stored;
+      const settings = options.phone ? { ...stored, alwaysApprove: [], maySend: false, mayDeleteOwn: false, mayPublish: false, mayRestartHosts: false, mayCleanSystem: false } : stored;
       const standing = kind ? settings.alwaysApprove?.find((rule) => rule.key === kind.key) : undefined;
       // Goal 7365014c-c: after the operator's own yes to the last 3 decisions of a kind "Always approve" covers, the card suggests it.
       const lastOfKind = kind && !standing ? (await deps.repository.listDecisions(input.ownerUserId, { statuses: ["APPROVED", "DECLINED", "ANSWERED"] }))
@@ -1801,15 +2191,27 @@ export function createNousService(deps: NousServiceDeps) {
       const prices = texts ? pricesLine(priceTokens(texts)) : null;
       const coveredKind = !standing && settings.maySend ? maySendKind(input) : null;
       // Nous 13/11 (mailrev:oLB398mFW7pu went out at 18:56Z on an inferred kind): a review approve or edit a rule memory requires the operator
-      // to read never runs under maySend, with or without refs.sendKind; it stays his card.
-      const review = coveredKind && input.action?.type === "COPILOT" && input.action.item === "REVIEW" && /^(?:approve|edit)$/i.test(input.action.decision) ? input.action : null;
-      const heldFor = review && deps.reviewRequiredBy ? await deps.reviewRequiredBy(input.ownerUserId, review).then((memory) => memory
-        && `copilot memory ${memory.id} requires that you read this review ("${clip(memory.text.replace(/\s+/g, " "), 300)}")`, () => "the copilot's rule memories could not be read to check this review") : null;
-      const sendKind = heldFor ? null : coveredKind;
+      // to read never runs under maySend, with or without refs.sendKind; it stays his card. lessons-mail-review-preempt (mailrev:70yml4x5icYO
+      // rejected under maySend 13/11 13:37Z, the operator sent it 13:42Z): a reject is held the same, and so is anything on an item an open decision asks about.
+      const item = coveredKind && input.action?.type === "COPILOT" ? input.action : null;
+      const review = item?.item === "REVIEW" ? item : null;
+      const asked = item && open.find((decision) => decision.id !== options.replaces && decision.action?.type === "COPILOT"
+        && decision.action.copilot === item.copilot && decision.action.itemId === item.itemId);
+      const heldFor = (review && deps.reviewRequiredBy ? await deps.reviewRequiredBy(input.ownerUserId, review).then((memory) => memory
+        && `copilot memory ${memory.id} requires that you read this review ("${clip(memory.text.replace(/\s+/g, " "), 300)}")`, () => "the copilot's rule memories could not be read to check this review") : null)
+        || (asked ? `the open decision "${clip(asked.title, 200)}" already asks you about this item` : null)
+        || replacedUnread(input, coveredKind && options.replaces ? open.find((decision) => decision.id === options.replaces) : undefined)
+        // Daily Nous errors 23/11 (nous_decision:8bf54f47 Moonstone, 16/11 and 21/11 alike): Nous said the send differs from an operator rule
+        // (space_ask_operator ruleDiffers) and maySend mailed it at once; whether it really differs is the operator's to judge.
+        || (coveredKind && input.body.includes(`\n\n${RULE_DIFFERS_LINE} `) ? "this send differs from your rule, so it is yours to read" : null);
+      const readFirst = coveredKind ? await readsFirst(input.ownerUserId, input) : false;
+      const sendKind = heldFor || readFirst ? null : coveredKind;
       // "May delete what Nous created" (2026-10-28): Nous's own Agent Files go at once, a copy kept first; anything else stays a card.
       // R27-1: and test VMs/CTs and their snapshots an agent pane recorded creating, named in refs.testDeletes (the record is the "copy kept").
       const own = standing || !settings.mayDeleteOwn || !deps.deleteOwn ? null : deleteOwnTargets(input) ? await deleteOwnCheck(input.ownerUserId, input)
         : testDeleteTargets(input) && deps.deleteOwn.testResources ? mayDeleteTestCovers({ decision: input, records: await deps.deleteOwn.testResources(input.ownerUserId).catch(() => []) }) : null;
+      // Audit §4 item 3 "May clean regenerable system files": a pane prompt removing only /tmp/space-*, /tmp/tmp.* or docker caches runs at once.
+      const clean = !standing && settings.mayCleanSystem && cleanupTargets(input) ? mayCleanSystemCovers(input) : null;
       // "May publish after a green lab proof" (2026-10-28): the candidate the captain's green lab proof names is approved at once, bound to that commit.
       const product = !standing ? mayPublishProduct(input) : null;
       const publish = product && settings.mayPublish && deps.mayPublish ? mayPublishCovers({ decision: input, facts: await deps.mayPublish.facts(input.ownerUserId, product)
@@ -1821,14 +2223,15 @@ export function createNousService(deps: NousServiceDeps) {
       const restartHost = !standing && settings.mayRestartHosts && deps.mayRestartHosts ? restartHostOf(input) : null;
       const restart = restartHost ? mayRestartHostsCovers({ decision: input, facts: await deps.mayRestartHosts!.facts(input.ownerUserId, restartHost)
         .catch(() => ({ stableQueueIdle: null, browsersHeld: null, panesMidTurn: null })) }) : null;
-      const allowanceLine = heldFor ? `${MAY_SEND_NOT_COVERED}: ${heldFor}.` : own ? own.covered ? testDeleteTargets(input) ? `${MAY_DELETE_OWN_ANSWER}: test VMs, CTs or snapshots agent panes recorded creating (${own.keptIn}).`
+      const allowanceLine = readFirst ? `${MAY_SEND_NOT_COVERED}: ${OPERATOR_READS_FIRST}.` : heldFor ? `${MAY_SEND_NOT_COVERED}: ${heldFor}.` : own ? own.covered ? testDeleteTargets(input) ? `${MAY_DELETE_OWN_ANSWER}: test VMs, CTs or snapshots agent panes recorded creating (${own.keptIn}).`
           : `${MAY_DELETE_OWN_ANSWER}: files Nous made itself; a copy of each is kept in ${own.keptIn}.` : `Not covered by "May delete what Nous created": ${own.reason}.`
+        : clean ? clean.covered ? `${MAY_CLEAN_SYSTEM_ANSWER}: only regenerable targets (${clean.targets.join(", ")}).` : `Not covered by "May clean regenerable system files": ${clean.reason}.`
         : releaseOk ? releaseOkAnswer(releaseOk)
         : publish ? publish.covered ? `${MAY_PUBLISH_ANSWER}: the captain's lab proof for ${publish.sourceSha.slice(0, 10)} is green.` : `Not covered by "May publish after a green lab proof": ${publish.reason}.`
         : restart ? restart.covered ? `${MAY_RESTART_HOSTS_ANSWER}: the stable queue idle, no browser held${restart.host === "PANE_HOST" ? ", no CLI pane in a turn" : ""}.`
           : restart.waits ? `${MAY_RESTART_HOLD_LINE} runs by itself once this clears: ${restart.reason}.` : `Not covered by "May run guarded host restarts": ${restart.reason}.` : null;
       // Only the server writes the hold lines: a body Nous began with one is not taken for one.
-      const nousBody = neutralizePricesLine([MAY_SEND_HOLD_LINE, MAY_RESTART_HOLD_LINE].some((line) => input.body.startsWith(line)) ? `Nous: ${input.body}` : input.body);
+      const nousBody = neutralizePricesLine([MAY_SEND_HOLD_LINE, MAY_RESTART_HOLD_LINE, MAY_SEND_NOT_COVERED].some((line) => input.body.startsWith(line)) ? `Nous: ${input.body}` : input.body);
       // R10-17 (lesson 28/10 19:31 BKK third-party-silence): the server writes what the recipients' domains sent in 14 days, so "they wrote nothing" is checked.
       // R13-12: also the sites its texts name (only when they hold mail). Account facts (sign-ins, Google accounts, Vault logins) are Nous's,
       // never the card's (operator 2/11 09:49 BKK «γιατι βλεπω ολα αυτα τα εμαιλ!!»).
@@ -1839,7 +2242,17 @@ export function createNousService(deps: NousServiceDeps) {
       const body = [allowanceLine, prices, mailLines, filed.length <= 3_000 ? filed : nousBody, suggest].filter(Boolean).join("\n\n");
       // Ask last (goal ee5a573e): the decision, its card and its Telegram text end with what Nous checked first.
       const checked = options.checked?.map(neutralizePricesLine);
-      const decision = await deps.repository.createDecision({ ...input, body: checked?.length ? withCheckedBlock(body, checked, 4_000) : body });
+      const created = await deps.repository.createDecision({ ...input, body: checked?.length ? withCheckedBlock(body, checked, 4_000) : body });
+      if (readFirst) await deps.repository.setDecisionOutcome(input.ownerUserId, created.id, OPERATOR_READS_FIRST);
+      const decision = readFirst ? { ...created, outcome: OPERATOR_READS_FIRST } : created;
+      // Audit §4 item 4 "Never buy": a purchase question is declined at once, before any allowance could approve it; Nous takes the free route.
+      if (settings.neverBuy && input.action?.type !== "COPILOT" && purchaseAsk(`${input.title}\n${input.recommendation ?? ""}`, input.refs.sendKind)) {
+        const declined = await deps.repository.answerDecision(input.ownerUserId, decision.id, { status: "DECLINED", answer: NEVER_BUY_ANSWER });
+        if (declined) {
+          await allowanceLedger(input.ownerUserId, "never-buy", declined);
+          return declined;
+        }
+      }
       // Away (plan clipboard:B7eTUHTJYg3X): a decision the operator's grant covers is approved by it and runs now; the record says so.
       const away = deps.away && !options.phone ? await deps.away.current(input.ownerUserId).catch(() => null) : null;
       if (standing) {
@@ -1900,6 +2313,15 @@ export function createNousService(deps: NousServiceDeps) {
           return { ...approved, outcome };
         }
       }
+      if (clean?.covered) {
+        const approved = await deps.repository.answerDecision(input.ownerUserId, decision.id, { status: "APPROVED", answer: MAY_CLEAN_SYSTEM_ANSWER });
+        if (approved) {
+          await allowanceLedger(input.ownerUserId, "clean-system", approved);
+          const outcome = await deps.executeAction(approved).catch((error: unknown) => `Failed: ${error instanceof Error ? error.message : String(error)}`);
+          await deps.repository.setDecisionOutcome(input.ownerUserId, decision.id, outcome);
+          return { ...approved, outcome };
+        }
+      }
       // R10-18: a send goes out only when its files are still the ones hashed when it was asked; otherwise it is the operator's card.
       const changed = sendKind ? await changedFiles(input.ownerUserId, decision) : null;
       if (sendKind && !changed) {
@@ -1921,7 +2343,8 @@ export function createNousService(deps: NousServiceDeps) {
       let sent = 0;
       for (const decision of due) {
         const kind = maySendKind(decision);
-        const why = await changedFiles(owner, decision) ?? (!(await deps.settings(owner)).maySend ? "the allowance is off" : kind ? null : "not a send it covers");
+        const why = await changedFiles(owner, decision) ?? (!(await deps.settings(owner)).maySend ? "the allowance is off" : !kind ? "not a send it covers"
+          : await readsFirst(owner, decision) ? OPERATOR_READS_FIRST : null);
         if (why) {
           const held = `Held for you: "May send to third parties" no longer covers it (${why.replace(/^Held: /, "").replace(/\.$/, "")}).`;
           await deps.repository.setDecisionOutcome(owner, decision.id, clip(held, 2_000));
@@ -1982,6 +2405,15 @@ export function createNousService(deps: NousServiceDeps) {
       return withdrawn;
     },
 
+    /** The operator dismisses an open decision in «Εισερχόμενα» (E3, after a confirmation): it closes unanswered, its action never runs, Nous is told. */
+    async dismiss(owner: string, id: string): Promise<NousDecision | null> {
+      const closed = await deps.repository.answerDecision(owner, id, { status: "CANCELLED", answer: "Closed by the operator without an answer" });
+      if (!closed) return null;
+      await deps.notifications.resolve(owner, `nous:decision:${id}`).catch(() => {});
+      await api.notice(owner, `decision-dismissed:${id}`, `The operator closed your decision "${clip(closed.title, 200)}" (${id}) without an answer: its action does not run. Do not ask it again unless something changed.`);
+      return closed;
+    },
+
     /**
      * Daily upgrade 2026-10-27 (repeated 4+ times): the operator decided a copilot item in the copilot's rail and Nous's decision on
      * it stayed OPEN. An OPEN COPILOT decision whose item no longer waits is withdrawn here, with one inbox line; `openItemIds` is
@@ -2039,7 +2471,7 @@ export function createNousService(deps: NousServiceDeps) {
     /** A person's "Always approve" (a decision) or "Always answer like this" (a needs-you card): the kind joins the list Settings shows. */
     rememberAlways: (owner: string, kind: { key: string; label: string }) => rememberAlways(owner, kind),
 
-    async answer(owner: string, id: string, input: NousDecisionAnswerInput, options: { via?: "TELEGRAM" } = {}): Promise<NousDecision> {
+    async answer(owner: string, id: string, input: NousDecisionAnswerInput, options: { via?: "TELEGRAM"; superior?: string } = {}): Promise<NousDecision> {
       const current = await deps.repository.getDecision(owner, id);
       if (!current) throw new SpaceNotFoundError("This decision does not exist.");
       const kind = input.always ? standingKind(current) : null;
@@ -2054,7 +2486,7 @@ export function createNousService(deps: NousServiceDeps) {
           + `Ask again with the files as they are now and "replaces": "${id}" (Space closes this one as replaced).`);
         throw new SpaceConflictError(`${changed} Nothing ran: the card now shows the new text, and Nous asks again.`);
       }
-      const answered = await deps.repository.answerDecision(owner, id, { status, answer: input.text ?? (options.via ? `${status.toLowerCase()} via Telegram` : null) });
+      const answered = await deps.repository.answerDecision(owner, id, { status, answer: input.text ?? (options.via ? `${status.toLowerCase()} via Telegram` : options.superior ? `${status.toLowerCase()} by the superior SpaceApp's person (${options.superior})` : null) });
       if (!answered) throw new SpaceConflictError("This decision was already answered.");
       // Goal 7365014c-e: the ledger keeps what Nous predicted and how the operator answered.
       const predicted = decisionPrediction(current);
@@ -2067,7 +2499,9 @@ export function createNousService(deps: NousServiceDeps) {
       if (kind) await rememberAlways(owner, kind);
       // Goal 7365014c step 2 (6/11: couldHaveDecided read 0, only the operator's feedback button set it): a send "May send" covers, its files
       // unchanged, is marked by the server. shortcut: the switch is read at answer time and a phone ask is not told apart; record the ask-time coverage if that skews the count.
-      const sendCovered = maySendKind(current) || (current.category === "EXTERNAL" && current.refs.sendKind && !current.action);
+      // Daily Nous errors 20/11 (fcb2c0b9, fbc04556, 61c93f74, c3bd3034): a send the server held on the operator's card (read first, a copilot
+      // memory, an open decision; its body opens with MAY_SEND_NOT_COVERED, which Nous cannot write) was never Nous's to decide.
+      const sendCovered = !current.body.startsWith(MAY_SEND_NOT_COVERED) && (maySendKind(current) || (current.category === "EXTERNAL" && current.refs.sendKind && !current.action));
       // 13/11: only an approved send; a declined one (Kevin's mail, the wrong meeting time) needed the ask.
       const marked = status === "APPROVED" && sendCovered && (await deps.settings(owner).catch(() => null))?.maySend && !await changedFiles(owner, current)
         ? await deps.repository.setDecisionFeedback(owner, id, true) : null;
@@ -2079,10 +2513,11 @@ export function createNousService(deps: NousServiceDeps) {
         if (outcome.startsWith("Failed")) await api.notice(owner, `decision-failed:${id}`, `Approved decision ${id} "${clip(answered.title, 120)}" FAILED: ${clip(outcome.replace(/^Failed:\s*/, ""), 200)}; act now (a working action, or tell the operator what to do by hand).`, undefined, { soonMs: 5_000 });
       }
       await deps.notifications.resolve(owner, `nous:decision:${id}`).catch(() => {});
-      const note = `Operator's decision on "${answered.title}": ${status.toLowerCase()}${read ? " (read from their words)" : ""}${kind ? `, and always from now on (${kind.label})` : ""}${input.text ? ` — "${input.text}"` : ""}.`
-        + `${outcome ? ` The server ran the action: ${outcome}` : answered.action && status !== "APPROVED" ? " The action was not run." : ""}`;
+      // Slice 22 (15/11 12:32Z): a linked SpaceApp's decision of the same title was taken for this one; the id and "this SpaceApp" tell them apart.
+      const note = `${options.superior ? `Your superior SpaceApp's person's (${options.superior}, over Space Link)` : "Operator's"} decision ${id} on "${answered.title}": ${status.toLowerCase()}${read ? " (read from their words)" : ""}${kind ? `, and always from now on (${kind.label})` : ""}${input.text ? ` — "${input.text}"` : ""}.`
+        + `${outcome ? ` This SpaceApp ran the action (not a linked one): ${outcome}` : answered.action && status !== "APPROVED" ? " The action was not run." : ""}`;
       const entry = runtime(owner);
-      await addMessage(owner, null, "DECISION", "DONE", note, { decisionId: id, status, ...(options.via ? { via: options.via } : {}) });
+      await addMessage(owner, null, "DECISION", "DONE", note, { decisionId: id, status, ...(options.via ? { via: options.via } : {}), ...(options.superior ? { superior: options.superior } : {}) });
       if (entry.runningOperator || entry.running) entry.pending = true;
       else void runTurn(owner, "DECISION");
       // A goal waiting on the operator is due again once they answered (its back-off ends).

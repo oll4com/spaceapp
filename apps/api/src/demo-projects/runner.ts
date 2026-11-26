@@ -123,7 +123,7 @@ export class DemoRunManager {
 
   private async adoptIfAlive(run: DemoRunRecord, serverEntry: string): Promise<boolean> {
     if (!run.pid || !run.port) return false;
-    let commandLine = "";
+    let commandLine: string;
     try {
       commandLine = await readFile(`/proc/${run.pid}/cmdline`, "utf8");
     } catch {
@@ -377,6 +377,7 @@ export class DemoRunManager {
   async appendLog(runId: string, stream: "stdout" | "stderr" | "system", line: string, secrets: string[] = []): Promise<void> {
     const run = await this.options.repository.getRun(runId);
     if (!run) return;
+    // eslint-disable-next-line no-control-regex -- stripping control characters (all but tab and newline) is the point
     const trimmed = redactDemoLogLine(line.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ""), secrets).slice(0, 2000);
     const entry: DemoLogEntry = { seq: await this.nextSeq(run.logPath), at: this.now().toISOString(), stream, line: trimmed };
     const previous = this.logQueues.get(run.logPath) ?? Promise.resolve();
@@ -396,7 +397,7 @@ export class DemoRunManager {
       this.seqCounters.set(logPath, next);
       return next;
     }
-    let count = 0;
+    let count: number;
     try {
       const raw = await readFile(logPath, "utf8");
       count = raw.split("\n").filter((line) => line.length > 0).length;
@@ -409,7 +410,7 @@ export class DemoRunManager {
 
   async readLogs(ownerUserId: string, runId: string, since = 0): Promise<{ entries: DemoLogEntry[]; nextSeq: number; dropped: boolean }> {
     const run = await this.requireOwnedRun(ownerUserId, runId);
-    let entries: DemoLogEntry[] = [];
+    let entries: DemoLogEntry[];
     let dropped = false;
     try {
       const raw = await readFile(run.logPath, "utf8");

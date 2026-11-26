@@ -12,9 +12,10 @@ Identity checks, phone, payout, tax forms, CAPTCHAs (after the single matching b
 - Profile: title, overview, hourly rate, skills, Specialized Profiles, portfolio, Project Catalog packages,
   Consultations (texts in PROFILE/PRICING memory).
 - Finding work: saved searches with email alerts to upwork@example.invalid (MAIL items), Best Matches and search at
-  https://www.upwork.com/nx/find-work/. Good posts: under 24 hours old, under 10 proposals, payment verified,
-  budget at or above the floor, the niche (AI agents, MCP, LLM integrations, Node.js/TypeScript APIs, e-commerce
-  and marketplace integrations, PostgreSQL).
+  https://www.upwork.com/nx/find-work/ (Most Recent tab too). Good posts: under 24 hours old, under 10 proposals,
+  payment verified, budget at or above the floor, the niche (AI agents, MCP, LLM integrations, Node.js/TypeScript
+  APIs, e-commerce and marketplace integrations, PostgreSQL). Until the first 5 reviews, SKILL.md "Volume until the
+  first 5 reviews" sets which posts get a proposal.
 - Proposal: "Apply now" on the post, cover letter, rate or fixed price with milestones, Connects (the post shows
   the cost; record it as `connects`), answers to screening questions. Boosting costs extra Connects: only when the
   operator asks.

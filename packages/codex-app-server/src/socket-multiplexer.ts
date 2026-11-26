@@ -627,7 +627,8 @@ export async function startCodexAppServerSocketMultiplexer(
           writeMessage(state.socket, { id: message.id, error: { code: -32600, message: "The active Codex task changed." } });
           return;
         }
-        const { spaceExpectedPrimaryThreadId: _expected, ...nativeParams } = params;
+        const nativeParams = { ...params };
+        delete nativeParams.spaceExpectedPrimaryThreadId;
         message.params = nativeParams;
       }
       const selectsPrimaryThread = state.id === primaryClientId && ["thread/start", "thread/resume", "thread/fork"].includes(message.method);

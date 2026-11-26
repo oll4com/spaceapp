@@ -71,6 +71,46 @@ describe("applyMigration", () => {
   });
 });
 
+describe("statement-per-transaction migrations", () => {
+  const perStatement = { id: "0379_split", filename: "0379_split.sql",
+    sql: "-- header\n-- space:migration statement-per-transaction\nSET LOCAL lock_timeout = '10s';\nUPDATE a SET x = 1;\nALTER TABLE a ALTER COLUMN x SET DEFAULT 1;\n" };
+  const recorder = (fail?: (sql: string) => unknown) => {
+    const calls: string[] = [];
+    const client = { query: vi.fn(async (sql: string) => {
+      calls.push(sql.startsWith("INSERT INTO space_schema_migrations") ? "INSERT history" : sql);
+      const error = fail?.(sql); if (error) throw error;
+      return { rowCount: 1 };
+    }) } as unknown as Pick<pg.Client, "query">;
+    return { calls, client };
+  };
+
+  it("commits each statement on its own with the SET LOCAL prelude, recording history with the last", async () => {
+    const { calls, client } = recorder();
+    await applyMigration(client, perStatement);
+    expect(calls).toEqual([
+      "BEGIN", "SET LOCAL lock_timeout = '10s';\nUPDATE a SET x = 1;", "COMMIT",
+      "BEGIN", "SET LOCAL lock_timeout = '10s';\nALTER TABLE a ALTER COLUMN x SET DEFAULT 1;", "INSERT history", "COMMIT"
+    ]);
+  });
+
+  it("retries only the deadlocked statement, not the ones already committed", async () => {
+    let failed = false;
+    const { calls, client } = recorder((sql) => sql.includes("ALTER TABLE") && !failed && (failed = true)
+      ? Object.assign(new Error("deadlock detected"), { code: "40P01" }) : undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await applyMigration(client, perStatement, { sleep: async () => undefined });
+    expect(calls.filter((sql) => sql.includes("UPDATE a"))).toHaveLength(1);
+    expect(calls.filter((sql) => sql.includes("ALTER TABLE"))).toHaveLength(2);
+    expect(calls.filter((sql) => sql === "INSERT history")).toHaveLength(1);
+  });
+
+  it("refuses a multi-line statement before running anything", async () => {
+    const { calls, client } = recorder();
+    await expect(applyMigration(client, { ...perStatement, sql: perStatement.sql + "UPDATE b\nSET y = 1;\n" })).rejects.toThrow(/one complete statement per line/);
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("applyPendingMigrations", () => {
   it("applies only unrecorded migrations, in the given order, and leaves recorded history alone", async () => {
     const recorded = new Set(["0001_first", "0094_removed_file"]);

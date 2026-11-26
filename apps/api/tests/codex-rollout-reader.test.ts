@@ -18,7 +18,7 @@ async function fixture() {
 function countReducer(): RolloutReducer<number> {
   let count = 0;
   return {
-    accept(line) { try { if (JSON.parse(line).count === true) count += 1; } catch {} },
+    accept(line) { try { if (JSON.parse(line).count === true) count += 1; } catch { /* not JSON */ } },
     result: () => count,
     checkpoint: () => count,
     restore: (value) => { count = value as number; }

@@ -15,7 +15,7 @@ export function maskEmail(email: string): string {
   const [localPart, domain] = email.split("@");
   if (!localPart || !domain) return "***";
 
-  let maskedLocal = "***";
+  let maskedLocal: string;
   if (localPart.length <= 2) {
     maskedLocal = `${localPart[0]}***`;
   } else if (localPart.length <= 4) {
@@ -331,8 +331,8 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
       ) : null}
 
       <GoogleAccountsManager enabled={googleAuthEnabled} onAuthRefresh={onAuthRefresh} />
-      <AppDevicesManager />
-      <MobileAppManager />
+      <AppDevicesManager googleAuthEnabled={googleAuthEnabled} />
+      <MobileAppManager googleAuthEnabled={googleAuthEnabled} />
       <InstanceLinksManager />
 
       {error ? (

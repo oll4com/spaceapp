@@ -1,13 +1,15 @@
 import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
-import { APPOINTMENT_FORMATS, APPOINTMENT_KINDS, APPOINTMENT_TIMINGS, appointmentOverdue, type Appointment, type Pane } from "@space/contracts";
+import { APPOINTMENT_FORMATS, APPOINTMENT_KINDS, APPOINTMENT_REPEATS, APPOINTMENT_TIMINGS, appointmentHoursOf, appointmentOverdue, type Appointment, type Pane } from "@space/contracts";
 import { api } from "../../api.js";
 import { dayLabel, monthDays, shiftDay, shiftMonth, weekDays } from "../task-dock/calendar-days.js";
 import { CalendarClock, CalendarDays, ChevronLeft, ChevronRight, Columns3, ExternalLink, List, Plus, Timer, type LucideIcon } from "../ui-theme/app-icons.js";
 import {
   APPOINTMENT_KIND_COLORS, APPOINTMENT_KIND_ICONS, APPOINTMENT_KIND_LABELS, appointmentClock, appointmentCountdown, appointmentDay,
-  appointmentCalendarDayLabel, appointmentMonthLabel, appointmentLink, appointmentRelativeDay, appointmentsByDay, appointmentWhen,
-  isoToZonedInput, useAppointments, zonedInputToIso
+  appointmentCalendarDayLabel, appointmentCompleteAllowed, appointmentMonthLabel, appointmentLink, appointmentRecurrenceLabel, appointmentRelativeDay,
+  appointmentsByDay, appointmentWhen, isoToZonedInput, useAppointments, zonedInputToIso
 } from "./appointments-view.js";
+import { AppointmentDateInput } from "./AppointmentDateInput.js";
+import { useDockConfirm } from "../dock-kit/DockKit.js";
 import { AppointmentDetail } from "./AppointmentDetail.js";
 import { APPOINTMENT_FORMAT_LABELS, AppointmentBadges } from "./AppointmentBadges.js";
 import { AgentFileMentions, FileMentionText } from "../terminal-pane/AgentFileLinks.js";
@@ -22,11 +24,12 @@ import "./appointments.css";
  * (Settings → Notifications).
  */
 type Draft = { zone: string; id?: string; title: string; starts: string; ends: string; kind: Appointment["kind"]; location: string; notes: string;
-  format: NonNullable<Appointment["format"]>; timing: NonNullable<Appointment["timing"]>; deadline: string };
+  format: NonNullable<Appointment["format"]>; timing: NonNullable<Appointment["timing"]>; deadline: string;
+  repeat: "" | (typeof APPOINTMENT_REPEATS)[number]; until: string };
 // The sections the server requires of an upcoming appointment (appointment-content.ts in contracts), to fill in.
 const NOTES_TEMPLATE = "WHAT IT IS: \nTIME: \nHOW TO JOIN: \nWHY IT MATTERS: \nWHAT YOU NEED: \nSOURCE: ";
 const blank = (zone: string): Draft => ({ zone, title: "", starts: "", ends: "", kind: "CALL", location: "", notes: NOTES_TEMPLATE,
-  format: "LIVE_HUMAN_VIDEO", timing: "FIXED", deadline: "" });
+  format: "LIVE_HUMAN_VIDEO", timing: "FIXED", deadline: "", repeat: "", until: "" });
 type View = "list" | "week" | "month";
 const VIEWS: Array<{ id: View; label: string; icon: LucideIcon }> = [
   { id: "list", label: "List", icon: List }, { id: "week", label: "Week", icon: Columns3 }, { id: "month", label: "Month", icon: CalendarDays }
@@ -65,11 +68,14 @@ export function AppointmentsPane({ pane }: { pane?: Pane }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const { confirm, confirmDialog } = useDockConfirm();
   // The day the week or month shows and the day opened under it; today until the operator moves.
   const [cursor, setCursor] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   // The appointment whose whole record is open over the list (nous_msg:a6016259); a click on its row or chip opens it.
   const [openId, setOpenId] = useState<string | null>(null);
+  const hours = list?.hours ?? appointmentHoursOf(null, list?.timeZone ?? zone);
   const opened = openId ? list?.appointments.find((item) => item.id === openId) : undefined;
   const shortDay = (day: string) => appointmentCalendarDayLabel(day, settings, "short");
   const today = appointmentDay(new Date(now).toISOString(), zone);
@@ -112,13 +118,25 @@ export function AppointmentsPane({ pane }: { pane?: Pane }) {
     if (!draft) return;
     const fields = { title: draft.title.trim(), startsAt: zonedInputToIso(draft.starts, draft.zone), endsAt: draft.ends ? zonedInputToIso(draft.ends, draft.zone) : null,
       kind: draft.kind, location: draft.location.trim() || null, notes: draft.notes.trim() || null,
-      format: draft.format, timing: draft.timing, deadlineAt: draft.timing === "FLEXIBLE" && draft.deadline ? zonedInputToIso(draft.deadline, draft.zone) : null };
+      format: draft.format, timing: draft.timing, deadlineAt: draft.timing === "FLEXIBLE" && draft.deadline ? zonedInputToIso(draft.deadline, draft.zone) : null,
+      recurrence: draft.repeat && draft.until ? { every: draft.repeat, until: draft.until } : null };
     if (await act(() => (draft.id ? api.updateAppointment(draft.id, fields) : api.addAppointment(fields)))) setDraft(null);
   }
 
   const edit = (item: Appointment) => setDraft({ zone, id: item.id, title: item.title, starts: isoToZonedInput(item.startsAt, zone), ends: item.endsAt ? isoToZonedInput(item.endsAt, zone) : "",
     kind: item.kind, location: item.location ?? "", notes: item.notes ?? "",
-    format: item.format ?? "LIVE_HUMAN_VIDEO", timing: item.timing ?? "FIXED", deadline: item.deadlineAt ? isoToZonedInput(item.deadlineAt, zone) : "" });
+    format: item.format ?? "LIVE_HUMAN_VIDEO", timing: item.timing ?? "FIXED", deadline: item.deadlineAt ? isoToZonedInput(item.deadlineAt, zone) : "",
+    repeat: item.recurrence?.every ?? "", until: item.recurrence?.until ?? "" });
+
+  /** The recontact copy opens in place of the record it continues, with the pane's notice (operator 26/11: it must show and confirm). */
+  const showRecontact = (created: Appointment, message: string) => {
+    const day = appointmentDay(created.startsAt, zone);
+    setWhen("upcoming");
+    setCursor(day);
+    setSelected(day);
+    setOpenId(created.id);
+    setNotice(message);
+  };
 
   function renderItem(item: Appointment) {
     const link = appointmentLink(item);
@@ -139,7 +157,8 @@ export function AppointmentsPane({ pane }: { pane?: Pane }) {
           <span className="appointments-heading">
             {isNext ? <span className="appointments-next">Next up</span> : null}
             <span className="appointments-kind">{APPOINTMENT_KIND_LABELS[item.kind]}</span>
-            <AppointmentBadges item={item} settings={settings} hoursZone={list?.timeZone ?? zone} />
+            <AppointmentBadges item={item} settings={settings} hours={hours} />
+            {item.recurrence ? <span className="appointments-repeat">{appointmentRecurrenceLabel(item, settings, language)}</span> : null}
           </span>
           <button type="button" className="appointments-title" onClick={() => setOpenId(item.id)} aria-label={`${item.title}: open details`}>{item.title}</button>
           {link ? (
@@ -155,7 +174,8 @@ export function AppointmentsPane({ pane }: { pane?: Pane }) {
         </span>
         {item.status === "UPCOMING" ? (
           <span className="appointments-actions">
-            <button type="button" onClick={() => void act(() => api.updateAppointment(item.id, { status: "DONE" }))} disabled={busy}
+            <button type="button" onClick={() => void appointmentCompleteAllowed(item, settings, language, confirm)
+              .then((yes) => yes && act(() => api.updateAppointment(item.id, { status: "DONE" })))} disabled={busy}
               aria-label={`Mark ${item.title} completed`}>Completed</button>
             <button type="button" onClick={() => edit(item)} disabled={busy} aria-label={`Edit ${item.title}`}>Edit</button>
             <button type="button" onClick={() => void act(() => api.updateAppointment(item.id, { status: "CANCELLED" }))} disabled={busy}
@@ -278,8 +298,8 @@ export function AppointmentsPane({ pane }: { pane?: Pane }) {
       {draft ? (
         <form className="appointments-form" onSubmit={(event) => void save(event)} aria-label={draft.id ? "Edit appointment" : "Add appointment"}>
           <label className="is-wide">Title<input required value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
-          <label>Starts<input type="datetime-local" required value={draft.starts} onChange={(event) => setDraft({ ...draft, starts: event.target.value })} /></label>
-          <label>Ends (optional)<input type="datetime-local" value={draft.ends} onChange={(event) => setDraft({ ...draft, ends: event.target.value })} /></label>
+          <AppointmentDateInput label="Starts" withTime required settings={settings} value={draft.starts} onChange={(starts) => setDraft({ ...draft, starts })} />
+          <AppointmentDateInput label="Ends (optional)" withTime settings={settings} value={draft.ends} onChange={(ends) => setDraft({ ...draft, ends })} />
           <label>Kind
             <select value={draft.kind} onChange={(event) => setDraft({ ...draft, kind: event.target.value as Appointment["kind"] })}>
               {APPOINTMENT_KINDS.map((kind) => <option key={kind} value={kind}>{APPOINTMENT_KIND_LABELS[kind]}</option>)}
@@ -295,7 +315,15 @@ export function AppointmentsPane({ pane }: { pane?: Pane }) {
               {APPOINTMENT_TIMINGS.map((timing) => <option key={timing} value={timing}>{timing === "FIXED" ? "Strict time" : "Flexible until a deadline"}</option>)}
             </select>
           </label>
-          {draft.timing === "FLEXIBLE" ? <label>Deadline<input type="datetime-local" required value={draft.deadline} onChange={(event) => setDraft({ ...draft, deadline: event.target.value })} /></label> : null}
+          {draft.timing === "FLEXIBLE" ? <AppointmentDateInput label="Deadline" withTime required settings={settings} value={draft.deadline} onChange={(deadline) => setDraft({ ...draft, deadline })} /> : null}
+          <label>{t("Repeat")}
+            <select value={draft.repeat} onChange={(event) => setDraft({ ...draft, repeat: event.target.value as Draft["repeat"] })}>
+              <option value="">{t("Does not repeat")}</option>
+              <option value="DAY">{t("Every day")}</option>
+              <option value="WEEKDAY">{t("Weekdays")}</option>
+            </select>
+          </label>
+          {draft.repeat ? <AppointmentDateInput label={t("Repeat until")} required settings={settings} value={draft.until} onChange={(until) => setDraft({ ...draft, until })} /> : null}
           <label>Place or link<input value={draft.location} onChange={(event) => setDraft({ ...draft, location: event.target.value })} /></label>
           <label className="is-wide">Notes<textarea rows={7} value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} /></label>
           <div className="appointments-form-actions is-wide">
@@ -305,7 +333,10 @@ export function AppointmentsPane({ pane }: { pane?: Pane }) {
         </form>
       ) : null}
       {failure || error ? <p className="appointments-error" role="alert">{failure ?? error}</p> : null}
-      {opened ? <AppointmentDetail item={opened} settings={settings} zone={zone} hoursZone={list?.timeZone ?? zone} now={now} onBack={() => setOpenId(null)} onEdit={() => { setOpenId(null); edit(opened); }} /> : null}
+      {notice ? <p className="appointments-notice" role="status">{notice}</p> : null}
+      {confirmDialog}
+      {opened ? <AppointmentDetail item={opened} settings={settings} zone={zone} hours={hours} now={now} onBack={() => setOpenId(null)} onEdit={() => { setOpenId(null); edit(opened); }}
+        onChanged={reload} onRecontact={showRecontact} /> : null}
       <div className="appointments-list">
         {!list ? <p className="appointments-muted">Loading appointments…</p> : view !== "list" ? renderCalendar() : list.appointments.length === 0 ? (
           <div className="appointments-empty">

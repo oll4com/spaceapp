@@ -1,7 +1,7 @@
 import {
   voiceRealtimeSessionRequestSchema,
   voiceRealtimeSessionResponseSchema
-} from "@space/contracts";
+} from "../src/index.js";
 import { describe, expect, it } from "vitest";
 
 describe("voice realtime contracts", () => {

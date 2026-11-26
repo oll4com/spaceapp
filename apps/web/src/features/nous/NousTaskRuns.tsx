@@ -66,7 +66,7 @@ export function NousTaskRuns({ active }: { active: boolean }) {
   const tasks = loaded?.tasks ?? [];
   const all = counts ? STATUSES.reduce((sum, status) => sum + counts[status], 0) : null;
   return (
-    <div className="nous-decisions nous-requests nous-task-runs" data-sensitive-masked="manual">
+    <div className="nous-decisions nous-requests nous-task-runs">
       <div className="nous-task-runs-filters">
         <select className="dock-kit-select nous-requests-filter" aria-label="Status" value={filter.status}
           onChange={(event) => { const status = event.currentTarget.value as Filter["status"]; setFilter((current) => ({ ...current, status })); }}>

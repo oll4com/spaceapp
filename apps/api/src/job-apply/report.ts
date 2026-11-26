@@ -36,14 +36,27 @@ export function platformOf(ats: string, url: string): string {
 }
 
 // `first` and `role` are read once per company, not once per company and mail (the report held the API's main thread up to 3.2 s on stable 4/11);
-// `word` is compiled only for a company a mail's text holds the first word of (one unicode RegExp per application held it 1.5 s).
-interface Company { name: string; key: string; word?: RegExp; lower: string; first: string; role: boolean }
-const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// a name is looked for only in a text that holds its first word (one unicode RegExp per application held it 1.5 s).
+interface Company { name: string; key: string; lower: string; first: string; role: boolean }
 function companyOf(name: string): Company {
   const trimmed = name.trim();
   return { name: trimmed, key: companyKey(trimmed) || trimmed.toLowerCase(), lower: trimmed.toLowerCase(), first: trimmed.toLowerCase().split(/\s+/)[0]!, role: ROLE_WORDS.test(trimmed) };
 }
-const wordOf = (company: Company) => company.word ??= new RegExp(`(?<![\\p{L}\\p{N}])${escape(company.name).replace(/\s+/g, "\\s+")}(?![\\p{L}\\p{N}])`, "iu");
+// A name is a whole word of a text when neither neighbour is a letter or a digit; both sides in lower case, each run of whitespace one space.
+// No RegExp per company: its two unicode classes cost 0.4 ms at the first test, and 1,500 of them held the API's main thread 0.6-1.3 s at the
+// first report after every start (14/11: the longest block in 11 of dev's 23 profiles, where every deploy is a start).
+const spaced = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
+const LETTER = /^[\p{L}\p{N}]/u;
+function holdsWord(text: string, word: string): boolean {
+  if (!word) return false; // indexOf("") finds a place forever
+  // Every place the name starts at, overlapping ones too: the first may sit inside a longer word.
+  for (let at = text.indexOf(word); at >= 0; at = text.indexOf(word, at + 1)) {
+    const end = at + word.length;
+    // The code point before by itself: /[\p{L}\p{N}]$/u misses a letter outside the BMP (Node 26.13).
+    if (!LETTER.test([...text.slice(Math.max(0, at - 2), at)].pop() ?? "") && !LETTER.test(text.slice(end, end + 2))) return true;
+  }
+  return false;
+}
 
 // Two or three words in a row read as one name: boards store "Dvtrading", "Mystenlabs", "Eightsleep", "Aurosglobal" (stable 3/11: their mails
 // say "DV Trading", "Mysten Labs", "Eight Sleep", auros.global, and ten rejections and a test were listed under no company).
@@ -81,9 +94,9 @@ export function namedCompany(companies: readonly Company[], byKey: ReadonlyMap<s
   // Short names ("Via", "Map") stand in subjects as plain words; there a name needs four letters.
   for (const [text, minimum] of [[display?.trim() ?? "", 2], [mail.subject, 4]] as const) {
     if (!text) continue;
-    const lower = text.toLowerCase();
+    const lower = spaced(text);
     const named = (company: Company) => company.key.length >= minimum && !company.role;
-    const hits = [...candidatesIn(companies, lower).filter((company) => named(company) && lower.includes(company.first) && wordOf(company).test(text)),
+    const hits = [...candidatesIn(companies, lower).filter((company) => named(company) && holdsWord(lower, spaced(company.name))),
       ...joinedKeys(text.split(/[^\p{L}\p{N}]+/u).filter(Boolean)).map((key) => byKey.get(key)).filter((hit): hit is Company => Boolean(hit) && named(hit!))];
     // A test or ATS platform named beside another company is the tool, not the employer (stable 5/11: "Agoda · …: HackerRank Coding Interview" went to HackerRank).
     const employers = hits.filter((hit) => !PLATFORM_KEYS.has(hit.key));

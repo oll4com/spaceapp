@@ -339,7 +339,7 @@ function setStoredCustomFolders(folders: string[]) {
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(`${CUSTOM_FOLDERS_PREFIX}${AGENT_FILES_SHARED_KEY}`, JSON.stringify(folders));
     }
-  } catch {}
+  } catch { /* storage unavailable: folders kept for this session */ }
 }
 
 function getStoredFolderMap(): Record<string, string> {
@@ -356,7 +356,7 @@ function setStoredFolderMap(map: Record<string, string>) {
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(`${FOLDER_MAP_PREFIX}${AGENT_FILES_SHARED_KEY}`, JSON.stringify(map));
     }
-  } catch {}
+  } catch { /* storage unavailable: map kept for this session */ }
 }
 
 function matchesFolder(entry: AgentFileEntry, folderId: string, folderMap: Record<string, string>): boolean {
@@ -517,7 +517,7 @@ export function getStoredAgentFilesCache(roomId: string): Artifact[] {
         }
       }
     }
-  } catch {}
+  } catch { /* no or unreadable cache: load fresh */ }
   return inMem ?? [];
 }
 
@@ -527,7 +527,7 @@ export function persistAgentFilesCache(roomId: string, items: Artifact[]): void 
     if (typeof sessionStorage !== "undefined") {
       sessionStorage.setItem(`space_agent_files_cache_${roomId}`, JSON.stringify(items.slice(0, 500)));
     }
-  } catch {}
+  } catch { /* storage full or unavailable: cache skipped */ }
 }
 
 export function clearStoredAgentFilesCache(roomId?: string): void {
@@ -538,7 +538,7 @@ export function clearStoredAgentFilesCache(roomId?: string): void {
       if (typeof sessionStorage !== "undefined") {
         sessionStorage.removeItem(`space_agent_files_cache_${roomId}`);
       }
-    } catch {}
+    } catch { /* storage unavailable: nothing to clear */ }
   } else {
     agentFilesRoomCache.clear();
     agentFilesLastFetched.clear();
@@ -551,7 +551,7 @@ export function clearStoredAgentFilesCache(roomId?: string): void {
         }
         toRemove.forEach((k) => sessionStorage.removeItem(k));
       }
-    } catch {}
+    } catch { /* storage unavailable: nothing to clear */ }
   }
 }
 
@@ -664,6 +664,7 @@ export function AgentFilePreviewDialog({ artifact, paneTitles, onClose }: {
       meta={`${entry.provenance} · ${entry.timestamp} · ${entry.size}`}
       kind={entry.previewKind}
       url={api.agentFilePreviewUrl(entry.artifact.id)}
+      pageUrl={`${api.agentFilePreviewUrl(entry.artifact.id)}?view=page`}
       closeLabel="Close Agent File preview"
       notice={downloadError ? <DockNotice onDismiss={() => setDownloadError(null)}>{downloadError}</DockNotice> : null}
       actions={<>
@@ -686,14 +687,20 @@ export type FilePreviewKind = AgentFilePreviewKind;
 
 /** Text files the Reading view lays out as a document (operator nous_msg:c70b18e1); code, logs and data stay raw. */
 const READABLE_TEXT = /\.(?:md|markdown|txt)$/i;
+/** HTML files run as a working page (operator nous_msg:709c40fa: a rating form showed as source). No allow-same-origin: the file is
+ *  untrusted and must not reach Space's origin, cookies or API (its response carries the same sandbox, artifact-read-routes.ts). */
+const HTML_FILE = /\.html?$/i;
+const HTML_SANDBOX = "allow-scripts allow-forms allow-downloads allow-modals";
 const isTextView = (value: unknown): value is "raw" | "reading" => value === "raw" || value === "reading";
 
-/** One file preview for Agent Files and Nous's attachments: `url` serves the file (TEXT: its text) for `kind`. */
-export function FilePreviewDialog({ filename, meta, kind, url, closeLabel, actions, notice, onClose }: {
+/** One file preview for Agent Files and Nous's attachments: `url` serves the file (TEXT: its text) for `kind`; `pageUrl` serves an
+ *  HTML file whole as a sandboxed page. */
+export function FilePreviewDialog({ filename, meta, kind, url, pageUrl, closeLabel, actions, notice, onClose }: {
   filename: string;
   meta: string;
   kind: FilePreviewKind;
   url: string;
+  pageUrl?: string;
   closeLabel: string;
   actions?: ReactNode;
   notice?: ReactNode;
@@ -702,11 +709,14 @@ export function FilePreviewDialog({ filename, meta, kind, url, closeLabel, actio
   const [fullscreen, setFullscreen] = useState(false);
   const [textPreview, setTextPreview] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [htmlSource, setHtmlSource] = useState(false);
   // Remembered on this device for every later preview, Agent Files and Nous alike, until switched back.
   const [textView, setTextView] = useNousUiState<"raw" | "reading">("filePreviewTextView", "raw", isTextView);
   const t = useUiText();
   const readable = kind === "TEXT" && READABLE_TEXT.test(filename);
   const reading = readable && textView === "reading";
+  const html = kind === "TEXT" && Boolean(pageUrl) && HTML_FILE.test(filename);
+  const page = html && !htmlSource;
   const previewOf = t("Preview of {name}", { name: filename });
   const returnFocus = useRef(document.activeElement as HTMLElement | null);
 
@@ -754,6 +764,7 @@ export function FilePreviewDialog({ filename, meta, kind, url, closeLabel, actio
     if (kind === "DOCX") {
       return <iframe src={url} title={previewOf} sandbox="" />;
     }
+    if (page) return <iframe src={pageUrl} title={previewOf} sandbox={HTML_SANDBOX} />;
     if (kind === "TEXT") {
       if (previewError) return <div className="agent-files-preview-note is-error" role="alert">{previewError}</div>;
       if (textPreview === null) return <div className="agent-files-preview-note" role="status">Loading preview…</div>;
@@ -775,7 +786,8 @@ export function FilePreviewDialog({ filename, meta, kind, url, closeLabel, actio
       role="dialog"
       aria-modal="true"
       aria-label={t("Preview {name}", { name: filename })}
-      onClick={onClose}
+      // A click beside a working page (a form being filled) must not throw its unsaved input away.
+      onClick={page ? undefined : onClose}
       onKeyDown={(event) => {
         event.stopPropagation();
         if (event.key === "Escape") { event.preventDefault(); onClose(); }
@@ -789,7 +801,7 @@ export function FilePreviewDialog({ filename, meta, kind, url, closeLabel, actio
       <div className={`attachment-modal-body agent-files-modal-body is-preview${fullscreen ? " is-fullscreen" : ""}`} onClick={(event) => event.stopPropagation()}>
         <div className="agent-files-modal-head">
           <div className="agent-files-modal-heading">
-            <span className="dock-kit-card-title" data-sensitive-masked="manual" title={filename}>{filename}</span>
+            <span className="dock-kit-card-title" title={filename}>{filename}</span>
             <span className="dock-kit-meta-text">{meta}</span>
             {notice}
           </div>
@@ -798,6 +810,11 @@ export function FilePreviewDialog({ filename, meta, kind, url, closeLabel, actio
               label={t(reading ? "Show original text" : "Show reading view")}
               icon={reading ? FileCode : BookOpen}
               onClick={() => setTextView(reading ? "raw" : "reading")}
+            /> : null}
+            {html ? <DockIconButton
+              label={t(page ? "Show page source" : "Show page")}
+              icon={page ? FileCode : Eye}
+              onClick={() => setHtmlSource(page)}
             /> : null}
             {actions}
             <DockFullscreenButton name="file preview" active={fullscreen} onToggle={() => setFullscreen((current) => !current)} />
@@ -1187,7 +1204,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     }
     document.addEventListener("keydown", handleEscape, true);
     return () => document.removeEventListener("keydown", handleEscape, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasOpenDialog, isDockActive, movingEntry, showNewFolderModal, detailsEntry]);
 
   function handleSetViewMode(mode: "list" | "grid") {
@@ -1196,7 +1212,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
       if (typeof localStorage !== "undefined") {
         localStorage.setItem("space_agent_files_view_mode", mode);
       }
-    } catch {}
+    } catch { /* storage unavailable: mode kept for this session */ }
   }
 
   function handleSetShowPreviews(enabled: boolean) {
@@ -1205,7 +1221,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
       if (typeof localStorage !== "undefined") {
         localStorage.setItem("space_agent_files_thumbnails", enabled ? "true" : "false");
       }
-    } catch {}
+    } catch { /* storage unavailable: setting kept for this session */ }
   }
 
   function clearFilters() {
@@ -1834,7 +1850,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
                 </button>
 
                 <div className="agent-files-item-body">
-                  <div className="dock-kit-card-title" data-sensitive-masked="manual" title={entry.filename}>{entry.filename}</div>
+                  <div className="dock-kit-card-title" title={entry.filename}>{entry.filename}</div>
                   <div className="dock-kit-meta">
                     <span className="dock-kit-meta-text" title={entry.provenance}>{entry.provenance}</span>
                   </div>

@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { InMemorySpaceStore } from '@space/runtime';
 import { createBrowserSessionManager, googleBrowserProfilePathFor } from '../src/browser-sessions.js';
 import { getApiConfig } from '../src/config.js';
+import { mkdtempShort } from './support/short-tmp.js';
 
 // All data belongs to a disposable fixture; this is storage evidence, not Google authentication.
 // Real Chrome and Xvfb at the paths the Browser Host uses; a machine without them skips these, as browser-chrome-crash does.
@@ -40,7 +41,7 @@ describe.skipIf(missingBrowser)('full profile persistence in real Chrome', () =>
   const config = () => getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: 'true', SPACE_BROWSER_SESSIONS_PROFILE_ROOT: root, SPACE_ARTIFACT_ROOT: root, SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN: origin, SPACE_BROWSER_SESSIONS_AUDIO_ENABLED: 'false', SPACE_BROWSER_SESSIONS_XVFB_ENABLED: 'true' });
   const start = (index: number, path: string, accountId = account.id) => manager.startOrRestore({ pane: panes[index]!, googleAccount: { ownerUserId: user.id, accountId }, targetUrl: origin + path, includeInitialFrame: false, traceId: 'trace' });
   async function text(index: number) { return (await manager.action(panes[index]!, { type: 'extract_text' }, 'trace')).text; }
-  beforeAll(async () => { temp = await mkdtemp(join(tmpdir(), 't-')); vi.stubEnv('TMPDIR', temp); root = await mkdtemp(join(tmpdir(), 'chrome-test-')); await new Promise<void>(r => server.listen(0, '127.0.0.1', r)); origin = `http://127.0.0.1:${(server.address() as {port:number}).port}`; manager = createBrowserSessionManager({ store, config: config() }); }, 30000);
+  beforeAll(async () => { temp = await mkdtempShort('t-'); vi.stubEnv('TMPDIR', temp); root = await mkdtemp(join(tmpdir(), 'chrome-test-')); await new Promise<void>(r => server.listen(0, '127.0.0.1', r)); origin = `http://127.0.0.1:${(server.address() as {port:number}).port}`; manager = createBrowserSessionManager({ store, config: config() }); }, 30000);
   afterAll(async () => { await manager?.closeAll(); await new Promise<void>(r=>server.close(()=>r())); if(root) await rm(root,{ recursive:true,force:true }); if(temp) await rm(temp,{ recursive:true,force:true }); vi.unstubAllEnvs(); },30000);
   it('shares cookies, localStorage and IndexedDB; isolates accounts, popups and survives a host restart', async () => {
     await start(0,'/write');
@@ -87,12 +88,13 @@ describe.skipIf(missingBrowser)('tabs in another Google account inside one pane,
   const room = store.createRoom({ name: 'Tab accounts', initialPaneCount: 0 }, 'trace', user.id);
   const pane = store.createPane({ roomId: room.id, title: 'Andy', mode: 'MARKETING_COPILOT' });
   const freelance = store.createPane({ roomId: room.id, title: 'Freelance', mode: 'FREELANCE_COPILOT' });
-  const config = () => getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: 'true', SPACE_BROWSER_SESSIONS_PROFILE_ROOT: root, SPACE_ARTIFACT_ROOT: root, SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN: origin, SPACE_BROWSER_SESSIONS_AUDIO_ENABLED: 'false', SPACE_BROWSER_SESSIONS_XVFB_ENABLED: 'true' });
+  // The Freelance pane leaves by its default route (thailand), whose proxy lives in the local env since 331040e3a7: a fixture one.
+  const config = () => getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: 'true', SPACE_BROWSER_SESSIONS_PROFILE_ROOT: root, SPACE_ARTIFACT_ROOT: root, SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN: origin, SPACE_BROWSER_SESSIONS_AUDIO_ENABLED: 'false', SPACE_BROWSER_SESSIONS_XVFB_ENABLED: 'true', SPACE_VPN_SOCKS_PROXIES: 'thailand=10.20.2.2:1080' });
   const inSecond = { googleAccount: { ownerUserId: user.id, accountId: second.id } };
   const toSecond = (pageId: string) => manager.startOrRestore({ pane, ...inSecond, accountTab: { pageId, profileId: second.id, label: 'b@example.test' }, traceId: 'trace' });
   const text = async () => (await manager.action(pane, { type: 'extract_text' }, 'trace')).text ?? '';
   const pages = () => manager.listPages!(pane);
-  beforeAll(async () => { temp = await mkdtemp(join(tmpdir(), 't-')); vi.stubEnv('TMPDIR', temp); root = await mkdtemp(join(tmpdir(), 'chrome-tabs-')); await new Promise<void>(r => server.listen(0, '127.0.0.1', r)); origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`; manager = createBrowserSessionManager({ store, config: config() }); }, 30000);
+  beforeAll(async () => { temp = await mkdtempShort('t-'); vi.stubEnv('TMPDIR', temp); root = await mkdtemp(join(tmpdir(), 'chrome-tabs-')); await new Promise<void>(r => server.listen(0, '127.0.0.1', r)); origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`; manager = createBrowserSessionManager({ store, config: config() }); }, 30000);
   afterAll(async () => { await manager?.closeAll(); await new Promise<void>(r => server.close(() => r())); if (root) await rm(root, { recursive: true, force: true }); if (temp) await rm(temp, { recursive: true, force: true }); vi.unstubAllEnvs(); }, 30000);
 
   it('keeps each tab in its account, follows it with the live view, popups and input, and reopens it there after a restart', async () => {
@@ -219,7 +221,7 @@ describe.skipIf(missingBrowser)('taking control of a pane whose tab another tab 
   const room = store.createRoom({ name: 'Front tab', initialPaneCount: 0 });
   const pane = store.createPane({ roomId: room.id, title: 'Browser', mode: 'BROWSER' });
   const text = async () => (await manager.action(pane, { type: 'extract_text' }, 'trace')).text;
-  beforeAll(async () => { temp = await mkdtemp(join(tmpdir(), 't-')); vi.stubEnv('TMPDIR', temp); root = await mkdtemp(join(tmpdir(), 'chrome-front-')); await new Promise<void>(r => server.listen(0, '127.0.0.1', r)); origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`; manager = createBrowserSessionManager({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: 'true', SPACE_BROWSER_SESSIONS_PROFILE_ROOT: root, SPACE_ARTIFACT_ROOT: root, SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN: origin, SPACE_BROWSER_SESSIONS_AUDIO_ENABLED: 'false', SPACE_BROWSER_SESSIONS_XVFB_ENABLED: 'true' }) }); }, 30000);
+  beforeAll(async () => { temp = await mkdtempShort('t-'); vi.stubEnv('TMPDIR', temp); root = await mkdtemp(join(tmpdir(), 'chrome-front-')); await new Promise<void>(r => server.listen(0, '127.0.0.1', r)); origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`; manager = createBrowserSessionManager({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: 'true', SPACE_BROWSER_SESSIONS_PROFILE_ROOT: root, SPACE_ARTIFACT_ROOT: root, SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN: origin, SPACE_BROWSER_SESSIONS_AUDIO_ENABLED: 'false', SPACE_BROWSER_SESSIONS_XVFB_ENABLED: 'true' }) }); }, 30000);
   afterAll(async () => { await manager?.closeAll(); await new Promise<void>(r => server.close(() => r())); if (root) await rm(root, { recursive: true, force: true }); if (temp) await rm(temp, { recursive: true, force: true }); vi.unstubAllEnvs(); }, 30000);
 
   it("brings the pane's active tab to the front when control is acquired", async () => {
@@ -252,7 +254,7 @@ describe.skipIf(missingBrowser)('a navigation fragment reaches Chrome only, in r
   const room = store.createRoom({ name: 'Fragment', initialPaneCount: 0 });
   const pane = store.createPane({ roomId: room.id, title: 'Browser', mode: 'BROWSER' });
   const text = async () => (await manager.action(pane, { type: 'extract_text' }, 'trace')).text;
-  beforeAll(async () => { temp = await mkdtemp(join(tmpdir(), 't-')); vi.stubEnv('TMPDIR', temp); root = await mkdtemp(join(tmpdir(), 'chrome-fragment-')); await new Promise<void>(r => server.listen(0, '127.0.0.1', r)); origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`; manager = createBrowserSessionManager({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: 'true', SPACE_BROWSER_SESSIONS_PROFILE_ROOT: root, SPACE_ARTIFACT_ROOT: root, SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN: origin, SPACE_BROWSER_SESSIONS_AUDIO_ENABLED: 'false', SPACE_BROWSER_SESSIONS_XVFB_ENABLED: 'true' }) }); }, 30000);
+  beforeAll(async () => { temp = await mkdtempShort('t-'); vi.stubEnv('TMPDIR', temp); root = await mkdtemp(join(tmpdir(), 'chrome-fragment-')); await new Promise<void>(r => server.listen(0, '127.0.0.1', r)); origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`; manager = createBrowserSessionManager({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: 'true', SPACE_BROWSER_SESSIONS_PROFILE_ROOT: root, SPACE_ARTIFACT_ROOT: root, SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN: origin, SPACE_BROWSER_SESSIONS_AUDIO_ENABLED: 'false', SPACE_BROWSER_SESSIONS_XVFB_ENABLED: 'true' }) }); }, 30000);
   afterAll(async () => { vi.restoreAllMocks(); await manager?.closeAll(); await new Promise<void>(r => server.close(() => r())); if (root) await rm(root, { recursive: true, force: true }); if (temp) await rm(temp, { recursive: true, force: true }); vi.unstubAllEnvs(); }, 30000);
 
   it('sends the fragment to Page.navigate and keeps it out of stored state, the response and logs', async () => {

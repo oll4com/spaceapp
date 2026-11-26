@@ -188,8 +188,9 @@ export interface NousMarketingReport {
   /** Plan clipboard:UoygRDurSshE step 2.4: site view → install interest → launcher started → completed → first CLI pane → active a second day, over the
    * owner's history period; a step whose source is not synced to this server is left out. */
   funnel?: Array<{ step: string; count: number }>;
-  /** The installs of `funnel` per launcher `--ref` channel code ("none" without one); empty until an install carries a ref. */
-  funnelByRef?: Array<{ ref: string; started: number; completed: number; firstCli: number; activeSecondDay: number }>;
+  /** `funnel` per channel: the site's utm_source (views, install interest) joined to the launcher's `--ref` the Copy button carries ("none" without
+   * one); views and interest absent when the site is not synced here; empty until a view has a source or an install a ref. */
+  funnelByRef?: Array<{ ref: string; views?: number; installIntent?: number; started: number; completed: number; firstCli: number; activeSecondDay: number }>;
 }
 /** A count and the median seconds of what it counts. */
 export interface NousSiteRow { key: string; views: number; medianSeconds: number | null }
@@ -207,7 +208,8 @@ export interface NousSiteFunnel {
   /** Every page: views, median visible seconds, median scroll depth (%) and views that left the site from it. */
   pages: Array<NousSiteRow & { medianDepth: number | null; leftSite: number }>;
   referrers: NousSiteRow[];
-  sources: NousSiteRow[];
+  /** utm_source, lowercased like the launcher's --ref, with the install interest of its views. */
+  sources: Array<NousSiteRow & { installIntent: number }>;
   countries: NousSiteRow[];
   screens: NousSiteRow[];
   /** "from → to" within the site, and the named actions (install_copy, demo, github, docs, advisor). */

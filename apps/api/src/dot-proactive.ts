@@ -254,7 +254,7 @@ export function createProactiveDecider(options: { baseUrl: string | null; apiKey
     const payload = await response.json() as { model?: unknown; usage?: unknown; choices?: Array<{ message?: { content?: unknown } }> };
     const usage = reportedUsage(payload);
     const content = String(payload.choices?.[0]?.message?.content ?? "").replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
-    let parsed: ReturnType<typeof decisionSchema.safeParse> | null = null;
+    let parsed: ReturnType<typeof decisionSchema.safeParse> | null;
     try { parsed = decisionSchema.safeParse(JSON.parse(content || "{\"items\":[]}")); } catch { parsed = null; }
     if (!parsed?.success) throw new ProactiveDecisionError("The model returned an invalid decision.", usage);
     return { ...parsed.data, usage };

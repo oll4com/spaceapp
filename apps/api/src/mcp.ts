@@ -47,6 +47,8 @@ export interface McpToolExecutionCapture {
   finishedAt: string;
   durationMs: number;
   isError: boolean;
+  /** The tool's own words when it answers isError (redacted), so the caller learns why without opening the artifact. */
+  errorText: string | null;
   artifact: McpToolExecutionArtifactInput;
 }
 
@@ -603,7 +605,11 @@ export async function executeMcpTool(
 
     await mkdir(artifactDir, { recursive: true, mode: 0o750 });
     await writeFile(join(artifactDir, filename), buffer, { mode: 0o640 });
+    const answer = sanitizedResult as { structuredContent?: { message?: unknown }; content?: Array<{ text?: unknown }> };
+    const errorText = resultRecord.isError !== true ? null
+      : [answer.structuredContent?.message, ...(answer.content ?? []).map((item) => item?.text)].find((text): text is string => typeof text === "string" && text.length > 0) ?? null;
     return {
+      errorText,
       executionId,
       startedAt,
       finishedAt,

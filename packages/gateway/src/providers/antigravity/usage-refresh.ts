@@ -29,9 +29,12 @@ export async function refreshAntigravityAccountUsage(input: { repository: Gatewa
     const info = await loadCodeAssist(credentials.accessToken, { fetchImpl: input.fetchImpl });
     project = info.project ?? project;
     account = await input.pool.recordPlanType(account, info.planType);
-    if (isGatewayFreePlan(account.planType)) return null;
   }
-  const groups = await fetchQuotaSummary(credentials.accessToken, project, { fetchImpl: input.fetchImpl });
+  // A free plan's quota read is best effort: when Google refuses it the account still serves, only without usage numbers.
+  const free = isGatewayFreePlan(account.planType);
+  const groups = await fetchQuotaSummary(credentials.accessToken, project, { fetchImpl: input.fetchImpl })
+    .catch((error: unknown) => { if (free && error instanceof CodeAssistError) return null; throw error; });
+  if (!groups) return null;
   await storeAntigravityUsage(input.repository, account.id, groups);
   input.pool.invalidate();
   return groups;

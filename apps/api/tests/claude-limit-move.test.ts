@@ -246,10 +246,13 @@ describe("Claude panes on Space Gateway that its pace cap held continue once", (
 describe("Claude CLIs started before the current launch env relaunch on the same conversation at an idle empty prompt (plan qH5emwVaV6yO step 8)", () => {
   // 6/11: five panes started before the 160k compact window still ran 400k, ~600M of 1.40B input; nobody should have to restart them.
   const stale = (startedAt = "2026-11-04T05:08:00.000Z") => ({ ...session("cli_session:old1", "space-gateway"), startedAt }) as PaneCliSession;
-  function relauncher(options: { startedAt?: string; seen?: Partial<RoomPaneObservation>; card?: boolean; resumable?: boolean } = {}) {
+  function relauncher(options: { startedAt?: string; seen?: Partial<RoomPaneObservation>; card?: boolean; resumable?: boolean; panes?: Pane[]; clock?: { at: number } } = {}) {
     const relaunched: string[] = [];
     const logged: string[] = [];
-    const deps = { listPanes: async () => [pane()], activeSession: async () => stale(options.startedAt),
+    // Past the after-start grace unless a test drives the clock.
+    const clock = options.clock ?? { at: 0 };
+    const now = options.clock ? () => clock.at : (() => { let first = true; return () => (first ? (first = false, 0) : 10 * 60_000); })();
+    const deps = { now, listPanes: async () => options.panes ?? [pane()], activeSession: async () => stale(options.startedAt),
       inspect: async () => observation("cli_session:old1", options.seen), waitsOnOperator: async () => options.card ?? false,
       relaunch: async (_pane: Pane, from: PaneCliSession) => { relaunched.push(from.sessionId); return options.resumable ?? true; },
       log: (event: string) => { logged.push(event); } } as unknown as ClaudeLimitMoveDeps;
@@ -264,6 +267,20 @@ describe("Claude CLIs started before the current launch env relaunch on the same
     const current = relauncher({ startedAt: CLAUDE_LAUNCH_ENV_SINCE });
     await current.mover.tick();
     expect(current.relaunched).toEqual([]);
+  });
+
+  it("relaunches nothing in the first 5 minutes after an API start, then one pane a tick (stable freeze 21/11 17:43Z)", async () => {
+    const clock = { at: 0 };
+    const many = relauncher({ clock, panes: [pane(), { ...pane(), id: "pane:limited2" }, { ...pane(), id: "pane:limited3" }] });
+    await many.mover.tick();
+    clock.at = 4 * 60_000;
+    await many.mover.tick();
+    expect(many.relaunched).toEqual([]);
+    clock.at = 5 * 60_000;
+    await many.mover.tick();
+    expect(many.relaunched).toHaveLength(1);
+    await many.mover.tick();
+    expect(many.relaunched).toHaveLength(2);
   });
 
   it("waits while a turn runs, a draft is typed, a pace hold waits or a card for the operator is open on the pane", async () => {

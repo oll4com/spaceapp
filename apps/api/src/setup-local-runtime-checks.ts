@@ -57,7 +57,9 @@ export function createSetupFunctionalChecks(options: { demoRoot: string; demoEna
         }
         return hash.digest("hex");
       },
-      exercise: () => checkSetupDemoRuntime(options.demoRoot, options.scratchRoot)
+      exercise: () => checkSetupDemoRuntime(options.demoRoot, options.scratchRoot),
+      // The public core image ships no built samples (1.2.0 first setup stopped here): offer Demo Projects only where they are installed.
+      available: async () => (await resolveVariantAvailability(options.demoRoot, demoVariantDefinitions.find(item => item.projectId === "project-2-crud-playground" && item.id === "javascript-react-node")!)).available
     } } : {})
   };
 }

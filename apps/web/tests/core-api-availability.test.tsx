@@ -84,6 +84,86 @@ describe("global core API availability alert", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  it("gives up on a probe that never answers and probes again, so the notice still goes (nous_msg:ea2ef8e2)", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => fetchMock.mock.calls.length === 1
+      ? new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))
+      : Promise.resolve(new Response("{}", { status: 200 })));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<GlobalApiErrorAlert actionError={null} />);
+
+    act(() => reportCoreApiFailure(Date.now() - 10_000));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000 + 10_000); });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status")).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("never leaves the calm notice up past 60 s: with probes hanging and failures still arriving it turns into the red error", async () => {
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))));
+    render(<GlobalApiErrorAlert actionError={null} />);
+
+    act(() => reportCoreApiFailure());
+    for (let second = 5; second < 60; second += 5) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      act(() => reportCoreApiFailure());
+      expect(screen.queryByRole("alert")).toBeNull();
+    }
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("Space API has not answered since");
+  });
+
+  it("clears the notice on any answer from the API, also a 404 or 429 (nous_msg:ea2ef8e2)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (urlOf(input).startsWith("/api/rooms")) {
+        return new Response(JSON.stringify({ error: { code: "RATE_LIMITED", message: "Too many requests.", requestId: "req:1" } }),
+          { status: 429, headers: { "content-type": "application/json" } });
+      }
+      throw new TypeError("Failed to fetch");
+    }));
+    const { api } = await import("../src/live-api.js");
+    render(<GlobalApiErrorAlert actionError={null} />);
+
+    act(() => reportCoreApiFailure(Date.now() - 10_000));
+    expect(screen.getByRole("status")).toBeTruthy();
+    await act(async () => { await expect(api.rooms()).rejects.toMatchObject({ status: 429 }); });
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("treats the API's own 502 error as an answer, only the proxy's UPSTREAM_UNAVAILABLE as an outage (goal 401b115b)", async () => {
+    let body = { error: { code: "CONNECTOR_PROVIDER_UNAVAILABLE", message: "Google did not respond. Try again shortly.", requestId: "req:1" } };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), { status: 502, headers: { "content-type": "application/json" } })));
+    const { api } = await import("../src/live-api.js");
+    render(<GlobalApiErrorAlert actionError={null} />);
+
+    // A 12 s read that the API answered with its own 502 starts nothing and ends a running notice.
+    act(() => reportCoreApiFailure(Date.now() - 10_000));
+    expect(screen.getByRole("status")).toBeTruthy();
+    await act(async () => { await expect(api.rooms()).rejects.toMatchObject({ status: 502 }); });
+    expect(screen.queryByRole("status")).toBeNull();
+
+    body = { error: { code: "UPSTREAM_UNAVAILABLE", message: "Space API is not reachable from the web server.", requestId: "space-web" } };
+    await act(async () => { await expect(api.rooms()).rejects.toMatchObject({ status: 502 }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(screen.getByRole("status")).toBeTruthy();
+  });
+
+  it("does not count a request the client aborted (its timeout) as Space being down (nous_msg:ea2ef8e2)", async () => {
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))));
+    const { api } = await import("../src/live-api.js");
+    render(<GlobalApiErrorAlert actionError={null} />);
+
+    const settings = expect(api.cliRuntimeSettings({ forceRefresh: true })).rejects.toMatchObject({ code: "REQUEST_TIMEOUT" });
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+    await settings;
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("clears a stale outage notice immediately after any core API success", async () => {
     let roomsCalls = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {

@@ -19,6 +19,30 @@ export function markSignin(owner: string, url: string, what: "tried" | "read", a
   if (key) marks.set(key, { ...marks.get(key), [what]: at });
 }
 
+/**
+ * The site record's reason an authenticator key saved into the Vault writes (space_vault_save_totp_from_qr). Operator nous_msg:e3d9b230
+ * (20/11, Braintrust): a swap was reported done with the key saved but the site's Change-2FA never confirmed.
+ */
+export const VAULT_OTP_SWAP_REASON = "Authenticator key saved into the Vault, unproven until a signed-out Vault-only sign-in succeeds";
+
+/** The newest swap of the record has no proof yet: no Vault login submitted after it (PENDING) followed by a SUCCESS no operator handoff recorded. */
+export function otpSwapUnproven(signin: SiteSignin | null): boolean {
+  const history = signin?.history ?? [];
+  const swap = history.findLastIndex((event) => event.reason === VAULT_OTP_SWAP_REASON);
+  if (swap < 0) return false;
+  const after = history.slice(swap + 1);
+  const tried = after.findIndex((event) => event.outcome === "PENDING");
+  // An operator handoff's SUCCESS means the operator's own code signed in, which proves nothing about the Vault key.
+  return tried < 0 || !after.slice(tried + 1).some((event) => event.outcome === "SUCCESS" && !event.by.startsWith("OPERATOR:"));
+}
+
+/** A `done` report from a pane whose authenticator swap is unproven: why it is refused, else null. */
+export function otpSwapDoneHold(signins: readonly SiteSignin[], paneId: string): string | null {
+  const open = signins.filter((signin) => otpSwapUnproven(signin)
+    && signin.history.findLast((event) => event.reason === VAULT_OTP_SWAP_REASON)?.by.endsWith(`:${paneId}`));
+  return open.length ? `The authenticator key for ${open.map((signin) => signin.site).join(", ")} is saved into the Vault, but no sign-in proved it, so the swap is not done: confirm the site's 2FA change, sign out, sign in with space_vault_request_fill (submit: true) and space_vault_request_totp_fill only (never the operator's code), read the page back with space_browser_page_readout, and record SUCCESS with space_site_signin_record. If it cannot be proven, report blocked or failed. Nothing reported.` : null;
+}
+
 export function lastVaultReset(signin: SiteSignin | null): number {
   return Math.max(0, ...(signin?.history ?? []).filter((event) => event.reason === VAULT_RESET_REASON).map((event) => Date.parse(event.at)));
 }
@@ -46,18 +70,41 @@ export function resetHold(owner: string, url: string, signin: SiteSignin | null,
 /** A sign-in or password ask: the agent's own hands when the Vault holds the login. */
 export const VAULT_SIGNIN_ASK = /\bsign(?:ed|ing)?[-_ ]?in\b|\blog(?:ged|ging)?[-_ ]?in\b|\blogin\b|password|credential|σύνδεσ|συνδεθ/i;
 /** 13/11 18:56 BKK (nous_msg:6734ba76: a CLI web-auth link to approve with the operator's security key, refused for a Vault login): no stored password passes these. */
-export const DEVICE_APPROVAL = /security[- ]key|hardware[- ]key|yubi ?key|webauthn|\bfido2?\b|passkey|windows hello|\/login\/cli\/|\bcli\b[^.\n]{0,40}\b(?:web[- ]?auth\w*|auth\w*|log[- ]?in|sign[- ]?in)\b|\bdevice (?:code|authori[sz]ation|login)\b|\bapprove\b[^.\n]{0,40}\b(?:log[- ]?in|sign[- ]?in)\b[^.\n]{0,20}\blink\b/i;
+// DEV3D-037: "CLI" counts only beside a web auth or login; a pane's card names its CLI and a sign-in all the time.
+export const DEVICE_APPROVAL = /security[- ]key|hardware[- ]key|yubi ?key|webauthn|\bfido2?\b|passkey|windows hello|\/login\/cli\/|\bcli\b[^.\n]{0,40}\bweb[- ]?(?:auth\w*|log[- ]?in|sign[- ]?in)\b|\bdevice (?:code|authori[sz]ation|login)\b|\bapprove\b[^.\n]{0,40}\b(?:log[- ]?in|sign[- ]?in)\b[^.\n]{0,20}\blink\b/i;
 /** What stays the operator's even then: a bot check, a push or code on their phone, a camera or ID, a card or payment (mailed codes: mailCodeHold). */
 export const OPERATOR_HANDS = new RegExp(String.raw`captcha|turnstile|puzzle|i am human|not a robot|\bpush\b|phone|\bsms\b|authenticator|\b2fa\b|\bmfa\b|\botp\b|one[- ]time|\bcodes?\b|passkey|camera|selfie|passport|identity|\bcard\b|\bpay|iban|\bbank\b|κάμερα|κινητ|κάρτα|πληρω|ταυτότητ|${DEVICE_APPROVAL.source}`, "i");
+
+/** A Vault list item as agents see it: its label and the Google account it belongs to (usernames stay sealed). */
+export type VaultLoginRef = { label?: unknown; account?: unknown };
+
+/** The accounts a sign-in ask names: the e-mail addresses in its reason and the sign-in page's own hint, lower-case. */
+export function namedAccounts(...texts: Array<string | null | undefined>): string[] {
+  return [...new Set(texts.flatMap((text) => text?.toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/g) ?? []))];
+}
+
+/** A stored login of one of the accounts: its Google account, or a word of its label that is the address or its user name. */
+function loginOfAccount(login: VaultLoginRef, accounts: readonly string[]): boolean {
+  const words = typeof login.label === "string" ? login.label.toLowerCase().split(/[\s,;()<>[\]]+/) : [];
+  const account = typeof login.account === "string" ? login.account.trim().toLowerCase() : "";
+  return accounts.some((email) => account === email || words.includes(email) || words.includes(email.split("@")[0]!));
+}
 
 /**
  * A sign-in handoff or card for a site whose login the Vault holds (the record's handle, or a Vault login for the site) while that login
  * was not filled and read back since its last reset: the next step for the agent, else null. `vaultLogins` null (agent access off, not
- * known): the agent cannot fill, so the ask passes.
+ * known): the agent cannot fill, so the ask passes. When the ask names `accounts`, only a login of one of them holds it (20/11 Cody:
+ * info@example.invalid held by four other google.com logins, which would sign in the wrong account).
  */
-export async function vaultSigninHold(owner: string, site: string, signin: SiteSignin | null, vaultLogins: () => Promise<number | null>): Promise<string | null> {
-  const logins = await vaultLogins().catch(() => null);
-  if (logins === null || (!signin?.vaultHandle && logins === 0)) return null;
+export async function vaultSigninHold(owner: string, site: string, signin: SiteSignin | null,
+  vaultLogins: () => Promise<number | readonly VaultLoginRef[] | null>, accounts: readonly string[] = []): Promise<string | null> {
+  const listed = await vaultLogins().catch(() => null);
+  if (listed === null) return null;
+  const named = accounts.length > 0;
+  const logins = typeof listed === "number" ? listed : listed.filter((login) => !named || loginOfAccount(login, accounts)).length;
+  const recordAccounts = [signin?.siteAccountEmail, signin?.googleAccountEmail].map((email) => email?.toLowerCase());
+  const recorded = Boolean(signin?.vaultHandle) && (!named || recordAccounts.some((email) => email && accounts.includes(email)));
+  if (!recorded && logins === 0) return null;
   const missing = readBackMissing(owner, site, signin);
   return missing ? readBackStep(missing, site) : null;
 }

@@ -78,7 +78,7 @@ export function createPaneCliModel(options: {
       throw new SpaceConflictError("The selected model settings are not advertised by this CLI.");
     }
     if (active.runtimeId === 'cli:gemini' && model.reasoningOptions?.length) {
-      const variantId = model.id.replace(/-(low|medium|high)$/, `-${input.reasoningEffort}`);
+      const variantId = model.id.replace(/-(minimal|low|medium|high|xhigh|max)$/, `-${input.reasoningEffort}`);
       model = before.models.find(entry => entry.id === variantId) ?? model;
     }
     if (before.isTurnActive) throw new SpaceConflictError("Wait for this CLI turn to finish before changing models.");

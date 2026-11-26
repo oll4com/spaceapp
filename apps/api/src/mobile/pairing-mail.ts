@@ -12,6 +12,16 @@ export type PairingMailResult = { result: "SENT"; from: string } | { result: "NO
 
 export async function mailPairingNotice(deps: { google: MailCopilotGoogleAccess | null; fetchImpl?: typeof fetch },
   input: { owner: string; to: string; deviceName: string; deviceId: string; requestedScopes: readonly string[]; instanceLabel: string; at: string }): Promise<PairingMailResult> {
+  return mailOwnerNotice(deps, { owner: input.owner, to: input.to, subject: `New device paired with SpaceApp: ${input.deviceName}`, text: [
+    `A phone named "${input.deviceName}" was paired with ${input.instanceLabel} at ${input.at} (device ${input.deviceId}; it asks for ${input.requestedScopes.join(", ")}).`,
+    "", "Until you allow it in SpaceApp > Settings > Account > Devices, within 10 minutes, it can only read.",
+    "", "If you did not pair it: Revoke it there now, then rotate the mobile keys with \"Keys exposed\" in Settings > Account > Mobile app."
+  ].join("\n") });
+}
+
+/** A security notice to the owner's sign-in address through their own connected Gmail (pairings, Space Link grants, ADR-014 v2). */
+export async function mailOwnerNotice(deps: { google: MailCopilotGoogleAccess | null; fetchImpl?: typeof fetch },
+  input: { owner: string; to: string; subject: string; text: string }): Promise<PairingMailResult> {
   try {
     if (!deps.google?.googleConfigured) return { result: "NO_GMAIL" };
     const accounts = (await deps.google.googleAccounts(input.owner)).filter((account) => account.capabilities.some((capability) => SENDS.includes(capability)));
@@ -19,13 +29,8 @@ export async function mailPairingNotice(deps: { google: MailCopilotGoogleAccess 
     const from = accounts.find((account) => account.email.toLowerCase() === input.to.toLowerCase()) ?? accounts[0];
     if (!from) return { result: "NO_GMAIL" };
     const token = await deps.google.googleAccessToken(input.owner, from.email, from.capabilities.find((capability) => SENDS.includes(capability))!);
-    const text = [
-      `A phone named "${input.deviceName}" was paired with ${input.instanceLabel} at ${input.at} (device ${input.deviceId}; it asks for ${input.requestedScopes.join(", ")}).`,
-      "", "Until you allow it in SpaceApp > Settings > Account > Devices, within 10 minutes, it can only read.",
-      "", "If you did not pair it: Revoke it there now, then rotate the mobile keys with \"Keys exposed\" in Settings > Account > Mobile app."
-    ].join("\n");
     await createGmailClient({ accessToken: token, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}) })
-      .send(buildMime({ from: from.email, to: [input.to], subject: `New device paired with SpaceApp: ${input.deviceName}`, text }));
+      .send(buildMime({ from: from.email, to: [input.to], subject: input.subject, text: input.text }));
     return { result: "SENT", from: from.email };
   } catch {
     return { result: "FAILED" };

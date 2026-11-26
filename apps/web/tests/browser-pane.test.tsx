@@ -700,6 +700,18 @@ describe("BrowserPane", () => {
     expect(screen.queryByPlaceholderText("Type into page")).toBeNull();
   });
 
+  it("restarts a browser closed for the night on its last page when the operator takes control (nous_msg:efbc6ddef88f4e2daebfa884)", async () => {
+    apiMock.browserSession.mockResolvedValue(sessionResponse({ status: "CLOSED", isActive: false, pages: [], activePageId: null }));
+    apiMock.startBrowserSession.mockResolvedValue(sessionResponse());
+    apiMock.acquireBrowserControl.mockResolvedValue(operatorLease());
+    render(<BrowserPane pane={browserPane({ mode: "JOB_APPLY" })} agentNumber={4} />);
+    await screen.findByRole("button", { name: "Start browser" });
+    fireEvent(window, new CustomEvent(BROWSER_PANE_ACTION_EVENT, { detail: { paneId: "pane:browser-proof", action: "handoff", roomId: "room:browser-proof" } }));
+    // No targetUrl: the API restores the closed session's page.
+    await waitFor(() => expect(apiMock.startBrowserSession).toHaveBeenCalledExactlyOnceWith("pane:browser-proof", { viewport: "desktop", ownerAgentId: "agent:4" }));
+    await waitFor(() => expect(apiMock.acquireBrowserControl).toHaveBeenCalledTimes(1));
+  });
+
   it("keeps heartbeating browser control past the expiry of the first lease", async () => {
     apiMock.browserSession.mockResolvedValue(sessionResponse());
     const lease = operatorLease();
@@ -710,6 +722,8 @@ describe("BrowserPane", () => {
     await waitFor(() => expect(join.hasAttribute("disabled")).toBe(false));
     fireEvent.click(join);
     await screen.findByRole("button", { name: "Release browser control Research Browser" });
+    // The heartbeat starts in a passive effect after the Release button renders; under load it lands a tick later.
+    await waitFor(() => expect(intervals.mock.calls.some(([, delay]) => delay === 15_000)).toBe(true));
     const heartbeat = intervals.mock.calls.filter(([, delay]) => delay === 15_000).at(-1)?.[0] as (() => void) | undefined;
     expect(heartbeat).toBeTypeOf("function");
     const start = Date.now();
@@ -944,6 +958,30 @@ describe("BrowserPane", () => {
       await act(() => vi.advanceTimersByTimeAsync(5000));
       expect(screen.getByRole("tab", { name: "First tab" })).toBeTruthy();
       expect(screen.queryByText("No open tabs. Use + to open a new tab.")).toBeNull();
+      expect(apiMock.startBrowserSession).not.toHaveBeenCalled();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  // Emma 20/11: the server stopped the view's session; its tab list failed (404) and the view kept a live browser that never
+  // streamed. It now reads the session again, shows it closed, and follows the one started next.
+  it("shows a session the server stopped as closed and follows the next one instead of retrying it forever", async () => {
+    const { before } = tabFixture();
+    apiMock.browserSession.mockResolvedValue(sessionResponse({ pages: before.pages, activePageId: before.activePageId }));
+    apiMock.browserPages.mockResolvedValue(before);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const view = render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    try {
+      expect(await screen.findByRole("tab", { name: "First tab" })).toBeTruthy();
+      apiMock.browserPages.mockRejectedValue(new Error("Active browser session for pane pane:browser-proof was not found."));
+      apiMock.browserSession.mockResolvedValue(sessionResponse({ status: "CLOSED", pages: [], activePageId: null }));
+      await act(() => vi.advanceTimersByTimeAsync(5000));
+      expect(await screen.findByRole("button", { name: "Start browser" })).toBeTruthy();
+      expect(screen.queryAllByRole("tab")).toHaveLength(0);
+      const agent = { ...before, sessionId: "browser_session:agent" };
+      apiMock.browserSession.mockResolvedValue(sessionResponse({ sessionId: agent.sessionId, pages: agent.pages, activePageId: agent.activePageId }));
+      apiMock.browserPages.mockResolvedValue(agent);
+      await act(() => vi.advanceTimersByTimeAsync(5000));
+      expect(screen.getByRole("tab", { name: "First tab" })).toBeTruthy();
       expect(apiMock.startBrowserSession).not.toHaveBeenCalled();
     } finally { view.unmount(); vi.useRealTimers(); }
   });
@@ -1982,6 +2020,24 @@ describe("BrowserPane", () => {
     }));
     expect((await screen.findByRole("alert")).textContent).toContain("Browser input could not be dispatched");
     expect(apiMock.browserInput).not.toHaveBeenCalled();
+  });
+
+  // 26/11 Andy pane: an agent replaced the browser, the view followed it and streamed, but a red "ticket for a different
+  // session" banner stayed. The switch is followed silently and no error is left once the new session streams.
+  it("follows a session an agent swapped in under the stream without leaving an error", async () => {
+    const agentTicket = { ...streamTicket(2), sessionId: "browser_session:agent" };
+    apiMock.browserSession.mockResolvedValue(streamingSessionResponse());
+    apiMock.browserStreamTicket.mockResolvedValue({ websocket: agentTicket });
+    apiMock.browserStreamWebSocketUrl.mockImplementation((ticket: { token: string }) => `ws://space.test/browser?token=${ticket.token}`);
+    render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    await waitFor(() => expect(apiMock.browserStreamTicket).toHaveBeenCalled());
+    apiMock.browserSession.mockResolvedValue({ ...sessionResponse({ sessionId: "browser_session:agent", streamMode: "REALTIME" }), websocket: agentTicket });
+    await waitFor(() => expect(MockBrowserWebSocket.instances).toHaveLength(1), { timeout: 3000 });
+    const socket = MockBrowserWebSocket.instances[0]!;
+    expect(socket.url).toContain("browser-stream-ticket-2-test-value");
+    act(() => socket.serverMessage({ type: "ready", paneId: "pane:browser-proof", sessionId: "browser_session:agent",
+      streamId: "browser_stream:test", encoding: "image/jpeg", requestedMode: "REALTIME", resolvedMode: "REALTIME", framesPerSecond: 35 }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   });
 
   it("closes the frame stream while the page is hidden and reconnects with a fresh ticket when it shows", async () => {

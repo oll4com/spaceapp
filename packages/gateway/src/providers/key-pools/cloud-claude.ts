@@ -23,15 +23,31 @@ const beta = (headers: IncomingHttpHeaders): Record<string, string> => { const v
 
 /** Bedrock's stored key: `<region>:<API key>`; a bare key is taken as us-east-1's. */
 export const BEDROCK_KEY = /^[a-z]{2}(?:-[a-z]+)+-\d:[A-Za-z0-9+/=_.-]{20,4096}$/;
-export const bedrockKeyFrom = (pasted: string): string | null => (BEDROCK_KEY.test(pasted) ? pasted : BEDROCK_KEY.test(`us-east-1:${pasted}`) ? `us-east-1:${pasted}` : null);
+export function bedrockKeyFrom(pasted: string): string | null {
+  const trimmed = pasted.trim();
+  const urlMatch = /bedrock-mantle\.([a-z]{2}(?:-[a-z]+)+-\d)\.api\.aws/i.exec(trimmed);
+  let cleaned: string;
+  if (urlMatch) {
+    const region = urlMatch[1]!.toLowerCase();
+    const after = trimmed.slice(urlMatch.index + urlMatch[0].length).replace(/^(\/[^:\s=]*)?\s*[:=]?\s*/, "").trim();
+    cleaned = `${region}:${after}`;
+  } else {
+    cleaned = trimmed.replace(/^([a-z]{2}(?:-[a-z]+)+-\d)\s*[:=]\s*/i, "$1:").trim();
+  }
+  if (BEDROCK_KEY.test(cleaned)) return cleaned;
+  if (BEDROCK_KEY.test(`us-east-1:${cleaned}`)) return `us-east-1:${cleaned}`;
+  return null;
+}
 
 /** Bedrock's Anthropic-native endpoint (Mantle): the Messages API with the key in `x-api-key` and `anthropic.` model ids. */
 export async function bedrockMessages({ apiKey, body, headers }: ClaudePoolRequest): Promise<ClaudePoolUpstream> {
   // shortcut: Bedrock API keys only (no SigV4 signing of IAM access keys), add SigV4 if AWS issues only IAM credentials.
   const at = apiKey.indexOf(":");
+  const model = String(body.model);
+  const modelId = model.startsWith("anthropic.") ? model : `anthropic.${model}`;
   return { url: `https://bedrock-mantle.${apiKey.slice(0, at)}.api.aws/anthropic/v1/messages`,
     headers: { "x-api-key": apiKey.slice(at + 1), "anthropic-version": header(headers, "anthropic-version") ?? "2023-06-01", ...beta(headers) },
-    body: JSON.stringify({ ...body, model: `anthropic.${String(body.model)}` }) };
+    body: JSON.stringify({ ...body, model: modelId }) };
 }
 
 interface VertexAccount { project_id: string; client_email: string; private_key: string; location: string }

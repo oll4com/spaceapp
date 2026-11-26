@@ -1,7 +1,7 @@
 import type {} from "../request-context.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { mailAddressSchema, mailCampaignCreateSchema, mailCampaignIdSchema, mailCampaignStatusSchema, mailCampaignUpdateSchema, mailConsentBasisSchema, mailContactIdSchema, mailHealthSchema, mailListCreateSchema, mailListIdSchema,
+import { mailAddressSchema, mailDeliveryReportSchema, mailCampaignCreateSchema, mailCampaignIdSchema, mailCampaignStatusSchema, mailCampaignUpdateSchema, mailConsentBasisSchema, mailContactIdSchema, mailHealthSchema, mailListCreateSchema, mailListIdSchema,
   MAIL_WARMUP_DAILY, mailSenderCreateSchema, mailSenderIdSchema, mailSenderUpdateSchema, mailSuppressionInputSchema, mailSuppressionReasonSchema, mailTemplateContentPatchSchema, mailTemplateCreateSchema, mailTemplateIdSchema, normalizeSuppressionPattern,
   type MailMadeBy, type Pane } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
@@ -236,6 +236,8 @@ function registerOperations(app: FastifyInstance, service: MailCampaignsService,
       messages: z.array(z.string().max(560_000)).min(1).max(50), source: z.string().trim().min(1).max(200) }).strict(), request.body ?? {});
     return service.signals(who.owner, input.messages.map((message) => Buffer.from(message, "base64")), input.source);
   });
+  route("post", "delivery-reports", async (who, request) => service.deliveryReports(who.owner, parseBody(z.object({ // Technical: request body size; space-mail-dmarc.mjs posts 20 a call.
+    reports: z.array(mailDeliveryReportSchema).min(1).max(50) }).strict(), request.body ?? {}).reports));
   route("post", "health/check", async (who, request) => {
     const input = parseBody(z.object({ listId: mailListIdSchema.optional(), contactIds: z.array(mailContactIdSchema).optional() }).strict(), request.body ?? {});
     return service.checkHealth(who.owner, input);

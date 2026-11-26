@@ -115,12 +115,17 @@ export function registerMailCopilotAgentRoutes(app: FastifyInstance, service: Ma
     const input = parseBody(z.object({ account: emailSchema, from: z.string().trim().min(3).max(320), subject: z.string().max(1000).optional() }).strict(), request.body ?? {});
     return service.habits(bridge.owner, bridge.pane, input);
   });
-  app.post(route("draft"), routeOptions, async (request, reply) => {
+  // 23/11 (Moonstone letter): a tracked send takes files only from a Gmail draft (attachmentsFrom), so a draft carries the agent's local files,
+  // read by the MCP tool from ~/agent-workspace and sent here as base64. Bound: Gmail's 25 MB message limit, as base64 inside JSON.
+  app.post(route("draft"), { ...routeOptions, bodyLimit: 36 * 1024 * 1024 }, async (request, reply) => {
     const bridge = await context(request, reply, true);
     if (!bridge) return reply;
-    const input = parseBody(mailComposeInputSchema, request.body ?? {});
-    const draft = await service.draft(bridge.owner, bridge.pane, input);
-    await service.record(bridge.owner, { paneId: bridge.pane.id, type: "DRAFTED", accountEmail: input.account, threadId: input.threadId ?? null, message: `The copilot drafted: ${input.subject || "(no subject)"} → ${input.to.join(", ")}`, payload: { draftId: draft.draftId, draftMessageId: draft.messageId } });
+    const file = z.object({ filename: z.string().trim().min(1).max(255).regex(/^[^\r\n/\\]+$/), mimeType: z.string().trim().regex(/^[\w.+-]+\/[\w.+-]+$/), data: z.string().min(1).regex(/^[A-Za-z0-9+/]+=*$/) }).strict();
+    const { files = [], ...input } = parseBody(mailComposeInputSchema.extend({ files: z.array(file).optional() }), request.body ?? {});
+    const attachments = files.map((entry) => ({ filename: entry.filename, mimeType: entry.mimeType, data: Buffer.from(entry.data, "base64") }));
+    const draft = await service.draft(bridge.owner, bridge.pane, input, attachments);
+    await service.record(bridge.owner, { paneId: bridge.pane.id, type: "DRAFTED", accountEmail: input.account, threadId: input.threadId ?? null, message: `The copilot drafted: ${input.subject || "(no subject)"} → ${input.to.join(", ")}${files.length ? ` [attachments: ${files.map((entry) => entry.filename).join(", ")}]` : ""}`,
+      payload: { draftId: draft.draftId, draftMessageId: draft.messageId, ...(files.length ? { attachments: files.map((entry) => entry.filename) } : {}) } });
     return draft;
   });
   app.post(route("draft/delete"), routeOptions, async (request, reply) => {

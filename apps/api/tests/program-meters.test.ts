@@ -74,4 +74,13 @@ describe("startup program meters", () => {
     at = 6 * 3_600_000; await lay([]);
     expect([read.mock.calls.length, importUsage.mock.calls.length]).toEqual([2, 3]);
   });
+
+  it("stays quiet about a program this install does not have, and warns the rest", async () => {
+    const warn = vi.fn();
+    const document: ProgramMeterDocument = { generatedAt: "2026-11-22T00:00:00.000Z", entries: [] };
+    const importUsage = vi.fn(async () => ({ problems: ["livekit-startup-program: no such program", "murf-startup-incubator: benefits: Required"] }));
+    await createProgramMeters({ importUsage, read: async () => document, now: () => 0, warn })([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect((warn.mock.calls[0]![0] as Error).message).toBe("murf-startup-incubator: benefits: Required");
+  });
 });

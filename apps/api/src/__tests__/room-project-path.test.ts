@@ -27,7 +27,7 @@ describe("Room Project Path & CWD auto-propagation", () => {
     }),
     enabledRuntimeIds: async () => ["cli:codex"],
     harnessAvailable: async () => true
-  };
+  } as unknown as Omit<Parameters<typeof createRoomPaneCommands>[0], "store">; // partial discovery fixture
 
   it("creates a room with projectPath and persists it in memory store", () => {
     const store = new InMemorySpaceStore();
@@ -73,7 +73,7 @@ describe("Room Project Path & CWD auto-propagation", () => {
       initialPaneCount: 0
     });
 
-    const commands = createRoomPaneCommands({ ...(mockOptions as any), store });
+    const commands = createRoomPaneCommands({ ...mockOptions, store });
     const resolved = await commands.resolve(room.id, [
       { mode: "TERMINAL", terminalRuntimeId: "cli:codex" }
     ]);
@@ -93,7 +93,7 @@ describe("Room Project Path & CWD auto-propagation", () => {
     // panes start there rather than in /etc.
     const room = store.updateRoom(created.id, { name: created.name, projectPath: null });
 
-    const commands = createRoomPaneCommands({ ...(mockOptions as any), store });
+    const commands = createRoomPaneCommands({ ...mockOptions, store });
     const resolved = await commands.resolve(room.id, [
       { mode: "TERMINAL", terminalRuntimeId: "cli:codex" }
     ]);

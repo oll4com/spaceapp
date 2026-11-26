@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { NousDecision } from "@space/contracts";
-import { approvalStates, copilotSettlement, type ApprovalStores } from "../src/nous/approvals.js";
+import { approvalStates, copilotSettlement, titleSendDate, type ApprovalStores } from "../src/nous/approvals.js";
 
 // Goal 84ba917a: «Approved but not done» from the rows that already exist.
 const decision = (id: string, extra: Partial<NousDecision>): NousDecision => ({ id, ownerUserId: "user:o", category: "EXTERNAL", status: "APPROVED", title: id, body: "",
@@ -26,10 +26,13 @@ describe("approvalStates", () => {
       "mktpost:bare": { id: "mktpost:bare", status: "SUPERSEDED", publishedUrl: null },
       "mktpost:wait": { id: "mktpost:wait", status: "APPROVED", publishedUrl: null }
     };
+    const sentTo = vi.fn((to: string[]) => to.includes("b2b@vodafone.gr") ? { state: "SENT", account: "a", threadId: "t", messageId: "m" } : null);
+    const decided = vi.fn((reviewId: string) => reviewId === "mailrev:a" ? { id: "mailevt:d", payload: { decision: "approve", sent: { messageId: "1a1b" } } } : undefined);
+    const sendsReader = vi.fn(async () => ({ sentTo, threadSend: () => null, decided }));
+    const listPosts = vi.fn(async () => Object.values(posts));
     const stores: ApprovalStores = {
-      marketing: { getPost: vi.fn(async (_o: string, id: string) => posts[id] ?? null), listPosts: async () => [], listCampaigns: async () => [], listRules: async () => [] } as never,
-      mail: { threadSend: vi.fn(async () => null), sentTo: vi.fn(async (_o: string, _a: string | null, to: string[]) => to.includes("b2b@vodafone.gr") ? { state: "SENT", account: "a", threadId: "t", messageId: "m" } : null),
-        listEvents: async () => [], listRules: async () => [] } as never,
+      marketing: { listPosts, listCampaigns: async () => [], listRules: async () => [] } as never,
+      mail: { sendsReader, listEvents: async () => [], listRules: async () => [] } as never,
       job: { listEvents: async () => [{ type: "REVIEW_REQUESTED", applicationId: "job:1", payload: { reviewId: "jobrev:1" } }], getApplication: async () => ({ id: "job:1", status: "SUBMITTED", url: "https://jobs/1" }) } as never
     };
     const since = Date.parse("2026-11-01T00:00:00.000Z");
@@ -38,15 +41,22 @@ describe("approvalStates", () => {
       decision("nous_decision:bare", { action: review("bare") }), // the itemId without its prefix (decision 153387ed)
       decision("nous_decision:wait", { action: review("mktpost:wait") }),
       decision("nous_decision:job", { action: review("jobrev:1", "JOB") }),
+      decision("nous_decision:mail", { action: review("mailrev:a", "MAIL"), createdAt: "2026-10-31T12:00:00.000Z" }),
       decision("nous_decision:to", { refs: { recipients: ["b2b@vodafone.gr"] } }),
       decision("nous_decision:none", { refs: { recipients: ["nobody@x.com"] } }),
       decision("nous_decision:old", { action: review("mktpost:pub"), answeredAt: "2026-10-01T00:00:00.000Z" }),
       decision("nous_decision:internal", { category: "INTERNAL" as never, action: review("mktpost:pub") })
     ], since, stores);
     expect(settled).toEqual({ "nous_decision:pub": { state: "DONE", proof: "https://reddit.com/r/x/1" }, "nous_decision:bare": { state: "VOID", proof: "mktpost:bare ended SUPERSEDED" },
-      "nous_decision:job": { state: "DONE", proof: "job:1 https://jobs/1" } });
+      "nous_decision:job": { state: "DONE", proof: "job:1 https://jobs/1" }, "nous_decision:mail": { state: "DONE", proof: "1a1b" } });
     expect(sends).toEqual({ "nous_decision:to": "SENT" });
-    expect(stores.mail!.sentTo).toHaveBeenCalledWith("user:o", null, ["b2b@vodafone.gr"], "2026-11-05T09:00:00.000Z");
+    // Speed audit 14/11: the mail store is read once for every mail ask, since the window's start or the earliest ask created before it;
+    // each asks with its own time (a review since its creation, a send since its approval).
+    expect(sendsReader.mock.calls).toEqual([["user:o", null, "2026-10-31T12:00:00.000Z"]]);
+    expect(decided.mock.calls).toEqual([["mailrev:a", "2026-10-31T12:00:00.000Z"]]);
+    // The marketing posts once for the three post decisions (slice 24).
+    expect(listPosts.mock.calls).toEqual([["user:o", {}]]);
+    expect(sentTo.mock.calls).toEqual([[["b2b@vodafone.gr"], "2026-11-05T09:00:00.000Z"], [["nobody@x.com"], "2026-11-05T09:00:00.000Z"]]);
   });
 
   it("audit 6/11 (operator «έφυγε στο τέλος»): a replacement post, an approved schedule and one send for duplicates settle it", async () => {
@@ -62,11 +72,9 @@ describe("approvalStates", () => {
       post("5q-PL-RppA0S", "APPROVED", { channel: "REDDIT", target: "r/ChatGPTCoding", scheduledAt: "2026-11-05T16:13:00.000Z" }),
       post("1VOZAQFJPDUN", "APPROVED", { channel: "LINKEDIN", scheduledAt: "2026-11-10T08:17:00.000Z" }), // b4e8eea8: waits for its date
       post("_qpjT825vzdL", "APPROVED", { channel: "LINKEDIN" })];
-    const byId = Object.fromEntries(list.map((entry) => [entry.id, entry]));
     const stores: ApprovalStores = {
-      marketing: { getPost: async (_o: string, id: string) => byId[id] ?? null, listPosts: async (_o: string, filter: { channel?: string }) => list.filter((entry) => entry.channel === filter.channel),
-        listCampaigns: async () => [], listRules: async () => [] } as never,
-      mail: { threadSend: async () => null, sentTo: async () => null, listEvents: async () => [], listRules: async () => [] } as never
+      marketing: { listPosts: async () => list, listCampaigns: async () => [], listRules: async () => [] } as never,
+      mail: { sendsReader: async () => ({ sentTo: () => null, threadSend: () => null, decided: () => undefined }), listEvents: async () => [], listRules: async () => [] } as never
     };
     const hetzner = ["legal@hetzner.com", "info@hetzner.com"];
     const { settled, scheduled } = await approvalStates("user:o", [
@@ -96,8 +104,8 @@ describe("audit 6/11 rule 4: a booking", () => {
       { id: "mailevt:acme", accountEmail: "ntheogr@gmail.com", threadId: "t-acme", messageId: "m-acme", type: "MAIL_RECEIVED", createdAt: "2026-11-03T12:00:00.000Z",
         payload: { from: { address: "recruiter@acme.io" }, subject: "Thanks, talk soon" } }
     ];
-    const threadSend = vi.fn(async () => null);
-    const stores: ApprovalStores = { mail: { threadSend, sentTo: async () => null, listEvents: async () => received, listRules: async () => [] } as never };
+    const threadSend = vi.fn(() => null);
+    const stores: ApprovalStores = { mail: { sendsReader: async () => ({ sentTo: () => null, threadSend, decided: () => undefined }), listEvents: async () => received, listRules: async () => [] } as never };
     const booking = (id: string, recipients: string[]) => decision(id, { answeredAt: "2026-11-03T11:34:50.666Z",
       refs: { mailThread: { account: "ntheogr@gmail.com", threadId: "1a1a11f961c9e544" }, sendKind: "interview-booking", recipients } as never });
     const { settled } = await approvalStates("user:o", [booking("nous_decision:0f222670", ["luke.baker@snyk.io"]), booking("nous_decision:acme", ["recruiter@acme.io"])],
@@ -125,10 +133,8 @@ describe("goal 84ba917a 6/11: a marketing decision that names its post only in t
         publishedUrl: "https://news.ycombinator.com/item?id=50365885" }),
       post("rejected0001", "REJECTED", { channel: "MASTODON" }),
       post("superseded01", "SUPERSEDED", { channel: "BLUESKY" })];
-    const byId = Object.fromEntries(list.map((entry) => [entry.id, entry]));
     const stores: ApprovalStores = {
-      marketing: { getPost: async (_o: string, id: string) => byId[id] ?? null, listPosts: async (_o: string, filter: { channel?: string }) => list.filter((entry) => entry.channel === filter.channel),
-        listCampaigns: async () => [], listRules: async () => [] } as never
+      marketing: { listPosts: async () => list, listCampaigns: async () => [], listRules: async () => [] } as never
     };
     const failed = "Failed: This post is no longer waiting for a decision.";
     const x = { sendKind: "marketing-x", notificationId: "notif:1" } as never;
@@ -160,7 +166,7 @@ describe("Nous 6/11 (nous_msg:d1325a00): a scheduled send is not owed before its
   it("dates a batch by its title and settles a named mail campaign by its approval", async () => {
     const stores: ApprovalStores = {
       mailCampaigns: { campaigns: async () => [{ id: "mcamp:YDCUL_837XYf", status: "APPROVED", schedule: { startAt: "2026-11-12T07:00:00.000Z" } }] } as never,
-      mail: { threadSend: async () => null, sentTo: async () => null, listEvents: async () => [], listRules: async () => [] } as never
+      mail: { sendsReader: async () => ({ sentTo: () => null, threadSend: () => null, decided: () => undefined }), listEvents: async () => [], listRules: async () => [] } as never
     };
     const asked = { answeredAt: "2026-11-03T20:00:00.000Z", refs: { recipients: ["hello@oddbit.id"] } };
     const { settled, scheduled } = await approvalStates("user:o", [
@@ -176,5 +182,17 @@ describe("Nous 6/11 (nous_msg:d1325a00): a scheduled send is not owed before its
     expect(scheduled).toEqual({ "nous_decision:a7a0a672": "2026-11-09T00:00:00.000Z", "nous_decision:8fe06919": "2026-11-12T00:00:00.000Z",
       "nous_decision:english": "2026-11-10T00:00:00.000Z" });
     expect(settled).toEqual({ "nous_decision:campaign": { state: "DONE", proof: "mcamp:YDCUL_837XYf" } });
+  });
+});
+
+describe("14/11 (nous_decision:c218d9d9): a send time after the title's date", () => {
+  it("is the send's moment, in UTC when marked and the operator's zone otherwise, never 00:00Z of that day", () => {
+    const approved = "2026-11-14T00:00:30.000Z";
+    expect(titleSendDate("Αποστολή του IONOS follow-up από your spaceapp.dev mailbox μέσω SMTP2GO στις 14/11 07:44Z", approved)).toBe("2026-11-14T07:44:00.000Z");
+    expect(titleSendDate("Send the follow-up on 15/11 at 09:30 UTC", approved)).toBe("2026-11-15T09:30:00.000Z");
+    expect(titleSendDate("Send the follow-up on 14/11 09:00", approved, "Asia/Bangkok")).toBe("2026-11-14T02:00:00.000Z");
+    // A time already past at the approval schedules nothing; a date alone still means that day.
+    expect(titleSendDate("Send it on 13/11 23:00Z", approved)).toBeNull();
+    expect(titleSendDate("Send it on 16/11", approved)).toBe("2026-11-16T00:00:00.000Z");
   });
 });

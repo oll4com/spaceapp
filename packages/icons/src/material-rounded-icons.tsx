@@ -7,6 +7,7 @@ import { materialRoundedPaths, type MaterialSymbolName } from "./material-symbol
 function createMaterialSymbol(name: MaterialSymbolName): LucideIcon {
   const definition = materialRoundedPaths[name];
   const Component = forwardRef<SVGSVGElement, LucideProps>(function MaterialRoundedSymbol(
+    // The underscore-named props are listed only to keep them out of ...props.
     {
       absoluteStrokeWidth: _absoluteStrokeWidth,
       children: _children,

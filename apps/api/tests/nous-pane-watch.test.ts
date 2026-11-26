@@ -4,6 +4,7 @@ import { InMemoryNousPaneChecksRepository } from "@space/db";
 import { createNousPaneWatch, paneCheckedText, waitsOnOperatorClaim, paneRoundLine, paneWatchEntries, paneWatchOverview, renderPanesNotChecked } from "../src/nous/pane-watch.js";
 import { renderNousWorld } from "../src/nous/digest.js";
 import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
+import { paneProgressSchema } from "../src/pane-reports.js";
 
 // Nous's pane watch (plan clipboard:MAongwnxq9Ro).
 const owner = "user:operator";
@@ -120,6 +121,16 @@ describe("Nous's pane watch", () => {
   it("operator 8/11 20:04 BKK: KEEP_OPEN because the pane waits for the operator needs their Needs you card or an open decision on it", async () => {
     expect(waitsOnOperatorClaim("Cloud Identity: waits on the operator's SMS code")).not.toBeNull();
     expect(waitsOnOperatorClaim("Waits for the promote")).toBeNull();
+    // Score 15/11: Nous's own wordings for the 6-scope grant wait (nous_msg:549e67fc) left the wait inside the request's time to Done.
+    for (const text of ["hz proof waits on the owner's 6-scope grant (card 1e51466c)", "Full access still needs the owner’s 6-scope step-up", "Step 7 waits on operator decision fbe31df2"])
+      expect(waitsOnOperatorClaim(text)).toBe(text);
+    for (const text of ["Kept with him, the owner, because he wrote it", "The fix needs the owner field", "Nothing waits on the owner's grant now"]) expect(waitsOnOperatorClaim(text)).toBeNull();
+    // Eva/Andy 16/11 08:41 BKK: a done report quoting the screen label ΣΕ ΠΕΡΙΜΕΝΟΥΝ unquoted was refused; labels in capitals or `code` are no claim.
+    for (const text of ["Done: η ομάδα ΣΕ ΠΕΡΙΜΕΝΟΥΝ του Inbox δείχνει πλέον 0 κάρτες.", "The WAITING FOR YOU group is gone from the board.", "Renamed `waits for you` to Inbox."])
+      expect(waitsOnOperatorClaim(text)).toBeNull();
+    for (const text of ["Done, αλλά περιμένω τον χειριστή για το promote.", "The ΣΕ ΠΕΡΙΜΕΝΟΥΝ fix is live; step 3 is waiting for the operator."]) expect(waitsOnOperatorClaim(text)).not.toBeNull();
+    expect(paneProgressSchema.safeParse({ status: "done", summary: "Η ομάδα ΣΕ ΠΕΡΙΜΕΝΟΥΝ του Inbox άδειασε (ticket q-1)." }).success).toBe(true);
+    expect(paneProgressSchema.safeParse({ status: "done", summary: "Έτοιμο, περιμένει εσένα η υπογραφή." }).success).toBe(false);
     const repository = new InMemoryNousPaneChecksRepository();
     let cards: unknown[] = [];
     let decisions: unknown[] = [];

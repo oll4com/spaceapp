@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { requestDonePayloadSchema, type DeployQueueTicket, type SpaceNotification } from "@space/contracts";
 import { api } from "../../api.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
@@ -22,12 +22,13 @@ export function useDoneView(onOpen: () => void): void {
   }, []);
 }
 const pending = (item: SpaceNotification) => item.status === "OPEN" || item.status === "READ";
-const visible = (item: SpaceNotification) => item.source === "NOUS" && item.kind === "REQUEST_DONE" && requestDonePayloadSchema.safeParse({
+export const isDoneRequest = (item: SpaceNotification) => item.source === "NOUS" && item.kind === "REQUEST_DONE" && requestDonePayloadSchema.safeParse({
   request: item.payload.request, summary: item.payload.summary, where: item.payload.where,
   ...(item.payload.planId ? { planId: item.payload.planId } : {}), ...(item.payload.tickets ? { tickets: item.payload.tickets } : {})
-}).success && pending(item);
+}).success;
+const visible = (item: SpaceNotification) => isDoneRequest(item) && pending(item);
 
-/** Read and unread both wait for Got it. A notification-store update also refreshes the count while another view is open. */
+/** Read and unread both wait for Seen it. A notification-store update also refreshes the count while another view is open. */
 export function useDoneRequests(active: boolean) {
   const { items } = useNotificationStore();
   const [requests, setRequests] = useState<SpaceNotification[] | null>(null);
@@ -57,14 +58,16 @@ export function useDoneRequests(active: boolean) {
   return { requests, error, count: requests?.filter(pending).length ?? 0, acknowledged, retry };
 }
 
-/** Got it removes a request from this list; the server keeps its acknowledgement record. */
-export function NousDone({ requests, error, onRetry, onOpenPlan, onAcknowledged }: {
+/** Seen it removes a request from this list; the server keeps its acknowledgement record. */
+export function NousDone({ requests, error, onRetry, onOpenPlan, onAcknowledged, history = false }: {
   requests: SpaceNotification[] | null; error?: string | null; onRetry?(): void; onOpenPlan(id: string): void; onAcknowledged(item: SpaceNotification): void;
+  /** Inbox › Completed (plan clipboard:aE7U1J_gU9OV): the acknowledged ones stay, without Seen it. */
+  history?: boolean;
 }) {
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
-  const waiting = requests?.filter(visible) ?? [];
-  return <div className="nous-decisions nous-done" data-sensitive-masked="manual">
+  const waiting = requests?.filter(history ? isDoneRequest : visible) ?? [];
+  return <div className="nous-decisions nous-done">
     {error ? <div><p role="alert">{error}</p>{onRetry ? <DockButton onClick={onRetry}>{t("Retry")}</DockButton> : null}</div> : null}
     {requests === null && !error ? <DockState kind="loading" title={t("Loading completed requests")} /> : null}
     {requests !== null && !waiting.length ? <DockState kind="empty" icon={CheckCheck} title={t("You’re up to date")}
@@ -73,11 +76,10 @@ export function NousDone({ requests, error, onRetry, onOpenPlan, onAcknowledged 
   </div>;
 }
 
-function DoneCard({ item, onOpenPlan, onAcknowledged }: { item: SpaceNotification; onOpenPlan(id: string): void; onAcknowledged(item: SpaceNotification): void }) {
+/** A request's merge-queue tickets as links (after `children`, the card's own links); a ticket opens in place under them. */
+export function DoneTickets({ ids, children }: { ids: readonly string[]; children?: ReactNode }) {
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [ticket, setTicket] = useState<DeployQueueTicket | null>(null);
   const [ticketBusy, setTicketBusy] = useState(false);
   const [ticketError, setTicketError] = useState<string | null>(null);
@@ -87,14 +89,33 @@ function DoneCard({ item, onOpenPlan, onAcknowledged }: { item: SpaceNotificatio
     catch (failure) { setTicketError(failure instanceof Error ? failure.message : "The ticket could not be loaded. Select its link to retry."); }
     finally { setTicketBusy(false); }
   };
+  return <>
+    <nav className="nous-done-links" aria-label={t("Implementation links")}>
+      {children}
+      {ids.map((id) => <a key={id} href={`/api/admin/deploy-queue/tickets/${encodeURIComponent(id)}`} title={`View merge-queue ticket ${id}`}
+        onClick={(event) => { event.preventDefault(); void showTicket(id); }}>{id}</a>)}
+    </nav>
+    {ticketBusy ? <p role="status">{t("Loading ticket…")}</p> : null}
+    {ticketError ? <p role="alert">{ticketError}</p> : null}
+    {ticket ? <section className="nous-done-ticket" aria-label={`Ticket ${ticket.id}`}><h4>{ticket.id} · {statusLabel[ticket.status]}</h4>
+      <p>{ticket.summary}</p>{ticket.note ? <p className="nous-muted">{ticket.note}</p> : null}</section> : null}
+  </>;
+}
+
+/** `onOpenPlan` is left out where no plan view exists (the Notifications dock with Nous hidden): the card then offers no Open plan. */
+export function DoneCard({ item, onOpenPlan, onAcknowledged }: { item: SpaceNotification; onOpenPlan?(id: string): void; onAcknowledged?(item: SpaceNotification): void }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const payload = item.payload as { request: string; summary: string; where: "stable" | "dev" | "no code"; planId?: string; tickets?: string[]; verified?: string };
   const acknowledge = async () => {
     setBusy(true); setError(null);
     try {
       const { notification } = await api.ackNotification(item.id);
-      onAcknowledged(notification);
+      onAcknowledged?.(notification);
       await refreshNotifications();
-    } catch (failure) { setError(failure instanceof Error ? failure.message : "Your acknowledgement could not be saved. Try Got it again."); }
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "Your acknowledgement could not be saved. Try Seen it again."); }
     finally { setBusy(false); }
   };
   const where = t({ stable: "Stable", dev: "Dev", "no code": "No code" }[payload.where]);
@@ -103,16 +124,10 @@ function DoneCard({ item, onOpenPlan, onAcknowledged }: { item: SpaceNotificatio
     <blockquote>{payload.request}</blockquote>
     <p className="nous-done-summary"><FileMentionText text={payload.summary} /></p>
     {payload.verified ? <p className="nous-muted">{t("Checked: {what}", { what: payload.verified })}</p> : null}
-    {payload.planId || payload.tickets?.length ? <nav className="nous-done-links" aria-label={t("Implementation links")}>
-      {payload.planId ? <button type="button" onClick={() => onOpenPlan(payload.planId!)}>{t("Open plan")}</button> : null}
-      {payload.tickets?.map((id) => <a key={id} href={`/api/admin/deploy-queue/tickets/${encodeURIComponent(id)}`} title={`View merge-queue ticket ${id}`}
-        onClick={(event) => { event.preventDefault(); void showTicket(id); }}>{id}</a>)}
-    </nav> : null}
-    {ticketBusy ? <p role="status">{t("Loading ticket…")}</p> : null}
-    {ticketError ? <p role="alert">{ticketError}</p> : null}
-    {ticket ? <section className="nous-done-ticket" aria-label={`Ticket ${ticket.id}`}><h4>{ticket.id} · {statusLabel[ticket.status]}</h4>
-      <p>{ticket.summary}</p>{ticket.note ? <p className="nous-muted">{ticket.note}</p> : null}</section> : null}
-    <DockButton tone="primary" busy={busy} disabled={busy} onClick={() => void acknowledge()}>{t("Got it")}</DockButton>
+    {(payload.planId && onOpenPlan) || payload.tickets?.length ? <DoneTickets ids={payload.tickets ?? []}>
+      {payload.planId && onOpenPlan ? <button type="button" onClick={() => onOpenPlan(payload.planId!)}>{t("Open plan")}</button> : null}
+    </DoneTickets> : null}
+    {pending(item) ? <DockButton tone="primary" busy={busy} disabled={busy} onClick={() => void acknowledge()}>{t("Seen it")}</DockButton> : null}
     {error ? <p role="alert">{error}</p> : null}
   </article>;
 }

@@ -84,6 +84,14 @@ describe("the feed", () => {
     expect(within(files).getByText("receipt.png")).toBeTruthy();
     expect(files.closest(".dots-bubble.user")?.querySelector("p")).toBeNull();
   });
+  it("copies a reply on double-click and shows no Copy row for it on hover", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(<DotFeed {...props} items={[item({ id: "d1", content: "Copy me" })]} />);
+    fireEvent.doubleClick(screen.getByText("Copy me"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Copy me"));
+    expect(await screen.findByText("Copied")).toBeTruthy();
+  });
   it("welcomes an empty conversation, offers earlier messages and shows the running task", () => {
     const { rerender } = render(<DotFeed {...props} items={[]} />);
     expect(screen.getByRole("heading", { name: "Hi, I'm Orbit" })).toBeTruthy();
@@ -273,31 +281,51 @@ describe("the Dot pane", () => {
         reasoningLabel: "High", isDefault: true }], selectedModelConfigId: "gpt:high",
       capabilities: { canSend: true, canInterrupt: false, canSelectModel: true, canSelectTools: false, supportsTools: true } });
   }
-  it("shows the Dot's feed from every room, the current conversation at once, and marks what is seen as read", async () => {
+  it("shows this conversation from every room at once, no earlier conversation, and marks what is seen as read", async () => {
     mock.dots.mockResolvedValue({ dots });
     mock.agentSession.mockResolvedValue(session([{ id: "m:live", role: "user", content: "Typed just now", status: "COMPLETED", createdAt: "2026-10-12T09:00:00.000Z" }]));
     // The latest cursor can lie past the last shown item (a hidden tool row): reading up to it clears the unread count.
     mock.dotFeed.mockResolvedValue({ dotId: orbit.dotId, nextBefore: null, latestCursor: "2026-10-12T08:02:00.000Z|tool", lastActiveAt: "2026-10-12T08:01:00.000Z", unread: 1,
-      items: [item({ id: "r2", author: "USER", content: "Asked in another room", roomId: "room:other" }),
+      items: [item({ id: "old", author: "USER", content: "An earlier conversation", createdAt: "2026-10-12T07:00:00.000Z" }),
+        item({ id: "r2", author: "USER", content: "Asked in another room", roomId: "room:other", sessionId: "agent_session:feed" }),
         item({ id: "n1", kind: "NOTICE", origin: "PROACTIVE", content: "Security notice", createdAt: "2026-10-12T08:01:00.000Z", sessionId: null })] });
     mock.markDotFeedRead.mockResolvedValue({ unread: 0 });
     render(<AgentPane pane={pane} codexEnvironment={null} workspaceTextSize={14} />);
     const log = await screen.findByRole("log", { name: "Conversation with Orbit" });
     expect(await within(log).findByText("Asked in another room")).toBeTruthy();
-    expect(within(log).getByText("Security notice")).toBeTruthy();
     expect(within(log).getByText("Typed just now")).toBeTruthy();
+    expect(within(log).queryByText("An earlier conversation")).toBeNull();
+    // The chat stays a plain conversation: mail and calendar notices are not shown in it.
+    expect(within(log).queryByText("Security notice")).toBeNull();
     await waitFor(() => expect(mock.markDotFeedRead).toHaveBeenCalledWith(orbit.dotId, "2026-10-12T08:02:00.000Z|tool", pane.roomId));
     // The pane's room goes along: an Agent Proof room sees only its own conversation.
     expect(mock.dotFeed).toHaveBeenCalledWith(orbit.dotId, { limit: 40, roomId: pane.roomId });
     expect(screen.queryByRole("tab")).toBeNull();
     expect(screen.queryByRole("combobox", { name: "Dot session history" })).toBeNull();
   });
+  it("New conversation empties the chat (operator 23/11)", async () => {
+    mock.dots.mockResolvedValue({ dots });
+    mock.agentSession.mockResolvedValue(session());
+    mock.dotCollection.mockResolvedValue({ dotId: orbit.dotId, items: [] });
+    mock.dotFeed.mockResolvedValue({ dotId: orbit.dotId, nextBefore: "2026-10-12T07:00:00.000Z|x", latestCursor: null, lastActiveAt: null, unread: 0,
+      items: [item({ id: "said", author: "USER", content: "Said before", sessionId: "agent_session:feed" })] });
+    const fresh = session(); fresh.binding.sessionId = "agent_session:new";
+    mock.createAgentSession.mockResolvedValue(fresh);
+    render(<AgentPane pane={pane} codexEnvironment={null} workspaceTextSize={14} />);
+    const log = await screen.findByRole("log", { name: "Conversation with Orbit" });
+    expect(await within(log).findByText("Said before")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    await waitFor(() => expect(within(log).queryByText("Said before")).toBeNull());
+    expect(mock.createAgentSession).toHaveBeenCalledWith(pane.id, expect.objectContaining({ sessionId: null }));
+    // Older pages hold only earlier conversations now, so none is offered.
+    expect(screen.queryByRole("button", { name: "Show earlier messages" })).toBeNull();
+  });
   it("reads no feed while the pane is minimized and opens Settings → Dots from the menu", async () => {
     mock.dots.mockResolvedValue({ dots });
     mock.agentSession.mockResolvedValue(session());
     mock.dotFeed.mockResolvedValue({ dotId: orbit.dotId, items: [], nextBefore: null, latestCursor: null, lastActiveAt: null, unread: 0 });
     const view = render(<AgentPane pane={{ ...pane, isMinimized: true }} codexEnvironment={null} workspaceTextSize={14} />);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Choose Dot (Orbit)" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: "New conversation" })).toBeTruthy());
     await act(async () => {});
     expect(mock.dotFeed).not.toHaveBeenCalled();
     view.rerender(<AgentPane pane={pane} codexEnvironment={null} workspaceTextSize={14} />);

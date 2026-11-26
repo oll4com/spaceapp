@@ -395,9 +395,9 @@ export async function buildAccountDetail(input: {
     repository.latestWarmups()
   ]);
   const warmup = warmups.find((row) => row.accountId === account.id);
-  const { credentialsExpiresAt: _expires, source, ...publicAccount } = account as GatewayAccount & { credentialsExpiresAt?: string | null; source?: string; [key: string]: unknown };
+  const { source, ...publicAccount } = account as GatewayAccount & { credentialsExpiresAt?: string | null; source?: string; [key: string]: unknown };
   const cleanAccount = Object.fromEntries(Object.entries(publicAccount).filter(([field]) =>
-    !["externalAccountId", "credentialsEncrypted", "sourceRef", "blockedUntil"].includes(field))) as GatewayAccount;
+    !["externalAccountId", "credentialsEncrypted", "credentialsExpiresAt", "sourceRef", "blockedUntil"].includes(field))) as GatewayAccount;
   return gatewayAccountDetailSchema.parse({
     account: cleanAccount,
     lifetime,

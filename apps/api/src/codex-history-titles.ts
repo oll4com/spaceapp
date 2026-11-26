@@ -48,6 +48,7 @@ const requestPromptTitleLeadPatterns = [
 
 function compactCodexHistoryDisplayText(value: string, maxLength = 300): string {
   return redactMemoryText(value)
+    // eslint-disable-next-line no-control-regex -- control characters are what this strips
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
@@ -89,7 +90,9 @@ export function buildSharedCliTaskContext(input: {
     .map((section) => {
       const role = section.stream === "stdin" ? "USER_INPUT" : section.stream === "stderr" ? "CLI_ERROR_OUTPUT" : "CLI_OUTPUT";
       const content = redactMemoryText(section.content)
+        // eslint-disable-next-line no-control-regex -- terminal escape sequences are what this strips
         .replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|[0-~])/g, "")
+        // eslint-disable-next-line no-control-regex -- control characters other than tab, newline and CR are what this strips
         .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
         .replace(/\r/g, "\n");
       const neutralizedContent = neutralizeSharedCliHistoryMarkers(content).trim();
@@ -169,7 +172,7 @@ function stripCodexHistoryPromptBoilerplate(value: string): string {
   if (/^attached space artifacts for this user message:/iu.test(source)) return "";
   return source
     .replace(/^(?:\[(?:image|screenshot|file)\s*#\d+\]\s*)+/giu, "")
-    .replace(/^(?:user prompt|prompt)\s*[:\-]\s*/iu, "")
+    .replace(/^(?:user prompt|prompt)\s*[:-]\s*/iu, "")
     .trim();
 }
 

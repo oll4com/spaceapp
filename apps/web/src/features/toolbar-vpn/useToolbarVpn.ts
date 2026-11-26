@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import type { CliEgressRouteId, CliRuntimeSettingsResponse } from "@space/contracts";
 import { api } from "../../api.js";
-import { CLI_VPN_ROUTING_STATUS_EVENT, refreshCliVpnRoutingStatus } from "../../cli-vpn-routing.js";
+import { CLI_VPN_ROUTING_STATUS_EVENT, loadCliVpnRoutingStatus, refreshCliVpnRoutingStatus } from "../../cli-vpn-routing.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 
 // The room toolbar's VPN control: the selected CLI egress route and the
@@ -38,8 +38,8 @@ export function useToolbarVpn({ isAuthenticated, onRuntimeSettings }: {
     }
     let active = true;
     const refresh = () => {
-      void api
-        .cliVpnRoutingStatus()
+      // The shared read: the status the event just published (or a pane card's load) answers this without a second request.
+      void loadCliVpnRoutingStatus()
         .then((status) => {
           if (active) setToolbarVpnRoute(status.selectedRoute);
         })

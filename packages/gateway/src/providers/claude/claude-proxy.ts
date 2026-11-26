@@ -19,7 +19,7 @@ import type { RequestLogWriter } from "../../request-log-writer.js";
 import { NOUS_OPERATOR_PROJECT, PACE_CAP, permanentFailureCodes, selectAccount, USAGE_LIMIT_REACHED, type SelectionResult, type UpstreamError } from "../../router/balancer.js";
 import type { GatewayRouteHelpers } from "../../server.js";
 import { apiBudgetMessage, DAILY_ALLOWANCE_REACHED, MONTHLY_BUDGET_REACHED, type createApiBudgetPacer } from "./api-budget.js";
-import { claudeCreditsExhausted, isClaudeApiKeyAccount, isClaudeCodeRequest } from "./api-key.js";
+import { claudeAccessReturnsAt, claudeCreditsExhausted, isClaudeApiKeyAccount, isClaudeCodeRequest } from "./api-key.js";
 import { buildClaudeUpstreamHeaders, CLAUDE_API_BASE_URL, type ClaudeUpstreamAuth } from "./headers.js";
 import { ClaudeStreamInspector, claudeResponseUsage, readClaudeRateLimitHeaders, type ClaudeUsageTokens } from "./stream.js";
 
@@ -126,7 +126,11 @@ export function claudePoolLimitMessage(accounts: number, resetsAt: number | null
   if (resetsAt === null || resetsAt === undefined || resetsAt <= nowSeconds) return `${subject}.`;
   const minutes = Math.ceil((resetsAt - nowSeconds) / 60);
   const wait = minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
-  const at = new Date(resetsAt * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, ...(timeZone ? { timeZone } : {}) });
+  const zone = timeZone ? { timeZone } : {};
+  const day = (seconds: number) => new Date(seconds * 1000).toLocaleDateString("en-CA", zone);
+  // A reset on another day names it: "88h 12m (at 02:00)" left the operator guessing which 02:00 (23/11 gateway log).
+  const at = new Date(resetsAt * 1000).toLocaleString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, ...zone,
+    ...(day(resetsAt) === day(nowSeconds) ? {} : { weekday: "short", day: "numeric", month: "short" }) });
   return `${subject}. ${accounts === 1 ? "It is" : "The first one is"} back in ${wait} (at ${at}).`;
 }
 
@@ -175,20 +179,16 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     const stickyId = stickyHash ? await stickyAccounts.get(stickyHash) : undefined;
     const stickyState = stickyId ? states.find((state) => state.accountId === stickyId) : undefined;
     const fillFirst = settings.subscriptionRouting === "FILL_FIRST";
-    // Fill-first reselects at request boundaries: a sticky later-reset account must not keep taking traffic
-    // after an earlier-reset subscription recovers. The deterministic policy keeps the chosen account until it fills.
-    if (stickyState && !fillFirst) {
-      // A session already running on this account continues: the pace cap only holds back new work (paceCapApplies).
-      const check = selectAccount([stickyState], { now: now() / 1000, routingStrategy: "SINGLE_ACCOUNT", allowUsageExhaustionError: false, paceCap: false });
-      const used = Math.max(stickyState.usedPercent ?? 0, stickyState.secondaryUsedPercent ?? 0);
-      if (check.account && used < settings.stickyReallocationBudgetThresholdPercent) {
-        return { account: accounts.find((candidate) => candidate.id === stickyState.accountId), result: null, pooled, fallback: false };
-      }
-    }
+    // A session already running on this account continues: the pace cap only holds back new work (paceCapApplies).
+    const stickyOk = stickyState && selectAccount([stickyState], { now: now() / 1000, routingStrategy: "SINGLE_ACCOUNT", allowUsageExhaustionError: false, paceCap: false }).account
+      && Math.max(stickyState.usedPercent ?? 0, stickyState.secondaryUsedPercent ?? 0) < settings.stickyReallocationBudgetThresholdPercent;
+    // Fill-first reselects at request boundaries and keeps the sticky account only as a soft preference (fillFirstAccount): a later-reset
+    // account must not keep taking traffic after an earlier-reset subscription recovers.
+    if (stickyOk && !fillFirst) return { account: accounts.find((candidate) => candidate.id === stickyState.accountId), result: null, pooled, fallback: false };
     // Operator 7/11 19:22 BKK (nous_msg:3d047588): no pace cap; nothing is held by PACE_CAP (the weekly 100% limit stays).
     const result = selectAccount(states, { now: now() / 1000, routingStrategy: settings.routingStrategy, preferEarlierReset: settings.preferEarlierReset, weeklyPace: true,
       exhaustionFloorPercent: settings.exhaustionFloorPercent, paceCap, weekRunway: true,
-      fillFirst: fillFirst ? { reserve: pooled < 2 ? null : priority ? "PRIORITY" : "NORMAL", reservePercent: settings.claudeReservePercent } : null,
+      fillFirst: fillFirst ? { reserve: pooled < 2 ? null : priority ? "PRIORITY" : "NORMAL", reservePercent: settings.claudeReservePercent, sticky: stickyOk ? stickyState.accountId : null } : null,
       accountNames: Object.fromEntries(accounts.map((candidate) => [candidate.id, candidate.alias ?? candidate.label])) });
     for (const state of states) options.pool.absorb(state);
     const account = result.account ? accounts.find((candidate) => candidate.id === result.account!.accountId) : undefined;
@@ -276,10 +276,12 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     const controller = new AbortController();
     request.raw.once("close", () => { if (!reply.raw.writableEnded) controller.abort(); });
     const upstreamUrl = `${baseUrl}/v1/messages${queryOf(request)}`;
+    // The effort the client asked for (Messages API output_config.effort); absent means the model's default. Plan clipboard:VypZ4sl7NR04 step 6 reads it.
+    const askedEffort = (body.output_config as { effort?: unknown } | null | undefined)?.effort;
 
     const baseLog = (): Omit<GatewayRequestLogInsert, "status" | "errorCode" | "errorMessage"> => ({
       requestId, requestedAt: new Date(startedAt).toISOString(), provider: "CLAUDE", accountId: null, apiKeyId: key.id,
-      model: model ?? "unknown", reasoningEffort: null, requestedServiceTier: null, serviceTier: null, transport: "http", upstreamTransport: "http",
+      model: model ?? "unknown", reasoningEffort: typeof askedEffort === "string" ? askedEffort.slice(0, 20) : null, requestedServiceTier: null, serviceTier: null, transport: "http", upstreamTransport: "http",
       latencyMs: null, firstTokenMs: null, inputTokens: null, cachedInputTokens: null, outputTokens: null, reasoningTokens: null, costUsd: null,
       compressionTokensSaved: null, stickyKeySource: sticky?.source ?? null, stickyKind: stickyHash ? "PROMPT_CACHE" : null,
       stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null, ...origin,
@@ -351,8 +353,10 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
       if (!upstream.ok) {
         const failure = parseClaudeError(await readBounded(upstream), upstream.status, upstream.headers);
         lastFailure = failure;
-        // Used-up prepaid credits: the key leaves routing as any used-up quota does, and Anthropic's answer goes to the client.
-        if (fallback && claudeCreditsExhausted(failure.status, failure.message)) await options.pool.markQuotaExceeded(account, failure.error);
+        // Used-up prepaid credits or monthly limit: the key leaves routing until the named reset, and Anthropic's answer goes to the client.
+        if (fallback && claudeCreditsExhausted(failure.status, failure.message)) {
+          await options.pool.markQuotaExceeded(account, { ...failure.error, resetsAt: claudeAccessReturnsAt(failure.message) ?? failure.error.resetsAt });
+        }
         // A client that edits its history (Qoder) would fail every later turn the same way: once more on the same
         // account, with the stale thinking blocks dropped as the error itself suggests.
         const dropped = extraBetas.length === 0 && failure.status === 400 && failure.message.includes("bound to a different conversation")

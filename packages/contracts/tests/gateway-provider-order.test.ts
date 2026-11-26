@@ -5,13 +5,13 @@ const on = (route: string, enabled = true) => ({ route, enabled });
 
 describe("Space Gateway provider order", () => {
   it("puts the routes in order: subscriptions on, cloud credits off", () => {
-    expect(GATEWAY_DEFAULT_PROVIDER_ORDER).toEqual([on("CLAUDE"), on("CODEX"), on("CLAUDE_OPENCODE"), on("ANTIGRAVITY"), on("ANTIGRAVITY_FLASH"), on("ANTIGRAVITY_CLAUDE"), on("BEDROCK", false), on("VERTEX", false)]);
+    expect(GATEWAY_DEFAULT_PROVIDER_ORDER).toEqual([on("CLAUDE"), on("CODEX"), on("CLAUDE_OPENCODE"), on("ANTIGRAVITY"), on("ANTIGRAVITY_CLAUDE"), on("ANTIGRAVITY_FLASH"), on("BEDROCK", false), on("VERTEX", false)]);
     expect(gatewayProviderOrderSchema.safeParse(GATEWAY_DEFAULT_PROVIDER_ORDER).success).toBe(true);
   });
 
   it("gives a stored order and keeps the operator's choices", () => {
     const stored = [on("CODEX"), on("OPENROUTER"), on("CLAUDE"), on("CLAUDE_OPENCODE", false), on("ANTIGRAVITY"), on("OPENAI_API", false), on("DEEPSEEK", false)];
-    expect(gatewayProviderOrderOf(stored)).toEqual([on("CODEX"), on("CLAUDE"), on("CLAUDE_OPENCODE", false), on("ANTIGRAVITY"), on("ANTIGRAVITY_FLASH"), on("ANTIGRAVITY_CLAUDE"), on("BEDROCK", false), on("VERTEX", false)]);
+    expect(gatewayProviderOrderOf(stored)).toEqual([on("CODEX"), on("CLAUDE"), on("CLAUDE_OPENCODE", false), on("ANTIGRAVITY"), on("ANTIGRAVITY_CLAUDE"), on("ANTIGRAVITY_FLASH"), on("BEDROCK", false), on("VERTEX", false)]);
   });
 
   it("takes a status row for every provider (12/11: a fixed 20 answered 422 once the providers passed 20)", () => {

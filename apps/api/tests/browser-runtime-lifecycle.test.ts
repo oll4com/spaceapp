@@ -25,7 +25,10 @@ vi.mock('node:child_process', async importOriginal => {
     const answer = mocks.pactl;
     setImmediate(() => answer === null ? done(new Error('Connection failure: Access denied'), '') : done(null, answer));
     return new EventEmitter();
-  }, { [promisify.custom]: (actual.execFile as unknown as Record<symbol, unknown>)[promisify.custom] });
+  }, { [promisify.custom]: (command: string, ...rest: unknown[]) => command === 'pactl'
+    // The sweep's pactl runs through promisify (236385d7c5): answer it here too, or the real pactl's failure freezes nothing.
+    ? (mocks.pactl === null ? Promise.reject(new Error('Connection failure: Access denied')) : Promise.resolve({ stdout: mocks.pactl, stderr: '' }))
+    : ((actual.execFile as unknown as Record<symbol, (...args: unknown[]) => unknown>)[promisify.custom])(command, ...rest) });
   return { ...actual, spawn: mocks.spawn, execFile };
 });
 vi.mock('node:fs', async importOriginal => {
@@ -39,10 +42,10 @@ vi.mock('node:fs', async importOriginal => {
       : (actual.readFileSync as (...args: unknown[]) => unknown)(path, ...rest)) as typeof actual.readFileSync
   };
 });
-import { allocateDisplay, browserSessionDisplayCapacity, createBrowserSessionManager, releaseDisplay, stopChromeAndDisplay } from '../src/browser-sessions.js';
+import { ORPHAN_CHROME_GRACE_MS, allocateDisplay, browserSessionDisplayCapacity, createBrowserSessionManager, releaseDisplay, stopChromeAndDisplay } from '../src/browser-sessions.js';
 import { getApiConfig } from '../src/config.js';
 
-async function fixture(mode: 'BROWSER' | 'YOUTUBE' | 'FREELANCE_COPILOT' = 'YOUTUBE', profile = 'profile') {
+async function fixture(mode: 'BROWSER' | 'YOUTUBE' | 'FREELANCE_COPILOT' = 'YOUTUBE', profile = 'profile', cdpSendTimeoutMs?: number) {
   const root = await mkdtemp(join(tmpdir(), 'browser-lifecycle-'));
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await new Promise<void>(resolve => server.once('listening', resolve));
@@ -59,9 +62,12 @@ async function fixture(mode: 'BROWSER' | 'YOUTUBE' | 'FREELANCE_COPILOT' = 'YOUT
   let mediaPlaying = false;
   let windowMovesFail = false;
   let listTargets = false;
+  // A Chrome that stops answering (API audit 16/11): commands arrive and are never answered.
+  let muted = false;
   server.on('connection', socket => socket.on('message', data => {
     const { id, method, sessionId, params } = JSON.parse(data.toString());
     cdpMethods.push(method);
+    if (muted) return;
     if (method === 'Page.addScriptToEvaluateOnNewDocument' && typeof params?.source === 'string') scriptSources.push(params.source);
     if (method === 'Page.navigate') currentUrl = params.url;
     if (method === 'Browser.setWindowBounds' && windowMovesFail) { socket.send(JSON.stringify({ id, error: { code: -32000, message: 'Browser window not found' } })); return; }
@@ -102,13 +108,31 @@ async function fixture(mode: 'BROWSER' | 'YOUTUBE' | 'FREELANCE_COPILOT' = 'YOUT
   const pane = store.createPane({ roomId: room.id, title: 'Browser lifecycle', mode });
   const session = store.createPaneBrowserSession({ sessionId: 'browser_session:lifecycle', agentNumber: 1, paneId: pane.id, roomId: room.id,
     profileId: 'profile:lifecycle', profilePath: join(root, profile), viewport: 'wide', targetUrl: null, status: 'READY', isActive: true });
-  const manager = createBrowserSessionManager({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_PROFILE_ROOT: root, SPACE_BROWSER_SESSIONS_ENABLED: 'true', SPACE_BROWSER_SESSIONS_CHROME_PATH: process.execPath, SPACE_BROWSER_SESSIONS_XVFB_PATH: '/fixture/Xvfb', SPACE_BROWSER_SESSIONS_XVFB_ENABLED: 'true' }) });
-  return { manager, pane, store, session, children, cdpMethods, scriptSources, windowMoves, lifecycle, playMedia: (on: boolean) => { mediaPlaying = on; }, failWindowMoves: (on: boolean) => { windowMovesFail = on; }, listTargets: () => { listTargets = true; },
+  const manager = createBrowserSessionManager({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_PROFILE_ROOT: root, SPACE_BROWSER_SESSIONS_ENABLED: 'true', SPACE_BROWSER_SESSIONS_CHROME_PATH: process.execPath, SPACE_BROWSER_SESSIONS_XVFB_PATH: '/fixture/Xvfb', SPACE_BROWSER_SESSIONS_XVFB_ENABLED: 'true', SPACE_VPN_SOCKS_PROXIES: 'greece=10.20.1.2:1080,thailand=10.20.2.2:1080' }), cdpSendTimeoutMs });
+  return { manager, pane, store, session, children, cdpMethods, scriptSources, windowMoves, lifecycle, playMedia: (on: boolean) => { mediaPlaying = on; }, failWindowMoves: (on: boolean) => { windowMovesFail = on; }, listTargets: () => { listTargets = true; }, mute: (on: boolean) => { muted = on; },
     hold: () => { holdChrome = true; }, release: () => releaseChrome?.(),
     async cleanup() { await manager.closeAll(); for (const socket of server.clients) socket.terminate(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); } };
 }
 
 describe('managed browser runtime lifecycle', () => {
+  it('an unanswered command marks the Chrome; its next action fails at once and a probe that answers clears the mark', async () => {
+    const f = await fixture('BROWSER', 'profile', 150);
+    try {
+      await f.manager.getActive(f.pane);
+      f.mute(true);
+      // Its frame's capture times out after 150 ms and marks the Chrome.
+      await f.manager.getActive(f.pane).catch(() => undefined);
+      f.mute(false);
+      const startedAt = Date.now();
+      const failed = await f.manager.getActive(f.pane).then(() => null, (error: unknown) => error as { errorCode?: string; details?: { paneId?: string; sessionId?: string; otherPanes?: string[] } });
+      expect(failed?.errorCode).toBe('BROWSER_UNRESPONSIVE');
+      expect(failed?.details).toMatchObject({ paneId: f.pane.id, sessionId: f.session.sessionId, otherPanes: [] });
+      expect(Date.now() - startedAt).toBeLessThan(100);
+      await vi.waitFor(() => f.manager.getActive(f.pane), { timeout: 2_000, interval: 50 });
+      expect(f.cdpMethods).toContain('Browser.getVersion');
+      expect(f.children.filter(child => child.command === process.execPath)).toHaveLength(1);
+    } finally { await f.cleanup(); }
+  });
   it.each([undefined, 'http://127.0.0.1:4911/browser-live-proof.html'])('restarts a stopped blank browser with target %s', async (targetUrl) => {
     const f = await fixture('BROWSER');
     try {
@@ -389,6 +413,73 @@ describe('managed browser runtime lifecycle', () => {
       expect(f.manager.capacity?.().activeLiveWorkloads).toBe(0);
     } finally { await f.cleanup(); }
   });
+  // Operator 14/11 21:53 BKK: 97 Chrome processes outlived the browser panes closed in SpaceApp.
+  describe('a closed browser leaves no Chrome behind', () => {
+    const chromes = (f: Awaited<ReturnType<typeof fixture>>) => f.children.filter(child => child.command === process.execPath);
+    const alive = (f: Awaited<ReturnType<typeof fixture>>) => chromes(f).filter(child => child.exitCode === null && child.signalCode === null).length;
+    it('closing the pane ends its Chrome, also when its stored session is gone or replaced', async () => {
+      const f = await fixture('BROWSER');
+      try {
+        await f.manager.getActive(f.pane);
+        expect(alive(f)).toBe(1);
+        await f.manager.stopPane(f.pane.id);
+        expect(alive(f)).toBe(0);
+        // The row went inactive behind the host's back (a new session row, a lost stop): the next stop still ends the Chrome.
+        const second = await f.manager.startOrRestore({ pane: f.pane, traceId: 'trace:second' });
+        expect(alive(f)).toBe(1);
+        await f.store.updatePaneBrowserSession(second.session.sessionId, { status: 'CLOSED', isActive: false });
+        await f.manager.stopPane(f.pane.id);
+        expect(alive(f)).toBe(0);
+        expect(f.manager.capacity?.().activeSessions).toBe(0);
+      } finally { await f.cleanup(); }
+    });
+    it('a browser stopped on a non-http page (a route change restart) starts again on its http target, not failing (19/11 set_route)', async () => {
+      const f = await fixture('BROWSER');
+      try {
+        await f.store.updatePaneBrowserSession(f.session.sessionId, { status: 'CLOSED', isActive: false, currentUrl: 'chrome-error://chromewebdata/', targetUrl: 'https://example.com/' });
+        const started = await f.manager.startOrRestore({ pane: f.pane, traceId: 'trace:non-http' });
+        expect(started.session.targetUrl).toBe('https://example.com/');
+        await f.store.updatePaneBrowserSession(started.session.sessionId, { status: 'CLOSED', isActive: false, currentUrl: 'chrome://newtab/', targetUrl: 'chrome://newtab/' });
+        const again = await f.manager.startOrRestore({ pane: f.pane, traceId: 'trace:non-http-2' });
+        expect(again.session.targetUrl).toMatch(/^(?:https?:|about:blank$)/);
+      } finally { await f.cleanup(); }
+    });
+    it('the sweep closes the Chrome of a deleted room after the grace, logs it, and never one an open pane holds', async () => {
+      const f = await fixture('BROWSER');
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        await f.manager.getActive(f.pane);
+        const now = Date.now();
+        // Held: the open pane's active session.
+        expect(await f.manager.sweepOrphanChromes!(now)).toBe(0);
+        expect(await f.manager.sweepOrphanChromes!(now + 2 * ORPHAN_CHROME_GRACE_MS)).toBe(0);
+        expect(alive(f)).toBe(1);
+        // Room deleted while the Browser Host could not stop it: its rows are gone, its Chrome is not.
+        await f.store.deleteRoom(f.pane.roomId);
+        expect(await f.manager.sweepOrphanChromes!(now)).toBe(0);
+        expect(alive(f)).toBe(1);
+        expect(await f.manager.sweepOrphanChromes!(now + ORPHAN_CHROME_GRACE_MS - 1)).toBe(0);
+        expect(await f.manager.sweepOrphanChromes!(now + ORPHAN_CHROME_GRACE_MS)).toBe(1);
+        expect(alive(f)).toBe(0);
+        expect(f.manager.capacity?.().activeSessions).toBe(0);
+        const line = log.mock.calls.map(([text]) => String(text)).find(text => text.includes('browser_orphan_chrome_closed'));
+        expect(JSON.parse(line!)).toMatchObject({ event: 'browser_orphan_chrome_closed', panes: [f.pane.id], tracked: true });
+      } finally { log.mockRestore(); await f.cleanup(); }
+    });
+    it('the sweep closes the Chrome of a pane closed while its stop failed and closes its session', async () => {
+      const f = await fixture('BROWSER');
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        await f.manager.getActive(f.pane);
+        await f.store.updatePane(f.pane.id, { isClosed: true });
+        const now = Date.now();
+        await f.manager.sweepOrphanChromes!(now);
+        expect(await f.manager.sweepOrphanChromes!(now + ORPHAN_CHROME_GRACE_MS)).toBe(1);
+        expect(alive(f)).toBe(0);
+        expect((await f.store.getPaneBrowserSession(f.session.sessionId))?.isActive).toBe(false);
+      } finally { log.mockRestore(); await f.cleanup(); }
+    });
+  });
   it('closing during startup waits for and stops that process without reviving the session', async () => {
     const f = await fixture();
     try {
@@ -412,8 +503,8 @@ describe('managed browser runtime lifecycle', () => {
       const pacArg = args.find(arg => arg.startsWith('--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,'));
       expect(pacArg).toBeTruthy();
       const pac = Buffer.from(pacArg!.split('base64,')[1]!, 'base64').toString('utf8');
-      expect(pac).toContain('["upwork.com","SOCKS5 10.254.242.2:1080"]');
-      expect(pac).toContain('return "SOCKS5 10.254.242.2:1080"');
+      expect(pac).toContain('["upwork.com","SOCKS5 10.20.2.2:1080"]');
+      expect(pac).toContain('return "SOCKS5 10.20.2.2:1080"');
       expect(args).toContain('--force-webrtc-ip-handling-policy=disable_non_proxied_udp');
       // The clock and languages of the Thailand exit; Chrome reports its own user agent and navigator values.
       expect(args).toContain('--accept-lang=en-US,en,th');
@@ -438,7 +529,7 @@ describe('managed browser runtime lifecycle', () => {
       const args = chromes()[0]!.args;
       const pac = Buffer.from(args.find(arg => arg.startsWith('--proxy-pac-url='))!.split('base64,')[1]!, 'base64').toString('utf8');
       // Every site through the Greece route, localhost direct, no DIRECT fallback: a route that is down fails closed.
-      expect(pac).toContain('return "SOCKS5 10.254.241.2:1080"');
+      expect(pac).toContain('return "SOCKS5 10.20.1.2:1080"');
       expect(pac).not.toMatch(/return "DIRECT";\n}$/);
       expect(args).toContain('--force-webrtc-ip-handling-policy=disable_non_proxied_udp');
       expect(args).toContain('--accept-lang=en-US,en,el');
@@ -489,6 +580,40 @@ describe('managed browser runtime lifecycle', () => {
       f.store.updateFreelanceCopilotMetadata(other.id, { ...metadata, settings: { ...metadata.settings, browserEgress: 'greece' } });
       await expect(f.manager.getActive(other)).rejects.toThrow(/BROWSER_ROUTE/);
       expect(chromes()).toHaveLength(2);
+    } finally { await f.cleanup(); }
+  });
+  it('a pane on a Freelance Copilot\'s pane route shares its account Chrome in either order; another route is still refused (Leo on Dana\'s account, 16/11)', async () => {
+    const f = await fixture('FREELANCE_COPILOT');
+    try {
+      const chromes = () => f.children.filter(child => child.command === process.execPath);
+      const addBrowser = (id: string, route: 'thailand' | 'greece') => {
+        const pane = f.store.createPane({ roomId: f.pane.roomId, title: id, mode: 'MARKETING_COPILOT' });
+        f.store.createPaneBrowserSession({ sessionId: `browser_session:${id}`, agentNumber: 2, paneId: pane.id, roomId: f.pane.roomId,
+          profileId: 'profile:lifecycle', profilePath: f.session.profilePath, viewport: 'wide', targetUrl: null, status: 'READY', isActive: true });
+        f.store.setPaneBrowserRoute(pane.id, route);
+        return pane;
+      };
+      // The Freelance pane's default route is Thailand: a pane that chose Thailand joins its Chrome, no restart.
+      await f.manager.getActive(f.pane);
+      const leo = addBrowser('leo', 'thailand');
+      await f.manager.getActive(leo);
+      expect(chromes()).toHaveLength(1);
+      await expect(f.manager.getActive(addBrowser('greece', 'greece'))).rejects.toThrow(/BROWSER_ROUTE/);
+      expect(chromes()).toHaveLength(1);
+
+      // The other order (a Browser Host restart): the Freelance pane restarts the Thailand pane's Chrome onto its routes, the pane comes back on it.
+      const pac = () => Buffer.from(chromes().at(-1)!.args.find(arg => arg.startsWith('--proxy-pac-url='))!.split('base64,')[1]!, 'base64').toString('utf8');
+      await f.manager.stopPane(f.pane.id);
+      await f.manager.stopPane(leo.id);
+      await f.store.updatePaneBrowserSession('browser_session:leo', { isActive: true, status: 'READY' });
+      await f.store.updatePaneBrowserSession(f.session.sessionId, { isActive: true, status: 'READY' });
+      await f.manager.getActive(leo);
+      expect(pac()).not.toContain('upwork.com');
+      await f.manager.getActive(f.pane);
+      expect(pac()).toContain('upwork.com');
+      const count = chromes().length;
+      await f.manager.getActive(leo);
+      expect(chromes()).toHaveLength(count);
     } finally { await f.cleanup(); }
   });
   it('streams Preview-only viewers by a screenshot a second and switches to the screencast while a faster viewer watches', async () => {
@@ -542,12 +667,34 @@ describe('a Browser Host that fails a request itself (round 9 item 4: Cleo/Bob l
     const stop = onBrowserHostInternalError((event) => heard.push(event));
     const failed = await manager.startOrRestore({ pane } as never).catch((error: unknown) => error as InstanceType<typeof SpaceFeatureDisabledError>);
     expect(failed).toMatchObject({ errorCode: 'BROWSER_HOST_UNAVAILABLE',
-      message: expect.stringMatching(/^The Browser Host is running but failed this request \(BROWSER_HOST_INTERNAL_ERROR: unrecognized_keys at input\.pane\.marketingCopilotMetadata \(keys: bookmarksView\)\)\. .*guarded restart/) });
-    expect(heard).toEqual([{ paneId: 'pane:bob00001', roomId: 'room:cleo0001', code: 'BROWSER_HOST_INTERNAL_ERROR', issue: 'unrecognized_keys at input.pane.marketingCopilotMetadata (keys: bookmarksView)' }]);
+      message: 'The Browser Host is running but failed this request (BROWSER_HOST_INTERNAL_ERROR: unrecognized_keys at input.pane.marketingCopilotMetadata (keys: bookmarksView)). No stale host is known, so a restart is not the fix: the message names the cause. Try once more in a few minutes (a timeout under load passes); if it fails the same way, report that message. Do not retry in a loop.' });
+    expect(heard).toEqual([{ paneId: 'pane:bob00001', roomId: 'room:cleo0001', code: 'BROWSER_HOST_INTERNAL_ERROR', issue: 'unrecognized_keys at input.pane.marketingCopilotMetadata (keys: bookmarksView)', stale: false }]);
     // A host that is down keeps its own answer; a non-function passes as it is.
     await expect(manager.getActive(pane as never)).rejects.toBe(down);
     expect(manager.health()).toBe('ok');
     stop();
+  });
+
+  it('passes the host\'s own message through the proxy (redacted) and names a stale host only while the age check says so (14/11: memory, not a stale host)', async () => {
+    const { BrowserHostError } = await import('@space/browser-host');
+    const { getApiConfig } = await import('../src/config.js');
+    const { createBrowserHostProxy } = await import('../src/browser-host-proxy.js');
+    const { createBrowserHostStaleWatch, keepBrowserHostErrorMessages, withBrowserHostErrorText } = await import('../src/browser-host-errors.js');
+    const client = keepBrowserHostErrorMessages({ getActive: async () => {
+      throw new BrowserHostError('BROWSER_HOST_INTERNAL_ERROR', 'timeout exceeded when trying to connect to postgres://space:hunter2secret@db/space');
+    } });
+    const manager = withBrowserHostErrorText(createBrowserHostProxy({ config: getApiConfig({}), client: client as never }));
+    const answer = () => manager.getActive({ id: 'pane:max00001', roomId: 'room:cleo0001' } as never).catch((error: Error) => error.message);
+    expect(await answer()).toBe('The Browser Host is running but failed this request (BROWSER_HOST_INTERNAL_ERROR: timeout exceeded when trying to connect '
+      + 'to postgres://[REDACTED]@db/space). No stale host is known, so a restart is not the fix: the message names the cause. Try once more in a few minutes (a timeout under load passes); if it fails the same way, report that message. Do not retry in a loop.');
+    const watch = (startedAt: string) => createBrowserHostStaleWatch({ health: async () => ({ startedAt }), changedAt: async () => '2026-11-14T21:00:00.000Z' });
+    await watch('2026-11-14T20:13:17.000Z').check();
+    // Slice 17 (14/11): the exact place and command, never "tell Nous" (the answer reached Nous itself).
+    expect(await answer()).toContain('The resident Browser Host started 2026-11-14 20:13 UTC, before the newest pane contracts, and refuses panes this way until '
+      + "the operator's guarded Browser Host restart (Settings → Nous → Server operations → Restart a service, or `space-admin-action server-ops restart browser-host` by an agent the operator asks)");
+    // A restarted host newer than the contracts: no hint again.
+    await watch('2026-11-14T21:05:00.000Z').check();
+    expect(await answer()).not.toContain('resident');
   });
 
   it('names a resident host older than the newest pane contract change once per host start, at most every 10 minutes', async () => {
@@ -563,6 +710,30 @@ describe('a Browser Host that fails a request itself (round 9 item 4: Cleo/Bob l
     startedAt = '2026-10-28T07:05:00.000Z';
     now += 11 * 60_000;
     expect(await watch.check()).toBeNull();
+  });
+
+  it('says nothing about a resident host that reads newer pane rows fine (17/11, nous_msg:efe9585f: a restart card after every promote)', async () => {
+    const { BrowserHostError } = await import('@space/browser-host');
+    const { getApiConfig } = await import('../src/config.js');
+    const { createBrowserHostProxy } = await import('../src/browser-host-proxy.js');
+    const { createBrowserHostStaleWatch, keepBrowserHostErrorMessages, withBrowserHostErrorText } = await import('../src/browser-host-errors.js');
+    const changedAt = async () => '2026-11-17T03:15:00.000Z';
+    const now = () => Date.parse('2026-11-17T08:00:00.000Z');
+    const written: string[] = [];
+    const told = { read: () => null, write: (startedAt: string) => { written.push(startedAt); } };
+    // A host older than the contracts that does not report the capability is still named.
+    expect(await createBrowserHostStaleWatch({ health: async () => ({ startedAt: '2026-11-17T01:00:00.000Z' }), changedAt, now, told }).check())
+      .toMatch(/^The resident Browser Host started 2026-11-17 01:00 UTC/);
+    expect(written).toEqual(['2026-11-17T01:00:00.000Z']);
+    // The same age with tolerantPaneRows: no line to Nous, nothing told, and the error text drops the stale-host hint.
+    const tolerant = createBrowserHostStaleWatch({ health: async () => ({ startedAt: '2026-11-17T02:00:00.000Z', tolerantPaneRows: true }), changedAt, now, told });
+    expect(await tolerant.check()).toBeNull();
+    expect(written).toEqual(['2026-11-17T01:00:00.000Z']);
+    const client = keepBrowserHostErrorMessages({ getActive: async () => { throw new BrowserHostError('BROWSER_HOST_INTERNAL_ERROR', 'timeout exceeded'); } });
+    const manager = withBrowserHostErrorText(createBrowserHostProxy({ config: getApiConfig({}), client: client as never }));
+    const answer = await manager.getActive({ id: 'pane:max00001', roomId: 'room:cleo0001' } as never).catch((error: Error) => error.message);
+    expect(answer).not.toContain('resident');
+    expect(answer).toContain('No stale host is known');
   });
 
   it('keeps the told host start across an API restart (round 2, 1/11: 50 restarts told the same host 22 times)', async () => {

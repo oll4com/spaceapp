@@ -1,5 +1,5 @@
 import {
-  codexResetCreditAvailabilitySchema, codexResetCreditRedemptionResponseSchema, codexUsageAccountListSchema,
+  codexResetCreditAvailabilitySchema, codexResetCreditRedemptionResponseSchema, codexUsageAccountListSchema, gatewayWeekResetCredits,
   type CodexResetCreditAvailability, type CodexUsageAccountList, type NotificationRaiseInput
 } from "@space/contracts";
 import type { GatewayRepository } from "@space/db";
@@ -53,23 +53,29 @@ export function createGatewayCodexResetCreditsService(options: { repository: Gat
 
   async function redeemOnce(accountId: string, idempotencyKey: string): Promise<CodexResetCreditsRedemptionResult> {
     const result = await options.admin.gatewayAdmin(`/__space-gateway/admin/accounts/${accountId}/reset-credit`, { idempotencyKey });
-    const outcome = (result.body as { outcome?: unknown } | null)?.outcome;
+    const { outcome, windowsReset: cleared } = (result.body ?? {}) as { outcome?: unknown; windowsReset?: unknown };
     if (result.status === 404) throw new CodexResetCreditsError("STALE_CREDIT");
     if (result.status >= 500 || typeof outcome !== "string" || !outcomes.has(outcome)) {
       throw new CodexResetCreditsError(result.status >= 500 ? "UNKNOWN_OUTCOME" : "PROVIDER_UNAVAILABLE");
     }
     const typed = outcome as "RESET" | "ALREADY_REDEEMED" | "NOTHING_TO_RESET" | "NO_CREDIT";
+    // Claude names the windows it cleared (dev@ 14/11: "reset" left the week at 93%); Codex answers a count, which names none.
+    const windowsReset = Array.isArray(cleared) ? cleared.filter((window): window is string => typeof window === "string" && /^[a-z0-9_]{1,60}$/.test(window)) : undefined;
     return {
-      response: codexResetCreditRedemptionResponseSchema.parse({ accountId, outcome: typed, completedAt: now().toISOString() }),
-      audit: { outcome: typed, usageVerified: typed === "RESET", creditIdHash: null }
+      response: codexResetCreditRedemptionResponseSchema.parse({ accountId, outcome: typed, completedAt: now().toISOString(), windowsReset }),
+      audit: { outcome: typed, usageVerified: typed === "RESET", creditIdHash: null, ...(windowsReset ? { windowsReset } : {}) }
     };
   }
 
   return {
     async availability(): Promise<CodexResetCreditAvailability> {
-      const accounts = (await options.repository.listAccounts()).filter((account) => account.provider === "CODEX");
+      // Claude's limit resets too (nous_msg:2cdc2f9a): the count is its week resets (weekly, full) and `grants` names every kind, so the
+      // button can say "Fable usage only" for an account whose only grant never gives a week (dev@ 14/11).
+      const accounts = (await options.repository.listAccounts()).filter((account) => account.provider === "CODEX" || account.provider === "CLAUDE");
       return codexResetCreditAvailabilitySchema.parse({
-        data: accounts.slice(0, 100).map((account) => ({ accountId: account.id, availableCreditCount: account.resetCreditsAvailable })),
+        data: accounts.slice(0, 100).map((account) => ({ accountId: account.id,
+          availableCreditCount: account.resetCreditGrants ? gatewayWeekResetCredits(account) : account.resetCreditsAvailable,
+          ...(account.resetCreditGrants?.length ? { grants: account.resetCreditGrants.map(({ kind, left }) => ({ kind, left })) } : {}) })),
         source: "space-gateway", isStale: false, error: null, checkedAt: now().toISOString()
       });
     },

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
-  NEEDS_YOU_GO_NOW, needsYouAnswerKind, needsYouAsk, nousAnswerIntent, needsYouTimingNow, notificationAnswerInputSchema, notificationIdSchema, nousCopilotSchema, nousPaneBoardAnswerInputSchema, nousPaneBoardRefreshInputSchema,
+  isNousApproval, NEEDS_YOU_GO_NOW, needsYouAnswerKind, needsYouAsk, nousAnswerIntent, needsYouTimingNow, notificationAnswerInputSchema, notificationIdSchema, nousCopilotSchema, nousPaneBoardAnswerInputSchema, nousPaneBoardRefreshInputSchema,
   type NotificationAnswerResult, type NotificationStatus, type NousCopilot, type NousDecisionAction, type NousMessage, type NousPaneBoardAnswerResult, type Pane, type Room,
   type NousClientContext, type SpaceNotification
 } from "@space/contracts";
@@ -12,6 +12,7 @@ import { requestNousClient } from "../request-helpers.js";
 import { paneLabel } from "./digest.js";
 import type { PaneBoardService } from "./pane-board.js";
 import { cardTextMatched, cardWordsConfirm } from "./predictions.js";
+import { NEVER_BUY_ANSWER, purchaseAsk } from "./allowances.js";
 import type { NousToolOutcome } from "./tools.js";
 
 export interface PaneBoardRouteDeps {
@@ -44,11 +45,15 @@ export interface PaneBoardRouteDeps {
   planWait?(owner: string, record: SpaceNotification): Promise<string | null>;
   /** Nous's space_send_to_pane path: the pane's next prompt (after its turn, held until it is at a prompt; critical text comes back refused). */
   sendToPane(owner: string, room: Room, pane: Pane, text: string): Promise<NousToolOutcome>;
+  /** R27-3: types a one-time code into the pane now (`typeCodeNow`); why it did not arrive, or null. */
+  typeCode(owner: string, room: Room, pane: Pane, text: string): Promise<string | null>;
   /** A copilot's review, rule or campaign decided as the operator: the server code an approved Nous COPILOT decision runs. */
   decideCopilot(owner: string, action: Extract<NousDecisionAction, { type: "COPILOT" }>): Promise<string>;
   /** Stores a kind in the operator's Always-approve list (Settings shows it and "Ask me again" removes it); the kinds stored. */
   rememberAlways(owner: string, kind: { key: string; label: string }): Promise<void>;
   alwaysKinds(owner: string): Promise<string[]>;
+  /** Audit §4 item 4: the operator's "Never buy" switch (Settings → Nous). */
+  neverBuy?(owner: string): Promise<boolean>;
   /** R16-3: the owner's quiet hours now (hands wait for the morning then). */
   quiet?(owner: string): Promise<boolean>;
   /** Goal 7365014c-e: one decision-ledger row per operator answer. */
@@ -128,11 +133,13 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
    * Needs you as questions (operator request 2026-10-27, plan clipboard:5AQvaoSR-IZa): the operator answers a needs-you record from its card,
    * like a Nous decision, without visiting the pane. The record's ask names where the answer goes; a person's session only.
    */
-  app.post("/api/notifications/:id/answer", routeOptions, async (request): Promise<NotificationAnswerResult> => {
+  app.post("/api/notifications/:id/answer", routeOptions, async (request): Promise<NotificationAnswerResult> =>
+    operatorAnswer(request, parseQuery(notificationParams, request.params).id, parseBody(notificationAnswerInputSchema, request.body)));
+
+  /** The operator's answer to a needs-you record, from its card or the unified inbox (plan clipboard:aE7U1J_gU9OV): one path. */
+  async function operatorAnswer(request: FastifyRequest, id: string, input: z.infer<typeof notificationAnswerInputSchema>): Promise<NotificationAnswerResult> {
     const owner = await deps.owner(request);
     deps.assertPerson(request);
-    const { id } = parseQuery(notificationParams, request.params);
-    const input = parseBody(notificationAnswerInputSchema, request.body);
     const record = await deps.notifications.get(owner, id);
     if (!record) throw new SpaceNotFoundError("That notification does not exist.");
     const kind = input.always ? needsYouAnswerKind(record) : null;
@@ -141,16 +148,18 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
       request.mobileDevice ? { device: request.mobileDevice.id, scopes: request.mobileDevice.scopes } : undefined);
     if (kind) await deps.rememberAlways(owner, kind);
     return result;
-  });
+  }
 
   /**
    * The answer's route: an operator's answer (person), or Space's on their "Always answer like this" (`by` ALWAYS) or their standing
    * hands-timing rule (`by` TIMING, R16-3); Space's answers are never a message as the person.
    */
-  async function answerNeedsYou(owner: string, record: SpaceNotification, input: { option?: string; text?: string }, by?: "ALWAYS" | "TIMING" | "HANDLED", client?: NousClientContext,
+  async function answerNeedsYou(owner: string, record: SpaceNotification, input: { option?: string; text?: string }, by?: "ALWAYS" | "TIMING" | "HANDLED" | "NEVER_BUY", client?: NousClientContext,
     mobile?: { device: string; scopes: string[] }): Promise<NotificationAnswerResult> {
-    if (record.status === "ACKED" || record.status === "RESOLVED") throw new SpaceConflictError("This no longer waits for an answer.");
     const ask = needsYouAsk(record);
+    // Operator 23/11 08:56 BKK: words typed into a card that closed meanwhile still reach Nous, never lost; a code or a pick does not.
+    const closed = record.status === "ACKED" || record.status === "RESOLVED";
+    if (closed && (!input.text?.trim() || ask.code || by)) throw new SpaceConflictError("This no longer waits for an answer.");
     if (input.option && !(ask.options ?? []).includes(input.option)) throw new SpaceConflictError("That is not one of this question's answers.");
     const answer = [input.option, input.text].filter(Boolean).join(": ");
     const found = record.paneId ? await deps.pane(owner, record.paneId) : null;
@@ -158,7 +167,7 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
     const toNous = async (why = "") => {
       // A plan's card with no pane (plan-needs-you.ts) names its plan, like the web's plan reply.
       const where = found ? `[${found.room.name} · ${paneLabel(found.pane)}] ` : typeof record.payload.planId === "string" ? `[Plan ${record.title} · ${record.payload.planId}] ` : "";
-      await deps.send(owner, `${where}${by === "TIMING" ? "Space answered by the operator's standing rule (hands now, one by one)"
+      await deps.send(owner, `${where}${by === "TIMING" ? "Space answered by the operator's standing rule (hands now, one by one)" : by === "NEVER_BUY" ? `Space answered by the operator's "Never buy" rule`
         : by ? `Space answered by the operator's "Always answer like this"` : "My answer"} to "${ask.question}": ${answer}${why}`,
         { person: !by, ...(refs ? { refs } : {}), ...(client && !by ? { client } : {}), ...(mobile ? { mobile } : {}) });
       return `Sent to Nous${found ? ` about ${paneLabel(found.pane)}` : ""}.`;
@@ -176,6 +185,7 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
         throw new SpaceConflictError(`Not done: ${text} The card stays open: try again, or answer in the pane.`);
       }
     };
+    if (closed) return { routed: "NOUS", display: await toNous(" (the card had already closed)"), notification: record };
     // R27-3: a one-time code goes into the pane's prompt and nowhere else: not the record, the ledger, Nous's conversation or an inbox line.
     if (ask.code) {
       const code = input.text?.trim();
@@ -184,20 +194,24 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
       // A browser handoff's code goes to the CLI that asked for it (`codePane`), not the browser pane the card is about.
       const at = typeof record.payload.codePane === "string" ? await deps.pane(owner, record.payload.codePane) : found;
       if (!at) throw new SpaceConflictError("That pane is closed: there is nobody to type the code for.");
-      const sent = await deps.sendToPane(owner, at.room, at.pane, `Operator's one-time code for your needs-you (${ask.question}): ${code}`)
-        .catch((error: unknown): NousToolOutcome => ({ ok: false, display: "Not typed", result: error instanceof Error ? error.message : String(error) }));
-      if (!sent.ok) {
-        const why = redactMemoryText((sent.result || sent.display).split(code).join("[the code]")).replace(/\s+/g, " ").trim();
-        await deps.inbox?.(owner, `needs-you-answer-failed:${record.id}`, `The operator's one-time code for "${ask.question}" (${at.room.name} · ${paneLabel(at.pane)}) did not `
-          + `reach the pane: ${why}. The code is not kept; the card stays open for them to type it again.`).catch(() => undefined);
-        throw new SpaceConflictError(`Not typed: ${why} The code is not kept: try again, or type it in the pane.`);
+      const failed = await deps.typeCode(owner, at.room, at.pane, `Operator's one-time code for your needs-you (${ask.question}): ${code}`)
+        .catch((error: unknown) => error instanceof Error ? error.message : String(error));
+      if (failed !== null) {
+        const why = redactMemoryText(failed.split(code).join("[the code]")).replace(/\s+/g, " ").trim();
+        const say = `Your code did not arrive (${why}): type a fresh one.`;
+        await deps.notifications.addPayload?.(owner, record.id, { answerError: { at: new Date().toISOString(), text: say } }).catch(() => null);
+        await deps.inbox?.(owner, `needs-you-answer-failed:${record.id}`, `Urgent: the operator's one-time code for "${ask.question}" (${at.room.name} · ${paneLabel(at.pane)}) did not `
+          + `reach the pane: ${why}. The code is not kept; the card stays open for a fresh one. A pane waiting for a code must end its turn, not poll.`).catch(() => undefined);
+        throw new SpaceConflictError(`${say} The code is not kept; the card stays open.`);
       }
       const notification = await deps.notifications.setStatus(owner, record.id, "ACKED", { answer: { text: "(a one-time code, typed into the pane; not kept)", at: new Date().toISOString(), routed: "PANE" } });
       return { routed: "PANE", display: `Typed into ${paneLabel(at.pane)}; the code is kept nowhere.`, notification };
     }
+    // Goal 7365014c: raise()'s fallback recommendedDefault is no producer or base-rate prediction, so the ledger never scores it as a hit or miss.
+    const predicted = record.payload.recommendedDefault === true ? null : ask.recommended ?? null;
     const ledger = (stored: string, match: boolean | null) => deps.ledger?.(owner, { source: `NEEDS_YOU:${record.source}`,
-      kind: (record.payload.baseRate ? null : needsYouAnswerKind(record)?.key) ?? `${record.source}:${record.kind}`, title: ask.question,
-      predicted: ask.recommended ?? null, answer: stored, match, ref: record.id }).catch(() => undefined);
+      kind: (record.payload.baseRate || record.payload.recommendedDefault ? null : needsYouAnswerKind(record)?.key) ?? `${record.source}:${record.kind}`, title: ask.question,
+      predicted, answer: stored, match, ref: record.id }).catch(() => undefined);
     // R27-2: "Go now" on a Nous hands card takes the operator to the pane: the card stays (READ) for the visit, scored once, no turn for Nous.
     // R37-2: an agent's card too (answer PANE): nothing is typed into the pane, which waits for the operator there.
     if (input.option === NEEDS_YOU_GO_NOW && !input.text && !by && !mobile && (ask.answer.kind === "NOUS" || ask.answer.kind === "PANE")) {
@@ -206,7 +220,7 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
       // A READ record keeps its status (the store moves only forward): the answer joins its payload.
       const notification = record.status === "OPEN" ? await deps.notifications.setStatus(owner, record.id, "READ", went)
         : await deps.notifications.addPayload?.(owner, record.id, went) ?? record;
-      if (!again) await ledger(NEEDS_YOU_GO_NOW, ask.recommended ? ask.recommended === NEEDS_YOU_GO_NOW : null);
+      if (!again) await ledger(NEEDS_YOU_GO_NOW, predicted ? predicted === NEEDS_YOU_GO_NOW : null);
       return { routed: ask.answer.kind, display: `Going to ${found ? paneLabel(found.pane) : "the pane"}: the card stays until its work is done.`, notification };
     }
     const planCard = !found && record.payload.derived === true && Boolean(record.dedupeKey?.startsWith("nous:plan:"));
@@ -295,21 +309,29 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
     const confirmed = !input.option && cardWordsConfirm(ask.recommended, input.text, nousAnswerIntent(input.text ?? ""), Array.isArray(ask.options) ? ask.options : []);
     const stored = confirmed ? `${ask.recommended}: ${input.text!.trim()}` : answer;
     // A cleared wait was done, not answered: if it is set again, it is asked again.
-    const answered = { answer: { text: stored, at: new Date().toISOString(), routed, ...(by ? { by } : {}) }, ...(deps.planWait ? { answeredWait: cleared ? null : wait } : {}) };
+    // 2026-11-15 REVIEW 5(a): the answering device (PHONE, TABLET, DESKTOP), so a slider "Failed" on a phone waits for a computer (phoneSliderHold).
+    const answered = { answer: { text: stored, at: new Date().toISOString(), routed, ...(by ? { by } : {}), ...(client?.form && !by ? { form: client.form } : {}) }, ...(deps.planWait ? { answeredWait: cleared ? null : wait } : {}) };
     const notification = await deps.notifications.setStatus(owner, record.id, "ACKED", answered);
     // Goal 7365014c-e: the operator's own answers go to the decision ledger (an "Always answer like this" is not one).
     // R16-9: a base-rate recommendation keeps the card's kind as its plain source and kind, so the next base rate counts this answer too.
-    if (!by) await ledger(stored, ask.recommended ? cardTextMatched(ask, stored) : null);
+    if (!by) await ledger(stored, predicted ? cardTextMatched(ask, stored) : null);
     return { routed, display, notification };
   }
 
   return {
+    operatorAnswer,
     /** A new needs-you card of a kind the operator chose "Always answer like this" for: answered with its recommended option, or null. */
     async autoAnswer(record: SpaceNotification): Promise<NotificationAnswerResult | null> {
       // R16-3: by day an ask about WHEN to hand over is answered «now»; in quiet hours the morning batch holds it.
       const now = needsYouTimingNow(record);
       if (now && !record.payload.heldUntil && !(deps.quiet ? await deps.quiet(record.ownerUserId).catch(() => true) : false)) {
         return answerNeedsYou(record.ownerUserId, record, { option: now }, "TIMING");
+      }
+      // Audit §4 item 4 "Never buy": a question whether to buy something paid is answered "no purchase" (never a review, approval or code).
+      const ask = needsYouAsk(record);
+      if (!ask.code && ask.answer.kind !== "COPILOT_DECISION" && !isNousApproval(record) && purchaseAsk(ask.question)
+        && await deps.neverBuy?.(record.ownerUserId).catch(() => false)) {
+        return answerNeedsYou(record.ownerUserId, record, { text: NEVER_BUY_ANSWER }, "NEVER_BUY");
       }
       // 2/11 rule 4: a Mail Copilot flag whose base rate (the operator's own answers, 2 or more) is "I handled it" raises no card; Nous gets it to act on (5/11).
       const baseRate = record.payload.baseRate as { option?: unknown; answers?: unknown } | undefined;

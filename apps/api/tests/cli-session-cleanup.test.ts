@@ -39,4 +39,10 @@ describe("CLI session cleanup", () => {
       ["/fixed/cleanup", "execute"]
     ]);
   });
+
+  it("runs the installed cleanup worker by default (EXT-C-F18: the path comes from host-paths, its value is unchanged)", async () => {
+    const runCommand = vi.fn(async () => JSON.stringify(counts));
+    await createCliSessionCleanupService({ runCommand }).preview({ actorId: "user:admin", protectedThreadIds: [], codexEnabled: true });
+    expect(runCommand.mock.calls[0]?.[0]).toBe("/opt/spaceapp/bin/space-cli-session-cleanup");
+  });
 });

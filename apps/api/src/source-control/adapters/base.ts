@@ -4,11 +4,14 @@ import type { ProviderExchange, ProviderResponse, ProviderUrlPolicy } from "../p
 import { GitControlError } from "../errors.js";
 
 export function invalid(code = "PROVIDER_FAILED", message = "Provider returned an invalid response."): never { throw new GitControlError(code, message, 502); }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- provider JSON differs per provider and the adapters read its fields ad hoc; unknown here needs a per-adapter rework (14 tsc errors)
 export function object(value: unknown): Record<string, any> { if (!value || typeof value !== "object" || Array.isArray(value)) return invalid(); return value as Record<string, any>; }
 export function array(value: unknown): unknown[] { if (!Array.isArray(value)) return invalid(); return value; }
+// eslint-disable-next-line no-control-regex -- rejects control characters on purpose
 export function text(value: unknown): string { if (typeof value !== "string" || !value || /[\x00-\x1f\x7f]/.test(value)) return invalid(); return value; }
 export function numericId(value: string): string { if (!/^[1-9][0-9]{0,19}$/.test(value)) throw new GitControlError("INVALID_REPOSITORY", "A stable numeric identifier is required."); return value; }
-export function segment(value: string): string { if (!value || value === "." || value === ".." || /[\/\\\x00-\x1f\x7f]/.test(value)) throw new GitControlError("INVALID_REPOSITORY", "Invalid repository identifier."); return encodeURIComponent(value); }
+// eslint-disable-next-line no-control-regex -- rejects control characters on purpose
+export function segment(value: string): string { if (!value || value === "." || value === ".." || /[/\\\x00-\x1f\x7f]/.test(value)) throw new GitControlError("INVALID_REPOSITORY", "Invalid repository identifier."); return encodeURIComponent(value); }
 export function repositoryName(value: string): string { if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(value) || value.endsWith(".git")) throw new GitControlError("INVALID_REPOSITORY", "Enter a repository name using letters, numbers, dots, underscores or hyphens."); return value; }
 export function requiredTarget(): never { throw new GitControlError("TARGET_REQUIRED", "Select an existing repository target."); }
 export function permission(): never { throw new GitControlError("INSUFFICIENT_PERMISSION", "Account cannot create a repository in this target.", 403); }
@@ -37,7 +40,8 @@ export abstract class AdapterBase {
     const base = new URL(this.server), prefix = base.pathname.replace(/\/$/, "") + "/";
     if (url.origin !== base.origin || url.password || url.username && !stripUsername || url.search || url.hash || !url.pathname.startsWith(prefix)) throw new GitControlError("REMOTE_MISMATCH", "Repository URL does not match the connected provider.", 409);
     const parts = url.pathname.slice(prefix.length).split("/");
-    if (parts.length < 2 || parts.some(part => { try { const s = decodeURIComponent(part); return !s || s === "." || s === ".." || /[\/\\\x00-\x1f\x7f]/.test(s); } catch { return true; } })) throw new GitControlError("REMOTE_MISMATCH", "Repository path is invalid.", 409);
+    // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
+    if (parts.length < 2 || parts.some(part => { try { const s = decodeURIComponent(part); return !s || s === "." || s === ".." || /[/\\\x00-\x1f\x7f]/.test(s); } catch { return true; } })) throw new GitControlError("REMOTE_MISMATCH", "Repository path is invalid.", 409);
     if (this.provider === "azure-devops" && (parts.length !== 3 || parts[1] !== "_git")) throw new GitControlError("REMOTE_MISMATCH", "Select a repository in this Azure organization.", 409);
     url.username = ""; return url.toString();
   }

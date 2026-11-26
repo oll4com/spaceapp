@@ -45,7 +45,7 @@ export interface SpaceGatewayClient {
   refreshUsage(accountId: string): Promise<{ status: string }>;
   testAccount(accountId: string): Promise<{ ok: boolean; model: string | null; status: number; latencyMs: number; error: string | null }>;
   deleteAccount(accountId: string): Promise<{ id: string; deleted: true }>;
-  useResetCredit(accountId: string, idempotencyKey: string): Promise<{ outcome: string; windowsReset: number }>;
+  useResetCredit(accountId: string, idempotencyKey: string): Promise<{ outcome: string; windowsReset: number | string[] }>;
   report(from: string, to: string): Promise<GatewayReport>;
   compressionStats(hours: number): Promise<GatewayCompressionStats>;
   compressionSession(): Promise<GatewayHeadroomSession>;

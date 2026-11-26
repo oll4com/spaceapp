@@ -11,8 +11,10 @@ export function safeBrowserObservationUrl(raw: string | null): string | null {
     const url = new URL(raw);
     url.username = "";
     Object.assign(url, { ["pass" + "word"]: "" });
+    // A fragment carries implicit-flow and magic-link tokens (#access_token=...): never echoed (15/11 23:20 transcript leak).
+    url.hash = "";
     for (const key of Array.from(url.searchParams.keys())) {
-      if (/(auth|credential|key|pass|secret|session|token)/i.test(key)) {
+      if (/(auth|code|credential|key|pass|secret|session|ticket|token)/i.test(key)) {
         url.searchParams.set(key, "[REDACTED]");
       }
     }
@@ -20,6 +22,13 @@ export function safeBrowserObservationUrl(raw: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+/** Tab lists (tabs, open, activate, close) echo each page's address: the same redaction as every observed URL. */
+export function safeBrowserPagesForResponse(result: unknown): unknown {
+  if (!result || typeof result !== "object" || !Array.isArray((result as { pages?: unknown }).pages)) return result;
+  const pages = (result as { pages: Array<{ url?: string | null }> }).pages;
+  return { ...result, pages: pages.map((page) => ({ ...page, url: safeBrowserObservationUrl(page.url ?? null) })) };
 }
 
 export function safeBrowserObservationText(value: string | null | undefined): string | null {

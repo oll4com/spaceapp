@@ -230,7 +230,7 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   }
   if (open && !busy) close("INTERRUPTED", lastActivityAt, undefined, false);
   for (const task of tasks) task.timing.observedAt = observedAt;
-  const turnResults = results.slice(-CLAUDE_TURN_RESULTS).map(({ answerId: _id, ...result }) => result);
+  const turnResults = results.slice(-CLAUDE_TURN_RESULTS).map(turn => { const result: ClaudeTurnResult & { answerId?: string | null } = { ...turn }; delete result.answerId; return result; });
   return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null, apiError, rateLimit, paceHold, lastAnswer, turnResults, modelPick };
 }
 

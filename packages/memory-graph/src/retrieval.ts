@@ -1,4 +1,4 @@
-import { normalizeMemoryQuery, memoryQueryTerms, memoryTermMatches } from "./query-normalization.js";
+import { normalizeMemoryQuery, memoryQueryTerms, memoryTermMatcher } from "./query-normalization.js";
 import { memoryTextWindows } from "./excerpt.js";
 export { normalizeMemoryQuery } from "./query-normalization.js";
 /** Normalized title/body computed earlier from exactly `source`; ignored once a field no longer matches. */
@@ -39,6 +39,8 @@ export function searchMemoryDocuments<T extends SearchDocument>(documents: T[], 
   if (!terms.length) return [];
   const naturalQuestion = normalized.split(/\s+/).length >= 5 && /[?;]$/.test(normalized);
   const identifiers = terms.filter(term => /\d/.test(term));
+  const matchers = new Map(terms.map(term => [term, memoryTermMatcher(term)]));
+  const memoryTermMatches = (text: string, term: string) => matchers.get(term)!(text);
   const candidates = documents.flatMap(document => {
     const normalizedDoc = normalizedDocument(document);
     const matched = terms.filter(term => memoryTermMatches(normalizedDoc.text, term));

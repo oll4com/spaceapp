@@ -2410,11 +2410,12 @@ button.topbar-meta-update {
   scrollbar-width: none;
 }
 
+/* The backdrops are a plain list, not :is(list): the same matching at about half the style work per terminal row repaint (22/11). */
 .space-shell:has(.side-surface-drawer) .room-toolbar-floating-controls,
 .space-shell:has(.mobile-action-sheet-backdrop) .room-toolbar-floating-controls,
 .space-shell:has(.mobile-action-sheet) .room-toolbar-floating-controls,
 .space-shell:has(.surface-dismiss-layer) .room-toolbar-floating-controls,
-.space-shell:has(:is(
+.space-shell:has(
   .admin-codex-tools-backdrop,
   .admin-operations-backdrop,
   .cli-launcher-backdrop,
@@ -2436,7 +2437,7 @@ button.topbar-meta-update {
   .toolbar-metric-dialog-backdrop,
   .user-management-backdrop,
   .vibe-music-sheet-backdrop
-)) .room-toolbar-floating-controls {
+) .room-toolbar-floating-controls {
   display: none;
 }
 
@@ -7164,7 +7165,18 @@ svg.space-aurora-icon {
   letter-spacing: 0.08em;
   line-height: 1;
   pointer-events: none;
-  z-index: 3;
+  /* Above the chat composer (8) and CLI bottom controls (12), below pane popovers (14+). */
+  z-index: 13;
+}
+
+/* Chat panes: sit just above the composer instead of on its "+" button. */
+.pane-card .codex-composer { anchor-name: --pane-completion-composer; }
+@supports (anchor-name: --a) {
+  .pane-card:has(.codex-composer) > .pane-completion-chip {
+    position-anchor: --pane-completion-composer;
+    left: anchor(left);
+    bottom: calc(anchor(top) + 0.4rem);
+  }
 }
 
 .pane-body > .coder-agent-pane {
@@ -12235,11 +12247,29 @@ svg.space-aurora-icon {
   --photo-shadow: var(--modern-shadow, 0 14px 38px rgba(0, 0, 0, 0.32));
 }
 
-.terminal-upload-preview-picker {
-  position: absolute;
-  top: 0.45rem;
-  left: 0.55rem;
+/* Photos (left) and the account menu (right) sit in this strip above the output, never on top of it. */
+.terminal-control-strip {
+  position: relative;
   z-index: 14;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.2rem 0.55rem;
+  background: #090b0c;
+}
+
+.terminal-control-strip:empty {
+  display: none;
+}
+
+.terminal-upload-preview-picker {
+  position: relative;
+}
+
+.terminal-control-strip > .terminal-gemini-account-picker {
+  margin-left: auto;
 }
 
 /* .terminal-stage prefixes outrank the room theme's generic `.space-shell[data-room-theme] button` rules. */
@@ -12730,10 +12760,7 @@ svg.space-aurora-icon {
 }
 
 .terminal-gemini-account-picker {
-  position: absolute;
-  top: 0.45rem;
-  right: 0.55rem;
-  z-index: 14;
+  position: relative;
 }
 
 .terminal-gemini-account-trigger {
@@ -15374,7 +15401,7 @@ svg.space-aurora-icon {
   color: var(--room-text);
 }
 
-.space-shell[data-room-theme] .terminal-viewport {
+.space-shell[data-room-theme] :is(.terminal-viewport, .terminal-control-strip) {
   background: var(--room-terminal-bg);
 }
 
@@ -17552,6 +17579,12 @@ svg.space-aurora-icon {
   border: 1px solid rgba(46, 204, 113, 0.4);
 }
 
+.clipboard-plan-status-badge.is-parked {
+  background: var(--dock-warning-soft);
+  color: var(--dock-warning);
+  border: 1px solid color-mix(in srgb, var(--dock-warning) 45%, transparent);
+}
+
 .clipboard-plan-status-badge.is-blocked,
 .clipboard-plan-status-badge.is-failed {
   background: rgba(231, 76, 60, 0.2);
@@ -18086,7 +18119,7 @@ svg.space-aurora-icon {
 
 .task-row-body {
   display: grid;
-  /* A long date chip truncates instead of widening the body under the row actions. */
+  /* A long date chip wraps inside the body instead of widening it under the row actions. */
   grid-template-columns: minmax(0, 1fr);
   gap: 0.2rem;
   min-width: 0;
@@ -18161,9 +18194,11 @@ svg.space-aurora-icon {
   padding: 0.1rem 0.5rem;
   font-size: 0.7rem;
   line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* UI review 22/11: an inline-flex box cuts its text with no ellipsis ("14:42 IC"); a long chip wraps instead. */
+  overflow-wrap: break-word;
+  /* shortcut: in a dock under ~18rem the pill grows past the body to hold its date ("18/10/2026" ran over the border) and can
+     reach under the row actions of a one-line task; upgrade when the row actions fold into one menu. */
+  min-width: min-content;
 }
 
 .task-chip svg {
@@ -20933,6 +20968,13 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
 :root[data-sensitive-mode="hidden"] [data-sensitive-masked="manual"]::selection {
   color: transparent;
   background: transparent;
+}
+
+/* A private value inside other text (SensitiveDataMask's highlight): only its own characters are blurred. */
+::highlight(space-sensitive) {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 0.55em color-mix(in srgb, var(--room-text, #f4efe5) 62%, transparent);
 }
 
 /* The pairing QR (data-sensitive-masked="pairing") stays sharp for the operator, who must scan it; agents' pictures blur it (PAIRING_MASK). */
@@ -24004,3 +24046,8 @@ input[type="checkbox"]:not(.space-toggle input):not(.sr-only):not([aria-hidden="
 :root[data-window-idle] *,
 :root[data-window-idle] *::before,
 :root[data-window-idle] *::after { animation-play-state: paused !important; }
+
+/* StepUpConfirm: the password path stays a quiet link under Google and the mailed link (operator 17/11). */
+.step-up-password-link { grid-column: 1 / -1; margin: 0; }
+.step-up-password-link button { background: none; border: 0; padding: 0; color: var(--room-muted, #a7a59e); text-decoration: underline; cursor: pointer; font: inherit; }
+.step-up-password-link button:hover, .step-up-password-link button:focus-visible { color: inherit; }

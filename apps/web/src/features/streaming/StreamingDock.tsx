@@ -19,7 +19,6 @@ import {
   Copy,
   GripVertical,
   LayoutGrid,
-  Loader2,
   Music2,
   Plug,
   Radio,
@@ -174,7 +173,6 @@ export function StreamingDock() {
   const {
     enabled,
     setEnabled,
-    previewActive,
     setPreviewActive,
     snapshot,
     snapshotError,
@@ -352,7 +350,7 @@ export function StreamingDock() {
           void loadCatalog(data.ok ? `${label} connection completed.` : `${label} connection did not complete.`);
           void refreshSnapshot();
         }
-      } catch {}
+      } catch { /* not our message format: ignore */ }
     }
     window.addEventListener("message", handleOAuthMessage);
     window.addEventListener("storage", handleStorage);

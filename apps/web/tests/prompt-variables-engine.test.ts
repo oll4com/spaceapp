@@ -13,7 +13,7 @@ const sampleVariables: PromptVariable[] = [
     id: "pv-1",
     name: "pc_thai",
     label: "Thai Remote Workstation",
-    value: "Computer at 192.168.10.50 accessible via wireguard tunnel on router RT-BKK-01",
+    value: "Computer at 192.168.88.50 accessible via wireguard tunnel on router RT-BKK-01",
     description: "Office workstation in Bangkok",
     category: "Infrastructure"
   },
@@ -138,7 +138,7 @@ describe("Prompt Variables Engine", () => {
       const input = "ping #pc_thai to verify latency";
       const expanded = expandPromptVariables(input, sampleVariables);
       expect(expanded).toBe(
-        "ping Computer at 192.168.10.50 accessible via wireguard tunnel on router RT-BKK-01 to verify latency"
+        "ping Computer at 192.168.88.50 accessible via wireguard tunnel on router RT-BKK-01 to verify latency"
       );
     });
 
@@ -146,7 +146,7 @@ describe("Prompt Variables Engine", () => {
       const input = "connect from #router_gw to #pc_thai";
       const expanded = expandPromptVariables(input, sampleVariables);
       expect(expanded).toBe(
-        "connect from 10.0.0.1 (Cisco Catalyst) to Computer at 192.168.10.50 accessible via wireguard tunnel on router RT-BKK-01"
+        "connect from 10.0.0.1 (Cisco Catalyst) to Computer at 192.168.88.50 accessible via wireguard tunnel on router RT-BKK-01"
       );
     });
 
@@ -154,7 +154,7 @@ describe("Prompt Variables Engine", () => {
       const input = "check #PC_THAI";
       const expanded = expandPromptVariables(input, sampleVariables);
       expect(expanded).toBe(
-        "check Computer at 192.168.10.50 accessible via wireguard tunnel on router RT-BKK-01"
+        "check Computer at 192.168.88.50 accessible via wireguard tunnel on router RT-BKK-01"
       );
     });
 

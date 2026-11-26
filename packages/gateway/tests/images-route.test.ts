@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryGatewayRepository } from "@space/db";
+import { YOUTUBE_SUMMARY_PROMPT_CHARS } from "@space/contracts";
 import { AccountPool, type StoredCredentials } from "../src/accounts/account-pool.js";
 import { generateGatewayApiKey } from "../src/api-keys.js";
 import { createCredentialCipher } from "../src/credential-cipher.js";
@@ -53,14 +54,53 @@ async function setup(upstream: (call: { url: string; token: string; body: Record
   }) as unknown as typeof fetch;
   const settled: { costMicros: number }[] = [];
   const server = createGatewayServer({ repository, version: "test", credentialKeyPresent: () => true, now: () => new Date(nowMs),
-    routes: (app, helpers) => registerImageRoutes(app, helpers, { antigravityPool: pool("ANTIGRAVITY"), codexPool: pool("CODEX"), repository, logs,
+    routes: (app, helpers) => {
+      const images = registerImageRoutes(app, helpers, { antigravityPool: pool("ANTIGRAVITY"), codexPool: pool("CODEX"), repository, logs,
       settings: () => repository.getSettings(), fetchImpl, now: () => nowMs, codeAssistBaseUrl: "https://code-assist.test", codexBaseUrl: "https://codex.test",
-      settleKeyUsage: async (_keyId, usage) => { settled.push(usage); } }) });
+      settleKeyUsage: async (_keyId, usage) => { settled.push(usage); } });
+      app.post("/pools/gemini/v1/chat/completions", images.geminiProChat);
+    } });
   const generate = (payload: Record<string, unknown>) => server.app.inject({ method: "POST", url: "/images/v1/generate", headers: { authorization: `Bearer ${plainKey}` }, payload });
   const text = (payload: Record<string, unknown>, headers: Record<string, string> = {}) =>
     server.app.inject({ method: "POST", url: "/gemini/v1/generate", headers: { authorization: `Bearer ${plainKey}`, ...headers }, payload });
-  return { repository, logs, calls, generate, text, refresh, settled };
+  const chat = (payload: Record<string, unknown>) =>
+    server.app.inject({ method: "POST", url: "/pools/gemini/v1/chat/completions", headers: { authorization: `Bearer ${plainKey}` }, payload });
+  return { repository, logs, calls, generate, text, chat, refresh, settled };
 }
+
+describe("Gemini Pro fallback (17/11)", () => {
+  const answer = (text: string) => json({ response: { candidates: [{ content: { role: "model", parts: [{ text: "plan", thought: true }, { text }] }, finishReason: "STOP" }],
+    usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 5 } } });
+  it("serves OpenAI chat for Gemini Pro on Antigravity, standing Argon in when Code Assist does not know the Pro name, and logs it as Antigravity", async () => {
+    const { chat, calls, logs, repository } = await setup(({ body }) => (body.model === "gemini-2.5-pro"
+      ? json({ error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } }, 404) : answer("Hello")));
+    const response = await chat({ model: "gemini-2.5-pro", max_tokens: 64, temperature: 0.2, user: "x",
+      messages: [{ role: "system", content: "Be brief." }, { role: "user", content: [{ type: "text", text: "Hi" }] }, { role: "assistant", content: "Yes?" }, { role: "user", content: "Again" }] });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ object: "chat.completion", model: "gemini-4-argon", choices: [{ message: { role: "assistant", content: "Hello" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 } });
+    expect(calls.map((call) => [call.token, call.body.model])).toEqual([["ANTIGRAVITY-token-a", "gemini-2.5-pro"], ["ANTIGRAVITY-token-a", "gemini-4-argon"]]);
+    expect(calls[1]!.body.request).toEqual({ systemInstruction: { parts: [{ text: "Be brief." }] }, generationConfig: { maxOutputTokens: 64, temperature: 0.2 },
+      contents: [{ role: "user", parts: [{ text: "Hi" }] }, { role: "model", parts: [{ text: "Yes?" }] }, { role: "user", parts: [{ text: "Again" }] }] });
+    await logs.flush();
+    expect((await repository.listRequestLogs({ limit: 5 }))[0]).toMatchObject({ provider: "ANTIGRAVITY", model: "gemini-2.5-pro", status: "success", inputTokens: 20, outputTokens: 5 });
+  });
+
+  it("answers a streaming client in one chunk and refuses tools, images and a request with no user turn", async () => {
+    const { chat, calls } = await setup(() => answer("Hello"));
+    const streamed = await chat({ model: "gemini-3.1-pro-preview", stream: true, messages: [{ role: "user", content: "Hi" }] });
+    expect(streamed.headers["content-type"]).toContain("text/event-stream");
+    const [first, done] = streamed.body.split("\n\n");
+    expect(JSON.parse(first!.slice("data: ".length))).toMatchObject({ object: "chat.completion.chunk", choices: [{ delta: { content: "Hello" }, finish_reason: "stop" }] });
+    expect(done).toBe("data: [DONE]");
+    const sent = calls.length;
+    for (const payload of [{ tools: [{ type: "function", function: { name: "f" } }] }, { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "x" } }] }] },
+      { messages: [{ role: "system", content: "x" }] }, { messages: [{ role: "tool", content: "x" }] }]) {
+      expect((await chat({ model: "gemini-2.5-pro", messages: [{ role: "user", content: "Hi" }], ...payload })).statusCode).toBe(400);
+    }
+    expect(calls).toHaveLength(sent);
+  });
+});
 
 describe("Image route", () => {
   it("generates a Nano Banana image on the least-used Antigravity account and logs its list price", async () => {
@@ -213,7 +253,11 @@ describe("Gemini text route", () => {
     expect((await text({ model: "gpt-5.6-luna", prompt: "x" })).statusCode).toBe(400);
     expect((await text({ model: "gemini-3.5-flash-lite", prompt: "x", videoUrl: "https://example.com/watch?v=jNQXAC9IVRw" })).statusCode).toBe(400);
     expect((await text({ model: "gemini-3.8-flash-medium", prompt: "x" })).statusCode).toBe(403);
+    expect((await text({ model: "gemini-3.5-flash-lite", prompt: "x".repeat(YOUTUBE_SUMMARY_PROMPT_CHARS + 1) })).statusCode).toBe(400);
     expect(calls).toHaveLength(0);
+    // A summary's captions as text (plan clipboard:nsWKwUFhUFWA slice 7) up to the bound, no video.
+    expect((await text({ model: "gemini-3.5-flash-lite", prompt: "x".repeat(YOUTUBE_SUMMARY_PROMPT_CHARS) })).statusCode).toBe(200);
+    expect(calls).toHaveLength(1);
   });
 });
 

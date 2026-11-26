@@ -56,6 +56,46 @@ describe("Gateway API key from the Vault", () => {
   });
 });
 
+// `space-admin-action gateway-anthropic-admin-key --vault-key` (nous_msg:5a2be929): the billing Admin key, read server-side from the Vault.
+describe("Anthropic Admin key from the Vault", () => {
+  async function setupAdmin(vaultKey: Parameters<typeof registerGatewayAdminRoutes>[1]["vaultKey"]) {
+    const app = Fastify();
+    app.addHook("preHandler", async (request) => { (request as { user?: unknown }).user = { role: "ADMIN" }; });
+    const gatewayAdmin = vi.fn(async () => ({ status: 200, body: { configured: true, keyHint: "…abcd", lastError: null } }));
+    const recordAudit = vi.fn(async () => undefined);
+    registerGatewayAdminRoutes(app, { service: { gatewayAdmin } as unknown as GatewayAdminService, recordAudit, routeOptions: {}, vaultKey });
+    await app.ready();
+    return { gatewayAdmin, recordAudit, put: (payload: object) => app.inject({ method: "PUT", url: "/api/admin/gateway/anthropic-admin", payload }) };
+  }
+  const id = "vault_key:hn8QsGDpPfvZmsb3qiEj1A";
+
+  it("saves the kept key the Vault hands over, marks it used and never returns it", async () => {
+    const key = `sk-ant-admin01-${"k".repeat(40)}abcd`;
+    const used = vi.fn(async () => undefined);
+    const { put, gatewayAdmin, recordAudit } = await setupAdmin(vi.fn(async () => ({ value: key, used })));
+    const answer = await put({ vaultKeyId: id });
+    expect(answer.statusCode).toBe(200);
+    expect(answer.body).not.toContain(key);
+    expect(gatewayAdmin).toHaveBeenCalledWith("/__space-gateway/admin/anthropic-admin/save", { adminKey: key });
+    expect(used).toHaveBeenCalledOnce();
+    expect(recordAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ metadata: { keyHint: "…abcd", method: "vault-key", vaultKeyId: id } }));
+  });
+
+  it("refuses a Vault refusal or a kept value that is no Admin key, without echoing it or calling the gateway", async () => {
+    const refused = await setupAdmin(async () => ({ reason: "AGENT_ACCESS_OFF" }));
+    const answer = await refused.put({ vaultKeyId: id });
+    expect([answer.statusCode, answer.json().error.code]).toEqual([409, "VAULT_KEY_UNAVAILABLE"]);
+    expect(refused.gatewayAdmin).not.toHaveBeenCalled();
+    const used = vi.fn(async () => undefined);
+    const wrong = await setupAdmin(async () => ({ value: "sk-ant-api03-not-an-admin-key-secretvalue", used }));
+    const bad = await wrong.put({ vaultKeyId: id });
+    expect(bad.statusCode).toBeGreaterThanOrEqual(400);
+    expect(bad.body).not.toContain("secretvalue");
+    expect(wrong.gatewayAdmin).not.toHaveBeenCalled();
+    expect(used).not.toHaveBeenCalled();
+  });
+});
+
 describe("Vault keys reconciled with Space Gateway (7/11: Inception's key, saved before its pool took it, never joined)", () => {
   it("offers each kept free-provider key that is no account yet, once per run, and leaves joined, paid and unlabelled keys alone", async () => {
     const { gatewayVaultKeyReconciler } = await import("../src/gateway/gateway-service.js");

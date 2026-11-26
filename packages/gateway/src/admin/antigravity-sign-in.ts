@@ -75,9 +75,8 @@ export function antigravityAccountActions(options: { repository: GatewayReposito
       const credentials = await options.pool.credentials(account, { allowFreePlan: true });
       try {
         const info = await loadCodeAssist(credentials.accessToken, { fetchImpl: options.fetchImpl });
-        const wasFree = isGatewayFreePlan(account.planType);
         await options.pool.recordPlanType(account, info.planType);
-        if (wasFree && !isGatewayFreePlan(info.planType)) {
+        if (!isGatewayFreePlan(info.planType)) {
           await fetchQuotaSummary(credentials.accessToken, info.project ?? credentials.upstreamAccountId, { fetchImpl: options.fetchImpl })
             .then((groups) => storeAntigravityUsage(options.repository, account.id, groups)).catch(() => undefined);
         }

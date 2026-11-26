@@ -9,7 +9,12 @@ describe("a Nous turn's output, read the same in the worker and from the CLI con
     const events: NousTurnEvent[] = [];
     const reader = createNousTurnReader(true, (event) => events.push(event));
     const out = [JSON.stringify({ type: "stream_event", event: { type: "message_start" } }), delta("Όλα "), delta("κινούνται."), result()].join("\n") + "\n";
-    for (let at = 0; at < out.length; at += 7) expect(reader.push(out.slice(at, at + 7))).toBeNull();
+    for (let at = 0; at < out.length; at += 7) {
+      // Answered only once the result record's line is whole (the worker then stops a CLI that lingers).
+      expect(reader.answered()).toBe(at >= out.length - 1);
+      expect(reader.push(out.slice(at, at + 7))).toBeNull();
+    }
+    expect(reader.answered()).toBe(true);
     expect(events).toEqual([{ start: true }, { text: "Όλα " }, { text: "κινούνται." }]);
     expect(reader.finish(0, "")).toEqual({ text: "Done.", isError: false, turns: 3, costUsd: 0.42, tokens: { "claude-sonnet-5-5": { inputTokens: 10 } } });
   });

@@ -213,7 +213,7 @@ function modelPriceCatalog(path: string | null | undefined): ModelPriceCatalog |
   let mtimeMs: number;
   try { mtimeMs = statSync(path).mtimeMs; } catch { return null; }
   if (cachedPriceCatalog?.path === path && cachedPriceCatalog.mtimeMs === mtimeMs) return cachedPriceCatalog.catalog;
-  let catalog: ModelPriceCatalog | null = null;
+  let catalog: ModelPriceCatalog | null;
   try { catalog = modelPriceCatalogSchema.parse(JSON.parse(readFileSync(path, "utf8"))); } catch { catalog = null; }
   cachedPriceCatalog = { path, mtimeMs, catalog };
   return catalog;
@@ -2754,7 +2754,9 @@ function runCliAgentTurnProcess(
           LANG: "C.UTF-8",
           ...modelEnv,
           ...effortEnv,
-          ...workspaceEnv
+          ...workspaceEnv,
+          // Chat turns use the Space Gateway pool like Nous: "main" is pinned to one account and fails when that one is exhausted.
+          ...(runtimeId === "cli:claude" ? { SPACE_CLAUDE_ACCOUNT_PROFILE: "space-gateway" } : {})
         },
         windowsHide: true
       }
@@ -2777,10 +2779,10 @@ function runCliAgentTurnProcess(
       }
     };
     const onAbort = () => {
-      try { child.kill("SIGTERM"); } catch {}
+      try { child.kill("SIGTERM"); } catch { /* already exited */ }
     };
     const timer = setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch {}
+      try { child.kill("SIGKILL"); } catch { /* already exited */ }
       settle(false, new Error("CLI chat turn timed out."));
     }, config.turnTimeoutMs);
     abortSignal?.addEventListener("abort", onAbort);
@@ -2793,7 +2795,7 @@ function runCliAgentTurnProcess(
         // Reject before retaining the excess or interpreting any partial tool
         // action. CLI activities have no automatic retry of this side effect.
         settle(false, new CliAgentTurnOutputLimitError(config.maxOutputBytes));
-        try { child.kill("SIGKILL"); } catch {}
+        try { child.kill("SIGKILL"); } catch { /* already exited */ }
         return;
       }
       stdoutBytes += bytes;

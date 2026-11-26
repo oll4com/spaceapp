@@ -6,7 +6,6 @@ import { type AgentRuntimeRegistry, type RoomPaneBatchItem, type SpaceWorktree }
 import { InMemorySpaceStore } from "@space/runtime";
 import { createRoomPaneCommands } from "../src/room-pane-commands.js";
 import { execGit, WorktreeService } from "../src/worktrees/worktree-service.js";
-import { defaultWorktreeBaseBranch } from "../src/worktrees/default-base-branch.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -121,7 +120,9 @@ it("gives a T3 Code pane its own worktree of the room project, as for CLI panes"
     const [isolated, shared] = await commands.resolve(room.id, [{ mode: "T3CODE", useWorktree: true }, { mode: "T3CODE" }]);
     expect(isolated).toMatchObject({ mode: "T3CODE", cwd: `/opt/spaceapp/var/worktrees/wt-t3-${repoPath.split("/").pop()}` });
     expect(shared!.cwd).toBeUndefined();
-    expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ repoPath, baseBranch: defaultWorktreeBaseBranch(repoPath), linkModules: true, branchName: undefined }));
+    expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ repoPath, linkModules: true, branchName: undefined }));
+    // No base: the service picks the queue default and reuses an existing pane branch as is.
+    expect(create.mock.lastCall?.[0]).not.toHaveProperty("baseBranch");
   }
   expect(create).toHaveBeenCalledTimes(3);
 });

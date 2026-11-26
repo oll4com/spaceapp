@@ -118,6 +118,7 @@ export function registerAdminToolbarRoutes(app: FastifyInstance, options: {
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Codex reset credit telemetry requires the ADMIN role.");
       }
+      // shortcut: Claude's resets share these two routes, so they need Codex switched on; give them their own gate if an install runs Claude without Codex.
       await cliRuntimeVisibility.assertEnabled("cli:codex");
       return codexResetCreditAvailabilitySchema.parse(await codexResetCreditsService.availability());
     }
@@ -240,7 +241,7 @@ export function registerAdminToolbarRoutes(app: FastifyInstance, options: {
               await codexLbSpeedDefaultUpdater(modelId, previousTier)
             );
             if (restored.models.find((model) => model.modelId === modelId)?.tier !== previousTier) {
-              throw new Error("Codex speed rollback was not confirmed.");
+              throw new Error("Codex speed rollback was not confirmed.", { cause: auditError });
             }
           } catch (rollbackError) {
             request.log.error(

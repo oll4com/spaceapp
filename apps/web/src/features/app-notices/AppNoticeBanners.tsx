@@ -2,6 +2,7 @@ import type { RefObject } from "react";
 import { GlobalApiErrorAlert } from "../../core-api-availability.js";
 import { ShieldAlert, X } from "../ui-theme/app-icons.js";
 import type { AppNotices } from "./useAppNotices.js";
+import { useUiText } from "../ui-language/ui-language.js";
 
 /** The banner stack at the top of the workspace, in display order. */
 export function AppNoticeBanners({ notices, actionError, onDismissActionError, vpnCityNotice, vpnCityNoticeRef, onDismissVpnCityNotice, isRoomFocusMode, isDemoRuntime }: {
@@ -16,6 +17,7 @@ export function AppNoticeBanners({ notices, actionError, onDismissActionError, v
   isDemoRuntime: boolean;
 }) {
   const { watchdogAlerts, storageWarning, dismissedStorageWarning, clipToolNotice, clipboardNotice, accountNotice, accountError } = notices;
+  const t = useUiText();
   return (
     <>
       {watchdogAlerts.map((alert) => (
@@ -72,7 +74,7 @@ export function AppNoticeBanners({ notices, actionError, onDismissActionError, v
       ) : null}
       {accountNotice ? (
         <div className="banner ok" role="status">
-          <div className="notice-row"><span>{accountNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => notices.setAccountNotice(null)}><X aria-hidden="true" /></button></div>
+          <div className="notice-row"><span>{t(accountNotice)}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => notices.setAccountNotice(null)}><X aria-hidden="true" /></button></div>
         </div>
       ) : null}
       {accountError ? (

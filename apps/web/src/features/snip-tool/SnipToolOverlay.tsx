@@ -1,5 +1,5 @@
 import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   assertCaptureAllowed, canRecordScreen, captureSnipFrame, checkAbort, hasNativeCapture, releaseSnipSession, startSnipRecording,
@@ -49,7 +49,7 @@ function readFlag(key: string): boolean {
   try { return localStorage.getItem(key) === "true"; } catch { return false; }
 }
 function writeFlag(key: string, value: boolean) {
-  try { localStorage.setItem(key, String(value)); } catch {}
+  try { localStorage.setItem(key, String(value)); } catch { /* Storage blocked or full: the choice lasts this session only. */ }
 }
 function loadSavedFloat(): Point | null {
   try {
@@ -64,7 +64,7 @@ function saveFloat(float: Point | null) {
     const current = JSON.parse(localStorage.getItem(POSITIONS_STORAGE_KEY) || "{}");
     if (float) current.float = float; else delete current.float;
     localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(current));
-  } catch {}
+  } catch { /* Storage blocked or full: positions reset next session. */ }
 }
 function clampToViewport(pos: Point, size: { width: number; height: number }): Point {
   const vw = window.innerWidth || 800, vh = window.innerHeight || 600;
@@ -162,7 +162,7 @@ function CaptureLayer({ layerRef, busy, destinationLabel, status, onSelect, onCa
     drag.current = { pointerId: event.pointerId, start };
     setDragging(true);
     paint(selection(start, start));
-    try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Pointer already gone: the drag ends on its own. */ }
   };
   const move = (event: React.PointerEvent<HTMLDivElement>) => {
     const p = pt(event);
@@ -175,7 +175,7 @@ function CaptureLayer({ layerRef, busy, destinationLabel, status, onSelect, onCa
     if (!g || g.pointerId !== event.pointerId) return;
     drag.current = null;
     setDragging(false);
-    try { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); } catch {}
+    try { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* Capture already released. */ }
     const r = selection(g.start, pt(event));
     if (!cancel && r.width >= MIN_SELECTION && r.height >= MIN_SELECTION) onSelect(r);
     else onCancel();
@@ -247,7 +247,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
   const railDragMoved = useRef(false);
   const docked = canDock && Boolean(railDock);
 
-  const panes = availablePanes ?? (activePaneId ? [{ id: activePaneId, title: activePaneName || activePaneTitle || activePaneId, mode: activePaneMode || "", paneName: activePaneName ?? null }] : []);
+  const panes = useMemo(() => availablePanes ?? (activePaneId ? [{ id: activePaneId, title: activePaneName || activePaneTitle || activePaneId, mode: activePaneMode || "", paneName: activePaneName ?? null }] : []), [availablePanes, activePaneId, activePaneName, activePaneTitle, activePaneMode]);
   const isCliPane = useCallback((paneId: string | null | undefined, paneMode?: string | null) => {
     if (!paneId) return false;
     if (isCliMode(paneMode)) return true;
@@ -424,7 +424,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
     const blob = await png;
     checkAbort(signal);
     if (alsoCopy) {
-      try { if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") void navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]).catch(() => {}); } catch {}
+      try { if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") void navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]).catch(() => {}); } catch { /* Image clipboard unsupported: the snip is still sent. */ }
     }
     await onCapture(new File([blob], `space-snip-${Date.now()}.png`, { type: "image/png" }), dest.targetId, dest.roomId, signal);
     checkAbort(signal);
@@ -713,7 +713,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
   };
 
   // ---- lifecycle & keyboard
-  const handlers = useRef({ trigger: () => {}, cancelSelecting, fullScreen: () => {}, pasteHeldInto: (_focus: Element | null): boolean => false, holdRecording: (() => false) as (file: File) => boolean });
+  const handlers = useRef({ trigger: () => {}, cancelSelecting, fullScreen: () => {}, pasteHeldInto: (() => false) as (focus: Element | null) => boolean, holdRecording: (() => false) as (file: File) => boolean });
   handlers.current = {
     trigger: () => {
       if (operation.current) return;
@@ -753,19 +753,19 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
     setRecordSelect(false);
     setPhase(initialMode === "capturing" ? "selecting" : "idle");
     if (initialMode === "capturing") rememberFocus();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, initialMode]);
 
   useEffect(() => {
     if (!isOpen || hasNativeCapture()) return;
     // Compile the page's stylesheets while idle so the first snip is as fast as the rest.
-    const idle = (window as any).requestIdleCallback as ((cb: () => void, opts?: { timeout: number }) => number) | undefined;
-    const handle = idle ? idle(() => { try { prepareDomCapture(); } catch {} }, { timeout: 1500 }) : window.setTimeout(() => { try { prepareDomCapture(); } catch {} }, 200);
-    return () => { if (idle) (window as any).cancelIdleCallback?.(handle); else window.clearTimeout(handle); };
+    const idle = (window as Partial<Window>).requestIdleCallback;
+    const handle = idle ? idle(() => { try { prepareDomCapture(); } catch { /* Warm-up only: the snip compiles them itself. */ } }, { timeout: 1500 }) : window.setTimeout(() => { try { prepareDomCapture(); } catch { /* Warm-up only: the snip compiles them itself. */ } }, 200);
+    return () => { if (idle) (window as Partial<Window>).cancelIdleCallback?.(handle); else window.clearTimeout(handle); };
   }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
+    const snipSession = session.current; // never reassigned; read here for the cleanup
     mounted.current = true;
     document.body.setAttribute("data-snip-tool-active", "true");
     let lastTrigger = 0;
@@ -800,7 +800,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       document.body.removeAttribute("data-snip-tool-active");
       operation.current?.abort();
       operation.current = null;
-      releaseSnipSession(session.current);
+      releaseSnipSession(snipSession);
       // Closing mid-recording keeps the video: stopping hands it to Media Dock.
       recorder.current?.stop();
       window.removeEventListener("keydown", keyboard, true);
@@ -844,7 +844,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       if (!drag.moved && Math.hypot(dx, dy) > 4) {
         drag.moved = true;
         // Captured only once it is a drag, so a click or double-click on the grip keeps its own target.
-        try { el.setPointerCapture(pointerId); } catch {}
+        try { el.setPointerCapture(pointerId); } catch { /* Pointer already gone: the drag ends on its own. */ }
       }
       if (!drag.moved) return;
       drag.latest = clampToViewport({ x: drag.origin.x + dx, y: drag.origin.y + dy }, { width: el.offsetWidth || 300, height: el.offsetHeight || 44 });
@@ -863,7 +863,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", end);
       window.removeEventListener("pointercancel", end);
-      try { if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId); } catch {}
+      try { if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId); } catch { /* Capture already released. */ }
       if (floatDragCleanup.current === cleanup) floatDragCleanup.current = null;
     };
     floatDragCleanup.current = cleanup;
@@ -905,7 +905,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       const dx = e.clientX - drag.startX, dy = e.clientY - drag.startY;
       if (!drag.moved && Math.hypot(dx, dy) > 4) {
         drag.moved = true;
-        try { el.setPointerCapture(pointerId); } catch {}
+        try { el.setPointerCapture(pointerId); } catch { /* Pointer already gone: the drag ends on its own. */ }
       }
       if (!drag.moved) return;
       drag.onRail = nearRail(e.clientX, e.clientY, (window.innerWidth || 800) - DOCK_MARGIN_RIGHT + dx);
@@ -927,7 +927,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", end);
       window.removeEventListener("pointercancel", end);
-      try { if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId); } catch {}
+      try { if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId); } catch { /* Capture already released. */ }
       if (floatDragCleanup.current === cleanup) floatDragCleanup.current = null;
     };
     floatDragCleanup.current = cleanup;

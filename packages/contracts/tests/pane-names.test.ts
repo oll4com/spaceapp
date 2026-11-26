@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   PANE_NAMES,
-  PANE_NAME_ALIASES,
   normalizePaneName,
   pickNextAvailablePaneName,
   resolvePaneByName

@@ -2,6 +2,7 @@ import { resolveFreelanceCopilotPaneMetadata, type Pane } from "@space/contracts
 import type { BrowserHostActorContext } from "@space/browser-host";
 import { makeSpaceId, type SpaceStore } from "@space/runtime";
 import { browserProfileLabel, type browserCensus } from "./browser-census-routes.js";
+import { vaultFencedTargets } from "./vault/fence-hooks.js";
 
 /**
  * Operator 5/11 14:47 BKK («κλείσε όσους browser δεν χρησιμοποιούνται»): a live pane browser with no agent or operator use for this long, and
@@ -17,7 +18,7 @@ const OPERATOR_MODES = new Set(["BROWSER", "YOUTUBE"]);
 
 type CensusRow = Awaited<ReturnType<typeof browserCensus>>["sessions"][number];
 export type BrowserRow = Pick<CensusRow, "paneId" | "roomId" | "title" | "paneName" | "mode" | "paneClosed" | "profile" | "control" | "handoff" | "fencedTabs"
-  | "agent" | "updatedAt" | "lastFrameAt" | "tabs">;
+  | "agent" | "updatedAt" | "lastFrameAt" | "tabs"> & Partial<Pick<CensusRow, "runtimeState">>;
 export interface UnusedBrowser { paneId: string; roomId: string; title: string; idleSince: string; why: string }
 /** The operator's last input to or view of a pane browser (browser-control-activity's usedAt). */
 type UsedAt = (paneId: string) => number | null;
@@ -74,10 +75,15 @@ const WORK_ENDS = new Set(["TURN_END", "DONE", "FAILED"]);
 const ASKS = new Set(["NEEDS_YOU", "NEEDS_DECISION", "BLOCKED", "WAITING", "QUESTION"]);
 const UNSAID = new Set(["TURN_END", "HEARTBEAT", "TODO"]);
 
-/** Whether a driver's reports (newest first) end its work after its last drive: a turn end, done or failed, and its last word is no ask. */
-export function driverWorkEnded(reports: Array<{ at: string; status: string }>, drivenAt: number): boolean {
+/** Whether a driver's reports (newest first) show its turn ended after its last drive: a turn end, done or failed. */
+function driverTurnEnded(reports: Array<{ at: string; status: string }>, drivenAt: number): boolean {
   const newest = reports.find((report) => report.status !== "HEARTBEAT" && report.status !== "TODO");
-  return Boolean(newest && at(newest.at) > drivenAt && WORK_ENDS.has(newest.status) && !ASKS.has(reports.find((report) => !UNSAID.has(report.status))?.status ?? ""));
+  return Boolean(newest && at(newest.at) > drivenAt && WORK_ENDS.has(newest.status));
+}
+
+/** Whether a driver's reports (newest first) end its work after its last drive: its turn ended and its last word is no ask. */
+export function driverWorkEnded(reports: Array<{ at: string; status: string }>, drivenAt: number): boolean {
+  return driverTurnEnded(reports, drivenAt) && !ASKS.has(reports.find((report) => !UNSAID.has(report.status))?.status ?? "");
 }
 
 export interface ReleaseDeps {
@@ -92,13 +98,17 @@ export interface ReleaseDeps {
 /**
  * The live BROWSER panes whose driver is a terminal pane (a copilot's own browser and the browsers it drives keep their sign-ins) that closed or
  * ended its work since its last drive, with no operator use since then, nothing that keeps them (browserKeptFor) and no typed form.
+ * With `driver` (its own done or failed report, W47 step 3) only that pane's browsers, and its own recent drive no longer keeps them.
  */
-export async function releasableBrowsers(rows: BrowserRow[], input: { store: Pick<SpaceStore, "getPane">; usedAt: UsedAt; scheduled: Set<string>; release: ReleaseDeps }) {
+export async function releasableBrowsers(rows: BrowserRow[], input: { store: Pick<SpaceStore, "getPane">; usedAt: UsedAt; scheduled: Set<string>; release: ReleaseDeps;
+  driver?: string }) {
   const found: Array<UnusedBrowser & { driverPaneId: string }> = [];
   for (const row of rows) {
-    if (row.mode !== "BROWSER" || row.paneClosed !== false || browserKeptFor(row, input.scheduled)) continue;
     const noted = input.release.agentFor(row.paneId);
-    if (!noted || noted.active || (input.usedAt(row.paneId) ?? 0) >= noted.at) continue;
+    const own = input.driver !== undefined && noted?.paneId === input.driver;
+    if (input.driver !== undefined && !own) continue;
+    if (row.mode !== "BROWSER" || row.paneClosed !== false || browserKeptFor(own ? { ...row, agent: null } : row, input.scheduled)) continue;
+    if (!noted || (noted.active && !own) || (input.usedAt(row.paneId) ?? 0) >= noted.at) continue;
     const driver = await Promise.resolve(input.store.getPane(noted.paneId)).catch(() => null);
     if (driver?.mode !== "TERMINAL") continue;
     const ended = driver.isClosed ? "closed" : driverWorkEnded(await input.release.reports(driver).catch(() => null) ?? [], noted.at) ? "ended its turn" : null;
@@ -109,35 +119,157 @@ export async function releasableBrowsers(rows: BrowserRow[], input: { store: Pic
   return found;
 }
 
-type ReaperStore = Pick<SpaceStore, "dueTaskSchedules" | "getRoom" | "getPane" | "recordAuditEvent">;
+/**
+ * Operator 14/11 09:42 BKK (nous_msg:efbc6ddef88f4e2daebfa884: Dino/Cody and Dino/Dana showed "Browser is stopped" and "No open tabs", kept open
+ * while Nous's pane checks read them OK_WORKING and WAITING_OPERATOR): an open BROWSER pane whose browser is stopped or has no tab is closed at
+ * the next sweep unless a handoff, lease, Vault fence or scheduled task holds it. No pane check verdict is read.
+ */
+export const BROWSER_PANE_CLOSED_ACTION = "browser.pane_closed";
+/** Technical bound: a pane just opened, or a browser just started or stopped, may not show its browser or first tab yet. */
+export const BROWSER_START_GRACE_MS = 2 * 60_000;
+type EmptyStore = Pick<SpaceStore, "listRooms" | "listPanes" | "getLatestPaneBrowserSession" | "getActiveBrowserHandoffRequest" | "getActiveBrowserControlLease">;
+
+/** The open BROWSER panes whose browser is stopped (its last session closed) or live with no tab, and nothing holds. */
+export async function emptyBrowserPanes(rows: BrowserRow[], input: { store: EmptyStore; now: number; usedAt: UsedAt; scheduled: Set<string> }) {
+  const live = new Map(rows.map((row) => [row.paneId, row]));
+  const found: Array<UnusedBrowser & { live: boolean }> = [];
+  for (const room of await input.store.listRooms()) {
+    for (const pane of await Promise.resolve(input.store.listPanes(room.id, false)).catch((): Pane[] => [])) {
+      if (pane.mode !== "BROWSER" || pane.isClosed || input.scheduled.has(pane.id)) continue;
+      const row = live.get(pane.id);
+      let last = Math.max(at(pane.updatedAt), input.usedAt(pane.id) ?? 0);
+      if (row) {
+        if (row.tabs.length > 0 || browserKeptFor(row, input.scheduled)) continue;
+        last = Math.max(last, browserLastUse(row, input.usedAt));
+      } else {
+        const session = await Promise.resolve(input.store.getLatestPaneBrowserSession(pane.id)).catch(() => null);
+        // Never started, or started since the census.
+        if (!session || session.isActive) continue;
+        const [handoff, lease, fence] = await Promise.all([Promise.resolve(input.store.getActiveBrowserHandoffRequest(session.sessionId)).catch(() => null),
+          Promise.resolve(input.store.getActiveBrowserControlLease(session.sessionId)).catch(() => null), vaultFencedTargets(input.store, pane.id)]);
+        if (handoff || lease || fence.length > 0) continue;
+        last = Math.max(last, at(session.updatedAt));
+      }
+      if (input.now - last < BROWSER_START_GRACE_MS) continue;
+      found.push({ paneId: pane.id, roomId: pane.roomId, title: pane.paneName ? `${pane.paneName} (${pane.title})` : pane.title, idleSince: new Date(last).toISOString(),
+        why: row ? "its browser has no open tab" : "its browser is stopped", live: Boolean(row) });
+    }
+  }
+  return found;
+}
+
+/**
+ * Operator 14/11 09:42 BKK (room Felix opened ~25 browser panes in a day): a browser another terminal agent of the room is done with
+ * (releasableBrowsers), on a pane's own profile like a new "CLI Browser", is handed to the next agent that asks for a browser instead of a new pane.
+ */
+export async function idleRoomBrowser(rows: BrowserRow[], roomId: string, input: Parameters<typeof releasableBrowsers>[1]): Promise<string | null> {
+  return (await releasableBrowsers(rows.filter((row) => row.roomId === roomId && row.profile === "pane"), input))[0]?.paneId ?? null;
+}
+
+/**
+ * Operator 14/11 10:18 BKK (nous_msg:2e8a3dac6ce0495e9b414a77: Dino/Emma's Freelance Copilot browser kept 9 tabs of finished workflows; «tabs
+ * nobody uses must not stay open, only ones a Needs you waits on; a finished workflow's close at once»): a live pane browser nobody works in keeps
+ * only its active tab (Chrome needs one; a handoff or Needs you shows that one), the popups it opened and its Vault-fenced tabs. Nobody works in
+ * it: no control lease, and the agent that drove it last closed, ended its turn since, or waits on a handoff. Every BROWSER_TAB_TRIM_MS.
+ * A browser no agent drove, or one the operator used since its agent's last drive in a Browser or YouTube pane, is his own browsing: kept.
+ */
+export const BROWSER_TABS_CLOSED_ACTION = "browser.tabs_closed";
+/** How soon a finished run's tabs close; each pass reads the API's own records, and asks the Browser Host only to close a tab. */
+export const BROWSER_TAB_TRIM_MS = 30_000;
+type TrimStore = Pick<SpaceStore, "getPane" | "getActivePaneBrowserSession">;
+
+/** The tabs to close in each live browser nobody works in (see BROWSER_TABS_CLOSED_ACTION). */
+export async function idleTabs(rows: BrowserRow[], input: { store: TrimStore; usedAt: UsedAt; release: ReleaseDeps }) {
+  const found: Array<UnusedBrowser & { pageIds: string[] }> = [];
+  for (const row of rows) {
+    // closePage starts a Chrome that is not running, so only a running one is trimmed.
+    if (row.paneClosed !== false || row.runtimeState !== "READY" || row.control || row.tabs.length < 2) continue;
+    const noted = input.release.agentFor(row.paneId);
+    if (!noted || (OPERATOR_MODES.has(row.mode ?? "") && (input.usedAt(row.paneId) ?? 0) >= noted.at)) continue;
+    const driver = await Promise.resolve(input.store.getPane(noted.paneId)).catch(() => null);
+    const why = row.handoff ? "a handoff waits on its active tab" : !driver || driver.isClosed ? "its driver closed"
+      : driverTurnEnded(await input.release.reports(driver).catch(() => null) ?? [], noted.at) ? `its driver ${driver.paneName ?? driver.title} ended its turn` : null;
+    if (!why) continue;
+    const session = await Promise.resolve(input.store.getActivePaneBrowserSession(row.paneId)).catch(() => null);
+    const active = new Set(session?.pages.filter((page) => page.isActive).map((page) => page.pageId));
+    // Census rows show a Vault-fenced tab without its id, so only unfenced tabs are candidates.
+    const unfenced = new Set(row.tabs.flatMap((tab) => "pageId" in tab && tab.pageId ? [tab.pageId] : []));
+    const pageIds = active.size === 0 ? [] : (session?.pages ?? [])
+      .filter((page) => unfenced.has(page.pageId) && !active.has(page.pageId) && !(page.openerPageId && active.has(page.openerPageId))).map((page) => page.pageId);
+    if (pageIds.length) found.push({ paneId: row.paneId, roomId: row.roomId, title: nameOf(row), idleSince: new Date(noted.at).toISOString(), why, pageIds });
+  }
+  return found;
+}
+
+type ReaperStore = Pick<SpaceStore, "dueTaskSchedules" | "getRoom" | "recordAuditEvent"> & EmptyStore & TrimStore;
 
 /**
  * Every BROWSER_REAP_MS: closes the unused browsers (stopPane keeps their tabs for the next start) and audits each as BROWSER_REAPED_ACTION,
  * then the ones their terminal driver is done with (releasableBrowsers) as BROWSER_RELEASED_ACTION. One unused past 30 minutes stays reaped.
+ * With closePane (only where browsers run), a BROWSER pane whose browser it stops closes too, and so does every emptyBrowserPanes pane.
+ * With closeTab and release, every BROWSER_TAB_TRIM_MS the idleTabs are closed and audited as BROWSER_TABS_CLOSED_ACTION.
  */
 export function startBrowserReaper(deps: { store: ReaperStore; census(): Promise<{ sessions: BrowserRow[] }>; usedAt: UsedAt; release?: ReleaseDeps;
-  stopPane(paneId: string, traceId: string): Promise<void>; warn(error: unknown, paneId?: string): void; now?: () => number }) {
-  const close = async (browser: UnusedBrowser & { driverPaneId?: string }, action: string) => {
+  stopPane(paneId: string, traceId: string): Promise<void>; closePane?(paneId: string, traceId: string): Promise<void>; warn(error: unknown, paneId?: string): void;
+  closeTab?(pane: Pane, pageId: string, traceId: string): Promise<void>; now?: () => number }) {
+  const close = async (browser: UnusedBrowser & { driverPaneId?: string }, action: string, how: { stop: boolean; pane: boolean }) => {
     const traceId = makeSpaceId("trace");
     // No actor: like closing the pane, the reaper outranks a stale lease (a live one keeps the browser above).
-    try { await deps.stopPane(browser.paneId, traceId); } catch (error) { deps.warn(error, browser.paneId); return; }
+    if (how.stop) try { await deps.stopPane(browser.paneId, traceId); } catch (error) { deps.warn(error, browser.paneId); return; }
+    const paneClosed = how.pane && deps.closePane
+      ? await deps.closePane(browser.paneId, traceId).then(() => true, (error: unknown) => { deps.warn(error, browser.paneId); return false; }) : false;
+    if (!how.stop && !paneClosed) return;
     const ownerUserId = await Promise.resolve(deps.store.getRoom(browser.roomId)).then((room) => room.ownerUserId ?? null).catch(() => null);
     await Promise.resolve(deps.store.recordAuditEvent({ actorUserId: null, traceId, action, targetType: "pane", targetId: browser.paneId,
-      metadata: { ownerUserId, roomId: browser.roomId, title: browser.title, idleSince: browser.idleSince, why: browser.why, driverPaneId: browser.driverPaneId } })).catch((error: unknown) => deps.warn(error, browser.paneId));
+      metadata: { ownerUserId, roomId: browser.roomId, title: browser.title, idleSince: browser.idleSince, why: browser.why, driverPaneId: browser.driverPaneId, paneClosed } }))
+      .catch((error: unknown) => deps.warn(error, browser.paneId));
   };
   const sweep = async () => {
     const rows = (await deps.census()).sessions;
     const scheduled = await scheduledPanes(deps.store);
-    const unused = unusedBrowsers(rows, { now: (deps.now ?? Date.now)(), usedAt: deps.usedAt, scheduled });
-    for (const browser of unused) await close(browser, BROWSER_REAPED_ACTION);
-    if (!deps.release) return;
-    const reaped = new Set(unused.map((browser) => browser.paneId));
-    const released = await releasableBrowsers(rows.filter((row) => !reaped.has(row.paneId)), { store: deps.store, usedAt: deps.usedAt, scheduled, release: deps.release });
-    for (const browser of released) await close(browser, BROWSER_RELEASED_ACTION);
+    const now = (deps.now ?? Date.now)();
+    const browserPanes = new Set(rows.filter((row) => row.mode === "BROWSER" && row.paneClosed === false).map((row) => row.paneId));
+    const unused = unusedBrowsers(rows, { now, usedAt: deps.usedAt, scheduled });
+    for (const browser of unused) await close(browser, BROWSER_REAPED_ACTION, { stop: true, pane: browserPanes.has(browser.paneId) });
+    if (deps.release) {
+      const reaped = new Set(unused.map((browser) => browser.paneId));
+      const released = await releasableBrowsers(rows.filter((row) => !reaped.has(row.paneId)), { store: deps.store, usedAt: deps.usedAt, scheduled, release: deps.release });
+      for (const browser of released) await close(browser, BROWSER_RELEASED_ACTION, { stop: true, pane: true });
+    }
+    if (!deps.closePane) return;
+    for (const pane of await emptyBrowserPanes(rows, { store: deps.store, now, usedAt: deps.usedAt, scheduled })) {
+      await close(pane, BROWSER_PANE_CLOSED_ACTION, { stop: pane.live, pane: true });
+    }
   };
+  const trim = async () => {
+    if (!deps.closeTab || !deps.release) return;
+    for (const browser of await idleTabs((await deps.census()).sessions, { store: deps.store, usedAt: deps.usedAt, release: deps.release })) {
+      const traceId = makeSpaceId("trace");
+      const pane = await Promise.resolve(deps.store.getPane(browser.paneId)).catch(() => null);
+      let closed = 0;
+      for (const pageId of pane ? browser.pageIds : []) {
+        await deps.closeTab(pane!, pageId, traceId).then(() => { closed += 1; }, (error: unknown) => deps.warn(error, browser.paneId));
+      }
+      if (!closed) continue;
+      const ownerUserId = await Promise.resolve(deps.store.getRoom(browser.roomId)).then((room) => room.ownerUserId ?? null).catch(() => null);
+      await Promise.resolve(deps.store.recordAuditEvent({ actorUserId: null, traceId, action: BROWSER_TABS_CLOSED_ACTION, targetType: "pane", targetId: browser.paneId,
+        metadata: { ownerUserId, roomId: browser.roomId, title: browser.title, why: browser.why, closed } })).catch((error: unknown) => deps.warn(error, browser.paneId));
+    }
+  };
+  /** A terminal pane reported done or failed: the browsers it drove last are released now, not at the next sweep 10 minutes after its drive. */
+  const releaseFor = async (driverPaneId: string) => {
+    if (!deps.release) return;
+    const rows = (await deps.census()).sessions;
+    const released = await releasableBrowsers(rows, { store: deps.store, usedAt: deps.usedAt, scheduled: await scheduledPanes(deps.store), release: deps.release, driver: driverPaneId });
+    for (const browser of released) await close(browser, BROWSER_RELEASED_ACTION, { stop: true, pane: true });
+  };
+  // One pass at a time: a slow Browser Host never stacks passes.
+  let trimming: Promise<void> | null = null;
+  const trimTimer = setInterval(() => { trimming ??= trim().catch((error: unknown) => deps.warn(error)).finally(() => { trimming = null; }); }, BROWSER_TAB_TRIM_MS);
+  trimTimer.unref();
   const timer = setInterval(() => void sweep().catch((error: unknown) => deps.warn(error)), BROWSER_REAP_MS);
   timer.unref();
-  return { sweep, stop: () => clearInterval(timer) };
+  return { sweep, trim, releaseFor, stop: () => { clearInterval(timer); clearInterval(trimTimer); } };
 }
 
 /** Manager calls that are the operator using the pane (input, navigation, tabs, control, a start); resizes and reads are not. */

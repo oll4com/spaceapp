@@ -40,6 +40,12 @@ describe("space instance", () => {
     expect(instanceBackgroundJobEnabled(env, "dot-schedules")).toBe(true);
     expect(instanceBackgroundJobEnabled(env, "streaming-bot")).toBe(true);
     expect(instanceBackgroundJobEnabled(env, "telegram-bridge")).toBe(false);
+    // A stable-mode clone turns single jobs off (spaceapp-hz's copied mail campaigns), and a listed job stays off on dev too.
+    const clone = { SPACE_INSTANCE_DISABLED_JOBS: "mail-campaign-sender, mail-campaign-health" };
+    expect(instanceBackgroundJobEnabled(clone, "mail-campaign-sender")).toBe(false);
+    expect(instanceBackgroundJobEnabled(clone, "mail-campaign-health")).toBe(false);
+    expect(instanceBackgroundJobEnabled(clone, "nous")).toBe(true);
+    expect(instanceBackgroundJobEnabled({ ...env, SPACE_INSTANCE_DISABLED_JOBS: "streaming-bot" }, "streaming-bot")).toBe(false);
   });
 
   it("never runs the Space Gateway down card on a self-hosted install, which has no gateway (1.2.0 lab 2/11: a false card held Nous's goal)", () => {

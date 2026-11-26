@@ -44,7 +44,7 @@ describe("Codex home of the install the pane runs in", () => {
       const session = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:codex", providerId: "codex", agentId: "codex",
         codexThreadId: threadId, status: "RUNNING", isActive: true });
       const manager = new CliTerminalManager({ store, config: getApiConfig({}), discoverRuntimes: vi.fn() });
-      expect(await manager.getCurrentTurnActivity(session.sessionId)).toEqual({ status: "RUNNING", turnId: "turn-1" });
+      expect(await manager.getCurrentTurnActivity(session.sessionId)).toEqual({ status: "RUNNING", turnId: "turn-1", modelId: "gpt-5.6-sol" });
       await writeFile(rollout, `${JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1" } })}\n`, { flag: "a" });
       expect(await manager.getCurrentTurnActivity(session.sessionId)).toMatchObject({ status: "COMPLETED", turnId: "turn-1", lastActivityAtMs: expect.any(Number) });
     } finally {

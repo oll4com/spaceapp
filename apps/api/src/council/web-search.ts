@@ -2,7 +2,7 @@ import { councilEvidenceSchema, type CouncilEvidence } from "@space/contracts";
 import { CODEX_LB_BASE_URL, getCodexApiKey, ProviderFailure, runWithProviderSlot } from "../asteroids-arena/providers.js";
 import { extractJsonObject } from "../asteroids-arena/protocol.js";
 import { gatewayRequestIdHeader } from "../gateway-request-id.js";
-import { GATEWAY_CLAUDE_MODEL } from "../room-agent-model-resolver.js";
+import { createGatewayFallback, type GatewayMessage } from "../gateway-fallback.js";
 import { buildSearchPrompt } from "./prompts.js";
 import { clip } from "./ranking.js";
 
@@ -109,32 +109,27 @@ function searchOnce(query: string, question: string, signal: AbortSignal, traceI
   }, signal);
 }
 
+const askSearchPool = createGatewayFallback();
+
 /**
- * 2026-11-07 REVIEW (space_web_search 10 of 10 failed while every Codex week was spent to 11/11): the same search on Claude's subscription
- * route (Space Gateway, the API's own key, Anthropic's server-side web_search; the pace cap applies). Nous uses it only while Codex is out.
+ * 2026-11-07 REVIEW (space_web_search 10 of 10 failed while every Codex week was spent to 11/11): the same search on Groq's free pool with its
+ * browser_search tool (Space Gateway, the API's own key). Nous uses it only while Codex is out. Claude's subscription refused every such search with 429
+ * (20/11, plan clipboard:VypZ4sl7NR04 step 4), and the other free pools cannot search, so they would answer from memory.
  */
-export async function searchWebThroughClaude(query: string, question: string, signal: AbortSignal, traceId?: string): Promise<CouncilEvidence[]> {
+export async function searchWebThroughPool(query: string, question: string, signal: AbortSignal, traceId?: string): Promise<CouncilEvidence[]> {
   const key = await getCodexApiKey();
   if (!key) throw new ProviderFailure("error", "The Space Gateway key is unavailable.");
-  const response = await fetch(`${CODEX_LB_BASE_URL}/v1/messages`, {
-    method: "POST",
-    signal: AbortSignal.any([signal, AbortSignal.timeout(SEARCH_TIMEOUT_MS)]),
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "anthropic-version": "2023-06-01", ...gatewayRequestIdHeader(traceId) },
-    body: JSON.stringify({ model: GATEWAY_CLAUDE_MODEL, max_tokens: 16_000, output_config: { effort: "low" }, messages: [{ role: "user", content: buildSearchPrompt(query, question) }],
-      tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3 }] })
-  });
-  if (!response.ok) throw new ProviderFailure(response.status === 429 ? "quota" : "error", `Claude web search HTTP ${response.status}`);
-  return claudeSearchFindings(await response.json());
+  return poolSearchFindings(await askSearchPool({ root: CODEX_LB_BASE_URL, pools: [{ path: "/pools/groq/v1", model: "openai/gpt-oss-120b" }], timeoutMs: SEARCH_TIMEOUT_MS, signal,
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...gatewayRequestIdHeader(traceId) },
+    // Asked for JSON, gpt-oss called a "json" tool it was not given and Groq answered 400 tool_use_failed (20/11 probe); the system line stops that.
+    body: { reasoning_effort: "low", tools: [{ type: "browser_search" }], messages: [{ role: "system", content: "Search with browser_search, then write your answer as "
+      + "plain text: only the JSON object the user asks for. browser_search is your only tool; never call a tool named json or any other." },
+    { role: "user", content: buildSearchPrompt(query, question) }] } }));
 }
 
-/** A Messages reply's findings: its text (the JSON the prompt asks for), else the web_search_result_location citations on its text blocks. */
-export function claudeSearchFindings(reply: unknown): CouncilEvidence[] {
-  let text = "";
-  const citations: Array<{ title: string; url: string; start: number; end: number }> = [];
-  for (const part of (reply as { content?: Array<{ type?: string; text?: string; citations?: Array<{ url?: string; title?: string }> }> })?.content ?? []) {
-    if (part.type !== "text") continue;
-    text += part.text ?? "";
-    for (const cited of part.citations ?? []) if (cited.url) citations.push({ title: cited.title ?? "", url: cited.url, start: text.length, end: text.length });
-  }
-  return parseSearchFindings(text, citations);
+/** Groq's answer's findings: its text (the JSON the prompt asks for, without its 【n†Lx-Ly】 source marks), else the pages browser_search opened. */
+export function poolSearchFindings(message: GatewayMessage): CouncilEvidence[] {
+  const tools = Array.isArray(message.executed_tools) ? message.executed_tools as Array<{ search_results?: { results?: Array<{ title?: string; url?: string }> } }> : [];
+  const citations = tools.flatMap((tool) => tool?.search_results?.results ?? []).flatMap((page) => page?.url ? [{ title: page.title ?? "", url: page.url, start: 0, end: 0 }] : []);
+  return parseSearchFindings(typeof message.content === "string" ? message.content.replace(/【[^】]*】/g, "") : "", citations);
 }

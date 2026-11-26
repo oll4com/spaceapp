@@ -26,6 +26,7 @@ export interface DomCaptureOptions {
 const XHTML = "http://www.w3.org/1999/xhtml";
 const EMPTY_IMAGE = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 // Characters XML 1.0 forbids; one stray control character would otherwise break the whole image.
+// eslint-disable-next-line no-control-regex -- matching the control characters XML forbids is the point
 const INVALID_XML = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 const SKIPPED_TAGS = new Set(["SCRIPT", "NOSCRIPT", "TEMPLATE", "LINK", "STYLE", "META", "TITLE", "BASE"]);
 const FRAME_TAGS = new Set(["IFRAME", "EMBED", "OBJECT", "PORTAL", "FRAME"]);
@@ -178,7 +179,7 @@ function readSheet(sheet: CSSStyleSheet): SheetInfo | null {
         for (const match of rule.cssText.matchAll(CSS_URL)) {
           const raw = match[2]!.trim();
           if (raw.startsWith("data:") || raw.startsWith("#")) continue;
-          try { urls.push({ selector: (rule as CSSStyleRule).selectorText, url: new URL(raw, base).href }); } catch {}
+          try { urls.push({ selector: (rule as CSSStyleRule).selectorText, url: new URL(raw, base).href }); } catch { /* Unparseable URL: left as the page wrote it. */ }
         }
       }
       if ("cssRules" in rule && (rule as CSSGroupingRule).cssRules) visit((rule as CSSGroupingRule).cssRules);
@@ -285,7 +286,7 @@ export async function captureDomFrame({ region, signal, scale, exclude }: DomCap
       const canvas = source as HTMLCanvasElement;
       if (!canvas.width || !canvas.height || !visible(canvas.getBoundingClientRect())) return clone;
       let context: RenderingContext | null = null;
-      try { context = canvas.getContext("2d"); } catch {}
+      try { context = canvas.getContext("2d"); } catch { /* Throws once control moved offscreen: reported as unsupported below. */ }
       if (!context) throw new SnipDomUnsupportedError("a 3D view");
       let data: string;
       try { data = canvas.toDataURL(); } catch { throw new SnipDomUnsupportedError("protected canvas content"); }
@@ -338,7 +339,7 @@ export async function captureDomFrame({ region, signal, scale, exclude }: DomCap
     }
     if (tag === "INPUT") {
       const input = source as HTMLInputElement;
-      if (input.type === "checkbox" || input.type === "radio") input.checked ? clone.setAttribute("checked", "") : clone.removeAttribute("checked");
+      if (input.type === "checkbox" || input.type === "radio") { if (input.checked) clone.setAttribute("checked", ""); else clone.removeAttribute("checked"); }
       // Same number of masked dots, without placing the secret itself in the snapshot markup.
       else if (input.type === "password") clone.setAttribute("value", "x".repeat(input.value.length));
       else if (input.type !== "file") clone.setAttribute("value", input.value);
@@ -347,7 +348,7 @@ export async function captureDomFrame({ region, signal, scale, exclude }: DomCap
     if (tag === "TEXTAREA") { clone.textContent = (source as HTMLTextAreaElement).value; return clone; }
     if (tag === "SELECT") {
       const options = (source as HTMLSelectElement).options, copies = (clone as HTMLSelectElement).querySelectorAll("option");
-      for (let i = 0; i < options.length; i++) options[i]!.selected ? copies[i]?.setAttribute("selected", "") : copies[i]?.removeAttribute("selected");
+      for (let i = 0; i < options.length; i++) { if (options[i]!.selected) copies[i]?.setAttribute("selected", ""); else copies[i]?.removeAttribute("selected"); }
       return clone;
     }
     return clone;

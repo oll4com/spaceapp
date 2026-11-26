@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { VaultHostTarget } from "@space/contracts";
+import type { Pane, VaultHostTarget } from "@space/contracts";
 import type { BrowserControlActivity } from "../browser-control-activity.js";
 import type { PostgresVaultRepository, VaultFillTarget } from "@space/db";
 import { cliBrowserBridgeTokenHeader, verifyCliBrowserBridgeToken } from "../cli-browser-bridge.js";
@@ -18,6 +18,8 @@ export type VaultProtectionStore = Pick<PostgresVaultRepository, "protectPane" |
 /** The stored fence (jsonb): the fill target, plus the agent (`cli:<session>`) that made the fill or asked for the handoff behind it, which
  *  gets masked screenshots (operator decision 2026-10-25). */
 type FenceFill = VaultFillTarget & { viewer?: string };
+/** A fence nobody gets a masked view of: the page shows a secret as text (an authenticator setup page, agent path otp-save). */
+export const VAULT_BLIND_FENCE = "blind";
 type Entry = { owner: string; fill: FenceFill | null } | null;
 /** A pane's open tabs as the Browser Host lists them. */
 export type VaultOpenPage = { pageId: string; isActive: boolean };
@@ -50,11 +52,47 @@ export function vaultFencedTabs(fill: VaultFillTarget): Array<Pick<VaultFillTarg
   return [latest, ...(also ?? [])];
 }
 
+/**
+ * Idle bound of a Vault/MFA flow's hold on its browser: technical (a holder that stopped, a crashed CLI or an ended turn, would keep
+ * the browser from every other agent for good). A holder silent this long loses the hold; its next fill takes it again.
+ */
+export const VAULT_FLOW_IDLE_MS = 5 * 60_000;
+export const VAULT_FLOW_HELD = `This browser is held by another agent's Vault sign-in or authenticator step: wait and retry. The hold ends when that agent closes the flow's tab or after ${VAULT_FLOW_IDLE_MS / 60_000} idle minutes.`;
+type FlowHold = { holder: string; tab: string; at: number };
+export type VaultFlowBrowser = {
+  listPages?(pane: Pane): Promise<{ activePageId: string | null; pages: Array<{ pageId: string; openerPageId?: string | null }> }>;
+  activatePage?(pane: Pane, pageId: string, traceId: string, context?: { holderType: "AGENT"; holderId: string }): Promise<unknown>;
+};
+
+/**
+ * A Vault/MFA flow holds its browser (Braintrust authenticator swap, 20/11, nous_msg:722364f3: another agent switched tabs between the
+ * key's capture and the confirm). Another actor's step waits (VAULT_FLOW_HELD); the holder's step lands in the flow's own tab, brought
+ * back to front when another tab became active, or follows a popup that tab opened. A closed flow tab ends the hold.
+ */
+export async function vaultFlowStep(protection: Pick<VaultProtection, "flowHold" | "holdFlow" | "endFlow">, browser: VaultFlowBrowser, pane: Pane,
+  actor: string | undefined, traceId: string): Promise<void> {
+  const hold = protection.flowHold(pane.id);
+  if (!hold) return;
+  const listed = await browser.listPages?.(pane).catch(() => null);
+  if (listed && !listed.pages.some((page) => page.pageId === hold.tab)) return protection.endFlow(pane.id);
+  if (hold.holder !== actor) throw new SpaceConflictError(VAULT_FLOW_HELD);
+  const active = listed?.pages.find((page) => page.pageId === listed.activePageId);
+  const tab = active?.openerPageId === hold.tab ? active.pageId : hold.tab;
+  protection.holdFlow(pane.id, actor, tab);
+  if (listed && listed.activePageId !== tab) await browser.activatePage?.(pane, tab, traceId, { holderType: "AGENT", holderId: actor });
+}
+
 export function createVaultProtection(repository: VaultProtectionStore | null, liveTarget?: (paneId: string) => Promise<VaultHostTarget>,
   openPages?: (paneId: string) => Promise<VaultOpenPage[]>) {
   const cache = new Map<string, { entry: Entry; at: number }>();
   const checked = new Map<string, number>();
   const listeners = new Set<(paneId: string) => void>();
+  const holds = new Map<string, FlowHold>();
+  const flowHold = (paneId: string): FlowHold | null => {
+    const hold = holds.get(paneId);
+    if (hold && Date.now() - hold.at > VAULT_FLOW_IDLE_MS) holds.delete(paneId);
+    return holds.get(paneId) ?? null;
+  };
   const entryOf = async (paneId: string): Promise<Entry> => {
     if (!repository) return null;
     const hit = cache.get(paneId);
@@ -75,8 +113,10 @@ export function createVaultProtection(repository: VaultProtectionStore | null, l
       // One fence per pane: tabs it already covers stay covered next to the new page.
       const previous = (await entryOf(paneId).catch(() => null))?.fill;
       const earlier = previous ? vaultFencedTabs(previous).filter((tab) => tab.targetId !== target.targetId) : [];
+      // A blind fence stays blind until it lifts: a later fill in the same browser never opens a masked view of the secret's page.
+      const seer = previous?.viewer === VAULT_BLIND_FENCE ? VAULT_BLIND_FENCE : viewer;
       const fill: FenceFill = { targetId: target.targetId, origin: target.origin, document: target.document,
-        ...(earlier.length ? { also: earlier } : {}), ...(viewer ? { viewer } : {}) };
+        ...(earlier.length ? { also: earlier } : {}), ...(seer ? { viewer: seer } : {}) };
       if (!repository || !await repository.protectPane(owner, paneId, fill)) return false;
       cache.set(paneId, { entry: { owner, fill }, at: Date.now() });
       // Open automation connections to this browser close now (the CLI CDP proxy listens).
@@ -101,7 +141,7 @@ export function createVaultProtection(repository: VaultProtectionStore | null, l
       // Tabs that are gone leave the fence; the rest keep it.
       if (left.length < tabs.length && repository) {
         const [latest, ...also] = left;
-        const fill: VaultFillTarget = { ...latest!, ...(also.length ? { also } : {}) };
+        const fill: FenceFill = { ...latest!, ...(also.length ? { also } : {}), ...(entry.fill.viewer === VAULT_BLIND_FENCE ? { viewer: VAULT_BLIND_FENCE } : {}) };
         if (await repository.protectPane(entry.owner, paneId, fill)) cache.set(paneId, { entry: { owner: entry.owner, fill }, at: Date.now() });
       }
       return false;
@@ -113,7 +153,17 @@ export function createVaultProtection(repository: VaultProtectionStore | null, l
       const fill = (await entryOf(paneId))?.fill;
       return fill ? vaultFencedTabs(fill).map((tab) => tab.targetId) : [];
     },
-    onProtected(listener: (paneId: string) => void): () => void { listeners.add(listener); return () => listeners.delete(listener); }
+    onProtected(listener: (paneId: string) => void): () => void { listeners.add(listener); return () => listeners.delete(listener); },
+    /** The agent (`cli:<session>`) whose Vault/MFA flow holds this browser, and the flow's tab (vaultFlowStep). */
+    flowHold,
+    /** Starts or refreshes `holder`'s flow on `tab`; false while another agent's flow holds the browser. */
+    holdFlow(paneId: string, holder: string, tab: string): boolean {
+      const hold = flowHold(paneId);
+      if (hold && hold.holder !== holder) return false;
+      holds.set(paneId, { holder, tab, at: Date.now() });
+      return true;
+    },
+    endFlow(paneId: string): void { holds.delete(paneId); }
   };
 }
 export type VaultProtection = ReturnType<typeof createVaultProtection>;
@@ -181,8 +231,8 @@ export function registerVaultFences(app: FastifyInstance, deps: { protection: Va
       // CLI pane that drives that browser now (13/11 Nous, plan clipboard:R4ypY6u56pAb: a Nous fill or a resumed session left it blind).
       const viewers = new Map<string, string | null>();
       for (const id of protectedPanes) viewers.set(id, await deps.protection.viewerOf(id));
-      const maskedFor = (paneId: string) => paneId === claims.paneId || viewers.get(paneId) === `cli:${claims.cliSessionId}`
-        || deps.controlActivity?.agentFor(paneId)?.paneId === claims.paneId;
+      const maskedFor = (paneId: string) => viewers.get(paneId) !== VAULT_BLIND_FENCE && (paneId === claims.paneId || viewers.get(paneId) === `cli:${claims.cliSessionId}`
+        || deps.controlActivity?.agentFor(paneId)?.paneId === claims.paneId);
       const onlyInteraction = route === "/api/cli/browser/actions" && Array.isArray(body.actions) && body.actions.length > 0
         && body.actions.every((entry) => !protectedPanes.has(String(entry?.targetPaneId)) || interactionActions.has(String(entry?.action?.type))
           || (entry?.action?.type === "masked_screenshot" && maskedFor(String(entry?.targetPaneId))));
@@ -195,6 +245,8 @@ export function registerVaultFences(app: FastifyInstance, deps: { protection: Va
       if (commandType === "TEXT_CAPTCHA" && [...protectedPanes].every(id => id === body.targetPaneId && maskedFor(id))) return;
       // Fixed Alibaba slider (operator 13/11): a drag that returns only a status, open like click to every pane that may act.
       if (commandType === "SLIDER_CAPTCHA" && [...protectedPanes].every(id => id === body.targetPaneId)) return;
+      // Fixed NetEase audio CAPTCHA (operator 16/11): types digits it heard and returns only a status, open like the slider.
+      if (commandType === "AUDIO_CAPTCHA" && [...protectedPanes].every(id => id === body.targetPaneId)) return;
       // The masked readout (path, title, visible messages; never a field), so no step after a fill is taken blind (7/11 Oracle): same viewers.
       if (commandType === "PAGE_READOUT" && [...protectedPanes].every(id => id === body.targetPaneId && maskedFor(id))) return;
       if (commandType === "CLOSE_PAGE") {

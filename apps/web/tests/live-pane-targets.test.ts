@@ -3,9 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { livePromptPaneReceipts, rememberLivePaneGroup, resolveLivePaneTargets } from "../src/features/live-pane/live-pane-targets.js";
 import { createLiveToolReplay } from "../src/features/live-pane/live-tool-replay.js";
 
+const codex = { id: "codex", mode: "TERMINAL", runtimeId: "cli:codex", paneName: "Andy" };
+const chat = { id: "chat", mode: "CHAT", paneName: "Bob" };
 const panes = [
-  { id: "codex", mode: "TERMINAL", runtimeId: "cli:codex", paneName: "Andy" },
-  { id: "chat", mode: "CHAT", paneName: "Bob" },
+  codex,
+  chat,
   { id: "control", mode: "TERMINAL", runtimeId: "cli:gemini", paneName: "Nik" },
   { id: "live", mode: "LIVE" }
 ];
@@ -46,9 +48,9 @@ describe("exact Live pane groups", () => {
   it("rejects another room and drops panes of the group closed since it was opened", () => {
     rememberLivePaneGroup("room:a", ["codex", "chat"], scope);
     expect(() => resolveLivePaneTargets("room:b", panes, { targetGroup: "lastOpened" }, scope, true)).toThrow();
-    expect(resolveLivePaneTargets("room:a", [panes[0]], { targetGroup: "lastOpened" }, scope, true)).toEqual(["codex"]);
-    expect(resolveLivePaneTargets("room:a", [panes[0], { ...panes[1], isClosed: true }], { targetGroup: "lastOpened" }, scope, true)).toEqual(["codex"]);
-    expect(() => resolveLivePaneTargets("room:a", [{ ...panes[0], isClosed: true }], { targetGroup: "lastOpened" }, scope, true)).toThrow("closed");
+    expect(resolveLivePaneTargets("room:a", [codex], { targetGroup: "lastOpened" }, scope, true)).toEqual(["codex"]);
+    expect(resolveLivePaneTargets("room:a", [codex, { ...chat, isClosed: true }], { targetGroup: "lastOpened" }, scope, true)).toEqual(["codex"]);
+    expect(() => resolveLivePaneTargets("room:a", [{ ...codex, isClosed: true }], { targetGroup: "lastOpened" }, scope, true)).toThrow("closed");
   });
   it.each([{ paneIds: ["codex", "missing"], all: true }, { paneIds: ["codex", "live"] }, { paneIds: [] }, {}, { targetGroup: "lastOpened", all: true }])(
     "never drops invalid IDs or broadens ambiguous selection: %j", args => {

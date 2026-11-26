@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { GatewaySettings } from "@space/contracts";
+import { isGatewayFreePlan, type GatewaySettings } from "@space/contracts";
 import type { GatewayAccountRecord, GatewayCompressionRow, GatewayCompressionSignalRow, GatewayRepository, GatewayRequestLogInsert } from "@space/db";
 import type { AccountPool } from "../../accounts/account-pool.js";
 import { StickyStore } from "../../accounts/sticky-store.js";
@@ -97,7 +97,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? Date.now;
   const baseUrl = (options.upstreamBaseUrl ?? CODE_ASSIST_BASE_URL).replace(/\/+$/, "");
-  const maxAttempts = options.maxAccountAttempts ?? 3;
+  const maxAttempts = options.maxAccountAttempts ?? 10;
   const sticky = options.sticky ?? new StickyStore({ provider: "ANTIGRAVITY", kind: "PROMPT_CACHE" });
   const verify = options.verifyIdentity ?? ((token: string) => googleTokenInfo(token, fetchImpl));
   const identities = new Map<string, { at: number; allowed: boolean }>();
@@ -109,25 +109,48 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     const cached = identities.get(key);
     if (cached && now() - cached.at < IDENTITY_CACHE_MS) return cached.allowed;
     const identity = await verify(token);
-    const accounts = await options.pool.accounts();
-    const allowed = Boolean(identity && (identity.clientId === null || identity.clientId === ANTIGRAVITY_CLIENT_ID) && accounts.some((account) =>
+    if (!identity) return cached?.allowed ?? false;
+    // An account switched off (operator 25/11: Antigravity logins only inside Antigravity) is no longer pooled: its own calls pass through untouched.
+    const accounts = (await options.pool.accounts()).filter((account) => account.status !== "PAUSED");
+    const allowed = Boolean((identity.clientId === null || identity.clientId === ANTIGRAVITY_CLIENT_ID) && accounts.some((account) =>
       (identity.subject && account.externalAccountId === identity.subject) || (identity.email && account.email?.toLowerCase() === identity.email.toLowerCase())));
     if (identities.size > 1000) identities.clear();
     identities.set(key, { at: now(), allowed });
     return allowed;
   }
 
-  /** A pool account's model list (its project and sign-in), or null so the client's own list goes through. */
+  /**
+   * A pool account's model list (its project and sign-in), preferring paid accounts so Pro-only models (Gemini 4 Argon,
+   * Hydrogen, Claude 5.5) are always advertised to the CLI, even when a free account is in the pool or paid quota windows
+   * are full (listing models costs no quota). Null falls back to the client's own sign-in.
+   */
   async function poolModels(request: FastifyRequest, upstreamPath: string, raw: Buffer): Promise<string | null> {
     try {
-      const settings = await options.settings();
-      const account = await pick("claude", new Set(), null, settings) ?? await pick("gemini", new Set(), null, settings);
-      if (!account) return null;
-      const credentials = await options.pool.credentials(account);
       const body = JSON.parse(raw.toString("utf8")) as Json;
-      const upstream = await fetchImpl(`${baseUrl}${upstreamPath}`, { method: "POST", headers: forwardHeaders(request.headers, credentials.accessToken),
-        body: JSON.stringify({ ...body, project: credentials.upstreamAccountId ?? body.project }), signal: AbortSignal.timeout(60_000) });
-      return upstream.ok ? await upstream.text() : null;
+      const settings = await options.settings();
+      const tried = new Set<string>();
+      const usable = (await options.pool.accounts()).filter((account) =>
+        account.status !== "PAUSED" && account.status !== "DEACTIVATED" && !options.pool.isSignedOut(account));
+      const nextAccount = async (): Promise<GatewayAccountRecord | undefined> =>
+        await pick("claude", tried, null, settings, null, "gemini-4-argon-high")
+        ?? await pick("gemini", tried, null, settings, null, "gemini-4-argon-high")
+        ?? usable.find((account) => !tried.has(account.id) && !isGatewayFreePlan(account.planType))
+        ?? await pick("claude", tried, null, settings)
+        ?? await pick("gemini", tried, null, settings)
+        ?? usable.find((account) => !tried.has(account.id));
+      for (;;) {
+        const account = await nextAccount();
+        if (!account) return null;
+        tried.add(account.id);
+        try {
+          const credentials = await options.pool.credentials(account);
+          const upstream = await fetchImpl(`${baseUrl}${upstreamPath}`, { method: "POST", headers: forwardHeaders(request.headers, credentials.accessToken),
+            body: JSON.stringify({ ...body, project: credentials.upstreamAccountId ?? body.project }), signal: AbortSignal.timeout(60_000) });
+          if (upstream.ok) return await upstream.text();
+        } catch {
+          // Try the next pool account.
+        }
+      }
     } catch {
       return null;
     }
@@ -275,7 +298,20 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     const startedAt = now();
     const requestId = request.id;
     const model = typeof body.model === "string" ? body.model : null;
-    const group = quotaGroupForModel(model);
+    let activeModel = model;
+    let activeGroup = quotaGroupForModel(activeModel);
+    let handedOverToHydrogen = false;
+    const tryHandoverToHydrogen = () => {
+      if (handedOverToHydrogen || (activeGroup !== "argon" && !activeModel?.includes("argon"))) return false;
+      handedOverToHydrogen = true;
+      activeModel = activeModel ? (activeModel.replace(/argon/i, "hydrogen") || "gemini-4-hydrogen-high") : "gemini-4-hydrogen-high";
+      activeGroup = "gemini";
+      tried.clear();
+      retryWith = null;
+      lastError = null;
+      compressed.outgoing.model = activeModel;
+      return true;
+    };
     const inner = body.request && typeof body.request === "object" ? body.request as Json : {};
     const sessionId = typeof inner.sessionId === "string" ? inner.sessionId : null;
     const stickyHash = sessionId ? hashKey(`antigravity:${stickyScope(request)}${sessionId}`) : null;
@@ -287,10 +323,10 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     const log = (account: GatewayAccountRecord | null, status: "success" | "error", errorCode: string | null, usage: GeminiUsage | null, extra: { firstTokenMs?: number | null; model?: string | null; errorMessage?: string | null } = {}) =>
       options.logs.add({
         requestId, requestedAt: new Date(startedAt).toISOString(), provider: "ANTIGRAVITY", accountId: account?.id ?? null, apiKeyId: request.gatewayApiKey?.id ?? null,
-        model: extra.model ?? model ?? "unknown", reasoningEffort: null, serviceTier: null, transport: "http", upstreamTransport: "http", status, errorCode,
+        model: extra.model ?? activeModel ?? model ?? "unknown", reasoningEffort: null, serviceTier: null, transport: "http", upstreamTransport: "http", status, errorCode,
         errorMessage: extra.errorMessage ?? null, latencyMs: now() - startedAt, firstTokenMs: extra.firstTokenMs ?? null,
         inputTokens: usage?.promptTokens ?? null, cachedInputTokens: usage?.cachedTokens ?? null, outputTokens: usage?.outputTokens ?? null,
-        reasoningTokens: usage?.thoughtsTokens ?? null, costUsd: geminiCostUsd(usage, extra.model ?? model), compressionTokensSaved: account ? compressed.saved : null, planType: account?.planType ?? null,
+        reasoningTokens: usage?.thoughtsTokens ?? null, costUsd: geminiCostUsd(usage, extra.model ?? activeModel ?? model), compressionTokensSaved: account ? compressed.saved : null, planType: account?.planType ?? null,
         stickyKeySource: sessionId ? "request.sessionId" : null, stickyKind: stickyHash ? "PROMPT_CACHE" : null, stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null,
         ...origin, compressionTokensBefore: compressed.measured?.before ?? null, compressionTokensAfter: compressed.measured?.after ?? null,
         compressionDetail: compressed.detail
@@ -301,11 +337,14 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     let retryWith: GatewayAccountRecord | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       if (disconnect?.signal.aborted) { log(null, "error", "client_closed", null); return reply; }
-      const account = retryWith ?? await pick(group, tried, stickyHash, settings, scope);
+      const account = retryWith ?? await pick(activeGroup, tried, stickyHash, settings, scope, activeModel);
       if (disconnect?.signal.aborted) { log(null, "error", "client_closed", null); return reply; }
       if (retryWith) attempt -= 1;
       retryWith = null;
-      if (!account) break;
+      if (!account) {
+        if (tryHandoverToHydrogen()) continue;
+        break;
+      }
       tried.add(account.id);
       options.pool.markSelected(account.id, reply.raw);
       let credentials;
@@ -316,7 +355,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
         continue;
       }
       if (disconnect?.signal.aborted) { log(account, "error", "client_closed", null); return reply; }
-      const outgoing = JSON.stringify({ ...compressed.outgoing, project: credentials.upstreamAccountId ?? body.project });
+      const outgoing = JSON.stringify({ ...compressed.outgoing, model: activeModel, project: credentials.upstreamAccountId ?? body.project });
       let upstream: Response;
       try {
         upstream = await fetchImpl(`${baseUrl}${upstreamPath}`, { method: "POST", body: outgoing, headers: forwardHeaders(request.headers, credentials.accessToken),
@@ -336,6 +375,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
         if (disconnect?.signal.aborted) { log(account, "error", "client_closed", null); return reply; }
         lastError = { status: upstream.status, body: text, headers: upstream.headers };
         if (await recordFailure(account, upstream.status, text)) continue;
+        if (tryHandoverToHydrogen()) continue;
         break;
       }
 
@@ -365,6 +405,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
           if (inspector.errorStatus !== null && !inspector.outputStarted && attempt + 1 < maxAttempts) {
             const failoverable = await recordFailure(account, inspector.errorStatus, JSON.stringify({ error: { code: inspector.errorStatus, message: inspector.errorMessage } }));
             if (failoverable) { await reader.cancel().catch(() => undefined); movedOn = true; break; }
+            if (tryHandoverToHydrogen()) { await reader.cancel().catch(() => undefined); movedOn = true; break; }
           }
           if (inspector.outputStarted) commit();
         }
@@ -392,13 +433,13 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     }
 
     const status = lastError?.status ?? 503;
-    log(null, "error", lastError ? `http_${status}` : "no_accounts", null);
+    log(null, "error", lastError ? `http_${status}` : "no_accounts", null, { errorMessage: lastError?.body ?? null });
     if (lastError) return reply.code(status).header("content-type", "application/json").send(lastError.body);
     return reply.code(503).send({ error: { code: 503, message: "No Antigravity account in Space Gateway can serve this model right now.", status: "UNAVAILABLE" } });
 
     /** Notes what the failure says about the account; returns whether another account may serve the request. */
     async function recordFailure(account: GatewayAccountRecord, status: number, text: string): Promise<boolean> {
-      const outcome = await access.recordFailure(account, group, status, text);
+      const outcome = await access.recordFailure(account, activeGroup, status, text);
       if (outcome.retryWith !== undefined) retryWith = outcome.retryWith;
       return outcome.failover;
     }

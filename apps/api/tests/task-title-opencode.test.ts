@@ -3,6 +3,7 @@ import {
   generateNativeOpenCodeTitle,
   nativeOpenCodeModelCatalog,
   OpenCodeTitleModelRetired,
+  OpenCodeTitleRateLimited,
   openCodeRunRejectsPermissionRequests,
   openCodeTitleRequestPreamble,
   parseNativeTitleOutput,
@@ -129,6 +130,17 @@ describe("native title usage boundary", () => {
       await writeFile(command, `#!/usr/bin/env node\nprocess.stdin.resume();\nprocess.stdout.write(${JSON.stringify(events)});\nsetTimeout(()=>process.exit(1),200);\n`, { mode: 0o700 });
       await expect(generateNativeOpenCodeTitle({ command, modelId: "exo-free", system: "Return JSON.", prompt: "Name it.", signal: AbortSignal.timeout(3000) }))
         .rejects.toBeInstanceOf(OpenCodeTitleModelRetired);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it("reports the free tier's usage limit with its retry time", async () => {
+    const root = await mkdtemp(join(tmpdir(), "title-limited-"));
+    const command = join(root, "fake-native");
+    try {
+      const events = '{"type":"step_start","part":{}}\n{"type":"error","error":{"type":"provider.free-limit","status":429,"retryAfterMs":27923000}}\n';
+      await writeFile(command, `#!/usr/bin/env node\nprocess.stdin.resume();\nprocess.stdout.write(${JSON.stringify(events)});\nsetTimeout(()=>process.exit(1),200);\n`, { mode: 0o700 });
+      const failure = await generateNativeOpenCodeTitle({ command, modelId: "big-pickle", system: "Return JSON.", prompt: "Name it.", signal: AbortSignal.timeout(3000) }).catch((error) => error);
+      expect(failure).toBeInstanceOf(OpenCodeTitleRateLimited);
+      expect(failure.retryAfterSeconds).toBe(27_923);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("reads the native model catalog once for every refresh within its cache window", async () => {

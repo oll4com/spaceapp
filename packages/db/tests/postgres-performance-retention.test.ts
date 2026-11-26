@@ -9,7 +9,6 @@ import {
   type PgPoolLike
 } from "../src/space-store.js";
 import { InMemorySpaceStore } from "../../runtime/src/index.js";
-import net from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -65,9 +64,9 @@ describe("PostgreSQL Performance Tuning & Data Retention", () => {
         // TCP to 54329 may either connect or fail with ECONNREFUSED (TCP), but crucially NOT ENOENT on the socket!
         try {
           await pool.query("SELECT 1");
-        } catch (error: any) {
+        } catch (error) {
           // If fallback occurred, error will be from TCP (or if live DB running, it succeeds!)
-          expect(error.message).toMatch(/(connect ECONNREFUSED|password authentication|relation)/i);
+          expect((error as Error).message).toMatch(/(connect ECONNREFUSED|password authentication|relation)/i);
         } finally {
           await pool.end();
         }
@@ -119,7 +118,7 @@ describe("PostgreSQL Performance Tuning & Data Retention", () => {
       const paneId = pane.id;
 
       // Create an active session (should NOT be pruned)
-      const activeSession = store.createPaneCliSession({
+      store.createPaneCliSession({
         roomId,
         paneId,
         sessionId: "session:active",
@@ -144,7 +143,7 @@ describe("PostgreSQL Performance Tuning & Data Retention", () => {
 
       // Backdate the exited session to 10 days ago
       const tenDaysAgo = new Date(Date.now() - 10 * 86_400_000).toISOString();
-      (store as any).paneCliSessions.set("session:old-exited", {
+      (store as unknown as { paneCliSessions: Map<string, unknown> }).paneCliSessions.set("session:old-exited", {
         ...oldExitedSession,
         updatedAt: tenDaysAgo
       });
@@ -242,7 +241,7 @@ describe("PostgreSQL Performance Tuning & Data Retention", () => {
       const oldClosedPane = store.createPane({ roomId: room.id, title: "Old Closed Pane", mode: "TERMINAL" });
       store.updatePane(oldClosedPane.id, { isClosed: true, status: "CLOSED" });
       const thirtyHoursAgo = new Date(Date.now() - 30 * 3600 * 1000).toISOString();
-      (store as any).panes.set(oldClosedPane.id, {
+      (store as unknown as { panes: Map<string, unknown> }).panes.set(oldClosedPane.id, {
         ...store.getPane(oldClosedPane.id),
         updatedAt: thirtyHoursAgo
       });
@@ -269,7 +268,7 @@ describe("PostgreSQL Performance Tuning & Data Retention", () => {
       const closedAt = (hoursAgo: number, mode: "JOB_APPLY" | "MARKETING_COPILOT" | "TERMINAL") => {
         const pane = store.createPane({ roomId: room.id, title: `${mode} ${hoursAgo}`, mode });
         store.updatePane(pane.id, { isClosed: true, status: "CLOSED" });
-        (store as any).panes.set(pane.id, { ...store.getPane(pane.id), updatedAt: new Date(Date.now() - hoursAgo * 3600 * 1000).toISOString() });
+        (store as unknown as { panes: Map<string, unknown> }).panes.set(pane.id, { ...store.getPane(pane.id), updatedAt: new Date(Date.now() - hoursAgo * 3600 * 1000).toISOString() });
         return pane;
       };
       const olderCopilot = closedAt(60, "JOB_APPLY");

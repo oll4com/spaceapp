@@ -20,6 +20,7 @@ export function parseAppDiagnosticsPerformanceDetail(
     occurredAt: "1970-01-01T00:00:00.000Z"
   });
   if (!parsed.success || parsed.data.category !== "PERFORMANCE") return null;
+  // sequence/occurredAt are named only to keep them out of detail
   const { sequence: _sequence, occurredAt: _occurredAt, ...detail } = parsed.data;
   return detail;
 }

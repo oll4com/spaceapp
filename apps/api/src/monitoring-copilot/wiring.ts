@@ -37,7 +37,7 @@ export interface MonitoringCopilotWiring extends Omit<MonitoringCopilotRouteDepe
   /** Reopens a closed pane as its owner (task-schedules' path): with none open, the watch reopens the newest closed one when work waits. */
   reopen?(pane: Pane, owner: string): Promise<unknown>;
   notice?: CopilotReopenDeps["notice"];
-  log: { warn(details: unknown, message: string): void; info?(details: unknown, message: string): void; debug?(details: unknown, message: string): void };
+  log: { warn(details: unknown, message: string): void; error(details: unknown, message: string): void; info?(details: unknown, message: string): void; debug?(details: unknown, message: string): void };
 }
 
 /**
@@ -66,11 +66,12 @@ export function registerMonitoringCopilot(app: FastifyInstance, deps: Monitoring
     if (!session) throw new SpaceConflictError("Open the Monitoring Copilot terminal first: the pane has no running CLI session.");
     const traceId = `monitoring-copilot:${makeSpaceId("kickoff")}`;
     await terminal.runSerializedTerminalMutation(session.sessionId, async () => {
-      await submitCliPrompt(terminal, session.sessionId, MONITORING_KICKOFF, traceId, `${traceId}:kickoff`);
+      await submitCliPrompt(terminal, session.sessionId, MONITORING_KICKOFF, traceId, `${traceId}:kickoff`, { paneId: session.paneId });
     });
   });
   const service = createMonitoringCopilotService({
     sentry: { issues: async () => { const token = sentryToken("SPACE_SENTRY_READ_TOKEN_FILE"); return token ? sentryUnresolvedIssues(token) : null; } },
+    admins: async () => ((await store.listUsersWithRoomCounts?.()) ?? []).filter((user) => user.role === "ADMIN").map((user) => user.id), log: deps.log,
     repository, store, notifications: deps.notifications, collector: deps.collector ?? createMonitoringCollector({ network: deps.collectorConfig?.network }), collectorConfig: deps.collectorConfig,
     askOwnHosts: async (owner) => nousSettingsSchema.parse((await store.getUserSettings(owner)).nous ?? {}).askOwnHostChanges,
     ...(deps.reopen ? { reopen: { reopen: (owner: string, pane: Pane) => deps.reopen!(pane, owner), ...(deps.notice ? { notice: deps.notice } : {}) } } : {}),

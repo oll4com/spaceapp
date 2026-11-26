@@ -1,3 +1,4 @@
+/* eslint-disable no-control-regex -- matching terminal escape and control characters is the point of this file */
 export interface TerminalPreviewSnapshot {
   lines: string[];
   lastUpdated: number;
@@ -56,7 +57,7 @@ const pendingThrottledPanes = new Set<string>();
 
 // Cursor moves and cursor restores; see flattenCursorMoves.
 const CURSOR_MOVE = /\x1b\[(\d*)(?:;(\d*))?([HfGCABEFd])|\x1b8|\x1b\[u/g;
-const CSI_SEQUENCE = /\x1b\[[0-?]*[ -\/]*[@-~]/g;
+const CSI_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const BOX_BORDER_LEFT = /^\s*[│┃║▌▎]\s?/;
 const BOX_BORDER_RIGHT = /\s*[│┃║]\s*$/;
 const HAS_TWO_LETTERS = /\p{L}.*\p{L}/su;
@@ -402,7 +403,7 @@ export function appendTerminalPreviewChunk(paneId: string, rawChunk: string): vo
     if (getter) {
       try {
         initialLines = getter();
-      } catch {}
+      } catch { /* a failing getter leaves the preview empty */ }
     }
     state = {
       lines: ingestLines(initialLines ?? []).lines,
@@ -462,7 +463,7 @@ export function notifyTerminalPreviewChanged(paneId?: string): void {
   listeners.forEach((fn) => {
     try {
       fn(paneId);
-    } catch {}
+    } catch { /* one failing listener must not stop the others */ }
   });
 }
 
@@ -521,7 +522,7 @@ export function getTerminalPreviewSummary(paneId: string, maxLines = 5): Termina
         const summary = summarizeTerminalPreviewLines(fresh, maxLines, state?.lastUpdated ?? 0);
         if (summary.lines.length > 0 || summary.activity) return summary;
       }
-    } catch {}
+    } catch { /* fall back to the cached lines */ }
   }
 
   const cached = terminalPreviewCache.get(paneId);
@@ -532,7 +533,13 @@ export function getTerminalPreviewLines(paneId: string, maxLines = 5): string[] 
   return getTerminalPreviewSummary(paneId, maxLines).lines;
 }
 
-export function extractRecentTerminalLines(terminal: any, maxLines = 8): string[] {
+// The slice of xterm's Terminal this reads.
+interface PreviewTerminal {
+  rows?: number;
+  buffer?: { active?: { length: number; baseY?: number; getLine(index: number): { translateToString(trimRight?: boolean): string } | undefined } };
+}
+
+export function extractRecentTerminalLines(terminal: PreviewTerminal | null | undefined, maxLines = 8): string[] {
   if (!terminal?.buffer?.active) return [];
   const buffer = terminal.buffer.active;
   const totalLength = buffer.length;

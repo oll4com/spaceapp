@@ -4,15 +4,15 @@ import { api } from "../../api.js";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
 import type { SpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { classifyRoomWarmPresentation } from "../../warm-room-startup.js";
-import type { PaneCompletionLifecycleState } from "../../pane-completion-lifecycle.js";
 import { lazyWithPreload } from "../../lazy-with-preload.js";
 import { RoomPaneComposer } from "../room-pane-composer/RoomPaneComposer.js";
 import { SPACE_PANE_CONTEXT_MIME, readPaneContextDragPayload } from "../pane-drag/pane-drag.js";
 import { RecoverableSurface } from "../SurfaceErrorBoundary.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { DockButton, DockChips, DockSearch } from "../dock-kit/DockKit.js";
-import { ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, MoreHorizontal, Plus, Rocket, Save, Terminal, Trash2, X } from "../ui-theme/app-icons.js";
-import { workspaceRoomActivity } from "../ui-theme/workspace-room-filter.js";
+import { ChevronRight, EyeOff, Folder, FolderOpen, GitBranch, LayoutGrid, MoreHorizontal, Plus, Rocket, Save, Terminal, Trash2, X, type LucideIcon } from "../ui-theme/app-icons.js";
+import { modeIcons } from "../pane-card/pane-mode-icons.js";
+import { paneModeLabel } from "../pane-float/pane-mode-labels.js";
 import type { AdminUsers } from "./useAdminUsers.js";
 import { ensureProjectFolder } from "./room-catalog.js";
 import { RoomSharing } from "./RoomSharing.js";
@@ -22,51 +22,8 @@ import "./rooms-dock.css";
 
 const LazyProjectSourcePicker = lazyWithPreload(() => import("../source-control/ProjectSourcePicker.js").then(module => ({ default: module.ProjectSourcePicker })));
 
-export interface RoomEntry { room: Room; activity: ReturnType<typeof workspaceRoomActivity> }
-
-/** Rooms shown in the dock: own rooms, or the admin's account filter, then the search. */
-export function selectRoomEntries({ rooms, selectedRoomId, panes, roomRuntimes, completions, roomCliActivityCounts, isAdminMode, userId, dock, userEmailById, notificationRooms, listsEveryRoom = false }: {
-  rooms: Room[];
-  selectedRoomId: string | null;
-  /** Panes of the active room. */
-  panes: Pane[];
-  roomRuntimes: Record<string, { panes: Pane[] }>;
-  completions: PaneCompletionLifecycleState["panes"];
-  roomCliActivityCounts: Record<string, number>;
-  isAdminMode: boolean;
-  userId: string | undefined;
-  dock: Pick<RoomsDock, "roomSearch" | "adminRoomFilterMode" | "adminSelectedUserId">;
-  userEmailById: Map<string, string>;
-  /** Open notifications per room, from the notification store. */
-  notificationRooms?: Record<string, number>;
-  /** A USER's room list already holds only their own and shared rooms (multi-user, operator-approved 2026-10-17). */
-  listsEveryRoom?: boolean;
-}): { entries: RoomEntry[]; isRoomListFiltered: boolean } {
-  const { roomSearch, adminRoomFilterMode, adminSelectedUserId } = dock;
-  const entries = rooms.map(room => ({
-    room,
-    activity: workspaceRoomActivity(room.id === selectedRoomId ? panes : roomRuntimes[room.id]?.panes ?? [], completions, roomCliActivityCounts[room.id], notificationRooms?.[room.id] ?? 0)
-  })).filter(({ room }) => {
-    if (!isAdminMode) {
-      if (!listsEveryRoom && room.ownerUserId && room.ownerUserId !== userId) return false;
-    } else {
-      if (adminRoomFilterMode === "mine") {
-        if (room.ownerUserId && room.ownerUserId !== userId) return false;
-      } else if (adminRoomFilterMode === "user") {
-        if (adminSelectedUserId && room.ownerUserId !== adminSelectedUserId) return false;
-      }
-    }
-    if (roomSearch.trim()) {
-      const q = roomSearch.trim().toLowerCase();
-      const nameMatch = room.name.toLowerCase().includes(q);
-      const ownerEmail = room.ownerUserId ? userEmailById.get(room.ownerUserId) ?? "" : "";
-      return nameMatch || ownerEmail.toLowerCase().includes(q);
-    }
-    return true;
-  });
-  const isRoomListFiltered = Boolean(roomSearch.trim()) || (isAdminMode && adminRoomFilterMode !== "mine");
-  return { entries, isRoomListFiltered };
-}
+import type { RoomEntry } from "./room-entries.js";
+export { selectRoomEntries, type RoomEntry } from "./room-entries.js";
 
 export interface RoomsDockPanelProps {
   dock: RoomsDock;
@@ -85,6 +42,8 @@ export interface RoomsDockPanelProps {
     warmRoomEnabled: boolean;
     roomPaneCounts: Record<string, number>;
     roomCliRuntimeIds: Record<string, string[]>;
+    /** Distinct open pane modes per room, from the cli-activity sample (rooms without live panes). */
+    roomPaneModes: Record<string, Pane["mode"][]>;
   };
   access: {
     auth: AuthMe | null;
@@ -127,7 +86,22 @@ const adminRoomFilterOptions: { id: AdminRoomFilterMode; label: string }[] = [
   { id: "all", label: "All accounts" },
   { id: "user", label: "Selected account" }
 ];
-const MAX_ROOM_CLI_ICONS = 3;
+// The row stays one line in the dock's width; the rest is "+N" with their names on hover (operator ask 14/11).
+const MAX_ROOM_TYPE_ICONS = 6;
+
+export type RoomPaneTypeIcon = { key: string; label: string } & ({ iconSrc: string; brand: string } | { Icon: LucideIcon });
+
+/** One icon per pane type open in a room: running CLIs by runtime, then every other pane mode, each once. */
+export function roomPaneTypeIcons(cliRuntimeIds: string[], paneModes: Pane["mode"][]): RoomPaneTypeIcon[] {
+  return [
+    ...[...new Set(cliRuntimeIds)].flatMap((runtimeId): RoomPaneTypeIcon[] => {
+      const presentation = cliRuntimePresentation(runtimeId);
+      return presentation ? [{ key: presentation.id, label: presentation.shortLabel, iconSrc: presentation.iconSrc, brand: presentation.brand }] : [];
+    }),
+    // TERMINAL panes are shown by their running CLI above.
+    ...[...new Set(paneModes)].filter((mode) => mode !== "TERMINAL").map((mode) => ({ key: mode, label: paneModeLabel(mode), Icon: modeIcons[mode] }))
+  ];
+}
 
 
 /** The Rooms dock: room list with filters, per-room project settings and the pane composer. */
@@ -141,7 +115,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
     testRoomsOpen, setTestRoomsOpen
   } = dock;
   const { adminUsersList, adminUsersListWithLiveCounts, userEmailById } = adminUsers;
-  const { rooms, setRooms, selectedRoomId, panes, roomRuntimes, roomPaneLoadStates, warmRoomIds, warmRoomEnabled, roomPaneCounts, roomCliRuntimeIds } = catalog;
+  const { rooms, setRooms, selectedRoomId, panes, roomRuntimes, roomPaneLoadStates, warmRoomIds, warmRoomEnabled, roomPaneCounts, roomCliRuntimeIds, roomPaneModes } = catalog;
   const { auth, isAdminMode, runtimeKind } = access;
   const {
     createRoom, roomCreationPending, selectRoom, requestRoomDelete, requestTestRoomsDelete, deletePendingRoomId, setSelectedPaneId, addFilesPane, addRootAdminPane,
@@ -198,10 +172,8 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
           .map(([roomId]) => roomId)
       )
     });
-    const roomCliPresentations = [...new Set(roomCliRuntimeIds[room.id] ?? [])].flatMap((runtimeId) => {
-      const presentation = cliRuntimePresentation(runtimeId);
-      return presentation ? [presentation] : [];
-    });
+    const livePanes = room.id === selectedRoomId ? panes : roomRuntimes[room.id]?.panes;
+    const roomTypeIcons = roomPaneTypeIcons(roomCliRuntimeIds[room.id] ?? [], livePanes ? livePanes.filter((pane) => !pane.isClosed).map((pane) => pane.mode) : roomPaneModes[room.id] ?? []);
     const effectivePath = room.projectPath || "/opt/spaceapp";
     const folderName = effectivePath.split("/").filter(Boolean).pop() || effectivePath;
     const isActive = room.id === selectedRoomId;
@@ -266,26 +238,31 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
               <span className="room-name">{room.name}</span>
               <span className="room-meta">
                 {activity.attention ? <span className="room-attention">Needs attention</span> : null}
+                {room.nousExcluded ? <span className="room-nous-off" title="Nous does not read or act in this room"><EyeOff aria-hidden="true" /> Nous off</span> : null}
                 <span className="room-folder" title={`Project: ${effectivePath}`}>{folderName}</span>
-                {roomCliPresentations.length ? (
+                {roomTypeIcons.length ? (
                   <span
                     className="room-cli-runtime-icons"
-                    aria-label={`Active CLI types: ${roomCliPresentations.map((presentation) => presentation.shortLabel).join(", ")}`}
+                    aria-label={`Open pane types: ${roomTypeIcons.map((icon) => icon.label).join(", ")}`}
                   >
-                    {roomCliPresentations.slice(0, MAX_ROOM_CLI_ICONS).map((presentation) => (
+                    {roomTypeIcons.slice(0, MAX_ROOM_TYPE_ICONS).map((icon) => "iconSrc" in icon ? (
                       <img
-                        key={presentation.id}
+                        key={icon.key}
                         className="room-cli-runtime-icon"
-                        src={presentation.iconSrc}
+                        src={icon.iconSrc}
                         alt=""
                         aria-hidden="true"
-                        title={presentation.shortLabel}
-                        data-terminal-runtime-brand={presentation.brand}
+                        title={icon.label}
+                        data-terminal-runtime-brand={icon.brand}
                         draggable={false}
                       />
+                    ) : (
+                      <span key={icon.key} className="room-pane-type-icon" title={icon.label} data-pane-mode={icon.key} aria-hidden="true">
+                        <icon.Icon />
+                      </span>
                     ))}
-                    {roomCliPresentations.length > MAX_ROOM_CLI_ICONS ? (
-                      <span className="room-cli-runtime-more" aria-hidden="true">+{roomCliPresentations.length - MAX_ROOM_CLI_ICONS}</span>
+                    {roomTypeIcons.length > MAX_ROOM_TYPE_ICONS ? (
+                      <span className="room-cli-runtime-more" aria-hidden="true" title={roomTypeIcons.slice(MAX_ROOM_TYPE_ICONS).map((icon) => icon.label).join(", ")}>+{roomTypeIcons.length - MAX_ROOM_TYPE_ICONS}</span>
                     ) : null}
                   </span>
                 ) : null}
@@ -488,6 +465,20 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
               detail="New CLI panes in this room each get their own Git branch."
               checked={isRoomWorktreeEnabled(room.id)}
               onChange={(enabled) => setRoomWorktreeEnabled(room.id, enabled)}
+            />
+            <SpaceToggle
+              className="room-dock-worktree-toggle"
+              label={<span className="room-dock-worktree-label"><EyeOff aria-hidden="true" /> Keep Nous out</span>}
+              detail="Nous does not read, watch or act in this room."
+              checked={Boolean(room.nousExcluded)}
+              onChange={async (enabled) => {
+                try {
+                  const updated = await api.updateRoom(room.id, { name: room.name, nousExcluded: enabled });
+                  setRooms((current) => current.map((r) => (r.id === room.id ? updated : r)));
+                } catch (err) {
+                  setError(err instanceof Error ? `The Nous setting could not be saved: ${err.message}` : "The Nous setting could not be saved.");
+                }
+              }}
             />
             {room.projectPath || dockProjectPathDrafts[room.id] ? (
               <div className="room-dock-actions-row">

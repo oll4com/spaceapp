@@ -77,6 +77,9 @@ describe("Room pane totals", () => {
     expect(css).toMatch(/\.room-select-text\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;/);
     expect(css).toMatch(/\.room-name\s*\{[^}]*text-overflow:\s*ellipsis;/);
     expect(css).toMatch(/\.room-cli-badge\s*\{[^}]*flex:\s*0 0 auto;/);
+    // nous_msg:b9a4f24b: "Needs attention" + folder must never push the pane-type icons off the 260px dock.
+    expect(css).toMatch(/\.room-meta\s*\{[^}]*flex-wrap:\s*wrap;/);
+    expect(css).toMatch(/\.room-folder\s*\{[^}]*min-width:\s*3ch;/);
   });
 
 });

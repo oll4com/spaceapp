@@ -51,7 +51,7 @@ describe.skipIf(disposablePostgresUnavailableReason())("Nous private-alpha harne
     await ops?.end();
     await app?.end();
     await server?.stop();
-  });
+  }, 120_000); // docker stop can outlast the api 20 s hookTimeout under load
 
   it("runs one wave from trial to paid, through a cell's sleep and wake, and opens the next wave", async () => {
     for (const { tenantId, plan } of wave) {

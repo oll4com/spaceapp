@@ -167,12 +167,16 @@ describe("setup connection verification", () => {
         discoveryCalls += 1;
         return registry;
       },
+      readRuntimes: async () => registry,
       observeCredential: async () => "c".repeat(64),
       smokeCredential: async () => true,
       now: () => "2026-07-29T10:00:00.000Z"
     });
 
     await expect(service.verify("cli:not-real")).rejects.toThrow("was not found");
+    // The overview reads the shared registry; only a verification pays for a fresh discovery.
+    expect(await service.overview()).toHaveLength(16);
+    expect(discoveryCalls).toBe(0);
     const connections = await service.verifyAll(undefined, async (connectionId, connection) => {
       expect(connection).not.toBeNull();
       completedConnectionIds.push(connectionId);

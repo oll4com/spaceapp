@@ -88,7 +88,7 @@ describe("Dot tool gateway in the worker", () => {
     expect((init!.headers as Record<string, string>)["x-space-internal-token"]).toBe("internal-token");
     expect(JSON.parse(String(init!.body)).identity).toMatchObject({ dotId, agentSessionId: "agent_session:dot", operatorUserId: "user:owner",
       workflowId: expect.stringMatching(/^workflow:codex-app-server:/) });
-    expect(text(await handleDotToolCall(context, request("space_describe_tool", { toolId: "memory.search" }))).id).toBe("memory.search");
+    expect(text(await handleDotToolCall(context, request("space_describe_tool", { toolId: "clipboard.get" }))).id).toBe("clipboard.get");
   });
 
   it("runs native tools through the existing bridge and records one receipt per call", async () => {

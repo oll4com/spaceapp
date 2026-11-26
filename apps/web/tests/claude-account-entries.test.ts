@@ -46,6 +46,19 @@ describe("Claude API key card", () => {
     for (const entry of [held!, bare!]) expect(JSON.stringify(entry)).not.toMatch(/API key|Paid per token|\$500/);
   });
 
+  it("puts the reset button only on an account Space Gateway holds, and its week credits keep it out of Week exhausted", () => {
+    const weeklyResetAt = new Date(clock + 3 * 86_400_000).toISOString();
+    const action = (account: { label: string }) => `Resets for ${account.label}`;
+    const [held, bare] = claudeAccountEntries([
+      apiCard({ id: "crew", label: "crew", email: "crew@spaceapp.dev", status: "CONNECTED", fiveHourRemainingPercent: 100, weeklyRemainingPercent: 0, weeklyResetAt,
+        gatewayAccountId: `gw_account:${"3".repeat(32)}`, resetCredits: 1 }),
+      apiCard({ id: "solo", label: "solo", status: "CONNECTED", fiveHourRemainingPercent: 100, weeklyRemainingPercent: 0, weeklyResetAt })
+    ], clock, [], action);
+    expect(held).toMatchObject({ action: "Resets for crew", availability: { state: "soon", backAt: null }, capacity: 100 });
+    expect(bare).toMatchObject({ availability: { state: "exhausted" }, capacity: 0 });
+    expect(bare!.action).toBeUndefined();
+  });
+
   it("labels the key in the pane account picker without making it a pick", () => {
     const pick = (patch: Partial<ClaudeUsageAccount>) => cliAccountAvailability({
       runtimeId: "cli:claude", profileId: "api", identity: null, clock,

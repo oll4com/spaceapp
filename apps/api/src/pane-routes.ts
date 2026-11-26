@@ -38,7 +38,7 @@ import type { TaskTitleService } from "./task-title-service.js";
 import { WORKTREES_ROOT } from "./worktrees/worktree-service.js";
 import { youtubeBrowserPlayback, type YouTubePlaybackStore } from "./youtube-playback-state.js";
 
-function forceOnForChat(paneMode: Pane["mode"]): "force_on" | "selectable" {
+function forceOnForChat(): "force_on" | "selectable" {
   return "force_on";
 }
 
@@ -56,7 +56,7 @@ async function buildPaneCapabilityMatrix(store: SpaceStore, pane: Pane): Promise
       label: "Memory search",
       status: "VERIFIED",
       statusReason: "Force-on canonical Space Memory search through Space mediation.",
-      execution: forceOnForChat(pane.mode),
+      execution: forceOnForChat(),
       requiresApproval: false
     },
     {
@@ -64,7 +64,7 @@ async function buildPaneCapabilityMatrix(store: SpaceStore, pane: Pane): Promise
       label: "Memory save",
       status: "VERIFIED",
       statusReason: "Authenticated saves append directly to the canonical Space Memory monthly file with redaction and audit.",
-      execution: forceOnForChat(pane.mode),
+      execution: forceOnForChat(),
       requiresApproval: false
     }
   ];
@@ -74,7 +74,7 @@ async function buildPaneCapabilityMatrix(store: SpaceStore, pane: Pane): Promise
       label: "Skills list",
       status: "VERIFIED",
       statusReason: `${skills.length} Space/Codex skills are visible through mediated reads.`,
-      execution: forceOnForChat(pane.mode),
+      execution: forceOnForChat(),
       requiresApproval: false
     },
     {
@@ -82,7 +82,7 @@ async function buildPaneCapabilityMatrix(store: SpaceStore, pane: Pane): Promise
       label: "Skills read",
       status: "VERIFIED",
       statusReason: "Verified bounded skill bodies are readable without exposing raw config.",
-      execution: forceOnForChat(pane.mode),
+      execution: forceOnForChat(),
       requiresApproval: false
     }
   ];
@@ -315,7 +315,7 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
       })) {
         try {
           await mkdir(cwd, { recursive: true, mode: 0o775 });
-        } catch {}
+        } catch { /* Best-effort: pane creation goes on without the folder, as before. */ }
       }
     }
     const pane = await store.createPane(input, request.requestIdForSpace);

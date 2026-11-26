@@ -95,7 +95,7 @@ export function YouTubeNativePlayer({
         playing.current = true;
         onPlayingChange?.(true);
         if (playbackKey) {
-          try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: true, savedAt: Date.now() })); } catch {}
+          try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: true, savedAt: Date.now() })); } catch { /* storage blocked: playback is not resumed after a reload */ }
         }
         activePlayer.current.playVideo();
       },
@@ -104,7 +104,7 @@ export function YouTubeNativePlayer({
         playing.current = false;
         onPlayingChange?.(false);
         if (playbackKey) {
-          try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: false, savedAt: Date.now() })); } catch {}
+          try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: false, savedAt: Date.now() })); } catch { /* storage blocked: playback is not resumed after a reload */ }
         }
         activePlayer.current.pauseVideo();
       },
@@ -114,14 +114,14 @@ export function YouTubeNativePlayer({
           playing.current = false;
           onPlayingChange?.(false);
           if (playbackKey) {
-            try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: false, savedAt: Date.now() })); } catch {}
+            try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: false, savedAt: Date.now() })); } catch { /* storage blocked: playback is not resumed after a reload */ }
           }
           activePlayer.current.pauseVideo();
         } else {
           playing.current = true;
           onPlayingChange?.(true);
           if (playbackKey) {
-            try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: true, savedAt: Date.now() })); } catch {}
+            try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: true, savedAt: Date.now() })); } catch { /* storage blocked: playback is not resumed after a reload */ }
           }
           activePlayer.current.playVideo();
         }
@@ -207,9 +207,9 @@ export function YouTubeNativePlayer({
     const onVisibility = () => { if (document.hidden) save(); };
     document.addEventListener('visibilitychange', onVisibility);
     const handlePageUnload = () => {
-      try { save(); } catch {}
+      try { save(); } catch { /* the page is unloading: a lost position is not recoverable */ }
       if (!playbackKey) return;
-      try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: playing.current, savedAt: Date.now() })); } catch {}
+      try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: playing.current, savedAt: Date.now() })); } catch { /* storage blocked: playback is not resumed after a reload */ }
     };
     window.addEventListener('pagehide', handlePageUnload);
     window.addEventListener('beforeunload', handlePageUnload);
@@ -231,7 +231,7 @@ export function YouTubeNativePlayer({
             playerReadyRef.current = true;
             activePlayer.current = player;
             player?.setVolume(getSpaceVolume() * 100);
-            try { player?.setLoop?.(true); } catch {}
+            try { player?.setLoop?.(true); } catch { /* player without loop support: plays once */ }
             setReady(true);
             const shouldPlay = autoPlay || pendingReload.current;
             pendingReload.current = false;
@@ -241,14 +241,14 @@ export function YouTubeNativePlayer({
               playing.current = true;
               onPlayingChange?.(true);
               if (playbackKey) {
-                try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: true, savedAt: Date.now() })); } catch {}
+                try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: true, savedAt: Date.now() })); } catch { /* storage blocked: playback is not resumed after a reload */ }
               }
             } else {
               player?.pauseVideo();
               playing.current = false;
               onPlayingChange?.(false);
               if (playbackKey) {
-                try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: false, savedAt: Date.now() })); } catch {}
+                try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: false, savedAt: Date.now() })); } catch { /* storage blocked: playback is not resumed after a reload */ }
               }
             }
             save();
@@ -260,14 +260,14 @@ export function YouTubeNativePlayer({
               playing.current = true;
               onPlayingChange?.(true);
               if (playbackKey) {
-                try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: true, savedAt: Date.now() })); } catch {}
+                try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: true, savedAt: Date.now() })); } catch { /* storage blocked: playback is not resumed after a reload */ }
               }
             }
             if (event.data === 0 || event.data === 2) {
               playing.current = false;
               onPlayingChange?.(false);
               if (playbackKey) {
-                try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: false, savedAt: Date.now() })); } catch {}
+                try { sessionStorage.setItem(playbackKey + ':reload', JSON.stringify({ playing: false, savedAt: Date.now() })); } catch { /* storage blocked: playback is not resumed after a reload */ }
               }
             }
             if (event.data === 0) {

@@ -87,7 +87,17 @@ export function sanitizeControlExecute(raw:unknown):unknown{
      act.input=inputObj;
     }
    }
-    if(act.kind==="resource"&&act.operation==="panes.move"&&!act.id&&typeof (act.input as Record<string,unknown>|undefined)?.paneId==="string")act.id=(act.input as Record<string,unknown>).paneId;
+    if(act.kind==="resource"){
+     const inputObj=act.input&&typeof act.input==="object"?{...(act.input as Record<string,unknown>)}:{};
+     for(const key of ["artifactId","paneId","path"] as const){
+      if(typeof act[key]==="string"){if(inputObj[key]===undefined)inputObj[key]=act[key];delete act[key];}
+     }
+     if(!act.id){
+      const rawId=act.operation==="panes.move"?inputObj.paneId:act.operation==="files.preview"||act.operation==="files.delete"||act.operation==="media.delete"?(inputObj.id??inputObj.artifactId??inputObj.path):undefined;
+      if(typeof rawId==="string"&&rawId.trim())act.id=(/artifact:[A-Za-z0-9_-]{1,80}(?![A-Za-z0-9_-])/.exec(rawId)?.[0]??rawId).trim();
+     }
+     if(act.input||Object.keys(inputObj).length)act.input=inputObj;
+    }
     if(act.kind==="resource"&&act.operation==="ui.scale"&&act.input&&typeof act.input==="object"){
      const inputObj={...(act.input as Record<string,unknown>)};
      if(typeof inputObj.scale==="number"&&!inputObj.zoomLevel)inputObj.zoomLevel=inputObj.scale;
@@ -130,7 +140,7 @@ export function registerSpaceControlRoutes(app:FastifyInstance,control:ReturnTyp
    case "space_test_mcp_tools":{const p=controlToolSchemas.space_test_mcp_tools.parse(raw);return control.testMcpTools(user,p.roomId,p);}
     case "space_list_mcp_tools":{const p=controlToolSchemas.space_list_mcp_tools.parse(raw);return control.listMcpTools(p.category);}
     case "space_describe_pane_types":{const p=controlToolSchemas.space_describe_pane_types.parse(raw);return control.describePaneTypes(p.roomId);}
-   case "space_debug":{const p=controlToolSchemas.space_debug.parse(raw);return control.runDebug(user,p.roomId,p.operation,p.paneId,p.query);}
+   case "space_debug":{const p=controlToolSchemas.space_debug.parse(raw);return control.runDebug(user,p.roomId,p.operation,p.paneId);}
    default:throw new SpaceConflictError("Unknown Space control tool.");
   }
  }
@@ -141,7 +151,7 @@ export function registerSpaceControlRoutes(app:FastifyInstance,control:ReturnTyp
  app.post("/api/control/v1/test-tools",async request=>{const user=await actor(request);const p=controlToolSchemas.space_test_mcp_tools.parse(request.body);return control.testMcpTools(user,p.roomId,p);});
   app.get("/api/control/v1/tools",async request=>{await actor(request);const p=controlToolSchemas.space_list_mcp_tools.parse(request.query);return control.listMcpTools(p.category);});
   app.get("/api/control/v1/pane-types",async request=>{await actor(request);const p=controlToolSchemas.space_describe_pane_types.parse(request.query);return control.describePaneTypes(p.roomId);});
- app.post("/api/control/v1/debug",async request=>{const user=await actor(request);const p=controlToolSchemas.space_debug.parse(request.body);return control.runDebug(user,p.roomId,p.operation,p.paneId,p.query);});
+ app.post("/api/control/v1/debug",async request=>{const user=await actor(request);const p=controlToolSchemas.space_debug.parse(request.body);return control.runDebug(user,p.roomId,p.operation,p.paneId);});
  app.post("/api/control/v1/operations",async request=>call(await actor(request),"space_operations",request.body));
  app.post("/api/control/v1/schedules",async request=>call(await actor(request),"space_schedules",request.body));
   app.post("/api/control/v1/watches",async request=>call(await actor(request),"space_watches",request.body));
@@ -162,7 +172,10 @@ export function registerSpaceControlRoutes(app:FastifyInstance,control:ReturnTyp
    else if(p.method==="tools/call"){const args=z.object({name:z.string(),arguments:z.unknown().optional()}).parse(p.params);const cliRoom=options?.cliRoom(request);const callArguments=cliRoom?cliRoomArguments(args.name,args.arguments,cliRoom):args.arguments;const data=await call(user,args.name,callArguments??{},request.requestIdForSpace);const structuredContent=data!==null&&typeof data==="object"&&!Array.isArray(data)?data:{data};result={content:[{type:"text",text:JSON.stringify(structuredContent)}],structuredContent,isError:["FAILED","PARTIAL","UNKNOWN","CANCELLED"].includes((data as {status?:string})?.status??"")};}
    else return {jsonrpc:"2.0",id:p.id,error:{code:-32601,message:"Method not found"}};
    return {jsonrpc:"2.0",id:p.id,result};
-  }catch(error){return {jsonrpc:"2.0",id:p.id,error:{code:-32602,message:error instanceof SpaceConflictError?error.message:"Invalid Space control arguments."}};}
+  }catch(error){return {jsonrpc:"2.0",id:p.id,error:{code:-32602,message:error instanceof SpaceConflictError?error.message
+   // 16/11 (Cleo/Andy's close without requestId): a schema miss names its fields, so the caller can fix the call.
+   :error instanceof z.ZodError?`Invalid Space control arguments: ${error.issues.map(i=>`${i.path.join(".")||"arguments"}: ${i.message}`).join("; ")}`
+   :"Invalid Space control arguments."}};}
  };
   const mcpRateLimitOptions = {
   config: {
@@ -203,7 +216,7 @@ export function registerSpaceControlRoutes(app:FastifyInstance,control:ReturnTyp
   const poll = async () => {
    while (!closed) {
     try {
-     const op = await control.operations(user, roomId, id) as any;
+     const op = await control.operations(user, roomId, id) as { status: string };
      sendEvent("telemetry", op);
      if (["COMPLETED", "PARTIAL", "FAILED", "CANCELLED", "UNKNOWN"].includes(op?.status)) {
       sendEvent("done", { status: op.status });

@@ -519,7 +519,7 @@ export function createDesignService(options: DesignServiceOptions) {
     /** A request from the operator, a CLI pane, Nous, a Dot or Marketing Copilot, routed to a Design pane of the owner's rooms. */
     async createRequest(owner: string, requester: DesignRequester, raw: DesignRequestCreate) {
       const input = designRequestCreateSchema.parse(raw);
-      let pane: Pane | null = null;
+      let pane: Pane | null;
       if (input.designPaneId) {
         pane = await paneOrNull(input.designPaneId);
         if (!pane || pane.mode !== "DESIGN" || pane.isClosed || await options.roomOwner(pane.roomId) !== owner) throw new SpaceNotFoundError(`Design pane ${input.designPaneId} was not found in your rooms.`);

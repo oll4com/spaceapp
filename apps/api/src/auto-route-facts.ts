@@ -17,7 +17,7 @@ function fileCache() {
     try { mtimeMs = (await stat(path)).mtimeMs; } catch { return null; }
     const hit = cache.get(path);
     if (hit?.mtimeMs === mtimeMs) return hit.value as T | null;
-    let value: T | null = null;
+    let value: T | null;
     try { value = parse(await readFile(path, "utf8")); } catch { value = null; }
     cache.set(path, { mtimeMs, value });
     return value;

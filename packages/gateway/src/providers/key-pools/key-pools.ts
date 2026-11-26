@@ -81,7 +81,8 @@ const stringsOf = (list: Record<string, unknown>[] | null, key: string) => list?
  *   headers, a stream has no cap). Some catalog models are end of life and answer 410 (a per-model refusal, never the key's fault).
  * - Cloudflare Workers AI: 10,000 neurons a day, reset at 00:00 UTC; the key is `<32-hex account id>:<API token>`.
  * - Gemini API free tier (6/11, goal d844e0cc): Flash models only (gemini-3-flash-preview, 3.1-flash-lite, 3.5-flash answered 200; Pro has no
- *   free quota, 2.5 is closed to new keys), through Google's OpenAI-compatible endpoint, which takes AI Studio's `AIza…` and `AQ.…` keys as Bearer.
+ *   free quota, 2.5 is closed to new keys; 17/11: no Pro request ever reached the key in the logs, so Pro chat goes to the Antigravity pool, the
+ *   rest of Pro is refused), through Google's OpenAI-compatible endpoint, which takes AI Studio's `AIza…` and `AQ.…` keys as Bearer.
  *   shortcut: Gemini's 429 is per model but cools the whole key, move to per-model cooldowns when Gemini carries real traffic.
  * - Adaption Labs (6/11): 1,500 granted credits (1 credit = $1, never expire, no card on file), vLLM behind an OpenAI-compatible API; on 6/11
  *   deepseek-v4-flash answered in under a second, glm-5.2 timed out (504 after 60 s).
@@ -290,6 +291,8 @@ export function registerKeyPoolRoutes(app: FastifyInstance, helpers: GatewayRout
   fetchImpl?: typeof fetch; now?: () => number; maxAccountAttempts?: number; baseUrls?: Partial<Record<KeyPoolSlug, string>>;
   settleKeyUsage?: (keyId: string, usage: { inputTokens: number; outputTokens: number; costMicros: number; model: string | null; at: string }) => Promise<void>;
   checks?: ModelChecks; internalToken?: string | null;
+  /** Gemini Pro's chat on the Antigravity pool (images-route.ts); without it the GOOGLE_AI pool refuses Pro. */
+  geminiProChat?: (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
   /** The credit grants (GATEWAY_FREE_GRANTS) and what a provider has spent since a day (the gateway's daily sums); without them a credit pool refuses. */
   grants?: Partial<Record<GatewayProvider, GatewayFreeGrant>>; creditSpent?: (provider: GatewayProvider, sinceDay: string) => Promise<number>;
 }) {
@@ -395,6 +398,11 @@ export function registerKeyPoolRoutes(app: FastifyInstance, helpers: GatewayRout
     if (key.enforcedModel) body.model = key.enforcedModel;
     const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : null;
     if (!model) return reply.code(400).send(gatewayError("invalid_request", "Missing required field: model.", "invalid_request_error"));
+    // The AI Studio key has no free Pro quota (logs 17/11) and no card may pay for one: Pro never reaches it, chat falls back to Antigravity.
+    if (entry.provider === "GOOGLE_AI" && /-pro(?:-|$)/.test(model)) {
+      if (path === "chat/completions" && options.geminiProChat) return options.geminiProChat(request, reply);
+      return reply.code(403).send(gatewayError("model_not_free", `${entry.label} has no free Gemini Pro; Pro runs on the Antigravity pool through /pools/gemini/v1/chat/completions only.`, "invalid_request_error"));
+    }
     // A fast-mode `speed` has no list price for every model, so a credit pool takes standard speed only.
     if (entry.fixedModels && (!entry.fixedModels.includes(model) || body.speed !== undefined)) {
       return reply.code(400).send(gatewayError("model_not_listed", `${entry.label} sends only ${entry.fixedModels.join(", ")}, at standard speed.`, "invalid_request_error"));
@@ -557,6 +565,71 @@ export function registerKeyPoolRoutes(app: FastifyInstance, helpers: GatewayRout
   app.post("/pools/:provider/v1/rerank", (request, reply) => forward(request, reply, "rerank"));
   // The Claude pools' Anthropic Messages API (Bedrock, Vertex).
   app.post("/pools/:provider/v1/messages", (request, reply) => forward(request, reply, "messages"));
+  /**
+   * Nous Live's realtime voice (plan clipboard:f5TgJ4IIJF1m, nous_msg:7f739948): a one-use Gemini Live token minted with the pool's next key,
+   * the caller's setup (model, voice, system prompt, tools) locked inside it, so the phone talks to Google directly and no key leaves the gateway.
+   */
+  app.post("/pools/:provider/v1/live/token", async (request, reply) => {
+    if (!(await helpers.authenticate(request, reply))) return reply;
+    const target = poolFor(request, reply);
+    if (!target) return reply;
+    const { entry, pool } = target;
+    if (entry.provider !== "GOOGLE_AI") return reply.code(404).send(gatewayError("unknown_route", `${entry.label}'s pool has no live tokens.`, "invalid_request_error"));
+    const setup = (request.body as { setup?: unknown } | null)?.setup;
+    const model = setup && typeof setup === "object" && !Array.isArray(setup) && typeof (setup as { model?: unknown }).model === "string"
+      ? (setup as { model: string }).model.replace(/^models\//, "") : "";
+    if (!model) return reply.code(400).send(gatewayError("invalid_request", "A setup object with its model is required.", "invalid_request_error"));
+    const key = request.gatewayApiKey!;
+    const startedAt = now();
+    try {
+      if (key.allowedModels.length > 0 && !key.allowedModels.includes(model)) {
+        throw new PolicyRejection(403, gatewayError("model_not_allowed", `This API key does not have access to model '${model}'`, "invalid_request_error"));
+      }
+      checkKeyLimits(key, model, new Date(startedAt).toISOString());
+    } catch (error) {
+      if (error instanceof PolicyRejection) return reply.code(error.statusCode).send(error.envelope);
+      throw error;
+    }
+    const origin = new URL(target.baseUrl).origin;
+    const log = (account: GatewayAccountRecord | null, status: "success" | "error", errorCode: string | null) => options.logs.add({
+      requestId: request.id, requestedAt: new Date(startedAt).toISOString(), provider: entry.provider, accountId: account?.id ?? null, apiKeyId: key.id, model,
+      reasoningEffort: null, serviceTier: null, transport: "http", upstreamTransport: "websocket", status, errorCode, latencyMs: now() - startedAt, firstTokenMs: null,
+      inputTokens: null, cachedInputTokens: null, outputTokens: null, reasoningTokens: null, costUsd: null, compressionTokensSaved: null, stickyKind: null,
+      stickyKeyHash: null, ...requestOrigin(request) });
+    const settings = await options.settings();
+    const scope = key.accountScopeEnabled ? new Set(key.accountIds) : null;
+    const tried = new Set<string>();
+    let last: { status: number; text: string } | null = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const account = await nextAccount(pool, settings, scope, tried);
+      if (!account) break;
+      tried.add(account.id);
+      // Technical: the token opens one session within a minute and lives 30 minutes (Google's default and limit for a Live session's token).
+      const minted = await pool.credentials(account).then((credentials) => fetchImpl(`${origin}/v1alpha/auth_tokens`, { method: "POST", signal: AbortSignal.timeout(10_000),
+        headers: { "x-goog-api-key": credentials.accessToken, "content-type": "application/json" },
+        body: JSON.stringify({ uses: 1, expireTime: new Date(startedAt + 30 * 60_000).toISOString(), newSessionExpireTime: new Date(startedAt + 60_000).toISOString(),
+          bidiGenerateContentSetup: setup }) })).catch(() => null);
+      if (!minted) { pool.markTransientError(account.id); last = { status: 502, text: JSON.stringify(gatewayError("upstream_unavailable", `${entry.label} is unreachable.`)) }; continue; }
+      const text = await readBounded(minted);
+      if (!minted.ok) {
+        last = { status: minted.status, text };
+        if (await recordFailure(entry, pool, account, minted.status, text, minted.headers.get("retry-after"))) continue;
+        break;
+      }
+      let token = "";
+      try { token = String((JSON.parse(text) as { name?: unknown }).name ?? ""); } catch { /* checked below */ }
+      if (!token) { last = { status: 502, text: JSON.stringify(gatewayError("upstream_invalid", `${entry.label} answered no token.`)) }; break; }
+      void pool.markSuccess(account.id).catch(() => undefined);
+      void pool.touch(account.id, new Date(startedAt).toISOString()).catch(() => undefined);
+      log(account, "success", null);
+      return { token, model, expiresAt: new Date(startedAt + 30 * 60_000).toISOString(),
+        websocketUrl: `${origin.replace(/^http/, "ws")}/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token=${encodeURIComponent(token)}` };
+    }
+    log(null, "error", last ? `http_${last.status}` : "no_accounts");
+    if (last) return reply.code(last.status).header("content-type", "application/json").send(last.text);
+    return reply.code(503).send(gatewayErrors.noAccounts());
+  });
+
   // Every pool's supported models through its first active key (the Gateway accounts view and the Nous programs rows; the API caches them).
   const guard = createAdminGuard(options.internalToken ?? null);
   app.post("/__space-gateway/admin/pool-models", async (request, reply) => {

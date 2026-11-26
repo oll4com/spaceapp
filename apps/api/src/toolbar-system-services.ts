@@ -183,6 +183,7 @@ function roundedPercent(numerator: number, denominator: number): number {
 }
 
 function safeProcessName(value: string): string {
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point
   const sanitized = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
   return (sanitized || "unknown").slice(0, 120);
 }

@@ -31,9 +31,13 @@ export class YouTubePlaybackStore {
         try {
           const content = JSON.parse(await readFile(join(this.root, file), 'utf8'));
           if (content?.panes?.[paneId]) return content.panes[paneId];
-        } catch {}
+        } catch {
+          // An unreadable or half-written state file is skipped; the next file may hold the pane.
+        }
       }
-    } catch {}
+    } catch {
+      // Never throws to the caller: a failed lookup means no saved playback.
+    }
     return null;
   }
   async removeProofState(userId: string) {

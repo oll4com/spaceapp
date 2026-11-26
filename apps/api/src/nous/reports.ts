@@ -126,6 +126,17 @@ export function startedOf(text: string | undefined, now: number): string | null 
   return new Date(at > now ? Date.UTC(year - 1, month - 1, day) : at).toISOString();
 }
 
+/**
+ * The Crypto row of the Score's Big projects: PASS of the methods tested to a PASS or FAIL. INSUFFICIENT is no result, so not a failure; and a final
+ * table with nothing pending is a finished project with no row, so it costs nothing (Nous 14/11 nous_msg:832a500e: 0/129 cost −20 for good).
+ */
+export function cryptoProject(report: Pick<NousCryptoReport, "source" | "rows" | "verdicts"> | null, now: number) {
+  if (!report || (report.source?.final && !report.verdicts.PENDING)) return null;
+  const tested = report.rows.filter((row) => row.verdict === "PASS" || row.verdict === "FAIL");
+  return tested.length ? { name: "Crypto methods", succeeded: tested.filter((row) => row.verdict === "PASS").length, tried: tested.length, what: "tested passed",
+    since: tested.map((row) => startedOf(row.registry?.started, now)).filter((day): day is string => !!day).sort()[0] ?? null } : null;
+}
+
 /** `dir` null: no table (another account than the operator's). */
 export async function readCryptoReport(dir: string | null): Promise<NousCryptoReport> {
   for (const table of dir ? NOUS_CRYPTO_TABLES : []) {

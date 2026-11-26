@@ -57,11 +57,11 @@ export function RoomAgentComposer({ composerRef, draft, onDraftChange, onSubmit,
     greekInputStateRef.current.enabled = mode === "el";
     if (mode) {
       try {
-        const desktop = (window as any).spaceDesktop;
+        const desktop = (window as unknown as { spaceDesktop?: { switchKeyboardLayout?: (mode: string) => Promise<unknown> } }).spaceDesktop;
         if (typeof desktop?.switchKeyboardLayout === "function") {
           desktop.switchKeyboardLayout(mode).catch(() => {});
         }
-      } catch {}
+      } catch { /* No desktop bridge: the in-page layout mode above still applies. */ }
     }
   }, []);
 

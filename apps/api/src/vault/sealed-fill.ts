@@ -1,13 +1,16 @@
+import jsqr from "jsqr";
 import {
-  canonicalVaultOrigin, decodeVaultBase32, isVaultCardRole, generateVaultPassword, generateVaultTransportKey, openWithVaultPrivateKey, sealToVaultPublicKey, vaultPolicyConstraints,
-  vaultBase64url, vaultHostFillRequestSchema, vaultHostSignupRequestSchema, vaultTotp, wipeVaultBytes, type VaultGeneratePolicy, type VaultHostFillResult, type VaultHostTarget,
+  canonicalVaultOrigin, isVaultCardRole, parseVaultOtp, generateVaultPassword, generateVaultTransportKey, openWithVaultPrivateKey, sealToVaultPublicKey, vaultPolicyConstraints,
+  vaultBase64url, vaultHostFillRequestSchema, vaultHostOtpQrRequestSchema, vaultHostSignupRequestSchema, vaultOtpStoredValue, vaultTotp, wipeVaultBytes, type VaultGeneratePolicy, type VaultHostFillResult, type VaultHostTarget,
   type VaultTransportEnvelope, type VaultUseClaims
 } from "@space/contracts";
+import { pngPixels } from "./png-pixels.js";
 
 // The Browser Host's sealed fill (plan clipboard:vEYtT6-bEN0J step 3, ADR-012). Runs in the Browser Host process only.
 // The agent supplies nothing here: the capability is broker-signed and bound to this pane, target, frame and exact
 // origin; the fields are found by fixed scripts in an isolated world (page scripts cannot patch them); the value enters
-// the page only through Input.insertText; every step re-checks the live page; the answer is a status and a reason code.
+// the page only through Input.insertText (a card expiry kept in a native <select> is chosen by option in the isolated world);
+// every step re-checks the live page; the answer is a status and a reason code.
 // shortcut: JavaScript strings cannot be wiped; plaintext lives in this call's locals only and is never logged or returned.
 
 export interface SealedFillCdp {
@@ -49,14 +52,17 @@ export function signupField(field: { minLength: number | null; maxLength: number
     ...(policy.symbols !== undefined || policy.requireEachClass !== undefined ? { symbols: merged.base.symbols, requireEachClass: merged.base.requireEachClass } : {}) };
 }
 /** `present`: a probe that also finds a box the page keeps disabled or read-only for now. */
-type FieldAction = "probe" | "present" | "focus" | "check" | "clear" | "submit";
+type FieldAction = "probe" | "present" | "focus" | "check" | "clear" | "submit" | "select";
 
-/** One fixed script per action: the role, action and expected length are the only inputs, all chosen here. */
-export function vaultFieldScript(role: Role, action: FieldAction, expectLength = 0): string {
+/** One fixed script per action: the role, action, expected length and (select) the expiry part are the only inputs, all chosen here. */
+export function vaultFieldScript(role: Role, action: FieldAction, expectLength = 0, selectValue = ""): string {
   return `(() => {
-  const role = ${JSON.stringify(role)}, action = ${JSON.stringify(action)}, expectLength = ${Number(expectLength) | 0};
+  const role = ${JSON.stringify(role)}, action = ${JSON.stringify(action)}, expectLength = ${Number(expectLength) | 0}, selectValue = ${JSON.stringify(selectValue)};
+  // An autofill trap is no field: Huawei Cloud's sign-up keeps a username and password, tabindex -1, in an aria-hidden box before
+  // the real ones, and the generated password went there instead of Confirm password (16/11).
+  const trap = (el) => el.getAttribute("tabindex") === "-1" && el.closest('[aria-hidden="true"]');
   const usable = (el) => { const box = el.getBoundingClientRect(); const style = getComputedStyle(el);
-    return box.width > 0 && box.height > 0 && style.visibility !== "hidden" && style.display !== "none" && (action === "present" || (!el.disabled && !el.readOnly)); };
+    return box.width > 0 && box.height > 0 && style.visibility !== "hidden" && style.display !== "none" && !trap(el) && (action === "present" || (!el.disabled && !el.readOnly)); };
   // Open shadow roots too (Reddit's login keeps its inputs in <faceplate-text-input>, 13/11); the document's own fields come first.
   const roots = [document];
   for (let i = 0; i < roots.length; i++) roots[i].querySelectorAll("*").forEach((node) => { if (node.shadowRoot) roots.push(node.shadowRoot); });
@@ -65,7 +71,22 @@ export function vaultFieldScript(role: Role, action: FieldAction, expectLength =
   // A field in a shadow root belongs to no form; its form is the one around its host.
   const formOf = (node) => { if (node.form) return node.form; for (let host = node.getRootNode().host; host; host = host.getRootNode().host) { const form = host.form || host.closest("form"); if (form) return form; } return null; };
   const named = (el, pattern) => pattern.test(String(el.name) + " " + String(el.id));
-  const passwords = pick('input[type="password"]');
+  const findById = (id) => { for (const root of roots) if (root.getElementById) { const hit = root.getElementById(id); if (hit) return hit; } return null; };
+  const described = (el) => {
+    const ariaRefs = String(el.getAttribute("aria-labelledby") || "").trim().split(/\\s+/).filter(Boolean).map((id) => findById(id)?.textContent || "").join(" ");
+    const labels = (el.labels ? Array.from(el.labels) : []).map((node) => node.textContent || "").join(" ");
+    const wrapped = el.closest("label")?.textContent || "";
+    return [el.name, el.id, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("title"), ariaRefs, labels, wrapped]
+      .filter(Boolean).join(" ");
+  };
+  const dialogOf = (node) => {
+    for (let cur = node; cur; cur = cur.parentNode || cur.host) {
+      if (cur.nodeType === 1 && cur.matches('[role="dialog"],[aria-modal="true"],dialog')) return cur;
+    }
+    return null;
+  };
+  // A password box a placeholder script or show-password toggle made type=text is still one (YeahPromos's inputholder, 14/11).
+  const passwords = pick('input[type="password"],input[type="text"]').filter((el) => el.type === "password" || (named(el, /pass(word|wd)|pwd/i) && !named(el, /user|mail|hint/i)));
   const fresh = passwords.filter((el) => /\\bnew-password\\b/.test(el.autocomplete));
   // A login secret a site keeps in a visible text field (timologio's SubscriptionKey): only with no password field, exactly one
   // field named for a secret, never a username, mail, VAT or one-time-code field.
@@ -82,29 +103,83 @@ export function vaultFieldScript(role: Role, action: FieldAction, expectLength =
   else if (role === "CONFIRM_PASSWORD") { const first = fresh[0] || passwords[0];
     // The retype field: the next password field after the new one in its form, never the new field itself.
     el = (fresh.length > 1 ? fresh[1] : first && passwords.slice(passwords.indexOf(first) + 1).find((candidate) => formOf(candidate) === formOf(first))) || null; }
-  else if (role === "OTP") el = pick('input[autocomplete~="one-time-code"]')[0]
-    || pick('input:not([type="password"])').find((candidate) => named(candidate, /otp|totp|2fa|mfa|verification|code/i)) || null;
+  else if (role === "OTP") {
+    const otpInputs = pick('input:not([type="password"])').filter((candidate) => /^(text|tel|number)$/i.test(candidate.type));
+    const excluded = (candidate) => /search|filter|query|find|postal|zip|promo|coupon|discount|referral|country|area|αναζήτ/i.test(described(candidate));
+    const isNumericOtp = (candidate) => candidate.getAttribute("inputmode") === "numeric" || candidate.maxLength === 6 || candidate.maxLength === 8
+      || /\\d\\{[68]\\}|\\[0-9\\]\\{[68]\\}/.test(candidate.getAttribute("pattern") || "");
+    const dialogMatches = new Map();
+    const dialogNumeric = [];
+    for (const candidate of otpInputs) {
+      const dialog = !excluded(candidate) ? dialogOf(candidate) : null;
+      if (!dialog) continue;
+      const list = dialogMatches.get(dialog) || [];
+      list.push(candidate);
+      dialogMatches.set(dialog, list);
+      if (isNumericOtp(candidate)) dialogNumeric.push(candidate);
+    }
+    const soleDialogInput = Array.from(dialogMatches.values()).reverse().find((list) => list.length === 1)?.[0] || null;
+    const matches = [pick('input[autocomplete~="one-time-code"]'),
+      otpInputs.filter((candidate) => named(candidate, /otp|totp|2fa|mfa|verification|one.?time|passcode|pin.?code|code/i)),
+      otpInputs.filter((candidate) => !excluded(candidate) && /otp|totp|2fa|mfa|verification|one.?time|authenticator|6.?digit|passcode|security.?code|\\bcode\\b|κωδικ/i.test(described(candidate))),
+      dialogNumeric,
+      soleDialogInput ? [soleDialogInput] : [],
+      otpInputs.filter((candidate) => !excluded(candidate) && candidate.getAttribute("inputmode") === "numeric" && (candidate.maxLength === 6 || candidate.maxLength === 8)),
+    ].find((list) => list.length) || [];
+    // Two code boxes (AWS virtual MFA enrolment wants two consecutive codes, 19/11: both fills went into box 1): a fill types into
+    // the first empty box, and its check and scrub stay on the box it just typed (still focused).
+    const active = focused();
+    el = ((action === "check" || action === "clear") && matches.includes(active) ? active : null) || matches.find((candidate) => !candidate.value) || matches[0] || null;
+  }
   // Card fields: the autocomplete token payment forms and frames (Stripe, Adyen, Braintree, Checkout.com) set, else the box's name.
-  // shortcut: an expiry in <select> boxes is not found (FIELD_NOT_FOUND); add option picking when a checkout needs it.
   const card = (token, pattern, not) => pick('input[autocomplete~="' + token + '"]')[0] || pick('input:not([type]),input[type="text"],input[type="tel"],input[type="number"],input[type="password"]')
     .find((candidate) => named(candidate, pattern) && !(not && named(candidate, not))) || null;
+  // An expiry in native <select> boxes (Azure sign-up step 3, FIELD_NOT_FOUND 18/11): its token, else its label or placeholder option.
+  const cardSelect = (token, pattern) => pick('select[autocomplete~="' + token + '"]')[0]
+    || pick("select").find((candidate) => { const text = described(candidate) + " " + (candidate.options[0]?.text || ""); return pattern.test(text) && !/birth|\\bdob\\b/i.test(text); }) || null;
   if (role === "CARD_NUMBER") el = card("cc-number", /card.?(number|num\\b|no\\b)|cc.?(number|num\\b)/i);
   else if (role === "CARD_EXPIRY") el = card("cc-exp", /expir|exp.?date|cc.?exp/i, /month|year|\\bmm\\b|\\byy/i);
-  else if (role === "CARD_EXPIRY_MONTH") el = card("cc-exp-month", /exp.*(month|\\bmm\\b)/i);
-  else if (role === "CARD_EXPIRY_YEAR") el = card("cc-exp-year", /exp.*(year|\\byy)/i);
+  else if (role === "CARD_EXPIRY_MONTH") el = card("cc-exp-month", /exp.*(month|\\bmm\\b)/i) || cardSelect("cc-exp-month", /month|\\bmm\\b/i);
+  else if (role === "CARD_EXPIRY_YEAR") el = card("cc-exp-year", /exp.*(year|\\byy)/i) || cardSelect("cc-exp-year", /year|\\byy/i);
   else if (role === "CARD_CVC") el = card("cc-csc", /cvc|cvv|csc|security.?code|card.?code/i);
   else if (role === "CARDHOLDER_NAME") el = card("cc-name", /card.?holder|holder.?name|name.?on.?card|cc.?name/i);
   if (!el) return { found: false };
-  if (action === "focus") { el.focus(); if (typeof el.select === "function") el.select(); return { found: true, focused: focused() === el && document.hasFocus() }; }
-  if (action === "check") return { found: true, filled: (${DIGIT_ROLES}.test(role) ? el.value.replace(/\\D/g, "") : el.value).length === expectLength };
-  if (action === "clear") { el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return { found: true }; }
-  if (action === "submit") { const form = formOf(el); if (!form) return { found: true, form: false };
+  const isSelect = el.tagName === "SELECT";
+  // Typed masked: the page's own script would turn it back to password only on change.
+  if (action === "focus") { if (el.type === "text" && passwords.includes(el)) el.type = "password"; el.focus(); if (typeof el.select === "function") el.select(); return { found: true, isSelect, focused: focused() === el && document.hasFocus() }; }
+  if (action === "select") {
+    if (!isSelect) return { found: true, selected: false };
+    // The option for the stored month ("07": value 7 or 07, "07 - July", "Jul") or year ("2028": value 2028 or 28, "'28").
+    const options = Array.from(el.options).filter((o) => !o.disabled && o.value !== "" && !/^(month|year|mm|yy|select)/i.test(o.text.trim()));
+    const text = (o) => o.text.trim();
+    let tests;
+    if (role === "CARD_EXPIRY_MONTH") {
+      const n = parseInt(selectValue, 10), mm = String(n).padStart(2, "0"), m = String(n);
+      const name = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"][n - 1] || "\\u0000";
+      tests = [(o) => o.value === mm || o.value === m, (o) => text(o) === mm || text(o) === m, (o) => new RegExp("^0?" + m + "(\\\\D|$)").test(text(o)),
+        (o) => text(o).toLowerCase().includes(name.slice(0, 3))];
+    } else {
+      const yy = selectValue.slice(-2), yyyy = "20" + yy;
+      tests = [(o) => o.value === yyyy || o.value === yy, (o) => text(o) === yyyy || text(o) === yy || text(o) === "'" + yy, (o) => text(o).startsWith(yyyy)];
+    }
+    let match = null;
+    for (const test of tests) { match = options.find(test) || null; if (match) break; }
+    if (!match) return { found: true, selected: false };
+    el.selectedIndex = Array.from(el.options).indexOf(match);
+    el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { found: true, selected: true }; }
+  if (action === "check") return { found: true, filled: isSelect ? el.selectedIndex >= 0 && el.value !== "" : (${DIGIT_ROLES}.test(role) ? el.value.replace(/\\D/g, "") : el.value).length === expectLength };
+  if (action === "clear") { if (isSelect) el.selectedIndex = 0; else el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); if (isSelect) el.dispatchEvent(new Event("change", { bubbles: true })); return { found: true }; }
+  if (action === "submit") { const form = formOf(el);
+    // A code box in a modal with no <form> (Braintrust's 2FA dialogs, 20/11): Enter does nothing there, its one confirm button submits.
+    const dialog = form ? null : el.closest('dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"]');
+    if (!form && !dialog) return { found: true, form: false };
     // Enter does nothing in a form with no submit button (DCMnetwork's "Log In" is an <input type="button"> with an onclick, 13/11):
     // a person clicks its one sign-in button there; none or several is left to the agent.
-    const controls = Array.from(form.elements);
-    if (!controls.some((c) => /^(submit|image)$/.test(c.type) && !c.disabled)) {
-      const buttons = controls.filter((c) => c.type === "button" && usable(c)
-        && /^\\s*(log ?in|sign ?(in|on|up)|register|create|join|submit|continue|next|save|change|update|confirm|σύνδεσ|είσοδ|εγγραφ)/i.test(c.value || c.textContent || c.getAttribute("aria-label") || ""));
+    const controls = form ? Array.from(form.elements) : Array.from(dialog.querySelectorAll("button, input"));
+    if (dialog || !controls.some((c) => /^(submit|image)$/.test(c.type) && !c.disabled)) {
+      const buttons = controls.filter((c) => (c.type === "button" || (dialog && c.type === "submit")) && usable(c)
+        && /^\\s*(log ?in|sign ?(in|on|up)|register|create|join|submit|continue|next|save|change|update|confirm|verify|επαλήθευσ|σύνδεσ|είσοδ|εγγραφ)/i.test(c.value || c.textContent || c.getAttribute("aria-label") || ""));
       if (buttons.length !== 1) return { found: true, form: true, button: false };
       buttons[0].click(); return { found: true, form: true, clicked: true }; }
     el.focus(); return { found: true, form: true, focused: focused() === el && document.hasFocus() }; }
@@ -125,8 +200,8 @@ export async function readVaultTarget(page: SealedFillPage): Promise<VaultHostTa
   const origin = frame?.url ? canonicalVaultOrigin(frame.url)?.origin ?? null : null;
   if (!frame?.id || !origin) return { eligible: false, reason: "NO_WEB_ORIGIN", targetId: null, frameId: null, origin: null, document: null };
   // freshDocument and generatePolicy: this host takes those fields in fill requests (the API sends them only to a host that says so).
-  // cards: this host fills mode CARD, payment frames included.
-  return { eligible: true, reason: null, targetId: page.targetId, frameId: frame.id, origin, document: typeof frame.loaderId === "string" ? frame.loaderId.slice(0, 128) : null, freshDocument: true, generatePolicy: true, cards: true };
+  // cards: this host fills mode CARD, payment frames included. otpQr: it reads a setup QR (mode OTP_QR).
+  return { eligible: true, reason: null, targetId: page.targetId, frameId: frame.id, origin, document: typeof frame.loaderId === "string" ? frame.loaderId.slice(0, 128) : null, freshDocument: true, generatePolicy: true, cards: true, otpQr: true };
 }
 
 interface FrameNode { frame: { id: string; url?: string }; childFrames?: FrameNode[] }
@@ -165,9 +240,9 @@ async function isolatedWorld(page: SealedFillPage, frameId: string, sessionId = 
   return world.executionContextId;
 }
 
-async function field(page: SealedFillPage, at: Where, role: Role, action: FieldAction, expectLength?: number): Promise<Record<string, unknown>> {
+async function field(page: SealedFillPage, at: Where, role: Role, action: FieldAction, expectLength?: number, selectValue = ""): Promise<Record<string, unknown>> {
   const answer = await page.cdp.send<{ result?: { value?: unknown }; exceptionDetails?: unknown }>("Runtime.evaluate",
-    { expression: vaultFieldScript(role, action, expectLength), contextId: at.contextId, returnByValue: true, awaitPromise: false }, at.sessionId);
+    { expression: vaultFieldScript(role, action, expectLength, selectValue), contextId: at.contextId, returnByValue: true, awaitPromise: false }, at.sessionId);
   // An exception's text could carry page content: it is never read, only treated as "not found".
   const value = answer.exceptionDetails ? null : answer.result?.value;
   return value && typeof value === "object" ? value as Record<string, unknown> : { found: false };
@@ -280,6 +355,7 @@ async function formResult(page: SealedFillPage): Promise<boolean> {
 
 export async function runSealedFill(page: SealedFillPage, broker: SealedFillBroker, rawRequest: unknown, now = new Date(), options: SealedFillOptions = {}): Promise<VaultHostFillResult> {
   if ((rawRequest as { mode?: unknown } | null)?.mode === "SIGNUP") return runSealedSignup(page, broker, rawRequest, options);
+  if ((rawRequest as { mode?: unknown } | null)?.mode === "OTP_QR") return runOtpQrRead(page, rawRequest);
   const attached: string[] = [];
   try { return await sealedFill(page, broker, rawRequest, now, options, attached); }
   finally { for (const sessionId of attached) await page.cdp.send("Target.detachFromTarget", { sessionId }).catch(() => undefined); }
@@ -331,10 +407,25 @@ async function sealedFill(page: SealedFillPage, broker: SealedFillBroker, rawReq
     at = (role) => found.at.get(role)!;
   } else {
     const top: Where = { sessionId: page.sessionId, contextId: await isolatedWorld(page, claims.frameId) };
-    at = () => top;
+    const roleAt = new Map<Role, Where>();
+    at = (role) => roleAt.get(role) ?? top;
     for (const role of roles) {
-      const probe = await locate(page, top, role, late);
+      let where = top;
+      let probe = await locate(page, top, role, late);
+      if (!probe && role === "OTP") {
+        // Same-origin modal iframes only (strictly bound to claims.origin); cross-origin iframes stay outside OTP fills.
+        const frames = await vaultPageFrames(page.cdp, page.sessionId, attached).catch(() => []);
+        for (const frame of frames.slice(1)) {
+          if (canonicalVaultOrigin(frame.url)?.origin !== claims.origin) continue;
+          const contextId = await isolatedWorld(page, frame.frameId, frame.sessionId).catch(() => null);
+          if (contextId === null) continue;
+          const candidateWhere: Where = { sessionId: frame.sessionId, contextId };
+          probe = await locate(page, candidateWhere, role, late);
+          if (probe) { where = candidateWhere; break; }
+        }
+      }
       if (!probe) return result("BLOCKED", reloaded ? "FIELD_NOT_FOUND_AFTER_RELOAD" : "FIELD_NOT_FOUND");
+      roleAt.set(role, where);
       constraints.set(role, probe);
     }
     if (request.mode === "GENERATE") typedRoles = await withConfirm(page, top, roles, late);
@@ -351,10 +442,10 @@ async function sealedFill(page: SealedFillPage, broker: SealedFillBroker, rawReq
     wipeVaultBytes(opened);
     values = new Map();
     if (request.mode === "TOTP") {
-      const seed = decodeVaultBase32(secrets.OTP ?? "");
-      if (!seed) return result("BLOCKED", "OTP_SEED_INVALID");
-      values.set("OTP", await vaultTotp(seed, now));
-      wipeVaultBytes(seed);
+      const otp = parseVaultOtp(secrets.OTP ?? "");
+      if (!otp) return result("BLOCKED", "OTP_SEED_INVALID");
+      values.set("OTP", await vaultTotp(otp.secret, now, otp));
+      wipeVaultBytes(otp.secret);
     } else if (request.mode === "GENERATE") {
       const target = constraints.get("NEW_PASSWORD") ?? constraints.get(roles[0]!)!;
       try {
@@ -419,7 +510,10 @@ async function typeIn(page: SealedFillPage, at: (role: Role) => Where, roles: Ro
       if (focus.focused !== true) { await scrub(); return result("BLOCKED", "FOCUS_LOST", null, typed); }
       const value = values.get(role)!;
       typed = true;
-      await page.cdp.send("Input.insertText", { text: value }, at(role).sessionId);
+      // A <select> takes no typed text: its option is chosen in the isolated world.
+      if (focus.isSelect === true) {
+        if ((await field(page, at(role), role, "select", 0, value)).selected !== true) { await scrub(); return result("BLOCKED", "FILL_FAILED", null, typed); }
+      } else await page.cdp.send("Input.insertText", { text: value }, at(role).sessionId);
       filled.push(role);
       if ((await field(page, at(role), role, "check", DIGIT_ROLES.test(role) ? value.replace(/\D/g, "").length : value.length)).filled !== true) { await scrub(); return result("BLOCKED", "FILL_FAILED", null, typed); }
     }
@@ -518,4 +612,136 @@ export async function runSealedSignup(page: SealedFillPage, broker: SealedFillBr
     wipeVaultBytes(reply.privateKey);
   }
   return typeIn(page, () => top, typedRoles, values, sameTarget, request.submit, sealedPassword, result, late, options.lateFieldWaitMs ?? VAULT_LATE_FIELD_WAIT_MS);
+}
+
+/** Chrome's own limit on one capture's side (a technical bound): a setup QR further down a longer page is not seen. */
+const CAPTURE_MAX_SIDE = 16_384;
+
+/** A crop is enlarged to about this side (CSS px × scale) so a small QR's modules span several pixels; at most ×4 (Chrome's capture size). */
+const QR_READ_SIDE = 480, QR_MAX_SCALE = 4;
+
+/**
+ * Tier 2's fixed script (isolated world): the page's square images, canvases and SVGs, open shadow roots too; the one at `index`
+ * is scrolled into view and its box answered in document coordinates (Page.captureScreenshot's clip). Geometry only, no content.
+ */
+export function qrCandidateScript(index: number): string {
+  return `(() => {
+  const roots = [document];
+  for (let i = 0; i < roots.length; i++) roots[i].querySelectorAll("*").forEach((node) => { if (node.shadowRoot) roots.push(node.shadowRoot); });
+  // Under 40 CSS px no QR is readable; a QR is square (its box allows a border's few pixels).
+  const square = (el) => { const box = el.getBoundingClientRect(), style = getComputedStyle(el);
+    return box.width >= 40 && box.height >= 40 && box.width / box.height > 0.75 && box.width / box.height < 1.33 && style.visibility !== "hidden" && style.display !== "none"; };
+  const found = roots.flatMap((root) => Array.from(root.querySelectorAll("img,canvas,svg"))).filter(square);
+  const el = found[${Number(index) | 0}];
+  if (!el) return { count: found.length };
+  el.scrollIntoView({ block: "center", inline: "center" });
+  const box = el.getBoundingClientRect();
+  return { count: found.length, x: box.x + window.scrollX, y: box.y + window.scrollY, width: box.width, height: box.height };
+})()`;
+}
+
+/** jsQR on a crop set in a white quiet zone (a QR drawn edge to edge on a dark card has none), then on its colours inverted. */
+export function decodeQrCrop(pixels: { data: Uint8ClampedArray; width: number; height: number }): string | null {
+  const pad = Math.ceil(Math.max(pixels.width, pixels.height) / 5), width = pixels.width + 2 * pad, height = pixels.height + 2 * pad;
+  const framed = new Uint8ClampedArray(width * height * 4).fill(255);
+  try {
+    for (const invert of [false, true]) {
+      for (let y = 0; y < pixels.height; y++) for (let x = 0; x < pixels.width; x++) {
+        const from = (y * pixels.width + x) * 4, to = ((y + pad) * width + x + pad) * 4;
+        for (let c = 0; c < 3; c++) framed[to + c] = invert ? 255 - pixels.data[from + c]! : pixels.data[from + c]!;
+      }
+      const link = jsqr.default(framed, width, height, { inversionAttempts: "dontInvert" })?.data;
+      if (link) return link;
+    }
+    return null;
+  } finally { framed.fill(0); }
+}
+
+/** Tier 2 (Braintrust 18/11: QR_NOT_FOUND at every scroll): each QR-shaped element captured on its own, enlarged, read by decodeQrCrop. */
+async function readQrElements(page: SealedFillPage, frameId: string): Promise<string | null> {
+  const contextId = await isolatedWorld(page, frameId).catch(() => null);
+  if (contextId === null) return null;
+  for (let index = 0, count = 1; index < count; index++) {
+    const answer = await page.cdp.send<{ result?: { value?: unknown }; exceptionDetails?: unknown }>("Runtime.evaluate",
+      { expression: qrCandidateScript(index), contextId, returnByValue: true }, page.sessionId).catch(() => null);
+    // An exception's text could carry page content: it is never read.
+    const box = (answer && !answer.exceptionDetails ? answer.result?.value : null) as { count?: unknown; x?: unknown; y?: unknown; width?: unknown; height?: unknown } | null;
+    if (typeof box?.count !== "number") return null;
+    count = box.count;
+    const { x, y, width, height } = box;
+    if (typeof x !== "number" || typeof y !== "number" || typeof width !== "number" || typeof height !== "number") continue;
+    const scale = Math.min(QR_MAX_SCALE, Math.max(1, QR_READ_SIDE / width));
+    const shot = await page.cdp.send<{ data?: string }>("Page.captureScreenshot", { format: "png", clip: { x, y, width, height, scale } }, page.sessionId).catch(() => null);
+    if (typeof shot?.data !== "string") continue;
+    const png = Buffer.from(shot.data, "base64"), pixels = pngPixels(png);
+    png.fill(0);
+    if (!pixels) continue;
+    const link = decodeQrCrop(pixels);
+    pixels.data.fill(0);
+    if (link) return link;
+  }
+  return null;
+}
+
+/** Braintrust 19/11: the agent calls at once, as the tool says, so a setup dialog's QR may still be drawing: read again after these waits (a technical bound; then QR_NOT_FOUND tells the agent to call again). */
+export const QR_RETRY_WAITS_MS = [1_000, 2_000];
+
+/** One read of the page: the whole capture by jsQR, else each QR-shaped element (readQrElements). null: Chrome gave no capture. */
+async function readQrOnce(page: SealedFillPage, frameId: string): Promise<{ link: string | null } | null> {
+  let png: Buffer;
+  try {
+    const metrics = await page.cdp.send<{ cssContentSize?: { width?: number; height?: number } }>("Page.getLayoutMetrics", {}, page.sessionId);
+    const side = (value: number | undefined) => Math.max(1, Math.min(CAPTURE_MAX_SIDE, Math.ceil(value ?? 0)));
+    const shot = await page.cdp.send<{ data?: string }>("Page.captureScreenshot", { format: "png", captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width: side(metrics.cssContentSize?.width), height: side(metrics.cssContentSize?.height), scale: 1 } }, page.sessionId);
+    if (typeof shot.data !== "string") return null;
+    png = Buffer.from(shot.data, "base64");
+  } catch { return null; }
+  const pixels = pngPixels(png);
+  png.fill(0);
+  if (!pixels) return null;
+  // jsqr is CommonJS: NodeNext types its default as the module, whose own `default` is jsQR at runtime too.
+  const link = jsqr.default(pixels.data, pixels.width, pixels.height)?.data ?? await readQrElements(page, frameId);
+  pixels.data.fill(0);
+  return { link };
+}
+
+/**
+ * An authenticator setup QR in the pane's page, sealed to the inbox key (nous_msg:cb10eefe6cc544e7af63ff64, 14/11). The host
+ * captures the whole page, decodes it with the dock's jsQR (else each QR-shaped element on its own, readQrElements), keeps the key as the OTP field keeps it and seals it to the inbox:
+ * the answer is a status, and the key reaches the API only sealed (as `sealedGenerated`). The capture never leaves this call.
+ */
+export async function runOtpQrRead(page: SealedFillPage, rawRequest: unknown): Promise<VaultHostFillResult> {
+  const result = answering(() => null);
+  const parsed = vaultHostOtpQrRequestSchema.safeParse(rawRequest);
+  if (!parsed.success) return result("BLOCKED", "BAD_REQUEST");
+  const request = parsed.data;
+  if (request.paneId !== page.paneId) return result("BLOCKED", "PANE_MISMATCH");
+  const sameTarget = async (): Promise<"OK" | "TARGET_CHANGED" | "ORIGIN_CHANGED" | "NOT_ELIGIBLE"> => {
+    const live = await readVaultTarget(page);
+    if (!live.eligible) return "NOT_ELIGIBLE";
+    if (live.targetId !== request.targetId || live.frameId !== request.frameId) return "TARGET_CHANGED";
+    return live.origin === request.origin ? "OK" : "ORIGIN_CHANGED";
+  };
+  const before = await sameTarget();
+  if (before === "NOT_ELIGIBLE") return result("BLOCKED", "NO_WEB_ORIGIN");
+  if (before !== "OK") return result("ORIGIN_MISMATCH", before);
+  let read = await readQrOnce(page, request.frameId);
+  for (const wait of QR_RETRY_WAITS_MS) {
+    if (!read || read.link) break;
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    read = await readQrOnce(page, request.frameId);
+  }
+  if (!read) return result("BLOCKED", "SCREENSHOT_FAILED");
+  const link = read.link;
+  if (!link) return result("BLOCKED", "QR_NOT_FOUND");
+  const stored = vaultOtpStoredValue(link);
+  if (!stored) return result("BLOCKED", "OTP_INVALID");
+  const after = await sameTarget();
+  if (after !== "OK") return after === "NOT_ELIGIBLE" ? result("BLOCKED", "NO_WEB_ORIGIN") : result("ORIGIN_MISMATCH", after);
+  const bytes = new TextEncoder().encode(stored);
+  try {
+    const sealed = await sealToVaultPublicKey(vaultBase64url.decode(request.inboxPublicKey), bytes, { ownerUserId: request.ownerUserId, vaultId: request.vaultId, keyVersion: 1 });
+    return result("SAVED", null, sealed);
+  } finally { wipeVaultBytes(bytes); }
 }

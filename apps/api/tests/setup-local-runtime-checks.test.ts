@@ -13,7 +13,11 @@ describe("selected local runtime checks", () => {
     await cp(resolve("../../demos/project-2-crud-playground/javascript-react-node/server"), join(variant, "server"), { recursive: true });
     await mkdir(join(variant, "web", "dist"), { recursive: true });
     await writeFile(join(variant, "web", "dist", "index.html"), "<!doctype html><title>CRUD Playground</title>");
+    const demoCheck = (demoRoot: string) => checks.createSetupFunctionalChecks({ demoRoot, demoEnabled: true, workspaceRoot: root, scratchRoot: root })["pane:demos"]!;
     try {
+      // An install without the built samples (the public core image) offers Demo Projects as unavailable instead of failing first setup.
+      expect(await demoCheck(join(root, "missing")).available!()).toBe(false);
+      expect(await demoCheck(demos).available!()).toBe(true);
       await expect(checks.checkSetupDemoRuntime(demos, root)).resolves.toBeUndefined();
       expect(await readdir(root)).toEqual([]);
       await expect(checks.checkSetupDemoRuntime(join(root, "missing"), root)).rejects.toThrow();

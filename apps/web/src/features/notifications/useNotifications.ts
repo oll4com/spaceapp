@@ -6,7 +6,7 @@ import { ingestNotificationStreamPayload, openNotification, refreshNotifications
 import { notificationStreamPayloadSchema } from "@space/contracts";
 
 export const NOTIFICATION_STREAM_EVENT = "space:notification";
-/** The stream handler in the app shell re-dispatches NOTIFICATION_CREATED/UPDATED payloads as this window event. */
+/** The stream handler in the app shell re-dispatches NOTIFICATION_CREATED/UPDATED and INBOX_UPDATED payloads as this window event. */
 export function dispatchNotificationStreamEvent(payload: unknown): void {
   window.dispatchEvent(new CustomEvent(NOTIFICATION_STREAM_EVENT, { detail: payload }));
 }
@@ -31,8 +31,11 @@ export function useNotificationBootstrap(userId: string | null, navigate: Notifi
     const schedule = () => { if (!cancelled) timer = window.setTimeout(() => void refreshNotifications({ ifChanged: true }).finally(schedule), document.hidden ? POLL_HIDDEN_MS : POLL_VISIBLE_MS); };
     void refreshNotifications().finally(schedule);
     const onStream = (event: Event) => {
-      const parsed = notificationStreamPayloadSchema.safeParse((event as CustomEvent).detail);
+      const detail = (event as CustomEvent).detail as { ownerUserId?: unknown; threadId?: unknown } | null;
+      const parsed = notificationStreamPayloadSchema.safeParse(detail);
       if (parsed.success) ingestNotificationStreamPayload(parsed.data);
+      // INBOX_UPDATED: `{threadId, ownerUserId}` only.
+      else if (typeof detail?.threadId === "string" && typeof detail.ownerUserId === "string") ingestNotificationStreamPayload({ ownerUserId: detail.ownerUserId });
     };
     const onVisible = () => { if (!document.hidden) void refreshNotifications({ ifChanged: true }); };
     window.addEventListener(NOTIFICATION_STREAM_EVENT, onStream);

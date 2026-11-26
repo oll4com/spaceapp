@@ -262,7 +262,7 @@ async function openGoogleVoiceSession(
       source.disconnect();
       silentGain.disconnect();
       void audioContext.close();
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
     stream.getTracks().forEach((track) => {
       if (track.readyState === "live") track.stop();
     });
@@ -275,7 +275,7 @@ async function openGoogleVoiceSession(
       if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
         socket.close();
       }
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
     stopCapture();
   };
 
@@ -324,7 +324,7 @@ async function openGoogleVoiceSession(
             }
           })
         );
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
     };
     capture = { stream, audioContext, source, processor, silentGain };
   };
@@ -409,7 +409,7 @@ async function openGoogleVoiceSession(
         transcript = mergeTranscriptText(transcript, heard);
         callbacks.onTranscriptDelta?.(transcript);
       }
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
   };
 
   openSocket.onerror = () => {
@@ -433,7 +433,7 @@ async function openGoogleVoiceSession(
         try {
           capture.processor.disconnect();
           capture.source.disconnect();
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
         capture.stream.getTracks().forEach((track) => track.stop());
       }
 
@@ -484,7 +484,7 @@ async function openLocalVoiceSession(
       processor.disconnect();
       source.disconnect();
       void audioContext.close();
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
     stream.getTracks().forEach((t) => t.stop());
   };
 
@@ -493,7 +493,7 @@ async function openLocalVoiceSession(
     closed = true;
     try {
       socket?.close();
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
     stopCapture();
   };
 
@@ -540,7 +540,7 @@ async function openLocalVoiceSession(
       const pcm16 = pcm16FromFloat32(inputData);
       try {
         socket.send(pcm16);
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
     };
     capture = { stream, audioContext, source, processor };
     sendStart();
@@ -593,7 +593,7 @@ async function openLocalVoiceSession(
         callbacks.onTranscriptDelta?.(transcript);
         if (msg.final && committed) finish();
       }
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
   };
 
   openSocket.onerror = () => {
@@ -626,7 +626,7 @@ async function openLocalVoiceSession(
       if (capture) {
         try {
           capture.processor.disconnect();
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
         capture.stream.getTracks().forEach((t) => t.stop());
       }
       // SenseVoice decodes the last segment on "stop" and answers with a final transcript; the Local PC provider streams it.
@@ -680,18 +680,18 @@ async function openOpenAiVoiceSession(
     if (isLiveTranscriptionModel(options.model) && channel.readyState === "open") {
       try {
         channel.send(JSON.stringify({ type: "session.close" }));
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
     }
     try {
       channel.close();
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
     connection.getSenders().forEach((sender) => sender.track?.stop());
     stream.getTracks().forEach((track) => {
       if (track.readyState === "live") track.stop();
     });
     try {
       connection.close();
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
   };
 
   const fail = (message: string) => {
@@ -795,7 +795,7 @@ async function openOpenAiVoiceSession(
     initialAudioProgress = await readOutboundAudioProgress(audioSenders);
   } catch (error) {
     close();
-    throw new Error(errorMessage(error, "Voice Realtime session failed to start."));
+    throw new Error(errorMessage(error, "Voice Realtime session failed to start."), { cause: error });
   }
 
   return {

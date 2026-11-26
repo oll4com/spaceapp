@@ -94,7 +94,7 @@ describe("Real operator-selected visual capture", () => {
   });
   it("does not draw DOM diagrams for MCP screenshots", () => {
     const create = vi.spyOn(document, "createElement");
-    expect(captureClientScreenshot("room:screen")).toMatchObject({ ok: false, evidence: { applied: false } });
+    expect(captureClientScreenshot()).toMatchObject({ ok: false, evidence: { applied: false } });
     expect(create).not.toHaveBeenCalled();
   });
   it.each(["space_capture_screen", "space_screenshot"])("%s fails honestly without hidden vision calls or provider fallback", async name => {

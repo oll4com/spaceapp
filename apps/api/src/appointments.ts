@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
 import {
-  agentLanguageOf, appointmentInputSchema, appointmentJoinUrl, appointmentListQuerySchema, appointmentUpcoming, appointmentUpdateSchema, historySince, ownerWorkingTimeZone,
+  agentLanguageOf, appointmentInputSchema, appointmentOccurrence, appointmentJoinUrl, appointmentListQuerySchema, appointmentOutOfHours, appointmentUpcoming, appointmentUpdateSchema, historySince, ownerAppointmentHours, ownerWorkingTimeZone,
   resolveNotificationSettings, type Appointment, type AppointmentInput, type AppointmentList, type AppointmentUpdate, type AppointmentsPaneRef,
   type NotificationRaiseInput, type UserSettings
 } from "@space/contracts";
@@ -16,7 +16,7 @@ import { parseBody, parseQuery } from "./route-parsing.js";
 // Nous's fullscreen card, Nous's tools and every pane's space_appointment_* tools, reminded before each appointment.
 
 type Store = Pick<SpaceStore, "upsertUser" | "getUserSettings" | "listRooms" | "listPanes" | "getRoom" | "getPane">;
-type Settings = Pick<UserSettings, "dateTime" | "notifications"> | null | undefined;
+type Settings = Pick<UserSettings, "dateTime" | "notifications" | "appointmentHours"> | null | undefined;
 
 /** A reminder that falls in the operator's quiet hours goes this long before they start (22:55 for 23:00), never dropped. */
 export const APPOINTMENT_QUIET_LEAD_MS = 5 * 60_000;
@@ -58,8 +58,10 @@ export function appointmentReminderText(item: Appointment, settings: Settings & 
   const when = new Intl.DateTimeFormat(greek ? "el-GR" : "en-GB", { timeZone: zone, weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
     hourCycle: "h23", timeZoneName: "short" }).format(new Date(item.startsAt));
   const kind = (greek ? KIND_EL : KIND_EN)[item.kind];
+  const clock = new Intl.DateTimeFormat("en-GB", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(item.startsAt));
   return {
-    title: `${greek ? "Υπενθύμιση" : "Reminder"}: ${item.title} ${untilText(Date.parse(item.startsAt) - nowMs, greek)}`,
+    // Operator 17/11 (nous_msg:e58363a2): like a calendar alert, the appointment and its time.
+    title: `${greek ? "Υπενθύμιση" : "Reminder"}: ${item.title} ${greek ? "στις" : "at"} ${clock}, ${untilText(Date.parse(item.startsAt) - nowMs, greek)}`,
     body: [`${kind} · ${when}`, item.location, item.notes].filter(Boolean).join("\n")
   };
 }
@@ -92,7 +94,12 @@ export function createAppointmentsService(deps: AppointmentsDeps): AppointmentsS
   const { store } = deps;
   const settingsOf = async (owner: string) => await Promise.resolve(store.getUserSettings(owner)).catch(() => null);
   const repository = requireAppointmentContent(deps.repository ?? (deps.databaseUrl ? PostgresAppointmentsRepository.fromConnectionString(deps.databaseUrl) : new InMemoryAppointmentsRepository()),
-    async (owner) => ownerWorkingTimeZone(await settingsOf(owner)));
+    async (owner) => ownerAppointmentHours(await settingsOf(owner)));
+  // A FIXED meeting the other side set outside the hours is kept; its answers carry why, so Nous and the copilots ask to move it.
+  const flagged = (item: Appointment, settings: Settings): Appointment => {
+    const outOfHours = appointmentOutOfHours(item, ownerAppointmentHours(settings));
+    return outOfHours ? { ...item, outOfHours } : item;
+  };
   // Every appointment writer goes through this repository; one event per appointment, status and time.
   const toMake = (item: Appointment | null | undefined, owner: string) => {
     if (item) emitMakeEvent(owner, "appointment", `${item.id}:${item.status}:${item.startsAt}`, { id: item.id, title: item.title, kind: item.kind, status: item.status,
@@ -117,14 +124,19 @@ export function createAppointmentsService(deps: AppointmentsDeps): AppointmentsS
       const settings = await settingsOf(owner);
       // Past ones within the owner's history period (Settings → History); upcoming ones (status UPCOMING) whatever their date.
       const rows = await repository.list(owner, historySince(settings));
-      const appointments = when === "all" ? rows : rows.filter((item) => appointmentUpcoming(item) === (when === "upcoming"));
-      return { appointments: when === "past" ? appointments.reverse() : appointments, timeZone: ownerWorkingTimeZone(settings), pane: await pane(owner) };
+      // A recurring one shows its current occurrence (operator 26/11, nous_msg:cfce1783), even between two reminder ticks.
+      const now = Date.now();
+      const appointments = (when === "all" ? rows : rows.filter((item) => appointmentUpcoming(item) === (when === "upcoming")))
+        .map((item) => item.status === "UPCOMING" ? appointmentOccurrence(item, now) : item).sort((x, y) => x.startsAt.localeCompare(y.startsAt));
+      return { appointments: (when === "past" ? appointments.reverse() : appointments).map((item) => flagged(item, settings)), timeZone: ownerWorkingTimeZone(settings),
+        hours: ownerAppointmentHours(settings), pane: await pane(owner) };
     },
     async add(owner, raw) {
       const parsed = appointmentInputSchema.parse(raw);
       const input = parsed.notes ? { ...parsed, notes: await notesFiled(owner, parsed.notes, parsed.kind) } : parsed;
-      const timeZone = input.timeZone ?? ownerWorkingTimeZone(await settingsOf(owner));
-      return input.sourceRef ? repository.upsertBySource(owner, { ...input, sourceRef: input.sourceRef, timeZone }) : repository.create(owner, { ...input, timeZone });
+      const settings = await settingsOf(owner);
+      const timeZone = input.timeZone ?? ownerWorkingTimeZone(settings);
+      return flagged(input.sourceRef ? await repository.upsertBySource(owner, { ...input, sourceRef: input.sourceRef, timeZone }) : await repository.create(owner, { ...input, timeZone }), settings);
     },
     async update(owner, id, patch) {
       const parsed = appointmentUpdateSchema.parse(patch);
@@ -134,13 +146,17 @@ export function createAppointmentsService(deps: AppointmentsDeps): AppointmentsS
       if (!item) throw new SpaceNotFoundError("Appointment was not found.");
       // Operator 4/11 (nous_msg:dc24e81ea2c9 «να το κανω completed και να ενημερωσει ολα τα συστηματα»): once, on the change to DONE; a failure never undoes it.
       if (before && before.status !== "DONE") await deps.onDone!(owner, item).catch((error: unknown) => deps.log?.warn({ err: error, appointmentId: id }, "Appointment completion follow-up failed."));
-      return item;
+      return flagged(item, await settingsOf(owner));
     },
     async remind(now = new Date()) {
       if (!deps.notifications) return 0;
       let sent = 0;
-      for (const item of await repository.upcoming(now.toISOString())) {
+      for (const row of await repository.upcoming(now.toISOString())) {
         try {
+          // A recurring one moves to its next occurrence once one is over; the new start clears remindersSent, so each day is reminded.
+          const next = appointmentOccurrence(row, now.getTime());
+          const item = next.startsAt === row.startsAt ? row : await repository.update(row.ownerUserId, row.id, { startsAt: next.startsAt, endsAt: next.endsAt, deadlineAt: next.deadlineAt }, now.toISOString()) ?? row;
+          if (Date.parse(item.startsAt) <= now.getTime()) continue;
           const settings = await settingsOf(item.ownerUserId);
           const config = resolveNotificationSettings(settings?.notifications).appointmentReminders;
           if (!config.enabled) continue;
@@ -158,7 +174,7 @@ export function createAppointmentsService(deps: AppointmentsDeps): AppointmentsS
           for (const step of due.slice(0, -1)) await deps.notifications.resolve(item.ownerUserId, reminderKey(item, step.leads)).catch(() => 0);
           sent += 1;
         } catch (error) {
-          deps.log?.warn({ err: error, appointmentId: item.id }, "Appointment reminder failed.");
+          deps.log?.warn({ err: error, appointmentId: row.id }, "Appointment reminder failed.");
         }
       }
       return sent;

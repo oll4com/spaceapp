@@ -1,6 +1,6 @@
 ---
 name: space-karpathy-guidelines
-description: "Andrej Karpathy's guidelines against common LLM coding mistakes (overcomplication, unrequested changes, hidden assumptions, unverifiable success). Opt-in: use when the operator asks for them, or to review a change that grew larger or broader than asked."
+description: "Karpathy's guidelines against overcomplicated, unrequested or unverifiable LLM code. Opt-in: on request, or to review a change that grew too broad."
 license: MIT
 metadata:
   category: WORKFLOW

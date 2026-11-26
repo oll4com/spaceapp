@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
-  cliEgressRouteIdSchema, createPaneInputSchema, defaultFreelanceCopilotPaneMetadata, effectiveFreelanceAutonomy, FREELANCE_CHANNELS, FREELANCE_EGRESS_ROUTES, FREELANCE_SETTINGS_CHANNELS, freelanceChannelEgress,
+  cliEgressRouteIdSchema, createPaneInputSchema, defaultFreelanceCopilotPaneMetadata, effectiveFreelanceAutonomy, FREELANCE_CHANNEL_LOGIN_URLS, FREELANCE_CHANNELS, FREELANCE_EGRESS_ROUTES, FREELANCE_SETTINGS_CHANNELS, freelanceChannelEgress,
   freelanceChannelSchema, freelanceChannelSettings,
-  freelanceChannelOfSender, freelanceCopilotPaneMetadataSchema, freelanceEgressPac,
+  freelanceChannelOfSender, freelanceCopilotPaneMetadataSchema, freelanceEgressPac, browserRoutePac,
   freelanceScamSignals, freelanceUrlMatchesChannel, freelanceWordingIssues, NOTIFICATION_SOURCES, resolveFreelanceCopilotPaneMetadata, roomPaneBatchItemSchema, userSettingsSchema
 } from "../src/index.js";
 
 describe("Freelance Copilot contracts", () => {
   it("reads unconfigured panes as fully autonomous with every channel on (operator decision 2026-10-14)", () => {
     const metadata = defaultFreelanceCopilotPaneMetadata();
-    expect(metadata.settings).toMatchObject({ autonomy: "FULL", paused: false, rateFloorHourly: 35, followUps: true, browserEgress: "thailand",
+    expect(metadata.settings).toMatchObject({ autonomy: "FULL", paused: false, rateFloorHourly: 20, followUps: true, browserEgress: "thailand",
       connectsBudget: { perDay: 120, perMonth: 2000 }, notifications: { needsYou: true, clientReady: true, telegram: true } });
     expect(Object.keys(metadata.settings.channels)).toEqual([...FREELANCE_SETTINGS_CHANNELS]);
     expect(FREELANCE_CHANNELS.every((channel) => freelanceChannelSettings(metadata.settings, channel).enabled && freelanceChannelSettings(metadata.settings, channel).autonomyCap === "FULL")).toBe(true);
@@ -26,6 +26,17 @@ describe("Freelance Copilot contracts", () => {
     expect(freelanceChannelSettings(settings, "GURU")).toMatchObject({ enabled: true, autonomyCap: "FULL" });
     expect(effectiveFreelanceAutonomy(settings, "PEOPLEPERHOUR")).toBe("FULL");
     expect(freelanceUrlMatchesChannel("https://www.guru.com/work/detail/123", "GURU")).toBe(true);
+  });
+
+  it("takes the remote job boards as channels with labels, sign-in pages and hosts (23/11, Dana's leads were refused)", () => {
+    const { settings } = defaultFreelanceCopilotPaneMetadata();
+    for (const channel of ["WELLFOUND", "WEWORKREMOTELY", "REMOTEOK", "WORKINGNOMADS", "SUPERTEAM", "CRYPTOJOBSLIST"] as const) {
+      expect(freelanceChannelSchema.parse(channel)).toBe(channel);
+      expect(freelanceChannelSettings(settings, channel)).toMatchObject({ enabled: true, autonomyCap: "FULL" });
+      expect(freelanceUrlMatchesChannel(FREELANCE_CHANNEL_LOGIN_URLS[channel], channel)).toBe(true);
+    }
+    expect(freelanceUrlMatchesChannel("https://earn.superteam.fun/listing/1", "SUPERTEAM")).toBe(true);
+    expect(freelanceChannelOfSender("jobs@angel.co")).toBe("WELLFOUND");
   });
 
   it("validates the metadata strictly and applies the lower of pane and channel autonomy", () => {
@@ -57,7 +68,12 @@ describe("Freelance Copilot contracts", () => {
     expect(freelanceWordingIssues("Demo at https://space.brand.example:4911/x", own)).toContain("outside-link");
     expect(freelanceWordingIssues("A seamless integration", base)).toContain("seamless");
     expect(freelanceWordingIssues("Ping me on Telegram", { ...base, contracted: true })).toEqual([]);
-    expect(freelanceWordingIssues("Fixed price, two milestones.", { ...base, bid: { type: "HOURLY", amount: 30 } })).toEqual(["below-rate-floor"]);
+    expect(freelanceWordingIssues("I built a WhatsApp bot and a Discord bot like this.", base)).toEqual([]);
+    expect(freelanceWordingIssues("Ping me on Telegram", base)).toContain("messenger");
+    // Operator 14/11: the default floor is $20/h (volume until the first reviews); a pane's own floor still applies.
+    expect(freelanceWordingIssues("Fixed price, two milestones.", { ...base, bid: { type: "HOURLY", amount: 19 } })).toEqual(["below-rate-floor"]);
+    expect(freelanceWordingIssues("Fixed price, two milestones.", { ...base, bid: { type: "HOURLY", amount: 20 } })).toEqual([]);
+    expect(freelanceWordingIssues("Fixed price, two milestones.", { ...base, bid: { type: "HOURLY", amount: 30 }, rateFloorHourly: 35 })).toEqual(["below-rate-floor"]);
     expect(freelanceWordingIssues("Budget $1,500 for 1.2M products and 150 000 calls", { ...base, bid: { type: "FIXED", amount: 20 } })).toEqual([]);
   });
 
@@ -65,6 +81,11 @@ describe("Freelance Copilot contracts", () => {
     expect(freelanceScamSignals("Contact me on WhatsApp. Unpaid test task first.")).toEqual(["move-to-messenger", "unpaid-test"]);
     expect(freelanceScamSignals("We pay in crypto only")).toEqual(["crypto-only"]);
     expect(freelanceScamSignals("Build an MCP server for our Shopify store, $2,000 fixed.")).toEqual([]);
+    // Operator 14/11: a messenger as the product to build is no scam signal; a messenger as the way to talk still is.
+    for (const post of ["Build a Telegram bot for our shop", "WhatsApp Business API integration with HubSpot", "Telegram mini app in React", "Need a WhatsApp chatbot (Twilio)", "telegram-bot developer"])
+      expect(freelanceScamSignals(post), post).toEqual([]);
+    expect(freelanceScamSignals("Build a Telegram bot. Send your portfolio on Telegram.")).toEqual(["move-to-messenger"]);
+    expect(freelanceScamSignals("Add me on WhatsApp: details there")).toEqual(["move-to-messenger"]);
     expect(freelanceUrlMatchesChannel("https://www.upwork.com/nx/proposals/123", "UPWORK")).toBe(true);
     expect(freelanceUrlMatchesChannel("http://www.upwork.com/nx/proposals/123", "UPWORK")).toBe(false);
     expect(freelanceUrlMatchesChannel("https://upwork.com.evil.example/x", "UPWORK")).toBe(false);
@@ -86,17 +107,22 @@ describe("Freelance Copilot contracts", () => {
     const { settings } = freelanceCopilotPaneMetadataSchema.parse({ version: 1, settings: { browserEgress: "direct", channels: { UPWORK: { enabled: true, egress: "nord", autonomyCap: "FULL", dailyCap: 5 } } } });
     expect(freelanceChannelEgress(settings, "UPWORK")).toBe("nord");
     expect(freelanceChannelEgress(settings, "CONTRA")).toBe("direct");
-    const pac = freelanceEgressPac(settings)!;
+    const proxies = { greece: "10.20.1.2:1080", thailand: "10.20.2.2:1080", nord: "10.20.4.2:1080" };
+    const pac = freelanceEgressPac(settings, proxies)!;
     const FindProxyForURL = new Function("dnsDomainIs", `${pac}; return FindProxyForURL;`)((host: string, domain: string) => host.endsWith(domain)) as (url: string, host: string) => string;
-    expect(FindProxyForURL("https://www.upwork.com/nx/find-work/", "www.upwork.com")).toBe("SOCKS5 10.254.244.2:1080");
-    expect(FindProxyForURL("https://upworkstatic.com/x.js", "upworkstatic.com")).toBe("SOCKS5 10.254.244.2:1080");
+    expect(FindProxyForURL("https://www.upwork.com/nx/find-work/", "www.upwork.com")).toBe("SOCKS5 10.20.4.2:1080");
+    expect(FindProxyForURL("https://upworkstatic.com/x.js", "upworkstatic.com")).toBe("SOCKS5 10.20.4.2:1080");
     expect(FindProxyForURL("https://notupwork.com/", "notupwork.com")).toBe("DIRECT");
     expect(FindProxyForURL("https://contra.com/", "contra.com")).toBe("DIRECT");
     expect(pac).not.toContain("; DIRECT");
-    const thailand = freelanceEgressPac(defaultFreelanceCopilotPaneMetadata().settings)!;
+    const thailand = freelanceEgressPac(defaultFreelanceCopilotPaneMetadata().settings, proxies)!;
     const viaThailand = new Function("dnsDomainIs", `${thailand}; return FindProxyForURL;`)((host: string, domain: string) => host.endsWith(domain)) as (url: string, host: string) => string;
-    expect(viaThailand("https://www.google.com/", "www.google.com")).toBe("SOCKS5 10.254.242.2:1080");
+    expect(viaThailand("https://www.google.com/", "www.google.com")).toBe("SOCKS5 10.20.2.2:1080");
     expect(viaThailand("http://localhost:4911/", "localhost")).toBe("DIRECT");
-    expect(freelanceEgressPac({ ...settings, channels: { ...settings.channels, UPWORK: { ...settings.channels.UPWORK, egress: "pane" } } })).toBeNull();
+    expect(freelanceEgressPac({ ...settings, channels: { ...settings.channels, UPWORK: { ...settings.channels.UPWORK, egress: "pane" } } }, proxies)).toBeNull();
+    // A route without a configured proxy fails closed instead of leaving from this server.
+    expect(() => freelanceEgressPac(settings, {})).toThrow(/nord route has no SOCKS5 proxy/);
+    expect(() => browserRoutePac("mullvad", proxies)).toThrow(/SPACE_VPN_SOCKS_PROXIES/);
+    expect(browserRoutePac("direct", {})).toBeNull();
   });
 });

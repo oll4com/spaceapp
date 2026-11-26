@@ -651,6 +651,9 @@ async function callHarnessRpc(
 }
 
 /** Metadata-only RPCs for the exact session assigned to this Space pane. */
+type HarnessContentPart = { type?: unknown; text?: unknown };
+type HarnessEvent = { type?: string; data?: { source?: { kind?: unknown }; content?: HarnessContentPart[] } };
+
 export async function readHarnessTaskTitle(
   config: SpaceApiConfig,
   paneId: string,
@@ -665,7 +668,7 @@ export async function readHarnessTaskTitle(
   const sessionId = selectedSessionId ?? `space-pane-${paneId.slice(5)}`;
   if (!/^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/.test(sessionId)) return null;
 
-  let title: unknown = null;
+  let title: unknown;
   const requests: string[] = [];
 
   try {
@@ -675,7 +678,7 @@ export async function readHarnessTaskTitle(
       { sessionId, maxMessages: 30 },
       5000,
     )) as {
-      events?: Array<{ event?: { type?: string; data?: any } }>;
+      events?: Array<{ event?: HarnessEvent }>;
       projections?: { values?: { title?: unknown } };
     };
     const events = history.events ?? [];
@@ -686,8 +689,8 @@ export async function readHarnessTaskTitle(
       ) {
         const parts = Array.isArray(item.event?.data?.content) ? item.event.data.content : [];
         const text = parts
-          .filter((part: any) => part.type === "text" && typeof part.text === "string")
-          .map((part: any) => part.text)
+          .filter((part: HarnessContentPart) => part.type === "text" && typeof part.text === "string")
+          .map((part: HarnessContentPart) => part.text)
           .join(" ");
         if (text) requests.push(text);
       }
@@ -709,7 +712,7 @@ export async function readHarnessTaskTitle(
             "session/page",
             { address: { kind: "session", sessionId }, throughSeq: proj.asOfSeq },
             5000,
-          )) as { records?: Array<{ type?: string; event?: { type?: string; data?: any } }> };
+          )) as { records?: Array<{ type?: string; event?: HarnessEvent }> };
           const records = page?.records ?? [];
           for (const item of records) {
             if (
@@ -718,13 +721,13 @@ export async function readHarnessTaskTitle(
             ) {
               const parts = Array.isArray(item.event?.data?.content) ? item.event.data.content : [];
               const text = parts
-                .filter((part: any) => part.type === "text" && typeof part.text === "string")
-                .map((part: any) => part.text)
+                .filter((part: HarnessContentPart) => part.type === "text" && typeof part.text === "string")
+                .map((part: HarnessContentPart) => part.text)
                 .join(" ");
               if (text) requests.push(text);
             }
           }
-        } catch {}
+        } catch { /* no page: keep the title without the requests */ }
       }
     } catch {
       return null;
@@ -786,7 +789,8 @@ async function ensureHarnessPaneSession(
       timeoutMs
     ) as { sessionId?: string };
     if (sessionResult.sessionId === sessionId) return sessionId;
-  } catch (error: any) {
+  } catch (caught) {
+    const error = caught as { code?: unknown; message?: unknown } | null;
     if (
       error?.code === "session-conflict" ||
       error?.code === "session/conflict" ||
@@ -796,7 +800,7 @@ async function ensureHarnessPaneSession(
     ) {
       return sessionId;
     }
-    throw error;
+    throw caught;
   }
   return sessionId;
 }

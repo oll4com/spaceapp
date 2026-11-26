@@ -34,6 +34,12 @@ function parsed(text: string | null): unknown {
 }
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 
+/** Opening a pane leaves the Nous fullscreen and its open plan, which would cover the pane (operator 2026-11-22). */
+export function leaveNousFullscreen(): void {
+  if (parsed(raw("fullscreen")) === true) write("fullscreen", false);
+  if (parsed(raw("plan")) != null) write("plan", null);
+}
+
 /** useState kept on this device; `valid` says whether a stored value is one this state takes (pass stable `valid` and `fallback`). */
 export function useNousUiState<T>(key: string, fallback: T, valid: (value: unknown) => value is T): [T, (next: T | ((current: T) => T)) => void] {
   const text = useSyncExternalStore(subscribe, () => raw(key), () => null);

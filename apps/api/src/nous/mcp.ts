@@ -17,12 +17,13 @@ import { NOUS_HELPER_PREFIX, NOUS_SUBAGENT_EXCLUDED, nousSubagentTools, type Nou
 export const cliNousPathPrefix = "/api/cli/nous/";
 export const NOUS_MCP_PATH = "/api/cli/nous/mcp";
 
-interface NousTokenClaims { owner: string; turnId: string; expiresAt: number }
+/** `deferred`: a runner without Claude Code's ToolSearch (Gemini, OpenCode, Codex, Chat) gets slim schemas and space_tool_schema. */
+interface NousTokenClaims { owner: string; turnId: string; expiresAt: number; deferred?: boolean }
 const b64 = (value: string) => Buffer.from(value, "utf8").toString("base64url");
 const sign = (secret: string, payload: string) => createHmac("sha256", secret).update(`nous-mcp:${payload}`).digest("base64url");
 
 export function signNousToken(secret: string, claims: NousTokenClaims): string {
-  const payload = b64(JSON.stringify({ o: claims.owner, t: claims.turnId, e: claims.expiresAt }));
+  const payload = b64(JSON.stringify({ o: claims.owner, t: claims.turnId, e: claims.expiresAt, ...(claims.deferred ? { d: 1 } : {}) }));
   return `nous.${payload}.${sign(secret, payload)}`;
 }
 
@@ -33,9 +34,9 @@ export function verifyNousToken(secret: string, token: string | undefined, now =
   const given = Buffer.from(match[2]!);
   if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
   try {
-    const claims = JSON.parse(Buffer.from(match[1]!, "base64url").toString("utf8")) as { o?: unknown; t?: unknown; e?: unknown };
+    const claims = JSON.parse(Buffer.from(match[1]!, "base64url").toString("utf8")) as { o?: unknown; t?: unknown; e?: unknown; d?: unknown };
     if (typeof claims.o !== "string" || typeof claims.t !== "string" || typeof claims.e !== "number" || claims.e < now) return null;
-    return { owner: claims.o, turnId: claims.t, expiresAt: claims.e };
+    return { owner: claims.o, turnId: claims.t, expiresAt: claims.e, ...(claims.d === 1 ? { deferred: true } : {}) };
   } catch {
     return null;
   }
@@ -46,6 +47,41 @@ export function verifyNousToken(secret: string, token: string | undefined, now =
  * none in the failed-call rows): a tool call still running at 55 s is answered with what happened and what to do next.
  */
 export const NOUS_MCP_ANSWER_MS = 55_000;
+
+/**
+ * Plan clipboard:nsWKwUFhUFWA slice 3: the full list is ~170k chars (~45k tokens) on every request of a runner without ToolSearch. A deferred
+ * turn's list keeps each description whole and only argument names, types and enums (~78k); space_tool_schema gives the rest on demand, and a
+ * call with wrong arguments is refused before it acts with the shape it takes (tools.ts), so nothing runs on a guess.
+ */
+export const NOUS_TOOL_SCHEMA = "space_tool_schema";
+const toolSchemaTool = {
+  name: NOUS_TOOL_SCHEMA,
+  description: "The other tools list their argument names and types only. Call this with tool names to read their full argument schemas "
+    + "(field rules, formats and nested objects) before a call whose arguments you are not sure of.",
+  inputSchema: { type: "object", properties: { names: { type: "array", items: { type: "string" }, minItems: 1 } }, required: ["names"] }
+};
+
+function slimSchema(schema: unknown, top: boolean): unknown {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+  const source = schema as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of ["type", "enum", "const"]) if (key in source) out[key] = source[key];
+  for (const key of ["anyOf", "oneOf"]) {
+    if (!Array.isArray(source[key])) continue;
+    const branches = [...new Map((source[key] as unknown[]).map((branch) => slimSchema(branch, false)).map((branch) => [JSON.stringify(branch), branch])).values()];
+    if (branches.length === 1) Object.assign(out, branches[0]); else out[key] = branches;
+  }
+  if (source.items) out.items = slimSchema(source.items, false);
+  if (top && source.properties && typeof source.properties === "object") {
+    out.properties = Object.fromEntries(Object.entries(source.properties as Record<string, unknown>).map(([key, value]) => [key, slimSchema(value, false)]));
+    if (source.required) out.required = source.required;
+  }
+  return out;
+}
+
+export function slimNousTools(tools: NousToolDefinition[]): NousToolDefinition[] {
+  return [...tools.map((tool) => ({ ...tool, inputSchema: slimSchema(tool.inputSchema, true) as Record<string, unknown> })), toolSchemaTool];
+}
 
 const rpcSchema = z.object({ jsonrpc: z.literal("2.0"), id: z.union([z.string(), z.number()]).optional(), method: z.string().max(100), params: z.unknown().optional() });
 const callSchema = z.object({ name: z.string().max(100), arguments: z.record(z.string(), z.unknown()).optional(), _meta: z.record(z.string(), z.unknown()).optional() });
@@ -76,13 +112,28 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
       return answer({ protocolVersion: "2025-11-25", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "space-nous", version: "1.0.0" } });
     }
     if (method === "ping") return answer({});
-    if (method === "tools/list") {
+    const visibleTools = async () => {
       const tools = typeof deps.tools === "function" ? await deps.tools() : deps.tools;
-      return answer({ tools: [...(helper ? nousSubagentTools(tools) : tools), ...(deps.attachments?.tools ?? [])] });
+      return helper ? nousSubagentTools(tools) : tools;
+    };
+    if (method === "tools/list") {
+      const tools = await visibleTools();
+      return answer({ tools: [...(claims.deferred ? slimNousTools(tools) : tools), ...(deps.attachments?.tools ?? [])] });
     }
     if (method === "tools/call") {
       const call = callSchema.safeParse(params);
       if (!call.success) return { jsonrpc: "2.0", id, error: { code: -32602, message: "Invalid tool call." } };
+      if (call.data.name === NOUS_TOOL_SCHEMA) {
+        // DEV3D-029: OpenCode lists the tools as space_nous_<tool>, Codex as mcp__space_nous__<tool>; strip it like space_tool_result.
+        const asked = call.data.arguments?.names;
+        const names = Array.isArray(asked) ? asked.map((name) => String(name).replace(/^(?:mcp__.+?__|space_nous_(?=space_))/, "")) : null;
+        const tools = await visibleTools();
+        const found = Array.isArray(names) ? tools.filter((tool) => names.includes(tool.name)) : [];
+        const missing = Array.isArray(names) ? names.filter((name) => !found.some((tool) => tool.name === name)) : [];
+        const text = found.length ? JSON.stringify(found) + (missing.length ? `\nNo tool named ${missing.map(String).join(", ")}.` : "")
+          : `${NOUS_TOOL_SCHEMA} takes {"names": ["space_..."]}, names from your tool list.`;
+        return answer({ content: [{ type: "text", text }], isError: !found.length });
+      }
       if (helper && NOUS_SUBAGENT_EXCLUDED.has(call.data.name)) {
         return answer({ content: [{ type: "text", text: `${call.data.name} stays with Nous: say in your report what it should do.` }], isError: true });
       }
@@ -156,7 +207,7 @@ export function postToWorker<T>(socketPath: string, path: string, body: unknown,
         text = final ? "" : lines.pop() ?? "";
         for (const line of lines) {
           if (!line.trim()) continue;
-          let parsed: Record<string, unknown> | null = null;
+          let parsed: Record<string, unknown> | null;
           try { parsed = JSON.parse(line) as Record<string, unknown>; } catch { parsed = null; }
           if (parsed) settle(parsed);
         }

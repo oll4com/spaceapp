@@ -37,7 +37,7 @@ describe("LAN access rules", () => {
     expect(isLoopback("127.0.0.1")).toBe(true);
     expect(isLoopback("::ffff:127.0.0.1")).toBe(true);
     expect(isLoopback("::1")).toBe(true);
-    expect(isLoopback("10.254.240.1")).toBe(false);
+    expect(isLoopback("10.88.240.1")).toBe(false);
   });
 
   it("serves the LAN only the proxy routes, to allowed sources", () => {
@@ -48,7 +48,7 @@ describe("LAN access rules", () => {
     for (const path of ["/antigravity/v1internal:generateContent", "/stats", "/readyz", "/__space-gateway/status", "/__space-gateway/admin/codex/device", "/v10", "/"]) {
       expect(lanPathAllowed(path)).toBe(false);
     }
-    expect(lanDecision("127.0.0.1", "10.254.240.11", "/stats", lan)).toBe("allow");
+    expect(lanDecision("127.0.0.1", "10.88.240.11", "/stats", lan)).toBe("allow");
     expect(lanDecision(undefined, undefined, "/stats", lan)).toBe("allow");
     expect(lanDecision("10.20.0.207", "10.20.0.5", "/v1/responses", lan)).toBe("allow");
     expect(lanDecision("10.20.0.207", "10.20.0.5", "/__space-gateway/status", lan)).toBe("not_found");

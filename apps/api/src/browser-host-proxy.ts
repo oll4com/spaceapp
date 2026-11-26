@@ -194,7 +194,7 @@ export function createConfiguredBrowserSessionManager(options: {
 
 export type BrowserHostReadiness = "RUNNING" | "DISABLED" | "CAPACITY_MISMATCH";
 
-export function browserHostReadiness(health: BrowserHostHealth, _expectedCommit: string | null): BrowserHostReadiness {
+export function browserHostReadiness(health: BrowserHostHealth): BrowserHostReadiness {
   if (!health.status.enabled) return "DISABLED";
   if (!health.capacity || health.capacity.maxSessions < 8 || health.capacity.maxLiveWorkloads < 4) {
     return "CAPACITY_MISMATCH";

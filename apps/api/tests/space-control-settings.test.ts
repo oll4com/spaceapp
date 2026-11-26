@@ -115,7 +115,7 @@ describe("Control settings adapters", () => {
       pluginsService: mockPluginsService
     });
     expect(connectOutcome.status).toBe("COMPLETED");
-    expect(mockPluginsService.connectPlugin).toHaveBeenCalledWith({ pluginId: "builtin_docs" });
+    expect(mockPluginsService.connectPlugin).toHaveBeenCalledWith({ pluginId: "builtin_docs", credentials: {} });
   });
 
   it("executes appearance preferences mutation and persists", async () => {

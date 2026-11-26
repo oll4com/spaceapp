@@ -7,7 +7,7 @@ import {
   spaceCapabilitySnapshotSchema, type StorageReadiness, storageReadinessSchema, systemHealthHistorySchema,
   systemHealthRangeSchema, systemHealthSnapshotSchema, systemTopologySnapshotSchema, workerReadinessSchema
 } from "@space/contracts";
-import { nowIso, type SpaceStore } from "@space/runtime";
+import { makeSpaceId, nowIso, type SpaceStore } from "@space/runtime";
 import type { AuthConfig } from "./auth.js";
 import type { CliRuntimeVisibilityPolicy } from "./cli-runtime-visibility.js";
 import { getCodexAppServerStatus, runCodexAppServerHandshake, runCodexAppServerTurnSmoke } from "./codex-app-server.js";
@@ -119,7 +119,6 @@ async function buildLaunchReadinessReport(input: {
     vectorReadiness,
     latestCodexHandshake,
     latestCodexTurnSmoke,
-    turns,
     events,
     auditEvents,
     memoryEntries,
@@ -137,7 +136,6 @@ async function buildLaunchReadinessReport(input: {
     input.store.getMemoryVectorReadiness(input.config.memoryEmbeddingDimensions),
     input.store.getLatestCodexAppServerHandshake(),
     input.store.getLatestCodexAppServerTurnSmoke(),
-    input.store.listTurns(),
     input.store.listEvents(),
     input.store.listAuditEvents(),
     input.store.listMemoryEntries({ page: 1, pageSize: 100, sortOrder: "desc" }),
@@ -338,6 +336,20 @@ async function buildLaunchReadinessReport(input: {
  * ADMIN integration overview, audit log, MCP discovery smoke and memory readiness status; the parent retains
  * authentication, CSRF, errors and rate limits.
  */
+/** Discovery smoke; a VERIFIED run replaces the registry the MCP policy reads (tool schema hashes). */
+export async function refreshMcpCatalog(config: SpaceApiConfig, store: SpaceStore) {
+  const context = { gatewayStatus: await store.getMcpGatewayStatus(), servers: await store.listMcpServers() };
+  let discoveredCatalog: McpDiscoveryCatalog | null = null;
+  const result = await runMcpDiscoverySmoke(config, context, {
+    performDiscovery: async () => {
+      discoveredCatalog = await discoverMcpCatalog(config, context);
+      return { serverCount: discoveredCatalog.servers.length, toolCount: discoveredCatalog.tools.length };
+    }
+  });
+  if (result.status === "VERIFIED" && discoveredCatalog) await store.recordMcpDiscoveryCatalog(discoveredCatalog);
+  return result;
+}
+
 export function registerAdminIntegrationRoutes(app: FastifyInstance, options: {
   config: SpaceApiConfig;
   store: SpaceStore;
@@ -367,24 +379,14 @@ export function registerAdminIntegrationRoutes(app: FastifyInstance, options: {
   app.get("/api/admin/mcp/discovery-smoke", defaultRouteRateLimitOptions, async () => ({
     data: await store.getLatestMcpDiscoverySmoke()
   }));
+  // 15/11 04:41: ops.logs answered SCHEMA_HASH_NOT_ALLOWLISTED because the registry held the hash of the last manual
+  // smoke while the deployed server (and the allowlist) had moved on; each API start now records what it deploys.
+  if (config.mcpDiscoverySmokeEnabled) app.addHook("onReady", async () => {
+    void refreshMcpCatalog(config, store).then((result) => store.recordMcpDiscoverySmoke({ ...result, actorUserId: null, traceId: makeSpaceId("trace"), checkedAt: result.finishedAt }))
+      .catch((error: unknown) => app.log.warn({ err: error }, "MCP catalog refresh at start failed; POST /api/admin/mcp/discovery-smoke retries it"));
+  });
   app.post("/api/admin/mcp/discovery-smoke", defaultRouteRateLimitOptions, async (request) => {
-    const context = {
-      gatewayStatus: await store.getMcpGatewayStatus(),
-      servers: await store.listMcpServers()
-    };
-    let discoveredCatalog: McpDiscoveryCatalog | null = null;
-    const result = await runMcpDiscoverySmoke(config, context, {
-      performDiscovery: async () => {
-        discoveredCatalog = await discoverMcpCatalog(config, context);
-        return {
-          serverCount: discoveredCatalog.servers.length,
-          toolCount: discoveredCatalog.tools.length
-        };
-      }
-    });
-    if (result.status === "VERIFIED" && discoveredCatalog) {
-      await store.recordMcpDiscoveryCatalog(discoveredCatalog);
-    }
+    const result = await refreshMcpCatalog(config, store);
     const persistedActor = request.user ? await store.upsertUser(request.user) : null;
     const recorded = await store.recordMcpDiscoverySmoke({
       ...result,

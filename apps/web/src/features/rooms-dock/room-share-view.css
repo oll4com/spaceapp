@@ -1,0 +1,4 @@
+/* MU-007 (operator-approved 2026-10-17): in a room shared to view only, the pane cards show no action buttons. */
+.space-shell[data-view-only-room] .pane-card > header :is(.pane-actions, .pane-actions-fixed) {
+  display: none !important;
+}

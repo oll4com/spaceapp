@@ -10,7 +10,8 @@ import type { GatewayProviderDailyUsage, GatewayRepository } from "@space/db";
 export const GATEWAY_FREE_POOL_NAMES: Partial<Record<GatewayProvider, string>> = {
   INCEPTION: "Inception Labs", JINA: "Jina AI", FREEAI: "Free.ai", ADAPTION: "Adaption Labs", AGENTROUTER: "AgentRouter", MIXEDBREAD: "Mixedbread",
   AZURE_OPENAI: "Azure OpenAI", AMD_TOKEN_LAB: "AMD Token Lab", GROQ: "Groq", NVIDIA: "NVIDIA NIM", CLOUDFLARE_AI: "Cloudflare Workers AI",
-  GOOGLE_AI: "Gemini API (free tier)", OPENROUTER: "OpenRouter free models", ZAI: "Z.AI", SILICONFLOW: "SiliconFlow", OVH: "OVHcloud AI Endpoints", MISTRAL: "Mistral"
+  GOOGLE_AI: "Gemini API (free tier)", OPENROUTER: "OpenRouter free models", ZAI: "Z.AI", SILICONFLOW: "SiliconFlow", OVH: "OVHcloud AI Endpoints", MISTRAL: "Mistral",
+  BEDROCK: "Claude on Amazon Bedrock"
 };
 const TIER_DAYS = 30;
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);

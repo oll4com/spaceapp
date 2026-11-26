@@ -1,3 +1,5 @@
+import { NOUS_SAVE_REQUEST } from "./save-request.js";
+
 /**
  * Work a background turn must move before it may answer NOTHING_NEW (operator 31/10 22:19 BKK «δεν προχωράς τίποτα μόνο σου», plan
  * clipboard:ZWJJdBgHm64Z hold A): a request that looks finished, an operator request waiting 3+ minutes behind a busy pane, idle capacity
@@ -17,6 +19,8 @@ export interface NousTurnItem {
   paneName?: string;
   /** The open request's note key (request-done.ts). */
   requestKey?: string;
+  /** REQUEST with evidence it is finished: a follow-up naming it does not move it (17/11: ten Dones deferred 16 h behind an hourly low-mode follow-up). */
+  finished?: boolean;
   /** QUESTION: the ids an act names it by (the card's notification id, the copilot's question or review id). */
   refs?: string[];
   /** R37-1: a copilot review held for Nous, by its item id (mktpost:…, flmsg:…) and its card (notification:…). */
@@ -24,6 +28,10 @@ export interface NousTurnItem {
   notification?: string;
   /** Held even when the turn answers in words, like a question (the 90 % push, 13/11: 121 of 224 pushes got words and no tool call). */
   always?: boolean;
+  /** UTILIZATION: the panes to fill (CLI panes not working); one dispatch passed it while 12 of 17 sat free (21/11 04:40-05:20Z). */
+  need?: number;
+  /** Goal 5acd171d: what a left item's re-push is compared on when its line carries more than the item (the push's pane lists, a request's ages). */
+  shape?: string;
 }
 /** A tool call of the turn (helpers' calls count for their parent turn); `subjects` are toolSubjects' pane and plan keys. */
 export interface NousTurnAct { name: string; args: Record<string, unknown>; ok: boolean; subjects: string[] }
@@ -35,6 +43,8 @@ export interface NousTurnAct { name: string; args: Record<string, unknown>; ok: 
 export const NOUS_ITEM_HOLDS = 2;
 
 /** The acts that move an item (plan clipboard:ZWJJdBgHm64Z A); space_nous_outcome too, which the "looks finished" line itself offers. */
+/** A follow-up about idle capacity: the same words datedHolds reads to keep the next push quiet until it fires. */
+const UTILIZATION_NOTE = /\butili[sz]ation\b/i;
 const DISPATCH = new Set(["space_send_to_pane", "space_copilot_brief", "space_open_panes", "space_execute"]);
 const dispatches = (act: NousTurnAct) => DISPATCH.has(act.name)
   && (act.name !== "space_execute" || /"operation":"(?:prompt|open|reopen|start|resume)"/.test(JSON.stringify(act.args)));
@@ -79,8 +89,12 @@ export const itemActed = (item: NousTurnItem, acts: readonly NousTurnAct[]): boo
   item.kind === "REVIEW" ? acts.some((act) => decides(act, item))
     : item.kind === "QUESTION" ? acts.some((act) => settles(act) && names(act, item))
     // Idle capacity moves by a dispatch, helpers started, or the wait recorded (a follow-up saying what blocks the work and when to look again).
-    : item.kind === "UTILIZATION" ? acts.some((act) => act.ok && (dispatches(act) || act.name === "space_subagents" || (act.name === "space_nous_followup" && act.args.op === "add")))
-    : item.kind === "STUCK" ? acts.some((act) => unsticks(act) && names(act, item)) : acts.some((act) => counts(act) && names(act, item));
+    // 21/11 05:38-06:12Z (load 35-44 %, 2-4 of 19 working): a follow-up on another matter and "save to memory" closeouts (they shrink the pool) passed it.
+    : item.kind === "UTILIZATION" ? acts.some((act) => act.ok && (act.name === "space_subagents" || (act.name === "space_nous_followup" && act.args.op === "add" && UTILIZATION_NOTE.test(String(act.args.note ?? "")))))
+      || acts.filter((act) => act.ok && dispatches(act) && !NOUS_SAVE_REQUEST.test(String(act.args.text ?? ""))).reduce((sum, act) => sum + (Array.isArray(act.args.panes) ? Math.max(1, act.args.panes.length) : 1), 0) >= (item.need ?? 1)
+    : item.kind === "STUCK" ? acts.some((act) => unsticks(act) && names(act, item))
+    // A Done record needs no pane and no tokens, so no wait (low mode included) holds a finished request: its Done, a dispatch or a PENDING outcome moves it.
+    : acts.some((act) => counts(act) && !(item.finished && act.name === "space_nous_followup") && names(act, item));
 export const unhandledItems = (items: readonly NousTurnItem[], acts: readonly NousTurnAct[]): NousTurnItem[] => items.filter((item) => !itemActed(item, acts));
 
 /** What moves a held copilot question (the hold line and the pinned section say it the same way). */
@@ -99,7 +113,7 @@ export function renderItemsHold(reason: string, items: readonly NousTurnItem[], 
     + "Nous moves work on its own, not only when he asks). Act on each now: a request you checked finished in this turn goes to Done, one at a time with that check (space_request_done, or space_open_requests close of that one); "
     + "a request or plan that waits gets its next step sent to a pane (space_send_to_pane, space_copilot_brief, space_open_panes, space_execute prompt) "
     + "naming its id or plan, or its wait recorded (space_plan_update waitsOn, space_pane_checked WAITING_*, a space_nous_followup naming it); idle capacity gets parallel work started "
-    + "(a pane, space_subagents) or what blocks it recorded (space_nous_followup add); "
+    + "(a pane, space_subagents) or what blocks it recorded (space_nous_followup add naming utilization); "
     + "a stuck pane is restarted, stopped or closed (space_restart_pane, space_stop_pane, space_close_pane, space_execute); "
     + `${REVIEW_ACT_LINE}. `
     + `If something blocks an item, write it in words instead of NOTHING_NEW.${question}`;

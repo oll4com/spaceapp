@@ -517,7 +517,8 @@ export class ChessTournamentRunner {
     if (!state) return null;
     const contestants = new Map(state.contestants.map((contestant) => [contestant.id, contestant]));
     const summary = (game: ChessGame): ChessGameSummary => {
-      const { san, uci, stats: _stats, ...rest } = game;
+      const { san, uci, ...rest } = game;
+      delete rest.stats;
       return { ...rest, plies: san.length, recentSan: san.slice(-LIVE_SAN), lastUci: uci[uci.length - 1] ?? null };
     };
     const finished = state.games.filter((game) => game.status === "finished");
@@ -546,8 +547,9 @@ export class ChessTournamentRunner {
         .flatMap((standing, index) => {
           const contestant = contestants.get(standing.id);
           if (!contestant) return [];
-          const { opponents: _opponents, ...rest } = standing;
-          return [{ ...rest, rank: index + 1, contestant }];
+          const view: Omit<ChessStanding, "opponents"> & { opponents?: string[] } = { ...standing };
+          delete view.opponents;
+          return [{ ...view, rank: index + 1, contestant }];
         }),
       liveGames: running.map(summary),
       recentGames: finished

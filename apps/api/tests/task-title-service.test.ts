@@ -66,7 +66,7 @@ function fixture(nativeTitles?: Pick<NativeTaskTitles, "metadata">, extra: { art
     nativeManual,
     images,
   });
-  const generate = vi.fn(async (_prompt: string, _signal: AbortSignal) =>
+  const generate = vi.fn<(prompt: string, signal: AbortSignal) => Promise<string>>(async () =>
     JSON.stringify({
       title: "Workspace menu layout",
       description: "Improve workspace navigation and menu readability.",
@@ -714,10 +714,28 @@ describe("task title coordinator", () => {
       await f.repository.cooldowns("2026-09-08T10:00:07.000Z"),
     ).toHaveProperty("provider:free");
   });
+  it("skips a second free model of a provider resting for quota and reaches the next provider in the same run", async () => {
+    const f = fixture();
+    f.generate.mockRejectedValueOnce(new TitleProviderFailure(429, 27_923));
+    const sameProvider = vi.fn(async () => "{}");
+    const gateway = vi.fn(async () =>
+      JSON.stringify({ title: "Gateway title", description: "A clean task description", steps: [], earlierWork: "" }),
+    );
+    f.candidates.push(
+      { ...f.candidates[0], id: "free:second", generate: sameProvider },
+      { ...f.candidates[0], id: "gateway:model", providerId: "gateway", generate: gateway },
+    );
+    await f.service.observe(f.pane.id);
+    f.advance(6);
+    await f.service.tick();
+    expect(sameProvider).not.toHaveBeenCalled();
+    expect(gateway).toHaveBeenCalledTimes(1);
+    expect(f.store.getPane(f.pane.id).taskMetadata?.generationStatus).toBe("ready");
+  });
   it("keeps usable local metadata when the budget is exhausted", async () => {
     const f = fixture();
     await f.repository.setSettings(
-      taskTitleSettingsSchema.parse({ globalDayAttempts: 1 }),
+      taskTitleSettingsSchema.parse({ perTaskDayAttempts: 1 }),
     );
     await f.service.observe(f.pane.id);
     f.advance(6);
@@ -779,7 +797,7 @@ describe("summarized task title lines", () => {
     f.advance(61);
     await f.service.tick();
     const pane = f.store.getPane(f.pane.id);
-    expect(pane.title).toBe("Login 500 error fix");
+    expect(pane.title).toBe("Workspace menu layout");
     expect(pane.taskMetadata?.topics?.map((topic) => topic.title)).toEqual(["Workspace menu layout", "Login 500 error fix"]);
     expect(pane.taskMetadata?.steps).toEqual(["Workspace menu layout", "Login 500 error fix"]);
     expect(pane.taskMetadata?.description).toBe("Repair the failing login.");
@@ -797,7 +815,7 @@ describe("summarized task title lines", () => {
         await mkdir(join(path, ".."), { recursive: true });
         await writeFile(path, "png");
       }
-      const vision = vi.fn(async (_prompt: string, _signal: AbortSignal, _images?: readonly string[]) =>
+      const vision = vi.fn<(prompt: string, signal: AbortSignal, images?: readonly string[]) => Promise<string>>(async () =>
         reply({ sameTopic: false, title: "Fix login 500 error", summary: "The screenshot shows a failing login." }));
       f.candidates.unshift({ ...f.candidates[0], id: "free:vision", modelId: "vision", vision: true, generate: vision });
       f.setRequests(["φτιάξε αυτό"]);
@@ -849,7 +867,7 @@ describe("summarized task title lines", () => {
     f.setNative("11111111-2222-4333-8444-555555555555", "Claude newer title");
     await f.service.observe(f.pane.id);
     pane = f.store.getPane(f.pane.id);
-    expect(pane.title).toBe("Chess clock fix");
+    expect(pane.title).toBe("Claude saved title");
     expect(pane.taskMetadata?.topics?.map((topic) => topic.title)).toEqual(["Claude saved title", "Chess clock fix"]);
     expect(pane.taskMetadata?.nativeTitle).toBe("Claude newer title");
     await f.service.close();
@@ -971,6 +989,27 @@ describe("summarized task title lines", () => {
     expect(f.generate).not.toHaveBeenCalled();
     expect(f.store.getPane(f.pane.id).taskMetadata?.topics?.map((topic) => topic.title))
       .toEqual(["Improve workspace menu layout", "Repair the chess clock display"]);
+    await f.service.close();
+  });
+  it("keeps the first title as the pane title when the title lines overflow", async () => {
+    const f = fixture();
+    await f.repository.setSettings(taskTitleSettingsSchema.parse({ enabled: false }));
+    await f.service.observe(f.pane.id);
+    await f.service.tick();
+    const first = f.store.getPane(f.pane.id).title;
+    const requests = Array.from({ length: 14 }, (_, i) => `Repair widget number ${i + 1} display`);
+    for (let i = 1; i <= requests.length; i++) {
+      f.setRequests([first, ...requests.slice(0, i)]);
+      await f.service.observe(f.pane.id);
+      f.advance(61);
+      await f.service.tick();
+    }
+    const pane = f.store.getPane(f.pane.id);
+    const titles = pane.taskMetadata?.topics?.map((topic) => topic.title) ?? [];
+    expect(titles).toHaveLength(12);
+    expect(titles[0]).toBe(pane.title);
+    expect(pane.title).toBe(first);
+    expect(titles.at(-1)).toContain("number 14");
     await f.service.close();
   });
 });

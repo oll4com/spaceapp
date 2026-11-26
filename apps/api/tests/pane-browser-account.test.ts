@@ -52,6 +52,13 @@ describe("pane browser accounts", () => {
     vi.setSystemTime(Date.now() + 11 * 60_000);
     expect(await accounts.geminiAccountEmails(["g"])).toEqual(new Map([["g", "g@example.com"]]));
     expect(probe).toHaveBeenCalledTimes(2);
+    // No email this time: asked again after 5 minutes, not each minute (Slice 8 21/11).
+    vi.setSystemTime(Date.now() + 2 * 60_000);
+    await accounts.geminiAccountEmails(["g"]);
+    expect(probe).toHaveBeenCalledTimes(2);
+    vi.setSystemTime(Date.now() + 4 * 60_000);
+    await accounts.geminiAccountEmails(["g"]);
+    expect(probe).toHaveBeenCalledTimes(3);
   });
 
   it("runs one YouTube account operation per pane at a time, and a failure frees the pane", async () => {

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { InMemoryGatewayRepository } from "@space/db";
 import type { GatewayTrafficClass } from "@space/contracts";
 import { generateGatewayApiKey } from "../src/api-keys.js";
-import { makeRelayInput, registerMakeRelayRoutes } from "../src/providers/make/make-relay.js";
+import { MAKE_RELAY_OFF_HOLD_MS, makeRelayInput, registerMakeRelayRoutes } from "../src/providers/make/make-relay.js";
 import { RequestLogWriter } from "../src/request-log-writer.js";
 import { createGatewayServer } from "../src/server.js";
 
@@ -29,7 +29,7 @@ const answer: Relay = (body, res) => body.token === "relay-token"
   ? res.writeHead(200, { "x-make-input-tokens": "4520", "x-make-output-tokens": "753" }).end("Hello from Make")
   : res.writeHead(401).end("Unauthorized");
 
-async function setup(relay: Relay, opts: { model?: string | null; trafficClass?: GatewayTrafficClass; allowedModels?: string[]; dailyCredits?: number; used?: number } = {}) {
+async function setup(relay: Relay, opts: { model?: string | null; trafficClass?: GatewayTrafficClass; allowedModels?: string[]; dailyCredits?: number; used?: number; now?: () => number } = {}) {
   const { url, bodies } = await mockRelay(relay);
   const repository = new InMemoryGatewayRepository();
   const { plainKey, keyHash, keyPrefix } = generateGatewayApiKey();
@@ -39,13 +39,15 @@ async function setup(relay: Relay, opts: { model?: string | null; trafficClass?:
   const logs = new RequestLogWriter(repository, { intervalMs: 1 });
   const server = createGatewayServer({ repository, version: "test", credentialKeyPresent: () => true,
     routes: (app, helpers) => registerMakeRelayRoutes(app, helpers, { model: opts.model === undefined ? "gpt-5.6-luna" : opts.model, logs,
-      dailyCredits: opts.dailyCredits, usedTokens: async () => ({ inputTokens: opts.used ?? 0, outputTokens: 0 }),
+      dailyCredits: opts.dailyCredits, now: opts.now, usedTokens: async () => ({ inputTokens: opts.used ?? 0, outputTokens: 0 }),
       credentials: async () => ({ url, token: "relay-token" }) }) });
   closers.push(() => server.app.close());
   const chat = (payload: Record<string, unknown> = { model: "make/gpt-5.6-luna", messages: [{ role: "user", content: "Hi" }] }, headers: Record<string, string> = {}) =>
     server.app.inject({ method: "POST", url: "/pools/make/v1/chat/completions", headers: { authorization: `Bearer ${plainKey}`, ...headers }, payload });
+  const models = (headers: Record<string, string> = {}) =>
+    server.app.inject({ method: "GET", url: "/pools/make/v1/models", headers: { authorization: `Bearer ${plainKey}`, ...headers } });
   const logged = async () => { await logs.flush(); return repository.listRequestLogs({ limit: 10 }); };
-  return { chat, bodies, logged };
+  return { chat, models, bodies, logged };
 }
 
 describe("Make AI relay provider", () => {
@@ -72,6 +74,20 @@ describe("Make AI relay provider", () => {
       expect([response.statusCode, response.json().error.code]).toEqual([status, code]);
       expect((await make.logged())[0]).toMatchObject({ provider: "MAKE", status: "error", errorCode: code });
     }
+  });
+
+  it("holds calls after the relay queued one (scenario off), so Make queues no more, then tries again", async () => {
+    let clock = Date.parse("2026-11-15T10:00:00Z");
+    let off = true;
+    const make = await setup((body, res) => off ? res.writeHead(200).end("Accepted") : answer(body, res), { now: () => clock });
+    expect((await make.chat()).json().error.code).toBe("make_relay_no_answer");
+    const held = await make.chat();
+    expect([held.statusCode, held.json().error.code, held.headers["retry-after"]]).toEqual([503, "make_relay_no_answer", String(MAKE_RELAY_OFF_HOLD_MS / 1000)]);
+    expect(make.bodies).toHaveLength(1);
+    off = false;
+    clock += MAKE_RELAY_OFF_HOLD_MS;
+    expect((await make.chat()).statusCode).toBe(200);
+    expect(make.bodies).toHaveLength(2);
   });
 
   it("serves only BACKGROUND keys that name the model, never Claude Code or another coding agent", async () => {
@@ -108,6 +124,24 @@ describe("Make AI relay provider", () => {
     expect(exhausted.json().error.message).toContain("4 credits for today are used up");
     expect(Number(exhausted.headers["retry-after"])).toBeGreaterThan(0);
     expect(make.bodies).toHaveLength(1);
+  });
+
+  it("lists configured Make models via GET /pools/make/v1/models", async () => {
+    const make = await setup(answer, { model: "gpt-5.6-luna" });
+    const res = await make.models();
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      object: "list",
+      data: [{ id: "make/gpt-5.6-luna", object: "model", created: 0, owned_by: "make" }]
+    });
+
+    const offMake = await setup(answer, { model: null });
+    const offRes = await offMake.models();
+    expect(offRes.statusCode).toBe(200);
+    expect(offRes.json()).toEqual({ object: "list", data: [] });
+
+    const unauth = await offMake.models({ authorization: "Bearer invalid" });
+    expect(unauth.statusCode).toBe(401);
   });
 
   it("flattens a conversation into the relay's one input text", () => {

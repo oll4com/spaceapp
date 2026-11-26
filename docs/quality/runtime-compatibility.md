@@ -250,6 +250,14 @@ from and rolls back to. The canary from the change's worktree: `0.26.6-space.1` 
 its three Qwen pins (`qwen_package_json_sha256`, `qwen_package_lock_sha256`, `qwen_patcher_sha256`); that hotfix lands
 before the promote that carries this change.
 
+**Autohand rebased onto 0.9.12 on 2026-11-23** (the guarded update of 23/11 stopped at `PATCH_REBASE_REQUIRED`):
+`chunk-MM4RDHSM.js` is byte-identical, and the workspace-validation chunk is renamed `chunk-IFC7EBK3.js` →
+`chunk-LWBJZMZL.js` (upstream only dropped the auto `git init` of empty folders and made git optional; both patch targets
+are unchanged and unique), so the patch text stays and only the chunk name and its preimage (`05b9e630`) are re-pinned with
+the tarball SRI (equal to the registry's), SHA-256 and git head `b99bedf957` as `0.9.12-space.1`. node-llama-cpp 3.22.1
+still pulls simple-git ^3.36.0, so the 4.0.2 override stays (npm audit: the same 4 moderate findings as 0.9.9's). The canary
+from the change's worktree: `0.9.12-space.1` `PASS` 16/16. CLI maintenance installs it on stable after the promote.
+
 **Autohand rebased onto 0.9.9 on 2026-11-03** (ADAPTER-001; the scheduled canary of 2/11 blocked 0.9.9 with
 `PATCH_REBASE_REQUIRED`): both patched chunks of 0.9.9 (`chunk-MM4RDHSM.js`, `chunk-IFC7EBK3.js`) are byte-identical to
 0.9.8's, so the patch is unchanged; tarball SRI (equal to the registry's), SHA-256 and git head `ec2372d5eb` are re-pinned
@@ -523,8 +531,15 @@ afterwards):**
   - Droid 0.244.0 and Muse 1.4.14: the process starts, then asks for a sign-in (a Factory login; a browser login or an API key).
   - Kimi, DeepSeek and Qwen: no pane opens, because the runtime needs a sign-in or setup first (LOGIN_REQUIRED or SETUP_REQUIRED).
 - **Not proven:** `ADD_CLAUDE_CODE_CLI` and `ADD_GEMINI_CLI` (the proof
-  room was not created or did not become ready, twice); host-loss resume for every runtime. Runtimes that need the operator's
-  sign-in first: Droid, Muse, Kimi, DeepSeek, Qwen, Grok, Cursor, Copilot and Autohand.
+  room was not created or did not become ready, twice); host-loss resume end to end for any runtime other than OpenCode (proven
+  2026-11-14, below). Runtimes that need the operator's sign-in first: Droid, Muse, Kimi, DeepSeek, Qwen, Grok, Cursor, Copilot and
+  Autohand; a lab has no account for them, so they stay contract-tested (accepted trade-off in EXT-G-6).
+- **2026-11-14, host-loss resume end to end (EXT-G-6; `~/agent-workspace/reports/20261114-extg6-hostloss/summary.json`):** a fresh
+  public SpaceApp 1.2.2 install (small profile) in a lab CT. An OpenCode pane started through Space Control stored a code word in
+  native session `ses_e239…`. The pane host container (`spaceapp-cli`) was killed with SIGKILL and started again; the API kept
+  running and still recorded the session RUNNING. The next Space Control prompt recreated the CLI (`launchMode` RESUME, "OpenCode
+  CLI host process recreated with exact resume after host loss.", relaunched with `--continue` in the room's folder), and the
+  answer carried `<word>-RECALLED`. OpenCode's own store shows both turns in the same `ses_` and no second session.
 - **2026-11-04 (plan clipboard:NtzEOzE3Ew00 step 9, P8; `~/agent-workspace/reports/20261104-plan-NtzEOzE3Ew00-step9-p8/summary.json`):**
   - Hermes exact resume, stable Agent Proof room: pane B's session was the folder's newest. Space's resume of pane A answered
     NATIVE_RESUME and launched `hermes --tui --resume local-1d2cc6cb…` (A's), and the pane showed A's prompt.
@@ -537,7 +552,7 @@ afterwards):**
 
 | Runtime | start | send | interrupt | native resume | reconnect |
 | --- | --- | --- | --- | --- | --- |
-| OpenCode | CT SA UF; LP pass (C) | CT; LP pass (C), browser-typed LP fail (see below) | CT; LP pass (C) | REFERENCE + provider selection: CT SA UF; exact session resume LP pass (C, stable 2026-11-04, the running session replaced) | live host CT; host loss resumes (CT); LP U |
+| OpenCode | CT SA UF; LP pass (C) | CT; LP pass (C), browser-typed LP fail (see below) | CT; LP pass (C) | REFERENCE + provider selection: CT SA UF; exact session resume LP pass (C, stable 2026-11-04, the running session replaced) | live host CT; host loss resumes (CT); host loss LP pass (C, public 1.2.2 lab install 2026-11-14: pane host container killed, same `ses_` answered the next prompt, see below) |
 | Codex | CT SA UF (resolved model required); LP pass (I) | CT; LP pass (I) | CT; LP pass (C, dev 2026-11-03; failed 2026-10-16 before its fix) | REFERENCE (thread): CT SA UF; resume picker LP pass (R); exact thread resume LP pass (C, dev 2026-11-03, live process) | live host CT; host loss resumes once a thread is bound; browser reattach LP pass (I) |
 | Claude Code | CT SA UF; LP pass (I) | CT; LP pass (I) | CT; LP pass (C, dev 2026-11-03) | REFERENCE + picker fallback: CT SA UF; exact session resume LP pass (C, stable 2026-11-03) | live host CT; host loss resumes; browser reattach LP pass (I) |
 | Gemini | CT SA UF; LP pass (C), (I stable and dev 2026-11-02) | CT; LP pass (C), (I stable and dev 2026-11-02) | CT; LP pass (C) | REFERENCE (conversation id, `agy --conversation <id>` from the wrapper) + provider selection: CT SA (env_keep) UF; wrapper live check 2026-10-30 (see below); id recorded = id agy prints on exit, LP pass (C); resume by id LP pass (C, dev 2026-11-02, after the account and reference fixes) | live host CT; host loss resumes; browser reattach LP pass (I, stable 2026-11-02) |

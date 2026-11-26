@@ -64,7 +64,7 @@ export function HarnessPane({ pane, workspaceTextSize, isVisible = true }: Harne
             ) ?? "null",
           )?.sessionId,
         );
-      } catch {}
+      } catch { /* frame not ready or cross-origin: nothing selected yet */ }
     }
     function onMessage(event: MessageEvent) {
       if (

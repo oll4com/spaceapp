@@ -285,7 +285,6 @@ export function describeDotApproval(payload: DotApprovalPayload): string {
     const args = payload.arguments;
     const quote = (value: unknown) => typeof value === "string" ? `: “${value.slice(0, 300)}”` : "";
     switch (payload.tool) {
-      case "memory.save": return `Save to the shared Space memory that every agent reads${quote(args.title ?? args.body)}`;
       case "chat.send": return `Send a shared chat message${quote(args.text ?? args.content)}`;
       case "chat.react": return "React to a shared chat message";
       case "clipboard.save": case "clipboard.save_plan": return `Save to your clipboard${quote(args.title ?? args.text)}`;

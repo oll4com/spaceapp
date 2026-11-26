@@ -27,6 +27,13 @@ export function cliCanaryHealth(dir = CLI_CANARY_REPORTS, now = Date.now()) {
   return cached.value;
 }
 
+/** "PASS · 2.1.323", or "PASS · 2.0.0 (runs 1.0.0)" when the tested version differs from the running one: only what the verdict knows. */
+function canaryValue(row: { verdict: string; candidateVersion: string | null; liveCurrentTarget: string | null }) {
+  const { candidateVersion: tested, liveCurrentTarget: runs } = row;
+  const version = tested && runs && tested !== runs ? `${tested} (runs ${runs})` : tested ?? runs;
+  return version ? `${row.verdict} · ${version}` : row.verdict;
+}
+
 async function collect(dir: string, now: number): Promise<Omit<SystemHealthService, "id" | "label" | "checkedAt">> {
   let names: string[];
   try {
@@ -47,7 +54,7 @@ async function collect(dir: string, now: number): Promise<Omit<SystemHealthServi
       { label: "Last run", value: summary.canaryLastRanAt ?? "Unavailable" },
       ...summary.rows.slice(0, 11).map((row) => ({
         label: row.cli.slice(0, 100),
-        value: `${row.verdict} ${row.candidateVersion ?? "?"} (runs ${row.liveCurrentTarget ?? "?"})`.slice(0, 160)
+        value: canaryValue(row).slice(0, 160)
       }))
     ]
   };

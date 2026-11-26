@@ -4,7 +4,6 @@ import {
   useImperativeHandle,
   useRef,
   useState,
-  type KeyboardEvent,
   type PointerEvent,
   type ReactNode
 } from "react";

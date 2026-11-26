@@ -127,6 +127,30 @@ describe("Room Agent tools", () => {
     expect(idle.result).toContain("send the answer as its next prompt (send_to_pane)");
   });
 
+  it("names a closed pane instead of Space Control's \"No panes match this selection.\" with paneId null (slice 17, 14/11: held model changes)", async () => {
+    const c = fixture();
+    const listed = await c.deps.listPanes(c.room.id);
+    (c.deps as { listPanes: typeof c.deps.listPanes }).listPanes = async () => listed.map((pane) => pane.id === c.bob.id ? { ...pane, isClosed: true } : pane);
+    expect(await c.tools.execute("set_pane_model", { pane: c.bob.id, modelId: "gpt-5.5", when: "after_turn" }, c.ctx))
+      .toEqual({ ok: false, display: "Bob is closed", result: "Bob is closed: reopen it first, then set the model again." });
+    expect(await c.tools.execute("send_to_pane", { panes: [c.bob.id, "Dana"], text: "Step 2." }, c.ctx))
+      .toMatchObject({ ok: false, result: "Bob is closed: reopen it first, then send the text again." });
+    expect(c.deps.controlExecute).not.toHaveBeenCalled();
+    expect(await c.tools.execute("send_to_pane", { panes: ["Dana"], text: "Step 2." }, c.ctx)).toMatchObject({ ok: true });
+  });
+
+  it("names a pane that closed between the check and the send instead of \"No panes match this selection.\" (15/11 01:40, Bob after \"save and close\")", async () => {
+    const c = fixture();
+    c.deps.controlExecute.mockImplementationOnce(async () => {
+      c.store.updatePane(c.bob.id, { isClosed: true });
+      throw new Error("No panes match this selection.");
+    });
+    expect(await c.tools.execute("send_to_pane", { panes: ["Bob"], text: "Step 2." }, c.ctx))
+      .toEqual({ ok: false, display: "Bob is closed", result: "Bob is closed: reopen it first, then send the text again.", refused: "Bob is closed: reopen it first, then send the text again." });
+    c.deps.controlExecute.mockRejectedValueOnce(new Error("No panes match this selection."));
+    expect(await c.tools.execute("send_to_pane", { panes: ["Dana"], text: "Step 2." }, c.ctx)).toEqual({ ok: false, display: "Sending to Dana failed", result: "No panes match this selection." });
+  });
+
   it("answers a question Claude waits on at an empty prompt as its next prompt, and a delivered send settles the wait (daily review 2026-10-22)", async () => {
     const c = fixture("❯ ");
     const base = await c.deps.inspectPane(c.bob as never);

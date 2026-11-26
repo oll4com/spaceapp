@@ -8,6 +8,8 @@ import { fitWhole } from "./retrieval.js";
 /** Which copilot sources a wired copilot service answers for: only their questions can be checked against the open items. */
 export const COPILOT_SOURCE_OF = { job: "JOB_COPILOT", mail: "MAIL_COPILOT", marketing: "MARKETING_COPILOT", freelance: "FREELANCE_COPILOT", design: "DESIGN",
   appStudio: "APP_STUDIO", video: "VIDEO", security: "SECURITY_COPILOT", monitoring: "MONITORING_COPILOT" } as const satisfies Record<string, NotificationSource>;
+/** Operator 24/11 12:50 BKK: a copilot's items wait in its own queue, never at a CLI prompt, so they bury nothing and hold no new work. */
+export const COPILOT_SOURCES: ReadonlySet<string> = new Set(Object.values(COPILOT_SOURCE_OF));
 
 /**
  * Ask Last step 7, every minute (like the decisions withdrawn once decided in the rail): (a) a copilot question record whose question no
@@ -61,7 +63,7 @@ export function heldForNousNote(item: Pick<SpaceNotification, "id" | "source" | 
   // other copilot NEEDS_USER are Nous's first; only hands, money, ID, his own tests or a send he asked to read go on to the operator.
   if (!isCopilotQuestion(item) && (item.kind === "NEEDS_USER" || item.kind === "NEEDS_YOU")) {
     return ` (held for you up to 60 min, not shown to the operator: do it yourself or have an agent do it (space_send_to_pane ${JSON.stringify({ pane: item.paneId })} with the answer or the way: `
-      + `a code in a connected mailbox, the Vault's login, an agent's browser), or resolve it with space_resolve_notification ${item.id} when it needs nobody (information, done, a duplicate); `
+      + `a code in a connected mailbox, the Vault's login, an agent's browser), or resolve it with space_resolve_notification ${item.source === "AGENT" ? `{"notification":"${item.id}","report":"<the id of its pane report, newer than the ask, saying done>"}` : item.id} when it needs nobody (information, done, a duplicate); `
       + `only what needs the operator's own hands, money, ID, his own tests or a send he asked to read goes on his card with ref ${item.id} and your recommended option)`;
   }
   // Plan clipboard:7L5KyWp3kQsP step 1: the exact answer call, so no read stands between Nous and the answer.

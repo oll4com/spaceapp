@@ -108,7 +108,6 @@ export default function DesktopMemoryGraph({
   loading,
   error,
   totalNodes,
-  totalEdges,
   truncated,
   atlasPositions,
   showTitles = true
@@ -459,12 +458,6 @@ export default function DesktopMemoryGraph({
     rendererRef.current?.refresh();
   }, [displayMode, labelsVisible]);
 
-  const visibleEdges = revealedCount >= nodes.length
-    ? edges.length
-    : edges.filter((edge) => {
-      const graph = rendererRef.current?.getGraph();
-      return graph?.hasNode(edge.source) && graph.hasNode(edge.target);
-    }).length;
   const effectiveError = error ?? renderError;
   const taxonomy = memoryGraphTaxonomySummary(nodes, edges);
 

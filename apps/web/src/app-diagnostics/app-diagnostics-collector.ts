@@ -60,7 +60,6 @@ const safeIdPattern = /^[A-Za-z0-9][A-Za-z0-9:_-]{5,99}$/;
 const safeCorrelationIdPattern = /^(?:correlation|req|request|trace):[A-Za-z0-9_-]{3,80}$/;
 const maxSnapshotPayloadBytes = 240 * 1024;
 const flickerMutationThreshold = 6;
-const flickerWindowMs = 500;
 const flickerSnapshotCooldownMs = 2_000;
 const structuralRoles = new Set([
   "alert", "button", "cell", "checkbox", "dialog", "form", "grid", "gridcell",

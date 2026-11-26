@@ -642,7 +642,7 @@ describe("Space public demo app", () => {
 
     await openWorkspaceDock("Show links");
     const links = await screen.findByRole("region", { name: "Links library" });
-    expect(within(links).getByText("Space Guide")).toBeTruthy();
+    expect(await within(links).findByText("Space Guide")).toBeTruthy();
     expect(links.querySelector(".link-favicon img")).toBeNull();
 
     fireEvent.click(within(links).getByRole("button", { name: "Add link" }));
@@ -655,7 +655,7 @@ describe("Space public demo app", () => {
     // The Workspace Utilities Quick Links entry opens the same session-only library.
     fireEvent.click(await workspaceAction("Quick Links", "Utilities"));
     const quickLinksLibrary = await screen.findByRole("region", { name: "Links library" });
-    expect(within(quickLinksLibrary).getByText("Space Guide")).toBeTruthy();
+    expect(await within(quickLinksLibrary).findByText("Space Guide")).toBeTruthy();
     expect(within(quickLinksLibrary).getByText("Demo runbook")).toBeTruthy();
 
     // The Quick Links dialog is opened from the collapsed room toolbar rail.
@@ -663,7 +663,7 @@ describe("Space public demo app", () => {
     fireEvent.click(screen.getByRole("button", { name: "Hide room toolbar" }));
     fireEvent.click(await screen.findByRole("button", { name: "Quick Links" }));
     const quickLinks = await screen.findByRole("dialog", { name: "Quick Links" });
-    expect(within(quickLinks).getByText("Space Guide")).toBeTruthy();
+    expect(await within(quickLinks).findByText("Space Guide")).toBeTruthy();
     fireEvent.click(within(quickLinks).getByRole("button", { name: "Close Quick Links" }));
     fireEvent.click(screen.getByRole("button", { name: "Show room toolbar" }));
 

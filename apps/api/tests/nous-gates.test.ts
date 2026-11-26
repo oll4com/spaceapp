@@ -9,6 +9,7 @@ import { createNotificationService } from "../src/notifications/service.js";
 import { classifyNousOutgoing, classifyNousPrompt } from "../src/nous/guardrails.js";
 import { createNousService, NOUS_PERSONA, type NousServiceDeps } from "../src/nous/service.js";
 import { confirmedControlBatch, createNousTools, namedSites, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
+import { marketingStaleHeld, marketingStaleReviewDetail } from "../src/nous/copilot-actions.js";
 import { cardStems } from "../src/nous/pane-notices.js";
 import { createNousFiles } from "../src/nous/files.js";
 import { createNousMailContext } from "../src/nous/mail-context.js";
@@ -166,6 +167,9 @@ describe("Nous's gates", () => {
     expect(executeAction).toHaveBeenCalledTimes(1);
     const notes = (await repository.listMessages(owner, 50)).filter((message) => message.kind === "DECISION").map((message) => message.content);
     expect(notes.find((text) => text.includes("Acme"))).toContain("approved (read from their words)");
+    // Slice 22 (15/11 12:32Z): the note names its id and that this SpaceApp ran it, never a linked SpaceApp's decision of the same title.
+    expect(notes.find((text) => text.includes("Acme"))).toContain(`decision ${yes.id} on "Send the proposal to Acme?"`);
+    expect(notes.find((text) => text.includes("Acme"))).toContain("This SpaceApp ran the action (not a linked one): ran");
     expect(notes.find((text) => text.includes("Gamma"))).toContain("The action was not run.");
     await service.idle(owner);
   });
@@ -265,6 +269,10 @@ describe("Nous's gates", () => {
         expect(ask.mock.calls.at(-1)?.[0]).toMatchObject({ refs: { fileHashes: [{ ref: pdf.id,
           sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length }] } });
       }
+      // A document not in hand still waits for a mail search and the portal's try (e27547c109, one gate with agents' cards).
+      const fetch = await tools.execute("space_ask_operator", { category: "EXTERNAL", title: "Download the October bank statement PDF", body: "Needed for the tax return.",
+        recommendation: "Yes. Prediction: yes (80%)", checked: ["Agent Files: no statement"] }, { owner: "user:operator", turnId: "nous_turn:r65", callId: "toolu_r65b", traceId: "trace:r65b" });
+      expect(fetch.result).toMatch(/fetches a document itself. Name a mail search and a try at the portal/);
       await chmod(join(dir, "signed.pdf"), 0o000);
       expect((await files.decisionFiles("user:operator", [pdf.id]))[0]?.error).toContain("private");
       await chmod(join(dir, "signed.pdf"), 0o644);
@@ -421,6 +429,28 @@ describe("Nous's gates", () => {
     expect(ask).toHaveBeenCalledTimes(1);
   });
 
+  it("Daily Nous errors 21/11: a Marketing review past its time is not asked to approve without a new scheduledAt (2 decisions failed MARKETING_STALE at 11:05Z)", async () => {
+    const ask = vi.fn(async (input: { title: string }) => ({ id: "nous_decision:new", status: "OPEN", title: input.title }));
+    const items = [{ copilot: "MARKETING", kind: "REVIEW", id: "mktpost:stale0000001", paneId: null, title: "Review the LinkedIn post", detail: marketingStaleReviewDetail("2026-11-18T10:55:00.000Z") },
+      { copilot: "MARKETING", kind: "REVIEW", id: "mktpost:fresh0000001", paneId: null, title: "Review the LinkedIn post", detail: "" }];
+    const tools = createNousTools({ ask, decisions: async () => [], copilots: { items: async () => items }, rooms: async () => [], listPanes: async () => [] } as unknown as NousToolDeps);
+    const ctx = { owner: "user:operator", turnId: "nous_turn:stale", callId: "toolu_stale", traceId: "trace:stale" };
+    const question = (itemId: string, extra: Record<string, unknown> = {}, decision = "approve") => tools.execute("space_ask_operator", { category: "EXTERNAL", title: `Post ${itemId} ${decision}`, body: "Post it.",
+      recommendation: "Yes. Πρόβλεψη: ναι (85%)", action: { type: "COPILOT", copilot: "MARKETING", item: "REVIEW", itemId, paneId: null, decision, ...extra }, checked: ["The Marketing rail: the post waits"] }, ctx);
+    const held = await question("mktpost:stale0000001");
+    expect(held).toMatchObject({ ok: false, refused: true });
+    expect(held.result).toMatch(/MARKETING_STALE: its time 2026-11-18T10:55:00.000Z.*scheduledAt/s);
+    expect(ask).not.toHaveBeenCalled();
+    expect((await question("mktpost:stale0000001", { scheduledAt: "2026-11-22T10:00:00.000Z" })).ok).toBe(true);
+    expect((await question("mktpost:stale0000001", {}, "reject")).ok).toBe(true);
+    expect((await question("mktpost:fresh0000001")).ok).toBe(true);
+    // Overnight 21/11: a yes answered after the post went stale is held (not "Failed", so not a failed decision); any other error stays an error.
+    const late = marketingStaleHeld(new Error("MARKETING_STALE: this post's time 2026-11-18T10:55:00.000Z is more than 24 hours past; approve it with a new future scheduledAt (or null to publish now)."));
+    expect(late).toMatch(/^Held: MARKETING_STALE: .*stays in review; ask again with a new scheduledAt, or reject it\.$/);
+    expect(marketingStaleHeld(new Error("Marketing Copilot is not available."))).toBeNull();
+    expect(marketingStaleHeld("MARKETING_STALE: x")).toBeNull();
+  });
+
   it("R56: a copilot item whose yes failed is asked once more; a second failed yes, or an item that no longer waits, still holds", async () => {
     // 3/11 17:50-20:09 UTC: decision 56b40039 (X reply mktpost:pxnVPA94GcS6) was approved but its action never ran (the API restarted); every
     // re-ask was held "already decides … its outcome: none recorded", and Kate had to file a new review for the same text.
@@ -547,6 +577,25 @@ describe("Nous's gates", () => {
     expect(ask).toHaveBeenCalledTimes(4);
   });
 
+  it("holds a prediction against the operator's latest written answer on the subject, past the hour (Daily Nous errors 14/11, 787e0034)", async () => {
+    const ask = vi.fn(async (input: { title: string }) => ({ id: "nous_decision:new", status: "OPEN", title: input.title }));
+    const at = new Date(Date.now() - 4 * 3_600_000).toISOString();
+    const decisions = [{ id: "nous_decision:6e715469", ownerUserId: "user:operator", category: "DIRECTION", title: "Πόσα Upwork Connects να αγοράσουμε για τις προτάσεις με χαμηλές τιμές;",
+      body: "", options: [], recommendation: null, refs: {}, action: null, status: "ANSWERED", answer: "20 Connects ($3.00 + ΦΠΑ = $3.72), όπως στις 7/11", outcome: null, createdAt: at, answeredAt: at }];
+    const tools = createNousTools({ ask, decisions: async () => decisions } as unknown as NousToolDeps);
+    const ctx = { owner: "user:operator", turnId: "nous_turn:ledger", callId: "toolu_ledger", traceId: "trace:ledger" };
+    const question = (answer: string, body = "Τα Connects τελείωσαν.") => tools.execute("space_ask_operator", { category: "DIRECTION",
+      title: "Νέα αγορά Connects στο Upwork: 20 ($3,72) ή 80 ($14,88);", body, recommendation: "Αγορά.", prediction: { answer, confidence: 55 },
+      options: ["20 Connects ($3,72)", "80 Connects ($14,88)", "Καμία αγορά"], refs: {}, checked: ["The decisions: 6e715469"] }, ctx);
+    expect(await question("80 Connects ($14,88)")).toMatchObject({ ok: false, display: "nous_decision:6e715469 answered this subject",
+      result: expect.stringContaining('which is "20 Connects ($3,72)"; your prediction "80 Connects ($14,88)" goes against it.') });
+    expect(ask).not.toHaveBeenCalled();
+    // Predicted from the answer, or saying what changed since it: asked.
+    expect((await question("20 Connects ($3,72)")).ok).toBe(true);
+    expect((await question("80 Connects ($14,88)", "Από το nous_decision:6e715469 οι προτάσεις διπλασιάστηκαν.")).ok).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(2);
+  });
+
   it("asks only with a prediction: the field, written in one form and stored, or the recommendation's line; the ledger scores the stored one (R12-11)", async () => {
     // 29/10: 698c318f and e755da44 were asked without «Πρόβλεψη»: 5 of the day's 17 decisions could not be scored.
     const ask = vi.fn(async (input: { title: string }) => ({ id: "nous_decision:new", status: "OPEN", title: input.title }));
@@ -575,6 +624,9 @@ describe("Nous's gates", () => {
     // 13/11 review: "prediction: expected object, received string" (repeating since 11/11): the line as a string is the object.
     await tools.execute("space_ask_operator", { ...base, title: "Start the lab?", options: [], recommendation: "Start it.", prediction: "Πρόβλεψη: ναι (90%)" }, ctx);
     expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ refs: { prediction: { answer: "yes", confidence: 90 } } }), expect.anything());
+    // Daily Nous errors 14/11 slice 6: a string with no confidence is refused with both forms named.
+    expect(await tools.execute("space_ask_operator", { ...base, recommendation: "The lab.", prediction: "yes" }, ctx))
+      .toMatchObject({ ok: false, refused: true, result: expect.stringContaining('prediction: takes {"answer": "yes", "confidence": 90}') });
     await tools.execute("space_ask_operator", { ...base, recommendation: "The lab.", prediction: "(β) Shop 65%" }, ctx);
     expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ refs: { prediction: { answer: "(β) Shop", confidence: 65 } } }), expect.anything());
     // 13/11 02:49 ("γ" refused against "γ: μένουμε …"): an option's letter names that option.
@@ -650,11 +702,17 @@ describe("Nous's gates", () => {
     covered = true;
     expect(await decide()).toMatchObject({ ok: true });
     expect(ask).toHaveBeenCalledTimes(3);
+    // 25/11 example.invalid: a review naming the customer's deposit receipt is Space's action to run, never "Fetch the document first".
+    expect(await tools.execute("space_ask_operator", { category: "EXTERNAL", title: "Approve the reply to Maria", body: "Η απάντηση ζητά το αποδεικτικό κατάθεσης.",
+      recommendation: "Approve. Πρόβλεψη: ναι (90%)", options: ["Approve", "Hold"], checked: ["The thread: Maria asked twice"],
+      action: { type: "COPILOT", copilot: "MAIL", item: "REVIEW", itemId: "mailrev:other001", paneId: "pane:mail0001", decision: "approve" },
+      refs: { sendKind: "mail-review", mailThread: { account: "ops@example.invalid", threadId: "t-other" } } }, ctx)).toMatchObject({ ok: true });
+    expect(ask).toHaveBeenCalledTimes(4);
     expect(ask.mock.calls[2]![0]).toMatchObject({ action: { type: "COPILOT", copilot: "MAIL", item: "REVIEW", itemId: "mailrev:fresh001", decision: "approve" },
       refs: { sendKind: "mail-review", mailThread: { account: "ops@example.invalid", threadId: "t-fresh" } } });
     expect((await send("t-held")).ok).toBe(true);
     expect((await send("t-hour")).ok).toBe(true);
-    expect(ask).toHaveBeenCalledTimes(5);
+    expect(ask).toHaveBeenCalledTimes(6);
   });
 
   it("leaves a held Security or Monitoring change to its rail review card for the card's first hour (R15-3)", async () => {
@@ -799,6 +857,10 @@ describe("Nous's gates", () => {
     trains = [{ ...trains[0]!, approvedSha: "1a2d8e72aa11" }];
     expect(await release()).toMatchObject({ ok: false, display: "nous_decision:9f8a7fba already approved this" });
     expect(ask).toHaveBeenCalledTimes(1);
+    // 14/11 (run-spaceapp 1.2.2 opened with 2f43b41031 and no approval yet, 1.2.1's yes c4bc1e39 under 24 h old): a new train is asked.
+    trains = [{ ...trains[0]!, version: "1.2.2", sourceSha: "2f43b41031aa", approvedSha: null as unknown as string }];
+    expect((await release()).ok).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(2);
   });
 
   it("asks for a hotfix approval only once its ticket waits on the stable queue (R10 hotfix-grant: ticket first, one decision)", async () => {
@@ -866,13 +928,16 @@ describe("Nous's gates", () => {
     const ctx = { owner: "user:operator", turnId: "nous_turn:g1", callId: "toolu_g", traceId: "trace:g" };
     const base = { title: "Which logo?", body: "Two drafts are ready.", recommendation: "The blue one. Πρόβλεψη: ναι (80%)" };
     const direction = await tools.execute("space_ask_operator", { ...base, category: "DIRECTION", options: ["Blue", "Red"] }, ctx);
-    expect(direction).toMatchObject({ ok: false, result: expect.stringContaining("checked is required: Ask last (operator goal ee5a573e") });
+    // Daily Nous errors 22/11 09:32Z: required in the schema the model reads, and a call without it is held (refused), never a failed call.
+    expect(direction).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Invalid arguments: checked: Ask last (operator goal ee5a573e") });
+    expect(direction.result).toContain('Example: "checked": ["Space Memory: no entry on X"');
+    expect(nousToolDefinitions({ copilots: true }).find((tool) => tool.name === "space_ask_operator")?.inputSchema.required).toContain("checked");
     const actionless = await tools.execute("space_ask_operator", { ...base, category: "EXTERNAL" }, ctx);
     expect(actionless.ok).toBe(false);
     expect(ask).not.toHaveBeenCalled();
     const approval = { ...base, category: "EXTERNAL", title: "Send the reply",
       action: { type: "COPILOT", copilot: "MAIL", item: "REVIEW", itemId: "mailrev:1", paneId: null, decision: "APPROVE" } };
-    expect(await tools.execute("space_ask_operator", approval, ctx)).toMatchObject({ ok: false, result: expect.stringContaining("checked is required") });
+    expect(await tools.execute("space_ask_operator", approval, ctx)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("checked:") });
     expect(ask).not.toHaveBeenCalled();
     const checked = ["Space Memory: no logo preference", "Design pane: both drafts delivered 27/10"];
     expect((await tools.execute("space_ask_operator", { ...approval, checked }, ctx)).ok).toBe(true);
@@ -1040,6 +1105,21 @@ describe("Nous's gates", () => {
       expect(notify).toHaveBeenCalledTimes(3);
     });
 
+    it("(1b) refuses a hands card to run a command on a host Space Memory holds access to, unless triedStored says it failed (10/11 B2 root-on-pve)", async () => {
+      const memory = [entry("memory_ref:3f9a0dbc", "Proxmox Host Access & Root Access (canonical)", "Agents reach pve as root over ssh (example.invalid); pve-az the same way."),
+        entry("space_memory:pkg00001", "Release notes", "package.json version bump as root of the repo")];
+      const { card, notify } = setup({ cardMemory: async () => memory });
+      const b2 = { text: "B2: run the rclone sync as root on pve", steps: ["ssh root@pve", "rclone sync /backups b2:space"] };
+      expect(await card("Max", b2)).toMatchObject({ ok: false, refused: true, display: "An agent has access to this host",
+        result: expect.stringContaining("Space Memory [memory_ref:3f9a0dbc]") });
+      expect(await card("Max", { text: "Τρέξε την εντολή στο pve-az για το B2" })).toMatchObject({ refused: true, display: "An agent has access to this host" });
+      // A host no memory holds access to, a file name, or a stored access that failed: the card goes.
+      expect((await card("Max", { text: "Run the installer on hetzner-box.example.net" })).ok).toBe(true);
+      expect((await card("Max", { text: "Run npm install after editing package.json" })).ok).toBe(true);
+      expect((await card("Max", { ...b2, triedStored: "ssh root@pve: Permission denied (publickey) at 10:02 UTC" })).ok).toBe(true);
+      expect(notify).toHaveBeenCalledTimes(3);
+    });
+
     it("(2) refuses a sign-in item for a site with a Vault login or a sign-in record unless triedStored says the stored method failed (4/11 X @oll4com)", async () => {
       const siteSignins = new InMemorySiteSigninsRepository();
       await siteSignins.record("user:operator", { site: "claude.ai", method: "GOOGLE", googleAccountEmail: "ntheogr@gmail.com", outcome: "SUCCESS" }, "test");
@@ -1151,6 +1231,16 @@ describe("Nous's gates", () => {
         checked: ["Disk: 2 GB of Toggl backups"] }, ctx)).toMatchObject({ refused: true, result: expect.stringContaining("keep over delete") });
     });
 
+    it("(4e) 1155: a card asking a step the operator already said cannot work is held once with the rule (18/11 REVIEW: Azure account cards)", async () => {
+      const operatorRules = async () => [{ id: "space_memory:az01", title: "Operator: Azure account", body: "Το Azure account δεν γίνεται με την κάρτα." }];
+      const { card, notify } = setup({ operatorRules } as Partial<NousToolDeps>);
+      const item = { text: "Open an Azure account with the saved card", question: "Go ahead?", options: ["Yes", "No"], recommended: "Yes" };
+      expect(await card("Dana", item)).toMatchObject({ refused: true, result: expect.stringContaining("the operator already said this cannot work: operator rule [space_memory:az01]") });
+      expect((await card("Dana", item)).ok).toBe(true);
+      expect((await card("Max", { ...item, ruleDiffers: "A new card was added on 20/11" })).ok).toBe(true);
+      expect(notify).toHaveBeenCalledTimes(2);
+    });
+
     it("(4b) refuses an item a card closed in the last 2 hours already asked, on any pane (13/11 REVIEW: one npm 2FA link on 3 cards)", async () => {
       const closedSince = vi.fn(async () => [{ id: "notification:npm00001", paneId: "pane:dana0001", title: "Dana needs you", status: "RESOLVED", resolvedAt: "2026-11-12T09:12:00.000Z",
         updatedAt: "2026-11-12T09:12:00.000Z", payload: { items: [{ text: "npm 2FA link for run-spaceapp 1.2.0: open it and approve the publish" }] } }]);
@@ -1160,6 +1250,22 @@ describe("Nous's gates", () => {
       expect(Date.now() - (closedSince.mock.calls[0] as unknown as [string, number])[1]).toBeGreaterThanOrEqual(2 * 3_600_000);
       expect(notify).not.toHaveBeenCalled();
       expect((await card("Dana", { text: "Approve the npm 2FA link for the run-spaceapp 1.2.0 publish", ruleDiffers: "The first link expired before it was used" })).ok).toBe(true);
+    });
+
+    it("(4c) a plan's card meets the same hold: Space's plan card the operator answered asked it (14/11 nous_msg:f8a4d2df); its own open card is no twin", async () => {
+      const plan = { id: "clipboard:plan0001abcd", roomId: "room:alex0001", source: "PLAN", title: "run-spaceapp 1.2.2" };
+      const plans = { get: async (_owner: string, id: string) => id === plan.id ? plan : null, list: async () => [plan] };
+      const ask = "Pick the logo variant for the run-spaceapp 1.2.2 release notes";
+      const own = { id: "notification:plan0002", paneId: null, source: "NOUS", dedupeKey: `nous:plan:${plan.id}`, title: plan.title, status: "OPEN", updatedAt: "2026-11-14T10:40:00.000Z",
+        payload: { planId: plan.id, items: [{ text: ask }] } };
+      const answered = { ...own, id: "notification:plan0001", status: "ACKED", ackedAt: "2026-11-14T10:41:00.000Z",
+        payload: { planId: plan.id, derived: true, ask: { question: `This plan waits on you: ${ask}`, options: ["Done"] } } };
+      const planCard = (tools: ReturnType<typeof setup>["tools"]) => tools.execute("space_notify_operator", { plan: plan.id, title: plan.title, items: [{ text: ask }], checked: ["The plan: waits on this"] }, ctx);
+      const held = setup({ plans, open: async () => [own], closedSince: async () => [answered] } as never);
+      expect(await planCard(held.tools)).toMatchObject({ refused: true, display: "A card asked this in the last 2 hours", result: expect.stringContaining("notification:plan0001") });
+      expect(held.notify).not.toHaveBeenCalled();
+      const free = setup({ plans, open: async () => [own], closedSince: async () => [] } as never);
+      expect((await planCard(free.tools)).ok).toBe(true);
     });
 
     it("(5) two panes, one subject, one card: the same ref, thread or site holds the second whatever its words (plan clipboard:USQ6ktIIN_1D step 9)", async () => {
@@ -1314,7 +1420,7 @@ describe("Nous's gates", () => {
     const call = vi.fn(async (input: { body: { site?: string } }) => ({ status: "LISTED", auditId: null, items: input.body.site === "upwork.com"
       ? [{ handle: "vault:h1", label: "Upwork", origins: ["https://www.upwork.com"], account: "ntheogr@gmail.com" }]
       : input.body.site === undefined ? [{ handle: "vault:h2", label: "Shop (shop.owner@example.net)", origins: ["https://shop.example.net"] }] : [] }));
-    const ask = vi.fn(async (input: { title: string }, _options?: object) => ({ id: "nous_decision:acc0001", status: "OPEN", title: input.title }));
+    const ask = vi.fn<(input: { title: string }, options?: object) => Promise<{ id: string; status: string; title: string }>>(async (input) => ({ id: "nous_decision:acc0001", status: "OPEN", title: input.title }));
     const notify = vi.fn(async () => ({ ok: true, display: "Sent the card", result: "ok" }));
     const andy = { id: "pane:andy0001", roomId: "room:gates1", paneName: "Andy", title: "Andy", mode: "TERMINAL", isClosed: false };
     const tools = createNousTools({ ask, rooms: async () => [{ id: "room:gates1", name: "Main" }], listPanes: async () => [andy], siteSignins, vault: { agent: { call } },
@@ -1386,7 +1492,7 @@ describe("Nous's gates", () => {
 
   it("names a site's Vault logins and mail on an EXTERNAL ask, and refuses a support message once until the sign-in and the mailbox were tried (R13-12)", async () => {
     // 29/10 12:46 6dffcd55: an Upwork support message; the account signs in with Google and Upwork's mail sat in a connected mailbox.
-    const ask = vi.fn(async (input: { title: string }, _options?: object) => ({ id: "nous_decision:sup0001", status: "OPEN", title: input.title }));
+    const ask = vi.fn<(input: { title: string }, options?: object) => Promise<{ id: string; status: string; title: string }>>(async (input) => ({ id: "nous_decision:sup0001", status: "OPEN", title: input.title }));
     const call = vi.fn(async (input: { body: { site?: string } }) => ({ status: "LISTED", auditId: null, items: input.body.site === "upwork.com"
       ? [{ handle: "vault:h1", label: "Upwork", origins: ["https://www.upwork.com"], account: "ntheogr@gmail.com" }] : [] }));
     const mailContext = vi.fn(async () => ['Mail from upwork.com in 30 days: ntheogr@gmail.com: 4 threads, newest 2026-10-28 "Your account"']);

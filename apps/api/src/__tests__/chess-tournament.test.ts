@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChessContestant, ChessMoveRequest, ChessMoveRequester } from "../chess/chess-players.js";
 import { registerChessBenchmarkRoutes } from "../chess/chess-routes.js";
 import {
@@ -192,6 +192,8 @@ describe("chess tournament runner", () => {
     // White gave up the queen for a pawn: Black is 8 points ahead.
     expect(game.reason).toBe("adjudication");
     expect(game.result).toBe("0-1");
+    // A summary never carries the full move lists or per-side stats.
+    for (const key of ["san", "uci", "stats"]) expect(game).not.toHaveProperty(key);
   });
 
   it("retries an illegal answer once and counts it", async () => {
@@ -207,6 +209,7 @@ describe("chess tournament runner", () => {
     const rows = (await runner.snapshot())!.standings;
     expect(rows.reduce((sum, row) => sum + row.illegalReplies, 0)).toBe(1);
     expect(rows.reduce((sum, row) => sum + row.fallbackMoves, 0)).toBe(0);
+    for (const row of rows) expect(row).not.toHaveProperty("opponents");
   });
 
   it("plays random moves for a failing provider and forfeits on the third strike", async () => {
@@ -595,8 +598,8 @@ describe("chess CLI providers", () => {
     const calls: Array<Record<string, unknown>> = [];
     const requester = createChessMoveRequester({
       claudeProfile: async () => "crew",
-      runCliMove: async ({ signal: _signal, ...input }) => {
-        calls.push(input);
+      runCliMove: async (input) => {
+        calls.push({ ...input, signal: undefined });
         return '{"move":"e2e4"}';
       },
     });
@@ -611,6 +614,24 @@ describe("chess CLI providers", () => {
     await expect(createChessMoveRequester()({ contestant: player, system: "SYS", prompt: "PROMPT", signal })).rejects.toThrow(
       "CLI moves need the Space worker."
     );
+  });
+
+  it("plays the API-credits Claude player as Claude Code on Claude Max, never on the spent key (nous_msg:0dfab66c)", async () => {
+    const { createChessMoveRequester } = await import("../chess/chess-players.js");
+    const calls: Array<Record<string, unknown>> = [];
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    try {
+      const requester = createChessMoveRequester({ claudeProfile: async () => "crew", runCliMove: async (input) => { calls.push({ ...input, signal: undefined }); return '{"move":"e2e4"}'; } });
+      const player: ChessContestant = {
+        id: "space-gateway-claude/claude-haiku-5-5@low", modelId: "space-gateway-claude/claude-haiku-5-5", providerId: "space-gateway-claude", modelName: "Claude Haiku 5.5", reasoningEffort: "low", displayName: "Claude Haiku 5.5 · low",
+      };
+      expect((await requester({ contestant: player, system: "SYS", prompt: "PROMPT", signal: new AbortController().signal })).text).toBe('{"move":"e2e4"}');
+      expect(calls).toEqual([{ runtimeId: "cli:claude", model: "claude-haiku-5-5", effort: "low", claudeProfile: "crew", prompt: "SYS\n\nPROMPT" }]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("asks the worker for CLI moves over its socket and stops a move on abort", async () => {

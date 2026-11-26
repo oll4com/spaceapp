@@ -13,6 +13,15 @@ describe("Space API config", () => {
       .toMatchObject({ harnessEnabled: true, harnessOrigin: "http://127.0.0.1:8100" });
   });
 
+  it("reads the VPN routes' SOCKS5 proxies only from SPACE_VPN_SOCKS_PROXIES (review 1.2.1)", () => {
+    expect(getApiConfig({}).vpnSocksProxies).toEqual({});
+    expect(getApiConfig({ SPACE_VPN_SOCKS_PROXIES: " greece=10.20.1.2:1080, nord=10.20.4.2:1080 " }).vpnSocksProxies)
+      .toEqual({ greece: "10.20.1.2:1080", nord: "10.20.4.2:1080" });
+    for (const bad of ["direct=10.20.0.2:1080", "lisbon=10.20.1.2:1080", "greece=10.20.1.2", "greece"]) {
+      expect(() => getApiConfig({ SPACE_VPN_SOCKS_PROXIES: bad })).toThrow(/SPACE_VPN_SOCKS_PROXIES/);
+    }
+  });
+
   it("uses its own package version without npm or with stale parent npm metadata", () => {
     const expected = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
     expect(getApiConfig({}).version).toBe(expected);

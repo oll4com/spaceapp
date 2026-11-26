@@ -1,3 +1,4 @@
+/* eslint-disable no-control-regex -- matching terminal escape and control characters is the point of this file */
 export interface TerminalInputSegment {
   data: string;
   display: "visible" | "hidden";

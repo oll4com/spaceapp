@@ -24,7 +24,9 @@ export const SPACE_GATEWAY_MIGRATIONS = [
   "0312_gateway_zai_siliconflow_ovh_pools.sql",
   "0313_gateway_mistral_pool.sql",
   "0314_gateway_cloud_claude_pools.sql",
-  "0321_cpu_report_indexes.sql"
+  "0321_cpu_report_indexes.sql",
+  "0336_space_gateway_reset_credit_grants.sql",
+  "0352_gateway_request_log_project_idx.sql"
 ] as const;
 
 /** Space files that also change Space's own tables: only their gateway statements are applied (each must still match the file). */

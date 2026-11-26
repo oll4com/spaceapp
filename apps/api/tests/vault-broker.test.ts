@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   generateVaultSigningKey, generateVaultTransportKey, newVaultHandle, openWithVaultPrivateKey, sealToVaultPublicKey,
   sealVaultEnvelope, signVaultMessage, splitVaultRootKey, vaultBase64url, vaultDelegationCertificateSchema, vaultDelegationOperatorMessage,
-  vaultDigest, vaultRandomBytes, vaultUnlockChallengeMessage, verifyVaultCertificate, vaultSignupGrantOperatorMessage, vaultSignupGrantCertificateSchema, VAULT_DELEGATION_TECHNICAL_MAX_ITEMS, type VaultFieldRole
+  vaultDigest, vaultOperatorRequestMessage, vaultRandomBytes, vaultUnlockChallengeMessage, verifyVaultCertificate, vaultSignupGrantOperatorMessage, vaultSignupGrantCertificateSchema, VAULT_DELEGATION_TECHNICAL_MAX_ITEMS, type VaultFieldRole
 } from "@space/contracts";
 import { createVaultBroker, createVaultBrokerHttpServer, vaultSocketPosture, type VaultBrokerCore } from "../src/vault/broker-server.js";
 import { VaultBrokerRefusedError, createSocketVaultBroker } from "../src/vault/broker-client.js";
@@ -27,12 +27,13 @@ async function start(ark = vaultRandomBytes(32), stateDir?: string, now?: () => 
   const state = stateDir ?? join(root, "state");
   // The move pin is this test user's (as root's on a host) in a folder of its own.
   const movePeerPath = join(root, "pin", "move-peer.json");
-  const core = await createVaultBroker({ ark, stateDir: state, ...(now ? { now } : {}), movePeerPath, movePeerOwnerUid: process.getuid!() });
+  const linkPeerDir = join(root, "link-peers");
+  const core = await createVaultBroker({ ark, stateDir: state, ...(now ? { now } : {}), movePeerPath, movePeerOwnerUid: process.getuid!(), linkPeerDir });
   const socketPath = join(root, "broker.sock");
   const server = createVaultBrokerHttpServer(core);
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
   servers.push(server);
-  return { ark, state, core, movePeerPath, client: createSocketVaultBroker(socketPath) };
+  return { ark, state, core, movePeerPath, linkPeerDir, client: createSocketVaultBroker(socketPath) };
 }
 
 async function pin(path: string, peer: VaultBrokerCore, mode = 0o644) {
@@ -311,6 +312,105 @@ describe("space-vault-broker server move without an unlock (operator 20/10, 31/1
   });
 });
 
+describe("space-vault-broker Vault sync over a Space Link (plan clipboard:TcX66vjNuZDv step 2)", () => {
+  it("moves the share and the delegation only to the broker the unlock key's consent names; agents fill there at once", async () => {
+    const source = await enrolled();
+    const { handle, fillEnvelopes, request } = await delegation(source);
+    const signed = await source.client.delegate(request);
+    const target = await start();
+    const consent = async (body: { transportKey: string; signingKey: string }, key = source.unlock.privateKey) => {
+      const claims = { linkId: "link:synthetic-link-1", issuedAt: new Date().toISOString(), ...body };
+      return { ...claims, operatorSignature: await signVaultMessage(key, vaultOperatorRequestMessage("link-sync", { ownerUserId: owner, vaultId: source.vaultId, ...claims })) };
+    };
+    const keys = { transportKey: b64.encode(target.core.transportPublicKey), signingKey: b64.encode(source.core.signingPublicKey) };
+    const link = await consent(keys);
+    const out = { ownerUserId: owner, vaultId: source.vaultId, unlockPublicKey: source.unlockPublicKey, serverShareEnvelope: source.serverShareEnvelope,
+      delegation: { certificate: signed.certificate, keyEnvelope: signed.keyEnvelope } };
+    // No pin needed, but only the operator's signature and only from the broker it names.
+    expect((await post(source.core, "/v1/move-out", { ...out, link: await consent(keys, (await generateVaultSigningKey()).privateKey) })).body).toEqual({ error: "LINK_SIGNATURE_REFUSED" });
+    expect((await post(source.core, "/v1/move-out", { ...out, link: await consent({ ...keys, signingKey: b64.encode(target.core.signingPublicKey) }) })).body).toEqual({ error: "LINK_NOT_THIS_BROKER" });
+    const moved = await post(source.core, "/v1/move-out", { ...out, link });
+    expect(moved.status).toBe(200);
+    const sealed = moved.body as { sealedServerShare: never; sealedFillKey: never };
+
+    const serverShareEnvelope = await target.client.sealServerShare({ ...source.scope, sealedServerShare: sealed.sealedServerShare, unlockPublicKey: source.unlockPublicKey });
+    const moveIn = { ownerUserId: owner, vaultId: source.vaultId, certificate: signed.certificate, sealedFillKey: sealed.sealedFillKey, unlockPublicKey: source.unlockPublicKey, serverShareEnvelope };
+    // A consent naming another broker lands nowhere else.
+    const other = await start();
+    expect((await post(other.core, "/v1/move-in", { ...moveIn, link })).body).toEqual({ error: "LINK_NOT_THIS_BROKER" });
+    const landed = await target.client.moveIn({ ...moveIn, link });
+    expect(JSON.stringify([moved.body, landed])).not.toContain(SENTINEL);
+    const host = await generateVaultTransportKey();
+    const use = await post(target.core, "/v1/use", useRequest(source, landed.certificate, handle));
+    const answer = await post(target.core, "/v1/fill", { capability: (use.body as { capability: unknown }).capability, keyEnvelope: landed.keyEnvelope, fieldEnvelopes: fillEnvelopes[handle], replyPublicKey: b64.encode(host.publicKey) });
+    expect(JSON.parse(new TextDecoder().decode(await openWithVaultPrivateKey(host.privateKey, host.publicKey, (answer.body as { sealedFields: unknown }).sealedFields, source.scope)))).toEqual({ PASSWORD: SENTINEL });
+
+    // B turning access off (or A's stop) raises its floor: the same generation never lands again.
+    await target.client.revoke({ ownerUserId: owner, vaultId: source.vaultId, generation: 2 });
+    await expect(target.client.moveIn({ ...moveIn, link })).rejects.toMatchObject({ reason: "GENERATION_RETIRED" });
+  });
+});
+
+describe("space-vault-broker Vault sync on a root-pinned link (operator rule 4d47dcab, plan clipboard:TcX66vjNuZDv step 7)", () => {
+  const linkId = "link:synthetic-link-1";
+  const writePin = async (dir: string, body: Record<string, unknown>, mode = 0o644) => {
+    await mkdir(dir, { recursive: true, mode: 0o755 });
+    await writeFile(join(dir, `${body.linkId ?? linkId}.json`), JSON.stringify(body), { mode });
+    await chmod(join(dir, `${body.linkId ?? linkId}.json`), mode);
+  };
+  it("takes an unsigned consent only from the keys root pinned for that link and person; the signed path is unchanged", async () => {
+    const source = await enrolled();
+    const { handle, fillEnvelopes, request } = await delegation(source);
+    const signed = await source.client.delegate(request);
+    const target = await start();
+    const keys = { transportKey: b64.encode(target.core.transportPublicKey), signingKey: b64.encode(source.core.signingPublicKey) };
+    const link = { linkId, issuedAt: new Date().toISOString(), ...keys };
+    const out = { ownerUserId: owner, vaultId: source.vaultId, unlockPublicKey: source.unlockPublicKey, serverShareEnvelope: source.serverShareEnvelope,
+      delegation: { certificate: signed.certificate, keyEnvelope: signed.keyEnvelope } };
+    const moveOut = () => post(source.core, "/v1/move-out", { ...out, link });
+    // No pin, a pin others may write, another link's pin, another person's or other keys, or the receiving side's pin: refused.
+    expect((await moveOut()).body).toEqual({ error: "LINK_NOT_PINNED" });
+    expect(await source.client.linkPin(linkId)).toEqual({ pinned: false });
+    await writePin(source.linkPeerDir, { linkId, ownerUserId: owner, ...keys, transportKey: keys.transportKey }, 0o666);
+    expect((await moveOut()).body).toEqual({ error: "LINK_NOT_PINNED" });
+    await rm(join(source.linkPeerDir, `${linkId}.json`));
+    await writePin(source.linkPeerDir, { linkId: "link:synthetic-link-2", ownerUserId: owner, ...keys });
+    expect((await moveOut()).body).toEqual({ error: "LINK_NOT_PINNED" });
+    const sending = { linkId, ownerUserId: owner, transportKey: keys.transportKey, signingKey: b64.encode(target.core.signingPublicKey) };
+    for (const bad of [{ ...sending, ownerUserId: "user:someone-else" }, { ...sending, transportKey: b64.encode((await start()).core.transportPublicKey) }, { ...sending, deviceId: "appdev:synthetic-device" }]) {
+      await writePin(source.linkPeerDir, bad);
+      expect((await moveOut()).body).toEqual({ error: "LINK_PIN_MISMATCH" });
+    }
+    await writePin(source.linkPeerDir, sending);
+    expect(await source.client.linkPin(linkId)).toEqual({ pinned: true, ...sending });
+    const moved = await moveOut();
+    expect(moved.status).toBe(200);
+    const sealed = moved.body as { sealedServerShare: never; sealedFillKey: never };
+
+    const serverShareEnvelope = await target.client.sealServerShare({ ...source.scope, sealedServerShare: sealed.sealedServerShare, unlockPublicKey: source.unlockPublicKey });
+    const moveIn = { ownerUserId: owner, vaultId: source.vaultId, certificate: signed.certificate, sealedFillKey: sealed.sealedFillKey, unlockPublicKey: source.unlockPublicKey, serverShareEnvelope, link };
+    const receiving = { linkId, ownerUserId: owner, transportKey: b64.encode(source.core.transportPublicKey), signingKey: keys.signingKey, deviceId: "appdev:synthetic-device" };
+    await expect(target.client.moveIn(moveIn)).rejects.toMatchObject({ reason: "LINK_NOT_PINNED" });
+    for (const bad of [{ ...receiving, signingKey: b64.encode(target.core.signingPublicKey) }, { ...receiving, deviceId: undefined }, { ...receiving, ownerUserId: "user:someone-else" }]) {
+      await writePin(target.linkPeerDir, bad);
+      await expect(target.client.moveIn(moveIn)).rejects.toMatchObject({ reason: "LINK_PIN_MISMATCH" });
+    }
+    await writePin(target.linkPeerDir, receiving);
+    const landed = await target.client.moveIn(moveIn);
+    expect(JSON.stringify([moved.body, landed])).not.toContain(SENTINEL);
+    const host = await generateVaultTransportKey();
+    const use = await post(target.core, "/v1/use", useRequest(source, landed.certificate, handle));
+    const answer = await post(target.core, "/v1/fill", { capability: (use.body as { capability: unknown }).capability, keyEnvelope: landed.keyEnvelope, fieldEnvelopes: fillEnvelopes[handle], replyPublicKey: b64.encode(host.publicKey) });
+    expect(JSON.parse(new TextDecoder().decode(await openWithVaultPrivateKey(host.privateKey, host.publicKey, (answer.body as { sealedFields: unknown }).sealedFields, source.scope)))).toEqual({ PASSWORD: SENTINEL });
+
+    // A signature still decides when present, pin or not: a wrong one is refused, the operator's goes through.
+    const claims = { ...link, issuedAt: new Date().toISOString() };
+    const bySignature = async (key: Uint8Array) => ({ ...claims, operatorSignature: await signVaultMessage(key, vaultOperatorRequestMessage("link-sync", { ownerUserId: owner, vaultId: source.vaultId, ...claims })) });
+    expect((await post(source.core, "/v1/move-out", { ...out, link: await bySignature((await generateVaultSigningKey()).privateKey) })).body).toEqual({ error: "LINK_SIGNATURE_REFUSED" });
+    expect((await post(source.core, "/v1/move-out", { ...out, link: await bySignature(source.unlock.privateKey) })).status).toBe(200);
+  });
+});
+
 describe("space-vault-broker socket posture (M1, operator decision Option B)", () => {
   async function socketFixture() {
     const { createServer } = await import("node:net");
@@ -487,9 +587,9 @@ describe("space-vault-broker logins agents add join the delegation without an un
     const seal = (text: string) => sealToVaultPublicKey(inbox.publicKey, new TextEncoder().encode(text), vault.scope);
     const extend = (certificate: unknown, entry: Record<string, unknown>) => post(vault.core, "/v1/delegate-pending", { ownerUserId: owner, vaultId: vault.vaultId, certificate,
       keyEnvelope: signed.keyEnvelope, inboxKeyEnvelope: signed.inboxKeyEnvelope, entry: { sealedUsername: null, sealedPassword: null, ...entry } });
-    const fillWith = async (certificate: unknown, itemHandle: string, fieldEnvelopes: unknown, origin: string) => {
+    const fillWith = async (certificate: unknown, itemHandle: string, fieldEnvelopes: unknown, origin: string, fields = ["PASSWORD"]) => {
       const host = await generateVaultTransportKey();
-      const use = await post(vault.core, "/v1/use", useRequest(vault, certificate, itemHandle, { origin }));
+      const use = await post(vault.core, "/v1/use", useRequest(vault, certificate, itemHandle, { origin, fields }));
       if (use.status !== 200) return use.body;
       const answer = await post(vault.core, "/v1/fill", { capability: (use.body as { capability: unknown }).capability, keyEnvelope: signed.keyEnvelope, fieldEnvelopes, replyPublicKey: b64.encode(host.publicKey) });
       return JSON.parse(new TextDecoder().decode(await openWithVaultPrivateKey(host.privateKey, host.publicKey, (answer.body as { sealedFields: unknown }).sealedFields, vault.scope)));
@@ -512,6 +612,15 @@ describe("space-vault-broker logins agents add join the delegation without an un
     expect(after.certificate.claims.items.find((item) => item.handle === second.handle)?.origins).toEqual(["https://login.example"]);
     expect(await fillWith(after.certificate, second.handle, after.fieldEnvelopes, "https://login.example")).toEqual({ PASSWORD: "SYNTHETIC-changed" });
     expect((await extend(certificate, { handle: second.handle, origin: "https://login.example", sealedUsername: await seal("other"), sealedPassword: await seal("x") })).body).toEqual({ error: "BAD_ENTRY" });
+    // An authenticator key read from a setup QR (SET_OTP, nous_msg:cb10eefe6cc544e7af63ff64) joins the existing item as its OTP field, sealed only.
+    const otp = await extend(after.certificate, { handle: second.handle, origin: "https://login.example", sealedOtp: await seal("JBSWY3DPEHPK3PXP") });
+    expect(otp.status).toBe(200);
+    const withOtp = otp.body as { certificate: { claims: { items: Array<{ handle: string; fields: string[] }> } }; fieldEnvelopes: Record<string, unknown> };
+    expect(withOtp.certificate.claims.items.find((item) => item.handle === second.handle)?.fields).toEqual(expect.arrayContaining(["PASSWORD", "OTP"]));
+    expect(Object.keys(withOtp.fieldEnvelopes)).toEqual(["OTP"]);
+    expect(JSON.stringify(otp.body)).not.toContain("JBSWY3DPEHPK3PXP");
+    expect(await fillWith(withOtp.certificate, second.handle, withOtp.fieldEnvelopes, "https://login.example", ["OTP"])).toEqual({ OTP: "JBSWY3DPEHPK3PXP" });
+    expect((await extend(after.certificate, { handle: second.handle, origin: "https://login.example", sealedUsername: await seal("other"), sealedOtp: await seal("JBSWY3DPEHPK3PXP") })).body).toEqual({ error: "BAD_ENTRY" });
     expect((await extend(certificate, { handle: newVaultHandle("vault_item"), origin: "https://new.example/path", sealedPassword: await seal("x") })).body).toEqual({ error: "BAD_ENTRY" });
     // An entry sealed to another key, or this delegation's older generation, opens nothing.
     const stranger = await generateVaultTransportKey();

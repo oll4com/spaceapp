@@ -88,6 +88,7 @@ export function ChatLauncherMenu({
     const focusFrame = window.requestAnimationFrame(() => enabledButtons(popupRef.current)[0]?.focus());
     return () => {
       window.cancelAnimationFrame(focusFrame);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- focus returns to the trigger mounted at close time, on purpose
       if (closeIntentRef.current === "dismissal" && triggerRef.current?.isConnected) triggerRef.current.focus();
     };
   }, [triggerRef]);

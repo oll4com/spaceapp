@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiProviderAccount, GatewayAnthropicBillingReport } from "@space/contracts";
 import {
   anthropicProviderAccount,
@@ -19,6 +19,10 @@ const bill = (lastError: string | null = null): GatewayAnthropicBillingReport =>
 });
 
 describe("api provider balance services", () => {
+  // Hermetic: the list also reads the host's real provider keys; without this every case waits on live provider APIs and times out.
+  beforeEach(() => { vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline in tests"); })); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
   it("discovers keys from environment and files", async () => {
     // Hermetic: the environment wins over the key files, so the host's own keys are not needed.
     vi.stubEnv("OPENROUTER_API_KEY", " test-openrouter-key ");

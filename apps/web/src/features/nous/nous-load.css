@@ -17,7 +17,7 @@
 .nous-load-linked { display: grid; gap: 0.3rem; font-size: 0.74rem; color: var(--dock-text); }
 .nous-load-linked p, .nous-load-linked ul { margin: 0; }
 .nous-load-linked ul { list-style: none; padding: 0; display: grid; gap: 0.25rem; }
-.nous-load-linked li { display: flex; justify-content: space-between; gap: 0.5rem; overflow-wrap: anywhere; }
+.nous-load-linked li { overflow-wrap: anywhere; }
 .nous-load-stale { color: var(--dock-muted); }
 .nous-load-part-label { color: var(--dock-text); }
 .nous-load-part-value { text-align: right; color: var(--dock-text); font-variant-numeric: tabular-nums; }
@@ -44,6 +44,7 @@
 .nous-score-value.is-negative { color: var(--dock-danger); }
 .nous-score-value.is-positive { color: var(--dock-success); }
 .nous-score-changes { margin: 0; display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.nous-score-period { margin: 0; color: var(--dock-muted); font-size: 0.75rem; }
 .nous-score-change {
   padding: 0.12rem 0.5rem; border: 1px solid var(--dock-border); border-radius: 999px; color: var(--dock-muted);
   font-size: 0.72rem; font-variant-numeric: tabular-nums; white-space: nowrap;
@@ -101,3 +102,9 @@
 .nous-token-usage .nous-load-bar { grid-column: 1 / -1; height: 0.32rem; margin: 0.1rem 0; }
 .nous-token-usage .nous-load-part-detail { grid-column: 1 / -1; }
 .nous-token-usage .nous-load-parts .nous-load-parts { grid-column: 1 / -1; margin: 0.15rem 0 0.2rem 0.8rem; padding-left: 0.5rem; border-left: 1px solid var(--dock-border, currentColor); gap: 0.25rem; }
+/* Linked SpaceApps (operator nous_msg:766c70a6): any number, scrolled past a dozen rows' height. */
+.nous-load-linked ul { max-height: 18rem; overflow-y: auto; }
+.nous-load-linked li { display: grid; gap: 0.1rem; }
+.nous-load-linked-head { display: flex; justify-content: space-between; gap: 0.5rem; }
+.nous-load-linked-head small, .nous-load-linked-parts { color: var(--dock-muted); }
+.nous-load-linked-parts { font-size: 0.68rem; }

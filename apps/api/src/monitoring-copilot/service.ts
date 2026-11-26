@@ -88,6 +88,9 @@ export interface MonitoringCopilotServiceOptions {
   askOwnHosts?(owner: string): Promise<boolean>;
   /** Sentry plan step 8: the org's unresolved issues; null when no read token is configured (nothing is read). */
   sentry?: { issues(): Promise<SentryIssue[] | null> };
+  /** Every ADMIN's id: told (log error and a card) when the installation's collector has no Monitoring Copilot pane to watch it. */
+  admins?(): Promise<string[]>;
+  log?: { error(details: unknown, message: string): void };
   onEvent?(event: MonitoringEvent): void;
   now?: () => number;
 }
@@ -97,7 +100,9 @@ export type MonitoringRequester = "OPERATOR" | "NOUS" | "WATCH";
 const RUN_STATUS: Partial<Record<MonitoringEventType, MonitoringRunStatus>> = { RUN_STARTED: "RUNNING", RUN_PAUSED: "PAUSED", RUN_STOPPED: "STOPPED" };
 /** R16-7: the change kinds that run on the operator's own hosts at every autonomy (operator rule f360b58c). */
 export const MONITORING_OWN_HOST_KINDS: readonly MonitoringActionBegin["kind"][] = ["SERVICE_RESTART", "GUEST_START", "CONFIG_CHANGE", "CACHE_CLEAR"];
+const MONITORING_UNWATCHED_KEY = "monitoring:unwatched";
 const trimmed = (text: string, max = TEXT_MAX) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
+// eslint-disable-next-line no-control-regex -- stripping control characters is the point
 const clean = (text: string, max: number) => trimmed(text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ").trim(), max);
 
 /** One guardian message: a `[timestamp] text` head line and the `- detail` lines that follow it. */
@@ -302,6 +307,27 @@ export function createMonitoringCopilotService(options: MonitoringCopilotService
     for (const key of open.keys()) if (!alerting.has(key)) await resolveNotice(owner, key);
     return raised;
   }
+  /**
+   * Nous 15/11 (decision 38331): the rooms deleted on 14/11 took the last Monitoring Copilot pane, and hz's pool alerts reached no
+   * one for a day. A configured collector that no pane watches is an error in the log and one card for each ADMIN (Nous's inbox),
+   * closed once a pane exists again. Said on each change (and once after a restart); a failed ADMIN read tries again next pass.
+   */
+  let unwatched: boolean | null = null;
+  async function sayUnwatched(none: boolean) {
+    const defaults = collectorConfig.defaults;
+    if (!defaults || !options.admins || none === unwatched) return;
+    const admins = await options.admins().catch(() => null);
+    if (!admins) return;
+    if (none) options.log?.error({ alertmanagerUrl: defaults.alertmanagerUrl, lokiUrl: defaults.lokiUrl }, "Monitoring Copilot: no pane watches the collector, its alerts reach no one");
+    for (const admin of admins) {
+      if (!none) await resolveNotice(admin, MONITORING_UNWATCHED_KEY);
+      else await options.notifications?.raise({ ownerUserId: admin, roomId: null, paneId: null, source: "MONITORING_COPILOT", kind: "MONITORING_UNWATCHED", severity: "ATTENTION",
+        title: "No Monitoring Copilot pane: collector alerts reach no one",
+        body: `No Monitoring Copilot pane exists (open or closed), so Space reads no alert from ${defaults.alertmanagerUrl} or the guardian log in ${defaults.lokiUrl}. Open a Monitoring Copilot pane; a closed one is enough.`,
+        link: {}, dedupeKey: MONITORING_UNWATCHED_KEY, payload: {}, telegram: null }).catch(() => undefined);
+    }
+    unwatched = none;
+  }
   async function watchOwner(owner: string, panes: Pane[]) {
     const pane = panes[0]!;
     const { collector: urls } = settingsOf(pane);
@@ -354,11 +380,13 @@ export function createMonitoringCopilotService(options: MonitoringCopilotService
     const ownHost = MONITORING_OWN_HOST_KINDS.includes(input.kind) && !(options.askOwnHosts ? await options.askOwnHosts(owner).catch(() => true) : false);
     const nousBrief = async () => (await repository.listEvents(owner, pane.id, { types: ["BRIEF"], status: ["TAKEN"] })).some((brief) => brief.payload.requester === "NOUS");
     const briefed = ownHost && !alerts.length && await nousBrief();
-    if (settingsOf(pane).autonomy === "ASSIST" && !(ownHost && (alerts.length || briefed))) return "The pane is on Assist: every change waits for the operator.";
+    // f360b58c: a config change (rule tuning) on our own hosts runs with its backup and rollback, firing alert or not; restarts still need one.
+    const ownConfig = ownHost && input.kind === "CONFIG_CHANGE" && Boolean(input.backup && input.rollback);
+    if (settingsOf(pane).autonomy === "ASSIST" && !(ownHost && (alerts.length || briefed || ownConfig))) return "The pane is on Assist: every change waits for the operator.";
     if (MONITORING_ALWAYS_ASK_KINDS.includes(input.kind)) return `${input.kind} always waits for the operator (reboots, deletes, free-form commands).`;
-    if (!alerts.length && !briefed) return "No firing alert names this change: only a change that heals a firing alert runs on its own.";
+    if (!alerts.length && !briefed && !ownConfig) return "No firing alert names this change: only a change that heals a firing alert runs on its own.";
     const quiet = alerts.filter((alert) => alert.state !== "FIRING");
-    if (quiet.length) return `${quiet.map((alert) => alert.alertname).join(", ")} no longer fires: check again before you change anything.`;
+    if (quiet.length && !ownConfig) return `${quiet.map((alert) => alert.alertname).join(", ")} no longer fires: check again before you change anything.`;
     const recent = await repository.listActions(owner, { target: input.target, since: new Date(now() - 3_600_000).toISOString() });
     if (recent.filter((action) => action.gate === "GO").length >= MONITORING_MAX_ACTIONS_PER_TARGET_HOUR) return `The hourly limit of ${MONITORING_MAX_ACTIONS_PER_TARGET_HOUR} autonomous changes on ${input.target} is reached.`;
     return null;
@@ -750,6 +778,7 @@ export function createMonitoringCopilotService(options: MonitoringCopilotService
      */
     async watch(): Promise<{ owners: number; fired: number; resolved: number; guardian: number; kicked: number; reopened: number; pruned: number }> {
       const owners = await ownerPanes();
+      await sayUnwatched(!owners.size);
       const total = { owners: owners.size, fired: 0, resolved: 0, guardian: 0, kicked: 0, reopened: 0, pruned: 0 };
       for (const [owner, entries] of owners) {
         const panes = entries.map((entry) => entry.pane);

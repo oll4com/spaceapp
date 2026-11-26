@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { appendFile, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { NOUS_PROGRAM_PAGES, NOUS_PROGRAM_STATUSES, nousProgramBenefitKey, nousProgramGmailUrl, nousProgramInputSchema, nousProgramMailKey, nousProgramMailSchema, nousProgramPageSchema,
+import { NOUS_PROGRAM_PAGES, NOUS_PROGRAM_STATUSES, nousProgramBenefitKey, nousProgramCompanyFromNotes, nousProgramGmailUrl, nousProgramInputSchema, nousProgramMailKey, nousProgramMailSchema, nousProgramPageSchema,
   nousProgramsFileSchema, nousProgramUsageEntrySchema, type NousProgram, type NousProgramBenefit, type NousProgramFields, type NousProgramMail,
   type NousProgramPage } from "@space/contracts";
 import type { NousProgramsRepository } from "@space/db";
@@ -33,10 +33,11 @@ export const programsToolArgsSchema = z.object({
   page: nousProgramPageSchema.optional().describe("list: startup (every startup program, oll4.com projects' ones included) or affiliate (every affiliate application and approval)."),
   status: z.enum(NOUS_PROGRAM_STATUSES).optional().describe("list: only this status."),
   reapply: z.boolean().optional().describe("list: only the programs flagged to apply again."),
+  company: z.string().trim().min(1).optional().describe("list: only the programs this company applied to (e.g. INTRATRADE, TOP IMPORTS, TECHME)."),
   query: z.string().trim().min(1).optional().describe("list: words in the parent, program, project, account, contacts or notes."),
   id: z.string().trim().min(1).optional().describe("read, add_mail, delete: the program's id (its slug, e.g. nvidia-inception)."),
   entry: z.record(z.string(), z.unknown()).optional().describe("upsert: the program's fields as the data files write them: id (slug, required), page "
-    + "(startup, the default; an oll4.com project's program goes there with its project; affiliate: an affiliate application, with affiliate below), parent (e.g. NVIDIA), program, project, url, status (APPROVED = the program said yes (approved, accepted, welcome, ready to move forward), even while activation, a code, card verification "
+    + "(startup, the default; an oll4.com project's program goes there with its project; affiliate: an affiliate application, with affiliate below), parent (e.g. NVIDIA), program, project, url, company (the company that applied: INTRATRADE, TOP IMPORTS, TECHME..., its short name; 'INTRATRADE SINGLE MEMBER P.C.' is stored as INTRATRADE; left out, a 'Εταιρεία αίτησης: …' line in notes sets it; only from the application, its mails or notes, else leave it out), status (APPROVED = the program said yes (approved, accepted, welcome, ready to move forward), even while activation, a code, card verification "
     + "or the credit itself is still pending: put what remains in nextAction and set awaitingCompletion true (the page lists it under Waiting too; false once the credit or access is in); APPLIED = no yes yet, waiting for a reply; IN_PROGRESS = no yes yet, "
     + "the process is moving (forms, calls, reviews); REJECTED, DRAFT, NOT_APPLIED, EXPIRED, CANCELLED), statusReason, appliedAt, decidedAt, expectedReplyBy, validUntil (ISO dates), amount {text, value, currency}, "
     + "commitments, account, contacts [addresses], mails [{date, direction SENT|RECEIVED, from, to [..], subject, gmailAccount, threadId}], nextAction, "
@@ -146,24 +147,32 @@ export function createNousPrograms(deps: { repository: NousProgramsRepository; n
   async function upsert(owner: string, raw: unknown, options: { at?: string; notAfter?: string; page?: NousProgramPage } = {}): Promise<UpsertOutcome> {
     const parsed = nousProgramInputSchema.safeParse(raw);
     if (!parsed.success) return { problem: `${typeof (raw as { id?: unknown })?.id === "string" ? `${(raw as { id: string }).id}: ` : ""}${issues(parsed.error)}` };
-    const fields = { ...parsed.data, page: parsed.data.page ?? options.page ?? "startup" };
+    const fields = { ...parsed.data };
     // Only space_programs locks (the operator's word); a data file's list is ignored.
     if (options.notAfter) delete fields.locked;
     const unknownLocks = (fields.locked ?? []).filter((key) => !FIELDS.includes(key));
     if (unknownLocks.length) return { problem: `${fields.id}: locked names no field: ${unknownLocks.join(", ")} (fields: ${FIELDS.join(", ")})` };
     const at = options.at ?? new Date(now()).toISOString();
     const kept = await repository.get(owner, fields.id);
+    // A change that names no page keeps the stored one (18/11, nous_msg:38500dff: affiliate rows updated without page landed on startup).
+    fields.page = parsed.data.page ?? options.page ?? kept?.page ?? "startup";
     // An approval stays one whatever is still pending (UpCloud 6/11: approved, credit not applied, its file still said DRAFT).
     if (options.notAfter && kept?.status === "APPROVED" && fields.status && UNDECIDED.has(fields.status)) fields.status = "APPROVED";
     // ...and a file's approval lands on an undecided row even when the row changed after the file (novita 7/11: APPROVED in its file, APPLIED on stable).
     const fileApproves = fields.status === "APPROVED" && kept !== null && UNDECIDED.has(kept.status);
+    // A data file only adds sources, like mails (14/11: a file list without the registry-only ones dropped 5 programs' citations).
+    const sources = kept && options.notAfter && fields.sources ? [...new Set([...kept.sources, ...fields.sources])] : fields.sources;
     if (kept && options.notAfter && kept.updatedAt > options.notAfter && !fileApproves) {
       const mails = mergeMails(kept.mails, fields.mails ?? []);
       // The file's money flag and tags fill a row that has none yet (the classification arrived after the row); set ones stay.
       const givesMoney = kept.givesMoney ?? fields.givesMoney ?? null;
       const tags = kept.tags.length || !fields.tags?.length ? kept.tags : fields.tags;
-      if (mails.length === kept.mails.length && givesMoney === kept.givesMoney && tags === kept.tags) return { program: kept, created: false };
-      return { program: await repository.put(owner, { ...kept, mails, givesMoney, tags }), created: false };
+      // ...and so does its applying company (operator 16/11, nous_msg:52aab269), from the field or its notes' line.
+      const company = kept.company ?? fields.company ?? nousProgramCompanyFromNotes(fields.notes) ?? nousProgramCompanyFromNotes(kept.notes);
+      const added = sources ?? kept.sources;
+      if (mails.length === kept.mails.length && added.length === kept.sources.length && givesMoney === kept.givesMoney && tags === kept.tags
+        && company === (kept.company ?? null)) return { program: kept, created: false };
+      return { program: await repository.put(owner, { ...kept, mails, sources: added, givesMoney, tags, company }), created: false };
     }
     if (!kept && (!fields.parent || !fields.program || !fields.status)) {
       return { problem: `${fields.id}: a new program needs parent, program and status` };
@@ -175,14 +184,20 @@ export function createNousPrograms(deps: { repository: NousProgramsRepository; n
     const base: NousProgram = kept ?? { id: fields.id, page: fields.page, parent: fields.parent!, program: fields.program!, project: null, url: null,
       status: fields.status!, statusReason: null, appliedAt: null, decidedAt: null, expectedReplyBy: null, validUntil: null, amount: null, commitments: null,
       account: null, contacts: [], mails: [], nextAction: null, reapply: null, sources: [], notes: null, givesMoney: null, tags: [], whatItIs: null, howWeUse: null, benefits: [], tiers: [],
-      locked: [], affiliate: null, createdAt: at, updatedAt: at };
-    const program: NousProgram = { ...base, ...definedOnly(fields), mails: mergeMails(base.mails, fields.mails ?? []),
+      locked: [], affiliate: null, company: null, createdAt: at, updatedAt: at };
+    const program: NousProgram = { ...base, ...definedOnly({ ...fields, sources }), mails: mergeMails(base.mails, fields.mails ?? []),
       benefits: fields.benefits ? keepUsage(base.benefits, fields.benefits) : base.benefits, createdAt: base.createdAt, updatedAt: at };
+    // An affiliate program never sits on the Startup programs page (operator 18/11, nous_msg:38500dff).
+    if (program.page === "startup" && (program.affiliate != null || program.project === "UnboxExpert (Oll4.com)")) {
+      return { problem: `${fields.id}: an affiliate program (affiliate details or project UnboxExpert (Oll4.com)) goes on page affiliate, not startup; nothing was saved` };
+    }
     // Operator 7/11: the provider's yes is APPROVED even while activation steps remain (card, promo, billing go in nextAction);
     // an active or used benefit, or a reached tier, is that yes.
     const promoted = (program.status === "IN_PROGRESS" || program.status === "APPLIED")
       && (program.benefits.some((line) => line.status === "ACTIVE" || line.status === "USED_UP") || program.tiers.some((tier) => tier.status === "REACHED"));
     if (promoted) program.status = "APPROVED";
+    // The applying company the notes name ("Εταιρεία αίτησης: TOP IMPORTS", Cody 16/11) fills an empty one; a given or stored one stays.
+    if (!program.company && fields.company !== null) program.company = nousProgramCompanyFromNotes(program.notes);
     const field = (row: NousProgram | null, key: string) => (row as Record<string, unknown> | null)?.[key] ?? null;
     const changed = FIELDS.filter((key) => same(field(kept, key)) !== same(field(program, key)));
     // A locked field (operator 9/11 20:59 BKK: UpCloud's €5,000) changes or unlocks only with the source that says so.
@@ -195,6 +210,9 @@ export function createNousPrograms(deps: { repository: NousProgramsRepository; n
     const warning = approving && (!program.whatItIs || !program.howWeUse) ? `${fields.id} is saved as APPROVED${promoted ? " (an active or used benefit or a reached tier is the provider's yes)" : ""}, `
       + "but its operator report waits for whatItIs (what the service or program is, one line) and howWeUse (how SpaceApp/oll4 uses it and what that needs: a card, "
       + "a paid plan, setup such as a DSN, a deadline), in the operator's language: write both now with space_programs upsert." : undefined;
+    // 14/11: 88 applied programs had no reply date, so none could ever come due for a follow-up.
+    const undated = !options.notAfter && (program.status === "APPLIED" || program.status === "IN_PROGRESS") && !program.expectedReplyBy
+      ? `${fields.id} is ${program.status} with no expectedReplyBy: write the date its page or mail says it answers by (none said: the day you will follow up), so its follow-up comes due.` : undefined;
     const saved = await repository.put(owner, program);
     if (changed.length) {
       for (const key of changed) replace(owner, saved.id, key, field(kept, key));
@@ -207,7 +225,8 @@ export function createNousPrograms(deps: { repository: NousProgramsRepository; n
       project: saved.project, url: saved.url, amount: saved.amount, decidedAt: saved.decidedAt, validUntil: saved.validUntil, whatItIs: saved.whatItIs, howWeUse: saved.howWeUse });
     // A failed update never undoes the write; the next write or the start's sweep posts it.
     const report = await deps.updates?.programChanged(owner, kept, saved).catch((error: unknown) => { deps.warn?.(error, `Operator update for program ${saved.id} failed.`); return null; });
-    return { program: saved, created: !kept, ...(report ? { report } : {}), ...(warning ? { warning } : {}) };
+    const warnings = [warning, undated].filter(Boolean).join(" ");
+    return { program: saved, created: !kept, ...(report ? { report } : {}), ...(warnings ? { warning: warnings } : {}) };
   }
 
   /** One data file `{generatedAt, entries}`: each entry is checked on its own, so one bad entry never stops the rest. */
@@ -217,10 +236,17 @@ export function createNousPrograms(deps: { repository: NousProgramsRepository; n
     const at = file.data.generatedAt ?? fileTime;
     let written = 0;
     const problems: string[] = [], keptLines: string[] = [];
-    const previous = revisions.get(`${owner}\n${page}`), next = new Map<string, Record<string, unknown>>();
+    const previous = revisions.get(`${owner}\n${page}`), next = new Map<string, Record<string, unknown>>(), invalid = new Set<string>();
     for (const entry of file.data.entries) {
       const parsed = nousProgramInputSchema.safeParse(entry);
-      if (!parsed.success) { problems.push(`${typeof (entry as { id?: unknown })?.id === "string" ? `${(entry as { id: string }).id}: ` : ""}${issues(parsed.error)}`); continue; }
+      if (!parsed.success) {
+        const id = typeof (entry as { id?: unknown })?.id === "string" ? (entry as { id: string }).id : null;
+        problems.push(`${id ? `${id}: ` : ""}${issues(parsed.error)}`);
+        // Still in the file, only not valid (14/11: three "left the file" had words in reapply.when): told once, when it stops parsing.
+        if (id) invalid.add(id);
+        if (id && previous?.has(id)) keptLines.push(`${id} was not imported (${issues(parsed.error)}); the registry keeps its last value`);
+        continue;
+      }
       const id = parsed.data.id, before = previous?.get(id), row = await repository.get(owner, id);
       next.set(id, parsed.data);
       // Only what the file changed since its last revision is its word; a field it still holds as before says nothing new.
@@ -240,7 +266,7 @@ export function createNousPrograms(deps: { repository: NousProgramsRepository; n
       const outcome = await upsert(owner, row ? words : entry, { at, notAfter: at, page });
       if ("problem" in outcome) problems.push(outcome.problem); else written += 1;
     }
-    const gone = [...(previous?.keys() ?? [])].filter((id) => !next.has(id));
+    const gone = [...(previous?.keys() ?? [])].filter((id) => !next.has(id) && !invalid.has(id));
     if (gone.length) keptLines.push(`${gone.length} programs left the file; the registry keeps them: ${gone.join(", ")}`);
     revisions.set(`${owner}\n${page}`, next);
     if (keptLines.length) await deps.kept?.(owner, `programs-file:${page}:${fileTime}`, `${NOUS_PROGRAM_FILES[page]} (written ${at}) was kept from undoing the registry `
@@ -333,12 +359,16 @@ export function createNousPrograms(deps: { repository: NousProgramsRepository; n
 
 const day = (value: string | null) => value ? value.slice(0, 10) : null;
 
+/** Applied (or moving) and past the day it was to answer by, with no decision written: its follow-up is due (14/11: 12 startup programs, none chased). */
+export const replyOverdue = (program: Pick<NousProgram, "status" | "expectedReplyBy">, now = Date.now()) =>
+  (program.status === "APPLIED" || program.status === "IN_PROGRESS") && Boolean(program.expectedReplyBy) && program.expectedReplyBy!.slice(0, 10) < new Date(now).toISOString().slice(0, 10);
+
 /** One line per program, for space_programs list. */
 export function programLine(program: NousProgram): string {
   const dates = [["applied", program.appliedAt], ["reply by", program.expectedReplyBy], ["decided", program.decidedAt], ["valid until", program.validUntil]]
     .filter(([, value]) => value).map(([label, value]) => `${label} ${day(value as string)}`);
-  return `- [${program.id}] ${program.parent} › ${program.program}${program.project ? ` (${program.project})` : ""} · ${program.status}`
-    + `${program.amount ? ` · ${program.amount.text}` : ""}${program.givesMoney ? " · MONEY" : ""}${program.awaitingCompletion ? " · AWAITING COMPLETION" : ""}${dates.length ? ` · ${dates.join(", ")}` : ""} · ${program.mails.length} mails`
+  return `- [${program.id}] ${program.parent} › ${program.program}${program.project ? ` (${program.project})` : ""}${program.company ? ` · by ${program.company}` : ""} · ${program.status}`
+    + `${program.amount ? ` · ${program.amount.text}` : ""}${program.givesMoney ? " · MONEY" : ""}${program.awaitingCompletion ? " · AWAITING COMPLETION" : ""}${dates.length ? ` · ${dates.join(", ")}` : ""}${replyOverdue(program) ? " · REPLY OVERDUE" : ""} · ${program.mails.length} mails`
     + `${program.reapply?.needed ? ` · RE-APPLY${program.reapply.why ? `: ${program.reapply.why}` : ""}` : ""}`;
 }
 
@@ -348,7 +378,7 @@ export function programText(program: NousProgram): string {
   return [
     `[${program.id}] ${program.parent} › ${program.program} · page ${program.page} · ${program.status}`,
     ...row("What it is", program.whatItIs), ...row("How we use it", program.howWeUse),
-    ...row("Project", program.project), ...row("Link", program.url), ...row("Why this status", program.statusReason),
+    ...row("Project", program.project), ...row("Applying company", program.company), ...row("Link", program.url), ...row("Why this status", program.statusReason),
     ...row("Applied", program.appliedAt), ...row("Reply expected by", program.expectedReplyBy), ...row("Decided", program.decidedAt), ...row("Valid until", program.validUntil),
     ...row("Amount", program.amount ? `${program.amount.text}${program.amount.value !== null ? ` (${program.amount.value} ${program.amount.currency ?? ""})`.trimEnd() : ""}` : null),
     ...row("Gives money", program.givesMoney === null ? null : program.givesMoney ? "yes" : "no"), ...row("Tags", program.tags.join(", ")),

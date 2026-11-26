@@ -46,9 +46,6 @@ interface BenchCacheEntry {
   expiresAt: number;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 function clampScore(value: number): number {
   return Math.min(Math.max(Math.round(value), 0), 100);
 }
@@ -57,12 +54,16 @@ function safeLower(value: string): string {
 }
 
 /** One OpenCode 2 /api/model entry in the model shape this bench reads. */
-export function openCode2VerboseModel(model: Record<string, any>): OpencodeVerboseModel {
+export function openCode2VerboseModel(model: {
+  id: string; providerID: string; modelID?: string; name?: string; family?: string; status?: string; package?: string;
+  settings?: { baseURL?: string }; cost?: unknown; limit?: OpencodeVerboseModel["limit"]; variants?: unknown[];
+  capabilities?: { temperature?: boolean; tools?: boolean; input?: unknown; output?: unknown };
+}): OpencodeVerboseModel {
   const flags = (kinds: unknown) => Object.fromEntries((Array.isArray(kinds) ? kinds : []).map((kind) => [kind, true]));
   return {
     id: model.id, providerID: model.providerID, name: model.name ?? model.id, family: model.family, status: model.status,
     api: { id: model.modelID, url: model.settings?.baseURL, npm: model.package },
-    cost: Array.isArray(model.cost) ? model.cost[0] : undefined, limit: model.limit,
+    cost: Array.isArray(model.cost) ? model.cost[0] as OpencodeVerboseModel["cost"] : undefined, limit: model.limit,
     capabilities: { temperature: model.capabilities?.temperature, reasoning: (model.variants?.length ?? 0) > 0,
       toolcall: model.capabilities?.tools, input: flags(model.capabilities?.input), output: flags(model.capabilities?.output) }
   };
@@ -161,7 +162,7 @@ async function probeChatHttp(providerId: string, modelId: string, prompt: string
     let errorType: string | null = null;
     let ok = res.ok;
     try {
-      const j = JSON.parse(txt) as any;
+      const j = JSON.parse(txt) as { choices?: Array<{ message?: { content?: string; reasoning?: string } }>; error?: { type?: string; code?: string } } | null;
       const content: string = j?.choices?.[0]?.message?.content ?? j?.choices?.[0]?.message?.reasoning ?? "";
       outLen = content.length;
       if (j?.error) {
@@ -186,9 +187,10 @@ async function probeChatHttp(providerId: string, modelId: string, prompt: string
     }
     if (!ok && !errorType) errorType = `HTTP${res.status}`;
     return { ok, latencyMs: latency, status: res.status, errorType, outLen };
-  } catch (e: any) {
+  } catch (error) {
     clearTimeout(to);
     const latency = Date.now() - started;
+    const e = error as { name?: string; message?: string } | null;
     const msg = e?.name === "AbortError" ? "TIMEOUT" : (e?.message ?? "FETCH_FAIL");
     return { ok: false, latencyMs: latency, status: null, errorType: msg.includes("aborted") ? "TIMEOUT" : msg.slice(0, 40), outLen: null };
   }
@@ -269,7 +271,7 @@ export class OpencodeModelBenchService {
     }
   }
 
-  async get(range: "10m" | "1h" | "7d" | "30d" = "7d", force = false): Promise<unknown> {
+  async get(range: "10m" | "1h" | "24h" | "7d" | "30d" = "7d", force = false): Promise<unknown> {
     const nowMs = this.now().getTime();
     if (!force && this.cache && this.cache.expiresAt > nowMs) return this.cache.payload;
     if (this.inFlight) return this.inFlight;
@@ -322,11 +324,11 @@ export class OpencodeModelBenchService {
     return "Functional and fast on both tests — good choice.";
   }
 
-  private async collect(range: "10m" | "1h" | "7d" | "30d", force = false) {
+  private async collect(range: "10m" | "1h" | "24h" | "7d" | "30d", force = false) {
     const sampledAt = this.now().toISOString();
     const since = this.sinceIso(range);
     // Historical aggregates from system analytics (last 7d by default to capture speed)
-    let historical: SystemAnalyticsModel[] = [];
+    let historical: SystemAnalyticsModel[];
     try {
       const events = await this.repository.listModelEvents(since, benchProviderIds);
       // aggregate similar to system-analytics but we just need mapping by provider+model
@@ -377,14 +379,12 @@ export class OpencodeModelBenchService {
     });
 
     // Live per-model chat probe (only on explicit refresh — heavy, simple hello)
-    let liveMap: Map<string, ChatProbeResult> | null = null;
-    if (force) {
-      liveMap = await this.probeAllSimple(items);
+    const liveMap = force ? await this.probeAllSimple(items) : null;
+    if (liveMap) {
       for (const it of items) {
         const key = `${it.providerId}\u0000${it.modelId}`;
         const pr = liveMap.get(key);
         if (pr) {
-          (it as any)._liveProbe = pr;
           it.lastRefreshedAt = sampledAt;
           if (pr.ok) {
             it.networkStatus = "ONLINE";
@@ -419,7 +419,7 @@ export class OpencodeModelBenchService {
       const aborted = hist?.abortedTurns ?? 0;
       const total = completed + aborted;
       const successRate = total > 0 ? (completed / total) * 100 : null;
-      const liveProbe = (item as any)._liveProbe as ChatProbeResult | undefined;
+      const liveProbe = liveMap?.get(`${item.providerId}\u0000${item.modelId}`);
       // networkScore — live chat probe overrides historical when available (force refresh)
       if (liveProbe) {
         if (!liveProbe.ok) {
@@ -432,7 +432,7 @@ export class OpencodeModelBenchService {
           if (item.networkStatus === "OFFLINE" && item.networkScore > 12) item.networkScore = 8;
         } else {
           const lat = liveProbe.latencyMs ?? 2500;
-          let probeScore = 88;
+          let probeScore: number;
           if (lat < 800) probeScore = 96;
           else if (lat < 1400) probeScore = 88;
           else if (lat < 2500) probeScore = 72;
@@ -451,16 +451,12 @@ export class OpencodeModelBenchService {
       }
 
       // speedScore: tokPerSec normalized 0-60 + ttft inverted 0-40, but heavily penalized if live probe failed
-      const complexProbe = (item as any)._complexProbe as ChatProbeResult | undefined;
       if (liveProbe && !liveProbe.ok) {
         if (liveProbe.errorType === "UPSTREAM_UNAVAILABLE" || liveProbe.errorType === "EMPTY") item.speedScore = 14;
         else if (liveProbe.errorType === "INTERNAL_500") item.speedScore = 16;
         else if (liveProbe.errorType === "TIMEOUT") item.speedScore = 12;
         else if (liveProbe.errorType === "RATE_LIMIT") item.speedScore = 22;
         else item.speedScore = 18;
-      } else if (complexProbe && (!complexProbe.ok || (complexProbe.latencyMs ?? 0) > 15000)) {
-        // x-preview complex timeout → very slow for complex code as user reported
-        item.speedScore = 18;
       } else {
         let speed = 0;
         if (item.avgTokPerSec !== null) speed += (item.avgTokPerSec / maxTokPerSec) * 60;
@@ -506,12 +502,7 @@ export class OpencodeModelBenchService {
     const methodology = force
       ? "Live catalog synthesis opencode --verbose (capabilities image/attachment, toolcall, reasoning, context), system-analytics history (TTFT/duration/tok/s, success rate), lightweight fetch probe on Zen endpoints AND live chat probe (simple hello) per model (concurrency 4, timeout 10s) for real network/speed measurement. VisionScore = 30% networking + 40% speed + 30% quality. CodingScore = 25% networking + 35% speed + 40% quality."
       : "Live catalog synthesis opencode --verbose (capabilities image/attachment, toolcall, reasoning, context), system-analytics history (TTFT/duration/tok/s, success rate) and lightweight fetch probe on Zen endpoints (latency). Click \"Run Benchmark now\" for live chat probe per model. VisionScore = 30% networking + 40% speed + 30% quality (context/reasoning). CodingScore = 25% networking + 35% speed + 40% quality (toolcall, reasoning, context).";
-    const notices = this.buildNotices(items, zenProbe, zenGoProbe, openrouterProbe);
-    // strip internal _liveProbe/_complexProbe before validation (strict schema)
-    for (const it of items) { delete (it as any)._liveProbe; delete (it as any)._complexProbe; }
-    if (bestVision) { delete (bestVision as any)._liveProbe; delete (bestVision as any)._complexProbe; }
-    if (bestCoding) { delete (bestCoding as any)._liveProbe; delete (bestCoding as any)._complexProbe; }
-    if (mostReliable) { delete (mostReliable as any)._liveProbe; delete (mostReliable as any)._complexProbe; }
+    const notices = this.buildNotices(items, liveMap, zenProbe, zenGoProbe, openrouterProbe);
 
     return {
       sampledAt,
@@ -530,7 +521,7 @@ export class OpencodeModelBenchService {
   }
 
   private sinceIso(range: string): string {
-    const map: Record<string, number> = { "10m": 10*60_000, "1h": 60*60_000, "7d": 7*24*60*60_000, "30d": 30*24*60*60_000 };
+    const map: Record<string, number> = { "10m": 10*60_000, "1h": 60*60_000, "24h": 24*60*60_000, "7d": 7*24*60*60_000, "30d": 30*24*60*60_000 };
     const lookup = (map as Record<string, number>)[range];
     const ms = lookup ?? map["7d"]!;
     return new Date(this.now().getTime() - ms).toISOString();
@@ -547,7 +538,7 @@ export class OpencodeModelBenchService {
           providerId: ev.providerId,
           modelId: ev.modelId,
           runtimeIds: [ev.runtimeId],
-          coverage: ev.coverage as any,
+          coverage: ev.coverage,
           activeSessions: 0,
           activeTurns: ev.status === "RUNNING" ? ev.turnCount : 0,
           completedTurns: ev.status === "COMPLETED" ? ev.turnCount : 0,
@@ -589,7 +580,7 @@ export class OpencodeModelBenchService {
     const costFree = ((raw.cost?.input ?? 0) === 0 && (raw.cost?.output ?? 0) === 0) || raw.id.endsWith(":free") || raw.id === "openrouter/free";
     const status = (raw.status ?? "active").toLocaleLowerCase();
     const family = (raw.family && typeof raw.family === "string" && raw.family.trim().length > 0) ? raw.family.trim().slice(0, 160) : null;
-    let networkStatus: "ONLINE"|"DEGRADED"|"OFFLINE"|"UNKNOWN" = "UNKNOWN";
+    let networkStatus: "ONLINE"|"DEGRADED"|"OFFLINE"|"UNKNOWN";
     if (status === "active") networkStatus = probe.ok ? "ONLINE" : "DEGRADED";
     else if (status === "inactive" || status === "offline") networkStatus = "OFFLINE";
     else networkStatus = probe.ok ? "ONLINE" : "OFFLINE";
@@ -693,17 +684,17 @@ export class OpencodeModelBenchService {
     return map;
   }
 
-  private buildNotices(items: any[], zenProbe: { ok: boolean; latencyMs: number | null }, zenGoProbe: { ok: boolean; latencyMs: number | null }, openrouterProbe: { ok: boolean; latencyMs: number | null }): string[] {
+  private buildNotices(items: Array<{ providerId: string; modelId: string; avgTtftMs: number | null }>, liveMap: Map<string, ChatProbeResult> | null, zenProbe: { ok: boolean; latencyMs: number | null }, zenGoProbe: { ok: boolean; latencyMs: number | null }, openrouterProbe: { ok: boolean; latencyMs: number | null }): string[] {
     const notices: string[] = [];
     if (!zenProbe.ok) notices.push("Zen (opencode) endpoint probe failed — network DEGRADED for free models. TTFT/tok/s history used as fallback.");
     if (!zenGoProbe.ok) notices.push(`Zen Go endpoint probe failed or token missing — opencode-go models DEGRADED. Check ${SPACE_AGENT_HOME}/.config/opencode/opencode-go.token.`);
     if (!openrouterProbe.ok) notices.push(`OpenRouter endpoint probe failed or token missing — openrouter models DEGRADED. Check ${SPACE_AGENT_HOME}/.config/opencode/openrouter.token.`);
     if (items.every((i) => i.avgTtftMs === null)) notices.push("No TTFT/tok/s history for this range — speed scores are indicative (baseline). Select 7d/30d for richer signal.");
-    const liveFails = items.filter((i: any) => i._liveProbe && !i._liveProbe.ok);
+    const liveFails = items.map((i) => liveMap?.get(`${i.providerId}\u0000${i.modelId}`)).filter((probe) => probe && !probe.ok);
     if (liveFails.length > 0) {
       const byType: Record<string, number> = {};
-      for (const it of liveFails) {
-        const t = (it as any)._liveProbe.errorType ?? "UNKNOWN";
+      for (const probe of liveFails) {
+        const t = probe?.errorType ?? "UNKNOWN";
         byType[t] = (byType[t] ?? 0) + 1;
       }
       const summary = Object.entries(byType).map(([k, v]) => `${k}: ${v}`).join(", ");

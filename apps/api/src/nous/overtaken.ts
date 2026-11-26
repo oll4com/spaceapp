@@ -11,8 +11,12 @@ export interface OvertakenFacts {
   host?(host: RestartHost): Promise<{ startedAt: string; buildCommit?: string | null } | null>;
   /** Whether `commit` is in `ref` of the Space repository (null: git cannot tell). */
   contains?(commit: string, ref: string): Promise<boolean | null>;
+  /** Whether the room still exists (null: cannot tell now). */
+  roomExists?(roomId: string): Promise<boolean | null>;
   /** One pane's reports, newest first. */
   paneReports?(paneId: string): Promise<Array<{ at: string; status: string; source: string; summary: string; body: string | null; planId: string | null; percent: number | null }>>;
+  /** Whether the plan is still open (parked counts as open; null: cannot tell now). */
+  planOpen?(planId: string): Promise<boolean | null>;
 }
 
 const HOST_NAME: Record<RestartHost, string> = { BROWSER_HOST: "Browser Host", PANE_HOST: "pane host" };
@@ -37,10 +41,15 @@ export async function overtakenEvidence(decision: NousDecision, facts: Overtaken
       if (has) return `the ${HOST_NAME[host]} restarted at ${utc(running.startedAt)}${commit ? ` on a build holding ${commit}` : ""}`;
     }
   }
+  // Daily Nous errors 14/11 (3fe69f59: room deleted 02:27, approved 03:57, "Failed: Room … was not found."): a deleted room's ask can never run.
+  if (decision.action?.type === "PANE_TEXT" && facts.roomExists && await facts.roomExists(decision.action.roomId) === false) return `its room ${decision.action.roomId} was deleted`;
+  // Inbox upgrade step 3 (plan clipboard:LkwKdOOh2mXK, «Έφτιαξες το κλειδί Gateway;» open in a done plan's request): a question (no action) of a
+  // closed plan has nothing left to wait for.
+  const plan = decision.refs?.planId;
+  if (!decision.action && plan && facts.planOpen && await facts.planOpen(plan) === false) return `its plan ${plan} is closed`;
   if (decision.action?.type === "PANE_TEXT" && facts.paneReports) {
     const short = decision.id.split(":").at(-1)!.slice(0, 8);
     const names = new RegExp(`\\b${short}`, "i");
-    const plan = decision.refs?.planId;
     const done = (await facts.paneReports(decision.action.paneId)).find((report) => report.status === "DONE" && report.source === "AGENT" && Date.parse(report.at) > asked
       && (names.test(`${report.summary}\n${report.body ?? ""}`) || (plan && report.planId === plan && report.percent === 100)));
     if (done) return `the pane reported done at ${utc(done.at)}: ${done.summary.slice(0, 160)}`;

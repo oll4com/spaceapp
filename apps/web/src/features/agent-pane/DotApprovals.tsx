@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import type { DotProfile, DotToolInvocation } from "@space/contracts";
 import { api } from "../../api.js";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
@@ -18,15 +18,16 @@ export function DotApprovals({ dot, sessionId, pending, onDecided, read = api.do
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
-  const key = `${dot?.dotId ?? ""}:${sessionId ?? ""}`;
+  const dotId = dot?.dotId ?? null;
+  const loadFailed = useEffectEvent(() => setError(t("Approval requests are unavailable. Retry to load them.")));
   useEffect(() => {
     let current = true;
-    if (!pending || !dot || !sessionId) { setItems([]); return; }
-    void Promise.resolve().then(() => read(dot.dotId, sessionId)).then(result => {
-      if (current && result.dotId === dot.dotId) setItems(result.items.filter(item => item.dotId === dot.dotId && item.sessionId === sessionId));
-    }).catch(() => { if (current) setError(t("Approval requests are unavailable. Retry to load them.")); });
+    if (!pending || !dotId || !sessionId) { setItems([]); return; }
+    void Promise.resolve().then(() => read(dotId, sessionId)).then(result => {
+      if (current && result.dotId === dotId) setItems(result.items.filter(item => item.dotId === dotId && item.sessionId === sessionId));
+    }).catch(() => { if (current) loadFailed(); });
     return () => { current = false; };
-  }, [key, pending, revision, read]);
+  }, [dotId, sessionId, pending, revision, read]);
   if (!pending || !dot) return null;
   async function choose(item: DotToolInvocation, decision: "APPROVE" | "DECLINE") {
     setBusy(item.invocationId); setError(null);

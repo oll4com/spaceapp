@@ -34,6 +34,11 @@ function cellColor(cell: ProjectedCell, which: "Fg" | "Bg"): TerminalColor | und
   return (which === "Fg" ? cell.isFgPalette() : cell.isBgPalette()) ? value : undefined;
 }
 
+function sameRunStyle(left: TerminalRun, right: TerminalRun): boolean {
+  return left.fg === right.fg && left.bg === right.bg && left.bold === right.bold && left.dim === right.dim
+    && left.italic === right.italic && left.underline === right.underline && left.inverse === right.inverse;
+}
+
 /** The line's cells as runs, cut to `length` characters: the line's text is always a prefix of its cells. */
 function lineRuns(line: ProjectedLine, omitFaint: boolean, length: number): TerminalRun[] {
   const runs: TerminalRun[] = [];
@@ -45,20 +50,22 @@ function lineRuns(line: ProjectedLine, omitFaint: boolean, length: number): Term
     let text = faint ? " ".repeat(cell.getWidth()) : cell.getChars() || " ";
     text = text.slice(0, length - used);
     used += text.length;
-    const style: Omit<TerminalRun, "text"> = {};
-    if (!faint) {
-      const fg = cellColor(cell, "Fg"), bg = cellColor(cell, "Bg");
-      if (fg !== undefined) style.fg = fg;
-      if (bg !== undefined) style.bg = bg;
-      if (cell.isBold()) style.bold = true;
-      if (cell.isDim()) style.dim = true;
-      if (cell.isItalic()) style.italic = true;
-      if (cell.isUnderline()) style.underline = true;
-      if (cell.isInverse()) style.inverse = true;
-    }
-    const key = JSON.stringify(style);
+    const fg = faint ? undefined : cellColor(cell, "Fg");
+    const bg = faint ? undefined : cellColor(cell, "Bg");
+    const flags = faint ? 0 : (cell.isBold() ? 1 : 0) | (cell.isDim() ? 2 : 0) | (cell.isItalic() ? 4 : 0) | (cell.isUnderline() ? 8 : 0) | (cell.isInverse() ? 16 : 0);
+    const key = `${fg ?? ""}|${bg ?? ""}|${flags}`;
     if (runs.length && key === lastKey) runs[runs.length - 1]!.text += text;
-    else runs.push({ text, ...style });
+    else {
+      const run: TerminalRun = { text };
+      if (fg !== undefined) run.fg = fg;
+      if (bg !== undefined) run.bg = bg;
+      if (flags & 1) run.bold = true;
+      if (flags & 2) run.dim = true;
+      if (flags & 4) run.italic = true;
+      if (flags & 8) run.underline = true;
+      if (flags & 16) run.inverse = true;
+      runs.push(run);
+    }
     lastKey = key;
   }
   return runs;
@@ -66,7 +73,7 @@ function lineRuns(line: ProjectedLine, omitFaint: boolean, length: number): Term
 
 function appendRuns(target: TerminalRun[], runs: TerminalRun[]) {
   const last = target.at(-1), [first, ...rest] = runs;
-  if (last && first && JSON.stringify({ ...last, text: "" }) === JSON.stringify({ ...first, text: "" })) { last.text += first.text; target.push(...rest); }
+  if (last && first && sameRunStyle(last, first)) { last.text += first.text; target.push(...rest); }
   else target.push(...runs);
 }
 
@@ -78,8 +85,12 @@ async function projectRoomTerminal(chunks: string[], cols: number, rows: number,
     // discard an unchanged composer or split an ANSI command, leaving only
     // animation deltas on an otherwise blank screen. Reject oversized input
     // instead of silently treating a partial reconstruction as current state.
-    const content = chunks.join("");
-    if (Buffer.byteLength(content, "utf8") > 8 * 1024 * 1024) throw new Error("Room terminal replay exceeds the projection limit.");
+    const replay = chunks.join("");
+    if (Buffer.byteLength(replay, "utf8") > 8 * 1024 * 1024) throw new Error("Room terminal replay exceeds the projection limit.");
+    // OSC 8 hyperlinks never reach the text, and registering each one was xterm's largest cost here (setHyperlink 15.3 s self time,
+    // profile 2026-11-21). The styled projection keeps them: xterm underlines a linked cell.
+    // eslint-disable-next-line no-control-regex -- terminal escape sequences are what this strips
+    const content = styled ? replay : replay.replace(/\x1b\]8;[\x20-\x7e]*(?:\x07|\x1b\\)/g, "");
     // Fed in 64 KiB writes: xterm parses one write whole, so an 8 MiB replay in one write held the API's main thread 1.5 s (stable 4/11,
     // operator-approved change); between writes a cancellable read stops and other requests run. xterm's parser keeps its state across writes.
     const step = 64 * 1024;
@@ -158,10 +169,11 @@ export function roomTerminalState(screen: string): "RUNNING" | "IDLE" | "WAITING
  * A Claude pane's state with Claude's own session status over the room screen: busy is running, a screen that only looks
  * busy is idle, and an idle Claude is idle when the screen cannot tell (R9-9, 28/10: a browser-attached pane's screen, rebuilt
  * from the output tail, lost its idle composer and four prompts to Alex/Hugo were refused as not ready). A question stays one.
+ * 16/11 (Dino/Cody): "shell" (turn done, a background shell still running) takes prompts, so it is idle too.
  */
 export function claudeRoomState<S extends string>(state: S, native: { busy: boolean; status: string | null }): S | "RUNNING" | "IDLE" {
   if (native.busy) return "RUNNING";
-  return state === "RUNNING" || (state === "UNKNOWN" && native.status === "idle") ? "IDLE" : state;
+  return state === "RUNNING" || (state === "UNKNOWN" && (native.status === "idle" || native.status === "shell")) ? "IDLE" : state;
 }
 
 export function roomTerminalCommands(screen: string): string[] {
@@ -317,7 +329,7 @@ export function roomComposerEmpty(screen: string): boolean {
   // The composer is the screen's last prompt row, whatever follows it: on 31/10 Claude Code listed a background shell under its footer,
   // five rows pushed Alex/Emma's empty "❯" out of a 6-line window, and every brief kick waited 7 hours. Claude's panel rows ("❯ ● main") are no composer.
   const prompt = lines.slice(-24).findLast((line) => /^[ \t\u00a0]*[❯›>]/.test(line) && !CLAUDE_PANEL_MAIN_ROW.test(line));
-  return prompt !== undefined && (EMPTY_PROMPT_ROW.test(prompt) || AGY_MODE_ROW.test(prompt));
+  return prompt !== undefined && (EMPTY_PROMPT_ROW.test(prompt) || AGY_MODE_ROW.test(prompt) || CLAUDE_PLACEHOLDER_ROW.test(prompt));
 }
 /**
  * Antigravity's (cli:gemini) empty composer shows its mode: "> Accept-edits mode: file edits auto-approved (shift+tab to cycle)"
@@ -333,7 +345,7 @@ const AGY_MODE_ROW = /^[ \t\u00a0]*>[ \t\u00a0]+[A-Z][a-z]*(?:-[A-Za-z]+)* mode(
 export function roomComposerNotReady(screen: string): string | null {
   screen = withoutDevProfilePrompt(screen);
   const lines = screen.split("\n").filter((line) => line.trim());
-  const at = lines.findLastIndex((line, index) => index >= lines.length - 24 && /^[ \t ]*[❯›>]/.test(line) && !CLAUDE_PANEL_MAIN_ROW.test(line));
+  const at = lines.findLastIndex((line, index) => index >= lines.length - 24 && /^[ \t\u00a0]*[❯›>]/.test(line) && !CLAUDE_PANEL_MAIN_ROW.test(line));
   if (at < 0) return null;
   let above = at - 1;
   while (above >= 0 && /^[\s─━]+$/.test(lines[above]!)) above--;
@@ -364,6 +376,13 @@ function openCodeBox(tail: string): string[] {
   for (let at = status - 1; at >= 0 && /^[ \t\u00a0]*┃/.test(lines[at]!); at--) box.unshift(lines[at]!.replace(/^[ \t\u00a0]*┃/, "").trim());
   return box;
 }
+
+/**
+ * Claude Code's dim placeholders of an empty composer ("Resend your message to try again" after "API Error: Connection lost mid-response",
+ * 'Try "…"' suggestions, the queued-messages hint): 23/11 every prompt to Jack (Job Copilot) was refused "its composer holds text" for 4 h.
+ * shortcut: a draft typed word for word as a placeholder reads as empty; the undimmed read (cli-prompt-submit) still tells them apart.
+ */
+const CLAUDE_PLACEHOLDER_ROW = /^[ \t\u00a0]*❯[ \t\u00a0]*(?:Resend your message to try again|Try "[^"\n]*"|Press up to edit queued messages)[ \t\u00a0]*$/;
 
 /**
  * Codex's dim placeholder of an empty composer (0.152 rotates a list, 0.165 shows "Ask Codex to do anything"): 29/10 the kits task

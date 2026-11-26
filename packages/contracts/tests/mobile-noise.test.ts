@@ -66,9 +66,8 @@ describe("mobile Noise state", () => {
   it(`both sides rekey after every ${MOBILE_NOISE_REKEY_EVERY} messages of a direction, with no signal`, () => {
     const { app, instance } = pair();
     const plain = bytes(3, 16);
-    let last = new Uint8Array(0);
     for (let n = 1; n <= MOBILE_NOISE_REKEY_EVERY + 1; n++) {
-      last = app.encrypt(plain);
+      const last = app.encrypt(plain);
       expect(toHex(instance.decrypt(last))).toBe(toHex(plain));
     }
     // A side whose count is off by one rekey cannot read message 10,001.

@@ -1,8 +1,8 @@
 import { mergeTranscriptText } from "./live-transcript.js";
 export { mergeTranscriptText } from "./live-transcript.js";
-import type { LiveRoomContext } from "@space/contracts";
+import type { ControlWatch, ControlWatchPaneDetails, LiveRoomContext } from "@space/contracts";
 import { api } from "../../api.js";
-import type { LivePersonalMemoryItem } from "../../live-api.js";
+import type { ControlMcpReply, LivePersonalMemoryItem } from "../../live-api.js";
 import type {
   VoiceModelVoice,
   VoiceTranscriptionDelay,
@@ -13,7 +13,6 @@ import type {
 } from "@space/contracts";
 import {
   inferProviderFromModel,
-  validateLiveAudioConfig,
   CASCADE_LIVE_PROVIDERS,
   LIVE_AUDIO_PROVIDERS,
   PANE_TYPES,
@@ -33,7 +32,7 @@ import { isSilentWatch } from "./live-watch-notices.js";
 import { liveMissionBootstrap, runLiveMissionAction } from "./live-missions.js";
 import { CLEAN_WORKTREE_PROMPT, PROMOTE_PROMPT } from "../osk-keyboard/cli-shortcuts.js";
 import { createLiveToolReplay } from "./live-tool-replay.js";
-import { rememberLivePaneGroup, resolveLivePaneTargets, livePromptPaneReceipts } from "./live-pane-targets.js";
+import { rememberLivePaneGroup, resolveLivePaneTargets, livePromptPaneReceipts, type InspectedPane, type LiveToolArgs } from "./live-pane-targets.js";
 import { resolvePaneByName } from "@space/contracts";
 import { createUnidentifiedLiveCommandOrigin, createIdentifiedLiveCommandOrigins, liveAnswerDeclines, liveUserTextSince, liveUserTurn, noteLiveUserTurn, type LiveCommandRoom } from "./live-command-origin.js";
 import { isDashboardAgent } from "../agents-dashboard/dashboard-model.js";
@@ -120,6 +119,11 @@ export interface LiveSessionCallbacks {
   onSessionResumption?: (handle: string | null, resumable: boolean) => void;
   /** Called once when a resumable Google transport closes unexpectedly. */
   onReconnect?: (reconnect: () => Promise<LiveSessionHandle>) => void;
+}
+
+declare global {
+  // The one Live session running in this tab (pane or rail coordinator), so a second start closes it first.
+  interface Window { __SPACE_ACTIVE_LIVE_SESSION__?: { handle: LiveSessionHandle; source: "pane" | "coordinator"; paneId?: string; roomId?: string | null } | null }
 }
 
 export interface LiveSessionHandle {
@@ -257,7 +261,7 @@ async function getAudioStreamWithFallback(
       return await runtime.platform.getUserMedia({ audio: true });
     } catch (secondErr) {
       const reason = secondErr instanceof Error ? secondErr.message : String(secondErr);
-      throw new Error(`Microphone access failed (${reason}). Please check microphone permissions in your browser.`);
+      throw new Error(`Microphone access failed (${reason}). Please check microphone permissions in your browser.`, { cause: secondErr });
     }
   }
 }
@@ -314,13 +318,13 @@ function sanitizeGoogleLiveSchema(schema: Record<string, unknown>): Record<strin
 
 export { isSilentWatch };
 
-export function formatWatchCompletionNotification(w: any): string {
+export function formatWatchCompletionNotification(w: Partial<Pick<ControlWatch, "paneId" | "status" | "reason" | "taskState" | "targetTaskRef">> & { paneDetails?: Partial<ControlWatchPaneDetails> }): string {
   const details = w.paneDetails;
   const paneTitle = details?.title || w.paneId;
   const runtime = details?.runtimeId || "CLI";
   const model = details?.modelId ? ` (model: ${details.modelId})` : "";
   const durationSec = details?.durationMs ? Math.round(details.durationMs / 1000) : null;
-  const durationText = durationSec !== null ? `${durationSec}s (${details.durationMs}ms)` : "immediate";
+  const durationText = durationSec !== null ? `${durationSec}s (${details?.durationMs}ms)` : "immediate";
 
   let statusText = w.status ? String(w.status).toLowerCase() : "updated";
   if (w.status === "VERIFIED" || details?.status === "COMPLETED") {
@@ -442,7 +446,6 @@ export async function openGoogleGeminiConversationSession(
   let googleInputTranscript = "";
   let googleOutputTranscript = "";
   let preToolOutputTranscript = "";
-  let inToolExecution = false;
   let googleTurnFinalized = false;
   let setupTimeout: ReturnType<typeof setTimeout> | undefined;
   let reconnectIssued = false;
@@ -464,7 +467,7 @@ export async function openGoogleGeminiConversationSession(
     for (const src of activeSources) {
       try {
         src.stop();
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
     }
     activeSources.length = 0;
     nextPlayTime = 0;
@@ -680,7 +683,7 @@ export async function openGoogleGeminiConversationSession(
     if (ctx.tools && ctx.tools.length > 0) {
       const geminiTools = [
         {
-          functionDeclarations: ctx.tools.map((t: any) => ({
+          functionDeclarations: ctx.tools.map((t: LiveToolDeclaration) => ({
             name: t.name || t.function?.name,
             description: t.description || t.function?.description,
             parameters: googleLiveToolParameters(t.parameters || t.function?.parameters)
@@ -727,7 +730,7 @@ export async function openGoogleGeminiConversationSession(
           await api.ackWatch(targetRoomId, w.id).catch(() => {});
           break;
         }
-      } catch {} finally {
+      } catch { /* best-effort: nothing to do if it fails */ } finally {
         watchPollInFlight = false;
       }
     }, 1000);
@@ -756,7 +759,11 @@ export async function openGoogleGeminiConversationSession(
       const topKeys = Object.keys(parsedEvent as Record<string, unknown>);
       callbacks.onLogEvent?.("google.event", { keys: topKeys, bytes: raw.length });
 
+      type GoogleToolCall = { id?: unknown; name?: unknown; args?: unknown };
       const data = parsedEvent as {
+        toolCallCancellation?: { ids?: unknown };
+        toolCall?: { functionCalls?: GoogleToolCall[] };
+        functionCalls?: GoogleToolCall[];
         setupComplete?: Record<string, unknown>;
         sessionResumptionUpdate?: { newHandle?: string; resumable?: boolean };
         goAway?: { timeLeft?: string };
@@ -824,7 +831,7 @@ export async function openGoogleGeminiConversationSession(
         console.log("[GeminiLive][DIAG] ⚠️ Unrecognized top-level keys:", JSON.stringify(unknownKeys));
       }
 
-      const cancelledIds = (data as any).toolCallCancellation?.ids;
+      const cancelledIds = data.toolCallCancellation?.ids;
       if (Array.isArray(cancelledIds)) {
         for (const id of cancelledIds) {
           if (typeof id !== "string" || !id || cancelledGoogleTools.size >= 4096) {
@@ -833,7 +840,7 @@ export async function openGoogleGeminiConversationSession(
           cancelledGoogleTools.add(id);
         }
       }
-      const directToolCalls = (data as any).toolCall?.functionCalls || (data as any).functionCalls;
+      const directToolCalls = data.toolCall?.functionCalls || data.functionCalls;
       if (!googleNotificationPending && (directToolCalls?.length || data.serverContent?.modelTurn || data.serverContent?.outputTranscription || data.serverContent?.turnComplete)) finishGoogleSpeechInput();
       if (Array.isArray(directToolCalls) && directToolCalls.length > 0) {
         for (const fc of directToolCalls) enqueueGoogleTool(fc);
@@ -866,7 +873,6 @@ export async function openGoogleGeminiConversationSession(
             googleInputTranscript = "";
             googleOutputTranscript = "";
             preToolOutputTranscript = "";
-            inToolExecution = false;
             googleTurnFinalized = false;
           }
         };
@@ -899,7 +905,6 @@ export async function openGoogleGeminiConversationSession(
               playPcmChunk(audioBuf, 24000);
             }
             if (part.functionCall) {
-              inToolExecution = true;
               preToolOutputTranscript = googleOutputTranscript;
               googleOutputTranscript = "";
               enqueueGoogleTool(part.functionCall);
@@ -927,7 +932,6 @@ export async function openGoogleGeminiConversationSession(
             googleInputTranscript = "";
             googleOutputTranscript = "";
             preToolOutputTranscript = "";
-            inToolExecution = false;
           }
           callbacks.onStatusChange?.("listening");
           if (!messageHasFunctionCall && pendingGoogleTools === 0) finishGoogleNotification();
@@ -951,7 +955,7 @@ export async function openGoogleGeminiConversationSession(
       close();
       callbacks.onError?.("Google Gemini Live: WebSocket connection timed out (15s). The browser could not reach generativelanguage.googleapis.com — check network/firewall.");
       callbacks.onStatusChange?.("error");
-      try { socket.close(); } catch {}
+      try { socket.close(); } catch { /* best-effort: nothing to do if it fails */ }
     }
   }, 15000);
 
@@ -1173,7 +1177,7 @@ export async function openGoogleGeminiConversationSession(
               ]
             }
           }));
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
       }
     }
 
@@ -1286,8 +1290,7 @@ export async function openGoogleGeminiConversationSession(
 
 export async function openAmazonNovaConversationSession(
   options: LiveSessionOptions,
-  callbacks: LiveSessionCallbacks = {},
-  paneId: string = "live"
+  callbacks: LiveSessionCallbacks = {}
 ): Promise<LiveSessionHandle> {
   const runtime = getSpaceRuntime();
   if (runtime.kind === "demo") {
@@ -1347,7 +1350,7 @@ export async function openAmazonNovaConversationSession(
     for (const src of activeSources) {
       try {
         src.stop();
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
     }
     activeSources.length = 0;
     nextPlayTime = 0;
@@ -1712,7 +1715,7 @@ async function openCascadeVoiceSession(
   const playing = new Set<AudioBufferSourceNode>();
   const send = (message: Record<string, unknown>) => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message)); };
   const stopAudio = () => {
-    for (const node of playing) { try { node.stop(); } catch {} }
+    for (const node of playing) { try { node.stop(); } catch { /* best-effort: nothing to do if it fails */ } }
     playing.clear();
     nextPlayTime = 0;
     carry = null;
@@ -1863,10 +1866,6 @@ async function openCascadeVoiceSession(
   } catch (error) { cleanup(); throw error; }
 }
 
-export function detectSpaceActionFromQuery(_query: string): { name: string; args: Record<string, unknown> } | null {
-  return null;
-}
-
 export async function openGatewayRealtimeConversationSession(
   options: LiveSessionOptions,
   callbacks: LiveSessionCallbacks = {}
@@ -1896,7 +1895,7 @@ export async function openGatewayRealtimeConversationSession(
   let nextPlayTime = 0;
   const playing = new Set<AudioBufferSourceNode>();
   const stopAudio = () => {
-    for (const node of playing) { try { node.stop(); } catch {} }
+    for (const node of playing) { try { node.stop(); } catch { /* best-effort: nothing to do if it fails */ } }
     playing.clear();
     nextPlayTime = 0;
   };
@@ -2023,8 +2022,7 @@ export async function openGatewayRealtimeConversationSession(
 
 export async function openVercelLiveConversationSession(
   options: LiveSessionOptions,
-  callbacks: LiveSessionCallbacks = {},
-  paneId: string = "live"
+  callbacks: LiveSessionCallbacks = {}
 ): Promise<LiveSessionHandle> {
   if (!/^(?:openai\/)?gpt-live-/.test(options.model)) return openGatewayRealtimeConversationSession(options, callbacks);
   const runtime = getSpaceRuntime();
@@ -2101,7 +2099,7 @@ export async function openVercelLiveConversationSession(
     for (const src of activeSources) {
       try {
         src.stop();
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
     }
     activeSources.length = 0;
     nextPlayTime = 0;
@@ -2161,7 +2159,7 @@ export async function openVercelLiveConversationSession(
       voice: String(voice),
       language: options.language,
       toolsCount: tools?.length ?? 0,
-      toolNames: (tools || []).map((t: any) => t?.name || t?.type || "tool")
+      toolNames: (tools || []).map((t: LiveToolDeclaration) => t?.name || t?.type || "tool")
     }));
 
     const fullInstructions = (ctx.combinedPrompt || "").trim();
@@ -2182,7 +2180,6 @@ export async function openVercelLiveConversationSession(
   };
 
   let lastUserQuery = "";
-  let lastUserQueryTimestamp = 0;
   let userTranscriptBuffer = "";
   let assistantTranscriptBuffer = "";
   let vercelUserTurnId = "";
@@ -2200,7 +2197,6 @@ export async function openVercelLiveConversationSession(
     if (!text) return;
     userTranscriptBuffer = "";
     lastUserQuery = text;
-    lastUserQueryTimestamp = Date.now();
     const item: LiveTranscriptItem = {
       id: vercelUserTurnId || `vercel-user:${crypto.randomUUID()}`,
       role: "user",
@@ -2281,9 +2277,6 @@ export async function openVercelLiveConversationSession(
     // Sending { type: "response.create" } is invalid in Vercel protocol and causes Code 1008 disconnect.
   };
 
-  let lastActionTimestamp = 0;
-  let lastActionName = "";
-  let lastActionOutput = "";
   let pendingActionTimer: ReturnType<typeof setTimeout> | null = null;
   let activeDelegationId: string | null = null;
   let inFlightActionPromise: Promise<string> | null = null;
@@ -2305,13 +2298,13 @@ export async function openVercelLiveConversationSession(
             return `Space Control MCP Tests: SUCCESS (${passed}/${total} passed${duration}). All tools are functional.`;
           }
           const failedNames = Array.isArray(parsed.results)
-            ? parsed.results.filter((r: any) => r.status === "FAIL").map((r: any) => r.tool).join(", ")
+            ? parsed.results.filter((r: ControlResultItem) => r.status === "FAIL").map((r: ControlResultItem) => r.tool).join(", ")
             : `${failed} tools`;
           return `Space Control MCP Tests: FAILED (${failed} failed: ${failedNames}). ${passed}/${total} passed${duration}.`;
         }
         if (parsed.section && parsed.panes) {
           const list = Array.isArray(parsed.panes) ? parsed.panes : [];
-          const summary = list.map((p: any) => `${p.title || p.paneId} (${p.runtime || p.mode || "pane"}: ${p.state})`).join(", ");
+          const summary = list.map((p: InspectedPane) => `${p.title || p.paneId} (${p.runtime || p.mode || "pane"}: ${p.state})`).join(", ");
           return `Room ${parsed.section} Inspection (${list.length} panes): ${summary}`.slice(0, maxChars);
         }
         if (Array.isArray(parsed)) {
@@ -2320,7 +2313,7 @@ export async function openVercelLiveConversationSession(
         const keys = Object.keys(parsed);
         return `Result status: ${parsed.status || "OK"}. Fields: ${keys.slice(0, 6).join(", ")}. Data: ` + JSON.stringify(parsed).slice(0, maxChars - 80);
       }
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
 
     return trimmed.slice(0, maxChars) + " [truncated]";
   };
@@ -2333,8 +2326,6 @@ export async function openVercelLiveConversationSession(
     }
     lastUserQuery = "";
 
-    lastActionTimestamp = Date.now();
-    lastActionName = name;
     executedCallIds.add(callId);
     pendingCallIds.add(callId);
     hasPendingToolOutputs = true;
@@ -2358,7 +2349,6 @@ export async function openVercelLiveConversationSession(
 
     try {
       const outputText = await promise;
-      lastActionOutput = outputText;
       callbacks.onLogEvent?.("tool_call_done", { callId, name, output: outputText });
 
       const effectiveDelegationId = delegationId || activeDelegationId || null;
@@ -2427,7 +2417,7 @@ export async function openVercelLiveConversationSession(
           }));
           await api.ackWatch(targetRoomId, w.id).catch(() => {});
         }
-      } catch {} finally {
+      } catch { /* best-effort: nothing to do if it fails */ } finally {
         watchPollInFlight = false;
       }
     }, 1000);
@@ -2447,6 +2437,10 @@ export async function openVercelLiveConversationSession(
         arguments?: string;
         args?: string;
         call_id?: string;
+        item_id?: string;
+        item?: RealtimeItem;
+        response?: { id?: string; output?: RealtimeItem[] };
+        delegation?: { id?: string; name?: string; arguments?: string; args?: string };
       };
       if (data.type === "session.started") {
         sessionStarted = true;
@@ -2487,7 +2481,6 @@ export async function openVercelLiveConversationSession(
         if (!vercelUserTurnId) { if (!legacyInputActive) beginLegacyInput(); vercelUserTurnId = `vercel-user:${crypto.randomUUID()}`; }
         userTranscriptBuffer += data.delta;
         lastUserQuery = userTranscriptBuffer;
-        lastUserQueryTimestamp = Date.now();
         const targetRoomId = options.roomId || "global";
         const item: LiveTranscriptItem = {
           id: vercelUserTurnId,
@@ -2519,7 +2512,7 @@ export async function openVercelLiveConversationSession(
         if (data.id) activeResponseIds.add(data.id);
       }
       if (data.type === "response.output_item.added") {
-        const item = (data as any).item;
+        const item = data.item;
         if (item?.type === "function_call") {
           const callId = item.call_id || item.id || "";
           const itemId = item.id || callId;
@@ -2534,8 +2527,8 @@ export async function openVercelLiveConversationSession(
         }
       }
       if (data.type === "response.function_call_arguments.delta") {
-        const itemId = typeof (data as any).item_id === "string" ? (data as any).item_id : "";
-        const callId = typeof (data as any).call_id === "string" ? (data as any).call_id : "";
+        const itemId = typeof data.item_id === "string" ? data.item_id : "";
+        const callId = typeof data.call_id === "string" ? data.call_id : "";
         const delta = typeof data.delta === "string" ? data.delta : "";
         const entry = (callId ? pendingCallsByCallId.get(callId) : undefined) || (itemId ? pendingCallsByItemId.get(itemId) : undefined);
         if (entry && delta) {
@@ -2543,21 +2536,21 @@ export async function openVercelLiveConversationSession(
         }
       }
       if (data.type === "response.function_call_arguments.done") {
-        const callId = (data as any).call_id || (data as any).id || "";
-        const entry = (callId ? pendingCallsByCallId.get(callId) : undefined) || (typeof (data as any).item_id === "string" ? pendingCallsByItemId.get((data as any).item_id) : undefined);
-        const itemId = typeof (data as any).item_id === "string" ? (data as any).item_id : (entry?.id || "");
+        const callId = data.call_id || data.id || "";
+        const entry = (callId ? pendingCallsByCallId.get(callId) : undefined) || (typeof data.item_id === "string" ? pendingCallsByItemId.get(data.item_id) : undefined);
+        const itemId = typeof data.item_id === "string" ? data.item_id : (entry?.id || "");
         if (itemId) pendingFunctionItemIds.delete(itemId);
-        const name = (typeof (data as any).name === "string" && (data as any).name) || entry?.name || "";
-        const argsStr = (typeof (data as any).arguments === "string" && (data as any).arguments) || entry?.arguments || "{}";
+        const name = (typeof data.name === "string" && data.name) || entry?.name || "";
+        const argsStr = (typeof data.arguments === "string" && data.arguments) || entry?.arguments || "{}";
         if (callId && name) {
           void executeFunctionCall(callId, name, argsStr);
         }
       }
       if (data.type === "response.output_item.done") {
-        const item = (data as any).item;
+        const item = data.item;
         if (item?.id) pendingFunctionItemIds.delete(item.id);
         if (item?.type === "function_call" && (item.call_id || item.id)) {
-          const callId = item.call_id || item.id;
+          const callId = item.call_id || item.id || "";
           const entry = pendingCallsByCallId.get(callId) || (item.id ? pendingCallsByItemId.get(item.id) : undefined);
           const name = item.name || entry?.name || "";
           const argsStr = item.arguments || entry?.arguments || "{}";
@@ -2568,13 +2561,13 @@ export async function openVercelLiveConversationSession(
       }
       if (data.type === "response.completed" || data.type === "response.done") {
         pendingFunctionItemIds.clear();
-        const resp = (data as any).response;
+        const resp = data.response;
         if (resp?.id) activeResponseIds.delete(resp.id);
         else activeResponseIds.clear();
         if (resp && Array.isArray(resp.output)) {
           for (const item of resp.output) {
             if (item && item.type === "function_call" && (item.call_id || item.id)) {
-              const callId = item.call_id || item.id;
+              const callId = item.call_id || item.id || "";
               const name = item.name || "";
               const argsStr = item.arguments || "{}";
               if (name && !executedCallIds.has(callId)) {
@@ -2591,7 +2584,7 @@ export async function openVercelLiveConversationSession(
           pendingActionTimer = null;
         }
         finalizeUserTurn();
-        const delegationId = (data as any).delegation?.id || data.delegation_id || data.id || `del_${Date.now()}`;
+        const delegationId = data.delegation?.id || data.delegation_id || data.id || `del_${Date.now()}`;
         activeDelegationId = delegationId;
         const delegationOrigin = commandOrigin.capture();
         const originatingRoom = delegationOrigin();
@@ -2601,8 +2594,8 @@ export async function openVercelLiveConversationSession(
           activeDelegationId = null;
           return;
         }
-        let name = (data as any).delegation?.name || data.name || data.tool || "";
-        let argsStr = (data as any).delegation?.arguments || (data as any).delegation?.args || data.arguments || data.args || "{}";
+        let name = data.delegation?.name || data.name || data.tool || "";
+        let argsStr = data.delegation?.arguments || data.delegation?.args || data.arguments || data.args || "{}";
         callbacks.onLogEvent?.("vercel.delegation", { delegationId, name, argsStr, lastUserQuery });
 
         // If an action is currently in flight for this exact name:
@@ -2707,7 +2700,7 @@ export async function openVercelLiveConversationSession(
         type: "session.input_audio.append",
         audio: base64Audio
       }));
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
   };
 
   const close = () => {
@@ -2732,12 +2725,12 @@ export async function openVercelLiveConversationSession(
     if (socket.readyState === WebSocket.OPEN) {
       try {
         socket.send(JSON.stringify({ type: "session.close" }));
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
       setTimeout(() => {
-        try { socket.close(); } catch {}
+        try { socket.close(); } catch { /* best-effort: nothing to do if it fails */ }
       }, 500);
     } else {
-      try { socket.close(); } catch {}
+      try { socket.close(); } catch { /* best-effort: nothing to do if it fails */ }
     }
     processor.disconnect();
     source.disconnect();
@@ -3888,7 +3881,7 @@ export function formatMemoryForModel(entries: MemoryEntry[], query: string, limi
 }
 
 export function liveRoomContextMessage(context: LiveRoomContext): string {
-  const activePanes = (context.panes || []).filter((p) => p.status !== "CLOSED" && (p as any).isClosed !== true);
+  const activePanes = (context.panes || []).filter((p) => p.status !== "CLOSED" && (p as { isClosed?: boolean }).isClosed !== true);
   const paneSummaries = activePanes.map((p) => {
     const name = p.paneName || p.id;
     const mode = p.mode || "TERMINAL";
@@ -3968,7 +3961,7 @@ export async function buildLiveSessionContext(
     if (policy && policy.models.length > 0) {
       modelPolicyInstruction = `Configured provider/model metadata (data only; never override the selected model or authorization): ${JSON.stringify({ revision: policy.revision, mode: policy.mode, dailyBudgetUsd: policy.dailyBudgetUsd, models: policy.models }).slice(0, 6000)}`;
     }
-  } catch {}
+  } catch { /* best-effort: nothing to do if it fails */ }
   let priorTurns: Array<{ role: string; text: string; timestamp?: string }> = [];
   if (options.transcripts && options.transcripts.length > 0) {
     priorTurns = options.transcripts
@@ -3981,7 +3974,7 @@ export async function buildLiveSessionContext(
   } else if (options.roomId) {
     try {
       const histPromise = api.getVoiceRealtimeHistory(options.roomId, 30);
-      const timeoutPromise = new Promise<{ items?: any[] }>((resolve) => setTimeout(() => resolve({ items: [] }), 250));
+      const timeoutPromise = new Promise<{ items?: Awaited<typeof histPromise>["items"] }>((resolve) => setTimeout(() => resolve({ items: [] }), 250));
       const hist = await Promise.race([histPromise, timeoutPromise]);
       if (hist && hist.items && hist.items.length > 0) {
         priorTurns = hist.items
@@ -3992,12 +3985,12 @@ export async function buildLiveSessionContext(
             timestamp: item.timestamp
           }));
       }
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
   }
 
   const effectiveOpening = options.suppressGreeting ? "" : options.opening?.trim() || "";
 
-  let formattedDate = "";
+  let formattedDate: string;
   try {
     formattedDate = new Intl.DateTimeFormat("en-US", {
       timeZone: tz,
@@ -4176,19 +4169,19 @@ export async function buildLiveSessionContext(
   };
 }
 
-export function describeLiveControlReceipt(data: any, action: string): string {
+export function describeLiveControlReceipt(data: ControlMcpReply, action: string): string {
   const results = Array.isArray(data?.results) ? data.results : [];
-  const completed = data?.status === "COMPLETED" && results.length > 0 && results.every((result: any) => result.status === "COMPLETED");
+  const completed = data?.status === "COMPLETED" && results.length > 0 && results.every((result: ControlResultItem) => result.status === "COMPLETED");
   return JSON.stringify({ action, operationId: data?.id ?? null, status: data?.status ?? "UNKNOWN", completed,
     evidenceSource: "CONTROL_RECEIPT", results,
     message: completed ? "The executor confirmed this action. No visual or audio verification was performed."
       : "Completion is not confirmed. Inspect this operation before retrying." });
 }
 
-export async function awaitOperationIfNeeded(roomId: string, res: any, timeoutMs = 7000): Promise<any> {
+export async function awaitOperationIfNeeded(roomId: string, res: ControlMcpReply, timeoutMs = 7000): Promise<ControlMcpReply> {
   let data = res?.result?.structuredContent || res?.result?.content?.[0]?.text || res;
   if (typeof data === "string") {
-    try { data = JSON.parse(data); } catch {}
+    try { data = JSON.parse(data); } catch { /* best-effort: nothing to do if it fails */ }
   }
   if (data?.status === "RUNNING" && data?.id) {
     const opId = data.id;
@@ -4205,32 +4198,46 @@ export async function awaitOperationIfNeeded(roomId: string, res: any, timeoutMs
         });
         let opData = opRes?.result?.structuredContent || opRes?.result?.content?.[0]?.text || opRes;
         if (typeof opData === "string") {
-          try { opData = JSON.parse(opData); } catch {}
+          try { opData = JSON.parse(opData); } catch { /* best-effort: nothing to do if it fails */ }
         }
         if (opData && (opData.status !== "RUNNING" || (Array.isArray(opData.results) && opData.results.length > 0))) {
           return opData;
         }
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
     }
   }
   return data;
 }
 
 /** True when a Space Control receipt (raw response or awaited operation) reports a failure. */
-export function controlReceiptFailed(res: any, data: any): boolean {
+export function controlReceiptFailed(res: ControlMcpReply, data: ControlMcpReply): boolean {
   return Boolean(
     res?.error ||
     res?.result?.isError ||
     data?.status === "FAILED" ||
-    (Array.isArray(data?.results) && data.results.some((item: any) => item?.status === "FAILED" || item?.ok === false))
+    (Array.isArray(data?.results) && data.results.some((item: ControlResultItem) => item?.status === "FAILED" || item?.ok === false))
   );
 }
+
+/** One result entry of a Space Control receipt (loose JSON). */
+type ControlResultItem = { status?: string; ok?: boolean; detail?: string; error?: string; tool?: string; evidence?: { result?: ControlEvidence; debugIncidentId?: string } };
+
+type ControlEvidence = { data?: unknown[]; skipped?: Array<{ typeId?: string }> };
+/** A pane entry of Space Control's MODELS/CONTENT inspect sections. */
+type InspectedItem = InspectedPane & { models?: Array<{ id: string }>; closed?: boolean; text?: unknown };
+/** /api/control/v1/pane-types reply. */
+type PaneTypesReply = { roomCap?: number; types?: Array<{ typeId: string; label: string; kind: string; countsKey: string; available?: boolean; reason?: string }> };
+/** A tool as the session context lists it: either flat or OpenAI's { function } wrapper. */
+type LiveToolDeclaration = { name?: string; type?: string; description?: string; parameters?: unknown; function?: { name?: string; description?: string; parameters?: unknown } };
+
+/** A function-call item in a realtime (Vercel/OpenAI) event. */
+type RealtimeItem = { type?: string; id?: string; call_id?: string; name?: string; arguments?: string };
 
 export interface LiveRoomCacheEntry {
   roomId: string;
   timestamp: number;
-  stateRes: any;
-  dashboardSnap?: any;
+  stateRes: ControlMcpReply;
+  dashboardSnap?: ControlMcpReply;
 }
 
 export const liveRoomCache = new Map<string, LiveRoomCacheEntry>();
@@ -4264,7 +4271,7 @@ export function recordRecentOpenedPanes(roomId: string, panes: RecentOpenedPane[
 }
 
 export function resolveTargetCliPane(
-  cliPanes: any[],
+  cliPanes: InspectedPane[],
   parsedArgs: {
     paneId?: string;
     paneName?: string;
@@ -4276,7 +4283,7 @@ export function resolveTargetCliPane(
   },
   roomId?: string,
   forModelChange = false
-): any {
+): InspectedPane | null | undefined {
   if (!cliPanes?.length) return null;
   // Explicit targets must never silently fall through to another pane.
   if (parsedArgs.paneId) return cliPanes.find(p => p.id === parsedArgs.paneId?.trim()) ?? null;
@@ -4358,7 +4365,7 @@ async function runLiveFunction(
     streamingOperatorIntent?: () => { text: string; at: number } | null;
   }
 ): Promise<string> {
-  const { paneId, delegatedModel, timeZone, callbacks, provider } = context;
+  const { paneId, timeZone, callbacks, provider } = context;
   const roomId = context.getCommandRoom ? context.getCommandRoom() : context.roomId;
   if (context.getCommandRoom && !roomId && name !== "space_get_current_time") {
     const rejection = { name, callId: context.callId, provider, code: "LIVE_ROOM_CONTEXT_UNSET", stage: "BEFORE_EXECUTOR", originRoomId: context.roomId };
@@ -4370,7 +4377,7 @@ async function runLiveFunction(
   }
   const executionId = context.callId || crypto.randomUUID();
   let actionIndex = 0;
-  const executeControl = async (targetRoom: string, actions: any[], revision?: string, wait = true) => {
+  const executeControl = async (targetRoom: string, actions: unknown[], revision?: string, wait = true) => {
     if (context.getCommandRoom && context.getCommandRoom() !== targetRoom) throw Error("LIVE_ROOM_CONTEXT_UNSET: The command room changed before execution.");
     const key = JSON.stringify([context.provider, executionId, name, actionIndex++, targetRoom, actions]);
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
@@ -4422,7 +4429,7 @@ async function runLiveFunction(
           const item = (publicContext.moderation as Array<{ id?: string; author?: string | null }>).find(entry => entry.id === args.moderationActionId);
           const name = normalized(item?.author ?? "");
           authorized = /\b(undo|unban|remove|cancel)\b/.test(verb) && /\b(timeout|ban|block)\b/.test(verb) &&
-            (!!name ? verb.includes(name) : verb.includes(normalized(args.moderationActionId)));
+            (name ? verb.includes(name) : verb.includes(normalized(args.moderationActionId)));
         }
         if (!authorized) return JSON.stringify({ ok: false, code: "OPERATOR_INTENT_MISMATCH" });
         let input: Parameters<typeof api.streamingLiveAction>[0];
@@ -4446,7 +4453,7 @@ async function runLiveFunction(
           parsedKey = parsedArgs.key?.trim() || "";
           parsedValue = parsedArgs.value?.trim() || "";
           if (parsedArgs.category) parsedCategory = parsedArgs.category.trim();
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
 
         const toolMsgId = `tool_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         callbacks.onTranscriptUpdate?.({
@@ -4505,7 +4512,7 @@ async function runLiveFunction(
         try {
           const parsedArgs = JSON.parse(argsStr) as { query?: string };
           parsedQuery = parsedArgs.query?.trim() || "";
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
 
         const toolMsgId = `tool_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         callbacks.onTranscriptUpdate?.({
@@ -4567,7 +4574,7 @@ async function runLiveFunction(
         try {
           const parsedArgs = JSON.parse(argsStr) as { keyOrId?: string; id?: string; key?: string };
           parsedKeyOrId = parsedArgs.keyOrId?.trim() || parsedArgs.id?.trim() || parsedArgs.key?.trim() || "";
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
 
         const toolMsgId = `tool_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         callbacks.onTranscriptUpdate?.({
@@ -4623,7 +4630,7 @@ async function runLiveFunction(
           const parsedArgs = JSON.parse(argsStr) as { query?: string; limit?: number };
           parsedQuery = parsedArgs.query?.trim() || "";
           if (typeof parsedArgs.limit === "number") parsedLimit = parsedArgs.limit;
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
 
         const toolMsgId = `tool_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         callbacks.onTranscriptUpdate?.({
@@ -4646,7 +4653,7 @@ async function runLiveFunction(
             outputText = `No prior conversation turns or tool executions found matching "${parsedQuery}".`;
           } else {
             outputText = `Found ${results.length} relevant prior conversation records:\n` +
-              results.map((r: any, idx: number) => {
+              results.map((r, idx: number) => {
                 const roleLabel = r.role === "user" ? "User" : r.role === "assistant" ? "Assistant" : (r.event || "Tool");
                 return `[${idx + 1}] [${r.timestamp || ""}] ${roleLabel}: ${r.text || JSON.stringify(r.toolCall || {})}`;
               }).join("\n---\n");
@@ -4684,7 +4691,7 @@ async function runLiveFunction(
         try {
           const parsedArgs = JSON.parse(argsStr) as { timeZone?: string };
           if (parsedArgs.timeZone) parsedTz = parsedArgs.timeZone;
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
 
         const toolMsgId = `tool_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const outputText = formatCurrentTimeForModel(parsedTz);
@@ -4714,7 +4721,7 @@ async function runLiveFunction(
         try {
           const parsedArgs = JSON.parse(argsStr) as { query?: string };
           parsedQuery = parsedArgs.query || "";
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
 
         const toolMsgId = `tool_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         callbacks.onTranscriptUpdate?.({
@@ -4766,7 +4773,7 @@ async function runLiveFunction(
         try {
           const parsedArgs = JSON.parse(argsStr) as { url?: string };
           parsedUrl = parsedArgs.url || "";
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
 
         const toolMsgId = `tool_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         callbacks.onTranscriptUpdate?.({
@@ -4820,7 +4827,7 @@ async function runLiveFunction(
           const parsedArgs = JSON.parse(argsStr) as { query?: string; limit?: number };
           parsedQuery = parsedArgs.query || "";
           if (typeof parsedArgs.limit === "number") parsedLimit = parsedArgs.limit;
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
 
         const toolMsgId = `tool_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         callbacks.onTranscriptUpdate?.({
@@ -4905,10 +4912,10 @@ async function runLiveFunction(
         outputText = JSON.stringify({ ok: true, requestId: res.request.id, status: res.request.status, videoPaneId: res.videoPaneId, formats: res.request.formatIds,
           message: "The Video pane makes the video and delivers it as Media of this room (open the Video pane or Media to see it); it is not announced in this conversation." });
       } else if (name.startsWith("space_")) {
-        let parsedArgs: Record<string, any> = {};
+        let parsedArgs: LiveToolArgs = {};
         try {
           parsedArgs = JSON.parse(argsStr);
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
 
         const targetNames: string[] = [];
         if (typeof parsedArgs.paneName === "string" && parsedArgs.paneName.trim()) {
@@ -4949,7 +4956,7 @@ async function runLiveFunction(
         });
 
         outputText = "";
-        let effectiveRoomId = roomId;
+        const effectiveRoomId = roomId;
         if (!effectiveRoomId || effectiveRoomId === "room:default" || effectiveRoomId === "global") {
           throw new Error("The active room is unavailable. Refresh the Live room context before executing a command.");
         }
@@ -4992,7 +4999,7 @@ async function runLiveFunction(
             if (roomScope === "all") {
               const roomsRes = await api.rooms({ all: true }).catch(() => null);
               const roomList = Array.isArray(roomsRes?.data) ? roomsRes.data : [];
-              inspectedRoomIds = roomList.filter((r: any) => !r.archivedAt).map((r: any) => r.id);
+              inspectedRoomIds = roomList.filter((r) => !r.archivedAt).map((r) => r.id);
               if (inspectedRoomIds.length === 0) inspectedRoomIds = [effectiveRoomId];
             } else {
               inspectedRoomIds = [effectiveRoomId];
@@ -5152,13 +5159,13 @@ async function runLiveFunction(
               const targetName = parsedArgs.paneName || (Array.isArray(parsedArgs.paneNames) ? parsedArgs.paneNames[0] : parsedArgs.paneNames);
               const cachedPanes = liveRoomCache.get(effectiveRoomId)?.stateRes?.result?.structuredContent?.panes;
               const stateRes = cachedPanes ? null : await api.inspectControlMcp(effectiveRoomId, "STATE");
-              const openPanes = ((cachedPanes || stateRes?.result?.structuredContent?.panes) || []).filter((p: any) => !p.isClosed);
+              const openPanes = ((cachedPanes || stateRes?.result?.structuredContent?.panes) || []).filter((p: InspectedPane) => !p.isClosed);
               const found = resolvePaneByName(openPanes, String(targetName));
               if (found?.id) paneId = found.id;
             }
 
-            let res: any;
-            let dashboardSnap: any = null;
+            let res: ControlMcpReply;
+            let dashboardSnap: ControlMcpReply = null;
             const cachedEntry = liveRoomCache.get(effectiveRoomId);
             const isStateCacheFresh = section === "STATE" && !paneId && !parsedArgs.fresh && cachedEntry && (Date.now() - cachedEntry.timestamp < 2500);
 
@@ -5193,19 +5200,19 @@ async function runLiveFunction(
                   roomId: effectiveRoomId,
                   section: "MODELS",
                   paneCount: list.length,
-                  panes: list.map((item: any) => ({
+                  panes: list.map((item: InspectedItem) => ({
                     paneId: item.paneId,
                     paneName: item.paneName ?? null,
                     title: item.title,
                     runtime: item.runtimeId,
                     state: item.state,
                     model: item.modelId,
-                    availableModels: item.models?.map((m: any) => m.id) ?? []
+                    availableModels: item.models?.map((m) => m.id) ?? []
                   }))
                 });
               } else if (section === "CONTENT") {
                 const list = Array.isArray(sc.data) ? sc.data : Array.isArray(sc) ? sc : [];
-                const openList = list.filter((item: any) => !item.closed);
+                const openList = list.filter((item: InspectedItem) => !item.closed);
                 const maxCharsPerPane = paneId || openList.length === 1 ? 12000 : 5000;
                 outputText = JSON.stringify({
                   status: "SUCCESS",
@@ -5213,7 +5220,7 @@ async function runLiveFunction(
                   section: "CONTENT",
                   paneCount: openList.length,
                   closedCount: list.length - openList.length,
-                  panes: openList.map((item: any) => ({
+                  panes: openList.map((item: InspectedItem) => ({
                     paneId: item.paneId,
                     paneName: item.paneName ?? null,
                     title: item.title,
@@ -5227,7 +5234,7 @@ async function runLiveFunction(
                 });
               } else {
                 const rawPanes = Array.isArray(sc.panes) ? sc.panes : Array.isArray(sc.data) ? sc.data : [];
-                const openPanes = rawPanes.filter((p: any) => !p.isClosed);
+                const openPanes = rawPanes.filter((p: InspectedPane) => !p.isClosed);
                 const paneTypeCounts: Record<string, number> = {};
                 const cliTypeCounts: Record<string, number> = {};
                 for (const p of openPanes) {
@@ -5242,13 +5249,9 @@ async function runLiveFunction(
                 }
                 const distinctPaneTypes = Object.keys(paneTypeCounts);
                 const distinctCliTypes = Object.keys(cliTypeCounts);
-                const unusedPanes = openPanes.filter((p: any) => p.isUnused);
-                const usedPanes = openPanes.filter((p: any) => !p.isUnused);
+                const unusedPanes = openPanes.filter((p: InspectedPane) => p.isUnused);
+                const usedPanes = openPanes.filter((p: InspectedPane) => !p.isUnused);
 
-                const paneTypesStr = distinctPaneTypes.map(t => `${t}: ${paneTypeCounts[t]}`).join(", ");
-                const cliTypesStr = distinctCliTypes.map(t => `${t}: ${cliTypeCounts[t]}`).join(", ");
-                const unusedTitles = unusedPanes.map((p: any) => p.title).slice(0, 5).join(", ");
-                const usedTitles = usedPanes.map((p: any) => p.title).slice(0, 5).join(", ");
 
                 let configuredPaneCap: number | null = null;
                 try {
@@ -5258,7 +5261,7 @@ async function runLiveFunction(
                   if (localCap && !isNaN(Number(localCap)) && Number(localCap) > 0) {
                     configuredPaneCap = Number(localCap);
                   }
-                } catch {}
+                } catch { /* best-effort: nothing to do if it fails */ }
                 const effectivePaneCap = configuredPaneCap ?? sc.room?.paneCap ?? 16;
                 const remainingSlots = Math.max(0, effectivePaneCap - openPanes.length);
 
@@ -5266,10 +5269,10 @@ async function runLiveFunction(
                   dashboardSnap = await api.dashboardAgents(effectiveRoomId).catch(() => null);
                 }
                 const dashboardActivity = dashboardSnap?.activity || {};
-                const dashWorking = openPanes.filter((p: any) => dashboardActivity[p.id] === "working").map((p: any) => p.paneName || p.title);
-                const dashDone = openPanes.filter((p: any) => dashboardActivity[p.id] === "done").map((p: any) => p.paneName || p.title);
-                const dashIdle = openPanes.filter((p: any) => !dashboardActivity[p.id] || dashboardActivity[p.id] === "idle").map((p: any) => p.paneName || p.title);
-                const dashWaiting = openPanes.filter((p: any) => dashboardActivity[p.id] === "waiting").map((p: any) => p.paneName || p.title);
+                const dashWorking = openPanes.filter((p: InspectedPane) => dashboardActivity[p.id] === "working").map((p: InspectedPane) => p.paneName || p.title);
+                const dashDone = openPanes.filter((p: InspectedPane) => dashboardActivity[p.id] === "done").map((p: InspectedPane) => p.paneName || p.title);
+                const dashIdle = openPanes.filter((p: InspectedPane) => !dashboardActivity[p.id] || dashboardActivity[p.id] === "idle").map((p: InspectedPane) => p.paneName || p.title);
+                const dashWaiting = openPanes.filter((p: InspectedPane) => dashboardActivity[p.id] === "waiting").map((p: InspectedPane) => p.paneName || p.title);
 
                 outputText = JSON.stringify({
                   status: "SUCCESS",
@@ -5299,21 +5302,21 @@ async function runLiveFunction(
                     waitingAgents: dashWaiting,
                     note: `Process status is 'RUNNING' for all open terminal processes. The actual agent task status from the Agents Dashboard is: ${dashWorking.length} working (${dashWorking.join(", ") || "none"}), ${dashDone.length} done (${dashDone.join(", ") || "none"}), ${dashIdle.length} idle (${dashIdle.join(", ") || "none"}). Refer to agentStatus or call space_inspect_dashboard for real task workload.`
                   },
-                  unusedPanes: unusedPanes.map((p: any) => ({
+                  unusedPanes: unusedPanes.map((p: InspectedPane) => ({
                     id: p.id,
                     paneName: p.paneName ?? null,
                     title: p.title,
                     runtime: p.terminalRuntimeId || p.runtimeId,
                     model: p.modelId || p.effectiveModelId || p.configuredModelId || undefined
                   })),
-                  usedPanes: usedPanes.map((p: any) => ({
+                  usedPanes: usedPanes.map((p: InspectedPane) => ({
                     id: p.id,
                     paneName: p.paneName ?? null,
                     title: p.title,
                     runtime: p.terminalRuntimeId || p.runtimeId,
                     model: p.modelId || p.effectiveModelId || p.configuredModelId || undefined
                   })),
-                  openPanes: openPanes.map((p: any) => ({
+                  openPanes: openPanes.map((p: InspectedPane) => ({
                     id: p.id,
                     paneName: p.paneName ?? null,
                     title: p.title,
@@ -5334,7 +5337,7 @@ async function runLiveFunction(
                   roomId: effectiveRoomId,
                   paneCap: effectivePaneCap,
                   openPanesCount: openPanes.length,
-                  panes: openPanes.map((p: any) => ({
+                  panes: openPanes.map((p: InspectedPane) => ({
                     id: p.id,
                     paneName: p.paneName ?? null,
                     title: p.title,
@@ -5347,7 +5350,7 @@ async function runLiveFunction(
               }
             }
           } else if (name === "space_open_panes") {
-            let cleanCounts: Record<string, number> = {};
+            const cleanCounts: Record<string, number> = {};
             // Single-type lock: explicit counts with exactly one type (e.g. "only codex")
             // must NEVER be expanded or mixed — fill flags are ignored in that case.
             const explicitKeys = Object.keys(parsedArgs.counts || {});
@@ -5410,17 +5413,17 @@ async function runLiveFunction(
                   ? localStorage.getItem(`space_room_pane_cap_${effectiveRoomId}`) || localStorage.getItem("space_room_pane_cap")
                   : null;
                 if (localCap && !isNaN(Number(localCap)) && Number(localCap) > 0) configuredPaneCap = Number(localCap);
-              } catch {}
+              } catch { /* best-effort: nothing to do if it fails */ }
               const effectivePaneCap = configuredPaneCap ?? sc.room?.paneCap ?? 16;
               const rawPanes = Array.isArray(sc.panes) ? sc.panes : Array.isArray(sc.data) ? sc.data : [];
-              const openPanes = rawPanes.filter((p: any) => !p.isClosed);
+              const openPanes = rawPanes.filter((p: InspectedPane) => !p.isClosed);
               const availableSlots = Math.max(0, effectivePaneCap - openPanes.length);
 
               if (availableSlots <= 0) {
                 outputText = `The room is already full (${openPanes.length}/${effectivePaneCap} panes). There are no free slots.`;
               } else {
                 const existingTypes = new Set(
-                  openPanes.map((p: any) => {
+                  openPanes.map((p: InspectedPane) => {
                     const raw = String(p.terminalRuntimeId || p.mode || "").toLowerCase().replace(/^(cli:|pane:)/, "");
                     return raw;
                   })
@@ -5465,14 +5468,14 @@ async function runLiveFunction(
             ]);
             const data = await awaitOperationIfNeeded(effectiveRoomId, res, 8000);
             invalidateLiveRoomCache(effectiveRoomId);
-            const failedResult = Array.isArray(data?.results) ? data.results.find((r: any) => r.status === "FAILED") : null;
+            const failedResult = Array.isArray(data?.results) ? data.results.find((r: ControlResultItem) => r.status === "FAILED") : null;
             const isErr = res?.error || res?.result?.isError || data?.status === "FAILED" || Boolean(failedResult);
 
             if (isErr) {
-              const evidenceRes = (failedResult?.evidence as any)?.result || (res?.result as any)?.structuredContent;
-              const debugDiagnosis = evidenceRes?.debugDiagnosis || (data as any)?.debugDiagnosis;
-              const debugIncidentId = evidenceRes?.debugIncidentId || (data as any)?.debugIncidentId || failedResult?.evidence?.debugIncidentId;
-              const agentHandoffPrompt = evidenceRes?.agentHandoffPrompt || (data as any)?.agentHandoffPrompt;
+              const evidenceRes = failedResult?.evidence?.result || res?.result?.structuredContent;
+              const debugDiagnosis = evidenceRes?.debugDiagnosis || data?.debugDiagnosis;
+              const debugIncidentId = evidenceRes?.debugIncidentId || data?.debugIncidentId || failedResult?.evidence?.debugIncidentId;
+              const agentHandoffPrompt = evidenceRes?.agentHandoffPrompt || data?.agentHandoffPrompt;
               const reason = debugDiagnosis?.failureReason || failedResult?.detail || failedResult?.error || data?.detail || data?.error || res?.error?.message || "Open panes failed.";
 
               if (isDebug || debugDiagnosis) {
@@ -5501,9 +5504,9 @@ async function runLiveFunction(
               // Backend silently skips unavailable types (treated as non-existent).
               // Exclude them from verification so a skipped type never reports FAILED.
               const openResults = Array.isArray(data?.results) ? data.results : [];
-              const openEvidence = openResults.map((r: any) => r?.evidence?.result).find((e: any) => e && (Array.isArray(e?.data) || Array.isArray(e?.skipped))) || {};
+              const openEvidence = openResults.map((r: ControlResultItem) => r?.evidence?.result).find((e: ControlEvidence | undefined) => e && (Array.isArray(e?.data) || Array.isArray(e?.skipped))) || {};
               const skippedTypes: string[] = Array.isArray(openEvidence?.skipped)
-                ? openEvidence.skipped.map((s: any) => String(s?.typeId || "").toLowerCase()).filter(Boolean)
+                ? openEvidence.skipped.map((s: { typeId?: string }) => String(s?.typeId || "").toLowerCase()).filter(Boolean)
                 : [];
               const effectiveCounts: Record<string, number> = {};
               for (const [k, v] of Object.entries(cleanCounts)) {
@@ -5513,19 +5516,19 @@ async function runLiveFunction(
                 outputText = `No pane was opened: every requested type is disabled right now.`;
               } else {
               window.dispatchEvent(new CustomEvent("space-pane-control-action", { detail: { action: "refresh" } }));
-              const totalRequested = Object.values(effectiveCounts).reduce((s: number, c: any) => s + (typeof c === "number" ? c : 0), 0);
+              const totalRequested = Object.values(effectiveCounts).reduce((s: number, c) => s + (typeof c === "number" ? c : 0), 0);
               const totalCreated = Array.isArray(openEvidence?.data) ? openEvidence.data.length : 0;
               // Read STATE at once, then every 300 ms within the same ~6 s the old fixed settle and retries took.
               const verifyDeadline = Date.now() + 6000;
-              const matchPanes = (panes: any[], types: string[]) => types.filter(
-                (t) => !panes.some((p: any) => String(p.mode || p.terminalRuntimeId || "").toLowerCase().includes(t.toLowerCase()))
+              const matchPanes = (panes: InspectedPane[], types: string[]) => types.filter(
+                (t) => !panes.some((p: InspectedPane) => String(p.mode || p.terminalRuntimeId || "").toLowerCase().includes(t.toLowerCase()))
               );
               let postInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
               let sc = postInspect?.result?.structuredContent || {};
               if (sc.room?.id && sc.room.id !== effectiveRoomId) {
                 outputText = `Room mismatch: verification read another room (${sc.room.id}). Ask the user which room they are in, then check again.`;
               } else {
-              let postPanes = (sc.panes || []).filter((p: any) => !p.isClosed);
+              let postPanes = (sc.panes || []).filter((p: InspectedPane) => !p.isClosed);
               const requestedTypes = Object.keys(effectiveCounts);
               let missingInState = matchPanes(postPanes, requestedTypes);
               const effectivePaneCap = Number(sc.paneCap || sc.maxPanesAllowed || 16);
@@ -5534,7 +5537,7 @@ async function runLiveFunction(
                 await new Promise((r) => setTimeout(r, 300));
                 postInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
                 sc = postInspect?.result?.structuredContent || {};
-                postPanes = (sc.panes || []).filter((p: any) => !p.isClosed);
+                postPanes = (sc.panes || []).filter((p: InspectedPane) => !p.isClosed);
                 missingInState = matchPanes(postPanes, requestedTypes);
                 isRoomAtCapacity = postPanes.length >= effectivePaneCap;
               }
@@ -5565,11 +5568,11 @@ async function runLiveFunction(
                 const paneLabels = newlyOpenedPanes.map((p) => `${p.title || p.terminalRuntimeId || p.mode} (paneId: ${p.id})`).join(", ");
                 outputText = `Opened ${totalCreated} panes (${paneLabels || requestedTypes.join(", ")}); the screen has not caught up yet.`;
               } else {
-                const verifiedList = postPanes.filter((p: any) => newlyOpenedPanes.some(created => created.id === p.id));
+                const verifiedList = postPanes.filter((p: InspectedPane) => newlyOpenedPanes.some(created => created.id === p.id));
                 if (totalRequested > 4) {
-                  outputText = `✓ State verified: opened ${verifiedList.length} panes (${requestedTypes.join(", ")}), now on screen: ${verifiedList.map((p: any) => `${p.title || p.id} [${p.id}]`).join(", ")}`;
+                  outputText = `✓ State verified: opened ${verifiedList.length} panes (${requestedTypes.join(", ")}), now on screen: ${verifiedList.map((p: InspectedPane) => `${p.title || p.id} [${p.id}]`).join(", ")}`;
                 } else {
-                  outputText = `✓ State verified: opened and on screen: ${verifiedList.map((p: any) => `${p.title || p.id} (paneId: ${p.id}, mode: ${p.mode})`).join(", ")}`;
+                  outputText = `✓ State verified: opened and on screen: ${verifiedList.map((p: InspectedPane) => `${p.title || p.id} (paneId: ${p.id}, mode: ${p.mode})`).join(", ")}`;
                 }
               }
               }
@@ -5578,8 +5581,8 @@ async function runLiveFunction(
           } else if (name === "space_close_panes") {
             const inspectRes = await api.inspectControlMcp(effectiveRoomId, "STATE");
             const stateData = inspectRes?.result?.structuredContent || {};
-            const openPanes = (stateData.panes || []).filter((p: any) => !p.isClosed);
-            const livePaneId = paneId || openPanes.find((p: any) => p.mode === "LIVE" || p.runtimeId === "LIVE")?.id;
+            const openPanes = (stateData.panes || []).filter((p: InspectedPane) => !p.isClosed);
+            const livePaneId = paneId || openPanes.find((p: InspectedPane) => p.mode === "LIVE" || p.runtimeId === "LIVE")?.id;
 
             const reqCliType = parsedArgs.cliType ? String(parsedArgs.cliType).toLowerCase().trim() : undefined;
             const reqMode = parsedArgs.mode ? String(parsedArgs.mode).toUpperCase().trim() : undefined;
@@ -5588,23 +5591,23 @@ async function runLiveFunction(
             if (parsedArgs.targetGroup !== undefined || parsedArgs.paneIds !== undefined || parsedArgs.paneId !== undefined || parsedArgs.paneNames !== undefined || parsedArgs.paneName !== undefined) {
               targetPaneIds = resolveLivePaneTargets(effectiveRoomId, openPanes, parsedArgs, context, false, livePaneId);
             } else if (reqMode) {
-              targetPaneIds = openPanes.filter((p: any) => p.id !== livePaneId && p.mode !== "LIVE" && String(p.mode || "").toUpperCase() === reqMode).map((p: any) => p.id);
+              targetPaneIds = openPanes.filter((p: InspectedPane) => p.id !== livePaneId && p.mode !== "LIVE" && String(p.mode || "").toUpperCase() === reqMode).map((p: InspectedPane) => p.id);
             } else if (reqCliType) {
-              const matchedPanes = openPanes.filter((p: any) => {
+              const matchedPanes = openPanes.filter((p: InspectedPane) => {
                 if (p.id === livePaneId || p.mode === "LIVE" || p.runtimeId === "LIVE") return false;
                 const rawId = String(p.terminalRuntimeId || p.runtimeId || p.runtime || "").toLowerCase();
                 const title = String(p.title || "").toLowerCase();
                 return rawId.includes(reqCliType) || title.includes(reqCliType);
               });
               if (parsedArgs.filter === "unused" || parsedArgs.unusedOnly === true) {
-                targetPaneIds = matchedPanes.filter((p: any) => p.isUnused || (!p.hasUserInput && p.status !== "RUNNING")).map((p: any) => p.id);
+                targetPaneIds = matchedPanes.filter((p: InspectedPane) => p.isUnused || (!p.hasUserInput && p.status !== "RUNNING")).map((p: InspectedPane) => p.id);
               } else {
-                targetPaneIds = matchedPanes.map((p: any) => p.id);
+                targetPaneIds = matchedPanes.map((p: InspectedPane) => p.id);
               }
             } else if (parsedArgs.filter === "unused" || parsedArgs.unusedOnly === true) {
               // Close only idle CLI or CHAT panes that are marked unused (or fallback: default title, no task, no user input)
               // YouTube, Music, Browser, VNC panes are NEVER unused and MUST be preserved.
-              const unusedPanes = openPanes.filter((p: any) => {
+              const unusedPanes = openPanes.filter((p: InspectedPane) => {
                 if (p.id === livePaneId || p.mode === "LIVE" || p.runtimeId === "LIVE") return false;
                 const isCliOrChat = p.mode === "TERMINAL" || p.mode === "CHAT";
                 if (!isCliOrChat) return false;
@@ -5614,16 +5617,16 @@ async function runLiveFunction(
                 const hasTask = Boolean(p.nativeTaskRef || p.status === "RUNNING");
                 return isDefaultTitle && !hasTask && !p.hasUserInput;
               });
-              targetPaneIds = unusedPanes.map((p: any) => p.id);
+              targetPaneIds = unusedPanes.map((p: InspectedPane) => p.id);
             } else if (parsedArgs.paneIds || parsedArgs.paneId || parsedArgs.paneNames || parsedArgs.paneName) {
               targetPaneIds = resolveLivePaneTargets(effectiveRoomId, openPanes, parsedArgs, context, false, livePaneId);
             } else if (parsedArgs.all === true || parsedArgs.filter === "all") {
               // Close all open panes EXCEPT the active Live pane
-              targetPaneIds = openPanes.filter((p: any) => p.id !== livePaneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE").map((p: any) => p.id);
+              targetPaneIds = openPanes.filter((p: InspectedPane) => p.id !== livePaneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE").map((p: InspectedPane) => p.id);
             }
 
             if (targetPaneIds.length === 0) {
-              const nonLiveOpen = openPanes.filter((p: any) => p.id !== livePaneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE");
+              const nonLiveOpen = openPanes.filter((p: InspectedPane) => p.id !== livePaneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE");
               outputText = reqCliType
                 ? `No open ${reqCliType.toUpperCase()} panes to close.`
                 : parsedArgs.filter === "unused" || parsedArgs.unusedOnly === true
@@ -5649,12 +5652,12 @@ async function runLiveFunction(
                 if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("space-pane-control-action", { detail: { action: "refresh" } }));
                 const postInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
                 const remainingOpen = (postInspect?.result?.structuredContent?.panes || []).filter(
-                  (p: any) => !p.isClosed && targetPaneIds.includes(p.id)
+                  (p: InspectedPane) => !p.isClosed && targetPaneIds.includes(p.id)
                 );
                 if (remainingOpen.length > 0) {
-                  outputText = `State verification failed: panes ${remainingOpen.map((p: any) => p.paneName || p.id).join(", ")} are still open on screen.`;
+                  outputText = `State verification failed: panes ${remainingOpen.map((p: InspectedPane) => p.paneName || p.id).join(", ")} are still open on screen.`;
                 } else {
-                  const closedNames = targetPaneIds.map(id => openPanes.find((p: any) => p.id === id)?.paneName || id).filter(Boolean);
+                  const closedNames = targetPaneIds.map(id => openPanes.find((p: InspectedPane) => p.id === id)?.paneName || id).filter(Boolean);
                   if (closedNames.length === 1) {
                     outputText = `✓ State verified: ${closedNames[0]} is closed and gone from the screen.`;
                   } else {
@@ -5666,7 +5669,7 @@ async function runLiveFunction(
           } else if (name === "space_minimize_panes") {
             const inspectRes = await api.inspectControlMcp(effectiveRoomId, "STATE");
             const openPanes = (inspectRes?.result?.structuredContent?.panes || []).filter(
-              (p: any) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE"
+              (p: InspectedPane) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE"
             );
             const paneIds = parsedArgs.paneIds || (parsedArgs.paneId ? [parsedArgs.paneId] : undefined);
             const paneNames = parsedArgs.paneNames || (parsedArgs.paneName ? [parsedArgs.paneName] : undefined);
@@ -5674,7 +5677,7 @@ async function runLiveFunction(
             const nonCliOnly = parsedArgs.nonCli === true || parsedArgs.excludeCli === true || parsedArgs.onlyNonCli === true;
             let targetPaneIds: string[] = [];
             if (parsedArgs.all === true) {
-              targetPaneIds = openPanes.map((p: any) => p.id);
+              targetPaneIds = openPanes.map((p: InspectedPane) => p.id);
             } else if (paneNames) {
               const names = Array.isArray(paneNames) ? paneNames : [paneNames];
               const resolved = names.map((n: unknown) => resolvePaneByName(openPanes, String(n))?.id).filter(Boolean) as string[];
@@ -5684,16 +5687,16 @@ async function runLiveFunction(
                 outputText = `Unknown pane names (${names.join(", ")}).`;
               }
             } else if (nonCliOnly) {
-              targetPaneIds = openPanes.filter((p: any) => p.mode !== "TERMINAL" && !(p as any).terminalRuntimeId).map((p: any) => p.id);
+              targetPaneIds = openPanes.filter((p: InspectedPane) => p.mode !== "TERMINAL" && !p.terminalRuntimeId).map((p: InspectedPane) => p.id);
             } else if (typeHint) {
-              targetPaneIds = openPanes.filter((p: any) => String(p.terminalRuntimeId || p.mode || "").toLowerCase().includes(String(typeHint).toLowerCase())).map((p: any) => p.id);
+              targetPaneIds = openPanes.filter((p: InspectedPane) => String(p.terminalRuntimeId || p.mode || "").toLowerCase().includes(String(typeHint).toLowerCase())).map((p: InspectedPane) => p.id);
             } else if (paneIds && paneIds.length > 0) {
               const raw = Array.isArray(paneIds) ? paneIds : [paneIds];
-              const unknownIds = raw.filter((id: string) => id !== paneId && !openPanes.some((op: any) => op.id === id));
+              const unknownIds = raw.filter((id: string) => id !== paneId && !openPanes.some((op: InspectedPane) => op.id === id));
               if (unknownIds.length > 0 && unknownIds.length === raw.length) {
                 outputText = `Unknown pane ids (${unknownIds.join(", ")}). The room was inspected again; pass all:true or valid ids.`;
               } else {
-                targetPaneIds = raw.filter((id: string) => id !== paneId && openPanes.some((op: any) => op.id === id));
+                targetPaneIds = raw.filter((id: string) => id !== paneId && openPanes.some((op: InspectedPane) => op.id === id));
               }
             } else {
               outputText = "No target given; pass all:true or valid ids.";
@@ -5711,19 +5714,19 @@ async function runLiveFunction(
               ]);
               const data = await awaitOperationIfNeeded(effectiveRoomId, res, 6000);
               invalidateLiveRoomCache(effectiveRoomId);
-              const isErr = res?.error || res?.result?.isError || data?.status === "FAILED" || (Array.isArray(data?.results) && data.results.some((r: any) => r.status === "FAILED"));
+              const isErr = res?.error || res?.result?.isError || data?.status === "FAILED" || (Array.isArray(data?.results) && data.results.some((r: ControlResultItem) => r.status === "FAILED"));
 
               if (isErr) {
-                const reason = data?.detail || data?.error || data?.results?.find((r: any) => r.status === "FAILED")?.detail || res?.error?.message || "Minimize failed.";
+                const reason = data?.detail || data?.error || data?.results?.find((r: ControlResultItem) => r.status === "FAILED")?.detail || res?.error?.message || "Minimize failed.";
                 outputText = `Minimizing failed: ${reason}`;
               } else {
                 if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("space-pane-control-action", { detail: { action: "refresh" } }));
                 const postInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
-                const postPanes = (postInspect?.result?.structuredContent?.panes || []) as any[];
-                const minimized = targetPaneIds.filter((id: string) => postPanes.find((p: any) => p.id === id)?.isMinimized);
+                const postPanes = (postInspect?.result?.structuredContent?.panes || []) as InspectedPane[];
+                const minimized = targetPaneIds.filter((id: string) => postPanes.find((p: InspectedPane) => p.id === id)?.isMinimized);
                 if (minimized.length === targetPaneIds.length) {
                   const minNames = targetPaneIds.map((id: string) => {
-                    const found = openPanes.find((p: any) => p.id === id) || postPanes.find((p: any) => p.id === id);
+                    const found = openPanes.find((p: InspectedPane) => p.id === id) || postPanes.find((p: InspectedPane) => p.id === id);
                     return found?.paneName || found?.title || id;
                   });
                   if (minNames.length === 1) {
@@ -5739,7 +5742,7 @@ async function runLiveFunction(
           } else if (name === "space_maximize_panes") {
             const inspectRes = await api.inspectControlMcp(effectiveRoomId, "STATE");
             const openPanes = (inspectRes?.result?.structuredContent?.panes || []).filter(
-              (p: any) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE"
+              (p: InspectedPane) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE"
             );
             let targetPaneId = parsedArgs.paneId;
             if (!targetPaneId && (parsedArgs.paneName || parsedArgs.paneNames)) {
@@ -5762,15 +5765,15 @@ async function runLiveFunction(
               ]);
               const data = await awaitOperationIfNeeded(effectiveRoomId, res, 6000);
               invalidateLiveRoomCache(effectiveRoomId);
-              const isErr = res?.error || res?.result?.isError || data?.status === "FAILED" || (Array.isArray(data?.results) && data.results.some((r: any) => r.status === "FAILED"));
+              const isErr = res?.error || res?.result?.isError || data?.status === "FAILED" || (Array.isArray(data?.results) && data.results.some((r: ControlResultItem) => r.status === "FAILED"));
 
               if (isErr) {
-                const reason = data?.detail || data?.error || data?.results?.find((r: any) => r.status === "FAILED")?.detail || res?.error?.message || "Maximize failed.";
+                const reason = data?.detail || data?.error || data?.results?.find((r: ControlResultItem) => r.status === "FAILED")?.detail || res?.error?.message || "Maximize failed.";
                 outputText = `Verification FAILED: maximizing failed: ${reason}`;
               } else {
                 if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("space-pane-control-action", { detail: { action: "refresh" } }));
                 const postInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
-                const targetPane = (postInspect?.result?.structuredContent?.panes || []).find((p: any) => p.id === targetPaneId);
+                const targetPane = (postInspect?.result?.structuredContent?.panes || []).find((p: InspectedPane) => p.id === targetPaneId);
                 if (!targetPane || !targetPane.isMaximized) {
                   outputText = `State verification failed: pane ${targetPaneId} does not show as maximized.`;
                 } else {
@@ -5782,7 +5785,7 @@ async function runLiveFunction(
           } else if (name === "space_restore_panes") {
             const inspectRes = await api.inspectControlMcp(effectiveRoomId, "STATE");
             const targetPanes = (inspectRes?.result?.structuredContent?.panes || []).filter(
-              (p: any) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && (p.isMinimized || p.isMaximized)
+              (p: InspectedPane) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && (p.isMinimized || p.isMaximized)
             );
             const paneIds = parsedArgs.paneIds || (parsedArgs.paneId ? [parsedArgs.paneId] : undefined);
             const paneNames = parsedArgs.paneNames || (parsedArgs.paneName ? [parsedArgs.paneName] : undefined);
@@ -5794,7 +5797,7 @@ async function runLiveFunction(
             } else if (paneIds && paneIds.length > 0) {
               targetPaneIds = Array.isArray(paneIds) ? paneIds : [paneIds];
             } else if (targetPanes.length > 0) {
-              targetPaneIds = targetPanes.map((p: any) => p.id);
+              targetPaneIds = targetPanes.map((p: InspectedPane) => p.id);
             }
 
             const res = await executeControl(effectiveRoomId, [
@@ -5806,27 +5809,27 @@ async function runLiveFunction(
             ]);
             const data = await awaitOperationIfNeeded(effectiveRoomId, res, 6000);
             invalidateLiveRoomCache(effectiveRoomId);
-            const isErr = res?.error || res?.result?.isError || data?.status === "FAILED" || (Array.isArray(data?.results) && data.results.some((r: any) => r.status === "FAILED"));
+            const isErr = res?.error || res?.result?.isError || data?.status === "FAILED" || (Array.isArray(data?.results) && data.results.some((r: ControlResultItem) => r.status === "FAILED"));
 
             if (isErr) {
-              const reason = data?.detail || data?.error || data?.results?.find((r: any) => r.status === "FAILED")?.detail || res?.error?.message || "Restore failed.";
+              const reason = data?.detail || data?.error || data?.results?.find((r: ControlResultItem) => r.status === "FAILED")?.detail || res?.error?.message || "Restore failed.";
               outputText = `Verification FAILED: restoring failed: ${reason}`;
             } else {
               if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("space-pane-control-action", { detail: { action: "refresh" } }));
               const postInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
               const postPanes = (postInspect?.result?.structuredContent?.panes || []).filter(
-                (p: any) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE"
+                (p: InspectedPane) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE"
               );
               const targetCheckPanes = targetPaneIds.length > 0
-                ? postPanes.filter((p: any) => targetPaneIds.includes(p.id))
+                ? postPanes.filter((p: InspectedPane) => targetPaneIds.includes(p.id))
                 : postPanes;
               const stillAbnormal = targetCheckPanes.filter(
-                (p: any) => p.isMinimized || p.isMaximized
+                (p: InspectedPane) => p.isMinimized || p.isMaximized
               );
               if (stillAbnormal.length > 0) {
-                outputText = `State verification failed: panes ${stillAbnormal.map((p: any) => p.paneName || p.id).join(", ")} are not back in the normal layout.`;
+                outputText = `State verification failed: panes ${stillAbnormal.map((p: InspectedPane) => p.paneName || p.id).join(", ")} are not back in the normal layout.`;
               } else if (targetPaneIds.length > 0) {
-                const restoredNames = targetPaneIds.map((id: string) => targetPanes.find((p: any) => p.id === id)?.paneName || id);
+                const restoredNames = targetPaneIds.map((id: string) => targetPanes.find((p: InspectedPane) => p.id === id)?.paneName || id);
                 outputText = `✓ State verified: ${restoredNames.join(", ")} restored to the normal layout (grid).`;
               } else {
                 outputText = `✓ State verified: every pane is restored to the normal layout (grid).`;
@@ -5852,8 +5855,8 @@ async function runLiveFunction(
             const cachedPanes = liveRoomCache.get(effectiveRoomId)?.stateRes?.result?.structuredContent?.panes;
             const stateRes = cachedPanes ? null : await api.inspectControlMcp(effectiveRoomId, "STATE");
             const rawPanes = cachedPanes || (stateRes?.result?.structuredContent?.panes || []);
-            const statePanes = (rawPanes as any[]).filter(
-              (p: any) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE"
+            const statePanes = (rawPanes as InspectedPane[]).filter(
+              (p: InspectedPane) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE"
             );
             const targetPaneIds = resolveLivePaneTargets(effectiveRoomId, statePanes, parsedArgs, context, true, paneId);
             if (targetPaneIds.length === 0) {
@@ -5878,8 +5881,8 @@ async function runLiveFunction(
             const elapsedMs = Math.max(1, Math.round(performance.now() - promptStartTime));
 
 
-            const matchedPanes = statePanes.filter((p: any) => targetPaneIds.includes(p.id));
-            const paneNames = matchedPanes.map((p: any) => `${p.paneName ? `${p.paneName}: ` : ""}"${p.title || p.id}" (${p.terminalRuntimeId || p.mode || "CLI"})`).join(", ");
+            const matchedPanes = statePanes.filter((p: InspectedPane) => targetPaneIds.includes(p.id));
+            const paneNames = matchedPanes.map((p: InspectedPane) => `${p.paneName ? `${p.paneName}: ` : ""}"${p.title || p.id}" (${p.terminalRuntimeId || p.mode || "CLI"})`).join(", ");
 
             // MCP can mark a completed partial/failed operation as isError.
             // Its per-pane receipts still describe effects that must not be retried.
@@ -5924,7 +5927,7 @@ async function runLiveFunction(
               "LATEST";
             try {
               localStorage.setItem(`space_last_snapshot_${effectiveRoomId}`, snapshotId);
-            } catch {}
+            } catch { /* best-effort: nothing to do if it fails */ }
             const closeRes = await executeControl(effectiveRoomId, [
               {
                 kind: "pane",
@@ -6113,7 +6116,7 @@ async function runLiveFunction(
           } else if (name === "space_build_christmas_tree") {
             const inspectRes = await api.inspectControlMcp(effectiveRoomId, "STATE");
             const stateData = inspectRes?.result?.structuredContent || {};
-            const openPanes = (stateData.panes || []).filter((p: any) => !p.isClosed);
+            const openPanes = (stateData.panes || []).filter((p: InspectedPane) => !p.isClosed);
             const needed = parsedArgs.paneCount && parsedArgs.paneCount >= 3 ? parsedArgs.paneCount : 6;
             if (openPanes.length < needed) {
               const diff = needed - openPanes.length;
@@ -6127,7 +6130,7 @@ async function runLiveFunction(
               await awaitOperationIfNeeded(effectiveRoomId, openRes, 8000);
             }
             const reInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
-            const currentPanes = (reInspect?.result?.structuredContent?.panes || []).filter((p: any) => !p.isClosed);
+            const currentPanes = (reInspect?.result?.structuredContent?.panes || []).filter((p: InspectedPane) => !p.isClosed);
 
             const placements: Array<{ paneId: string; x: number; y: number; width: number; height: number }> = [];
             if (currentPanes.length >= 6) {
@@ -6142,7 +6145,7 @@ async function runLiveFunction(
               }
             }
 
-            let layoutRes: any;
+            let layoutRes: ControlMcpReply;
             if (placements.length > 0) {
               layoutRes = await executeControl(effectiveRoomId, [
                 {
@@ -6168,7 +6171,7 @@ async function runLiveFunction(
 
             outputText = `Christmas tree layout successfully created with ${currentPanes.length} panes (mode: ${appliedMode}). Outcome: ${typeof layoutData === "string" ? layoutData : JSON.stringify(layoutData)}`;
           } else if (name === "space_execute_mcp") {
-            const actions: any[] = Array.isArray(parsedArgs.actions) ? parsedArgs.actions : [];
+            const actions: Array<{ kind?: string; operation?: string; id?: string }> = Array.isArray(parsedArgs.actions) ? parsedArgs.actions : [];
             const forbidden = actions.filter(action => action?.kind === "resource" && liveForbiddenResourceOperations.has(String(action.operation)));
             if (forbidden.length) throw new Error(`${forbidden.map(action => action.operation).join(", ")} is never available by voice. Nothing was executed.`);
             const sensitive = actions.filter(liveActionNeedsConfirmation);
@@ -6217,7 +6220,7 @@ async function runLiveFunction(
             outputText = `MCP space_watches (${op}) completed: ${typeof res === "string" ? res : JSON.stringify(res)}`;
           } else if (name === "space_stop_pane") {
             const stateInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
-            const openPanes = (stateInspect?.result?.structuredContent?.panes || stateInspect?.panes || []).filter((p: any) => !p.isClosed);
+            const openPanes = (stateInspect?.result?.structuredContent?.panes || stateInspect?.panes || []).filter((p: InspectedPane) => !p.isClosed);
             let targetPaneId = (typeof parsedArgs.paneId === "string" && parsedArgs.paneId.trim()) ? parsedArgs.paneId.trim() : undefined;
             if (!targetPaneId && (parsedArgs.paneName || parsedArgs.paneNames)) {
               const names = [
@@ -6233,7 +6236,7 @@ async function runLiveFunction(
               }
             }
             if (!targetPaneId) {
-              const runningPane = openPanes.find((p: any) => p.status === "RUNNING");
+              const runningPane = openPanes.find((p: InspectedPane) => p.status === "RUNNING");
               if (runningPane) {
                 targetPaneId = runningPane.id;
               } else if (paneId) {
@@ -6252,7 +6255,7 @@ async function runLiveFunction(
                 }
               ]);
               const data = await awaitOperationIfNeeded(effectiveRoomId, res, 8000);
-              const stoppedPane = openPanes.find((p: any) => p.id === targetPaneId);
+              const stoppedPane = openPanes.find((p: InspectedPane) => p.id === targetPaneId);
               const targetName = stoppedPane?.paneName || stoppedPane?.title || targetPaneId;
               if (controlReceiptFailed(res, data)) throw new Error(`Stopping ${targetName} failed: ${JSON.stringify(data ?? res).slice(0, 800)}`);
               outputText = `✓ State verified: ${targetName} is stopped.`;
@@ -6277,7 +6280,7 @@ async function runLiveFunction(
                     channelName = topVideo.channel;
                   }
                 }
-              } catch {}
+              } catch { /* best-effort: nothing to do if it fails */ }
             }
 
             if (!targetUrl) {
@@ -6287,9 +6290,9 @@ async function runLiveFunction(
             } else {
               const inspectRes = await api.inspectControlMcp(effectiveRoomId, "STATE");
               const stateData = inspectRes?.result?.structuredContent || {};
-              const openPanes = (stateData.panes || []).filter((p: any) => !p.isClosed);
-              const targetPane = (parsedArgs.paneId ? openPanes.find((p: any) => p.id === parsedArgs.paneId) : null) ||
-                                 openPanes.find((p: any) => p.mode === "YOUTUBE");
+              const openPanes = (stateData.panes || []).filter((p: InspectedPane) => !p.isClosed);
+              const targetPane = (parsedArgs.paneId ? openPanes.find((p: InspectedPane) => p.id === parsedArgs.paneId) : null) ||
+                                 openPanes.find((p: InspectedPane) => p.mode === "YOUTUBE");
 
               if (targetPane) {
                 window.dispatchEvent(new CustomEvent("space-play-youtube-url", {
@@ -6322,9 +6325,9 @@ async function runLiveFunction(
             const cachedPanes = liveRoomCache.get(effectiveRoomId)?.stateRes?.result?.structuredContent?.panes;
             const inspectRes = cachedPanes ? null : await api.inspectControlMcp(effectiveRoomId, "STATE");
             const stateData = cachedPanes ? { panes: cachedPanes } : (inspectRes?.result?.structuredContent || {});
-            const openPanes = (stateData.panes || []).filter((p: any) => !p.isClosed);
+            const openPanes = (stateData.panes || []).filter((p: InspectedPane) => !p.isClosed);
 
-            let targetPaneIds: string[] = [];
+            const targetPaneIds: string[] = [];
             if (parsedArgs.paneId) {
               targetPaneIds.push(String(parsedArgs.paneId).trim());
             }
@@ -6341,7 +6344,7 @@ async function runLiveFunction(
               }
             }
             if (targetPaneIds.length === 0) {
-              const fallback = openPanes.find((p: any) => p.mode !== "LIVE")?.id;
+              const fallback = openPanes.find((p: InspectedPane) => p.mode !== "LIVE")?.id;
               if (fallback) targetPaneIds.push(fallback);
             }
 
@@ -6360,7 +6363,7 @@ async function runLiveFunction(
               invalidateLiveRoomCache(effectiveRoomId);
               if (controlReceiptFailed(colorRes, colorData)) throw new Error(`Setting the pane color failed: ${JSON.stringify(colorData ?? colorRes).slice(0, 800)}`);
               if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("space-pane-control-action", { detail: { action: "refresh" } }));
-              const targetNames = targetPaneIds.map((id: string) => openPanes.find((p: any) => p.id === id)?.paneName || id).join(", ");
+              const targetNames = targetPaneIds.map((id: string) => openPanes.find((p: InspectedPane) => p.id === id)?.paneName || id).join(", ");
               outputText = targetColor
                 ? `✓ Set the color of ${targetNames} to ${targetColor}.`
                 : `✓ Cleared the color of ${targetNames}.`;
@@ -6371,12 +6374,12 @@ async function runLiveFunction(
             try {
               const capRes = await fetch(`/api/control/v1/capabilities?roomId=${encodeURIComponent(effectiveRoomId)}`);
               if (capRes.ok) {
-                const caps = (await capRes.json()) as any;
+                const caps = (await capRes.json()) as { types?: Array<{ mode?: string; title?: string; terminalRuntimeId?: string; id: string }>; unavailable?: Array<{ id: string; reason?: string }> };
                 workingRuntimes = (caps.types || [])
-                  .filter((t: any) => t.mode === "TERMINAL")
-                  .map((t: any) => t.title || t.terminalRuntimeId || t.id);
-                unavailableRuntimes = (caps.unavailable || []).map((u: any) => {
-                  const def = PANE_TYPES.find((p: any) => p.runtimeId === u.id || p.typeId === u.id);
+                  .filter((t) => t.mode === "TERMINAL")
+                  .map((t) => t.title || t.terminalRuntimeId || t.id);
+                unavailableRuntimes = (caps.unavailable || []).map((u) => {
+                  const def = PANE_TYPES.find((p) => p.runtimeId === u.id || p.typeId === u.id);
                   return {
                     id: u.id,
                     name: def?.label || u.id,
@@ -6384,7 +6387,7 @@ async function runLiveFunction(
                   };
                 });
               }
-            } catch {}
+            } catch { /* best-effort: nothing to do if it fails */ }
 
             const lines = [
               "=== CLI RUNTIME STATUS ===",
@@ -6400,10 +6403,10 @@ async function runLiveFunction(
             const cachedPanes = liveRoomCache.get(effectiveRoomId)?.stateRes?.result?.structuredContent?.panes;
             const stateRes = cachedPanes ? null : await api.inspectControlMcp(effectiveRoomId, "STATE");
             const rawPanes = cachedPanes || (stateRes?.result?.structuredContent?.panes || []);
-            const statePanes = (rawPanes as any[]).filter(
-              (p: any) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE"
+            const statePanes = (rawPanes as InspectedPane[]).filter(
+              (p: InspectedPane) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE"
             );
-            const cliPanes = statePanes.filter((p: any) => p.mode === "TERMINAL" || (p as any).terminalRuntimeId);
+            const cliPanes = statePanes.filter((p: InspectedPane) => p.mode === "TERMINAL" || p.terminalRuntimeId);
             if (cliPanes.length === 0) {
               outputText = "No open CLI (terminal) panes in this room.";
             } else {
@@ -6416,8 +6419,8 @@ async function runLiveFunction(
                   ? (targetPane.title ? `${targetPane.paneName} (${targetPane.title})` : targetPane.paneName)
                   : (targetPane.title || targetPaneId);
 
-              let settingsStatus = await api.cliModelSettingsStatus(targetPaneId).catch(() => null);
-              let settings = settingsStatus?.status === "AVAILABLE" ? settingsStatus.settings : null;
+              const settingsStatus = await api.cliModelSettingsStatus(targetPaneId).catch(() => null);
+              const settings = settingsStatus?.status === "AVAILABLE" ? settingsStatus.settings : null;
 
               if (!settings || !Array.isArray(settings.models) || settings.models.length === 0) {
                 outputText = `Model settings for pane "${targetPaneTitle}" (${targetPaneId}) are unavailable.`;
@@ -6427,45 +6430,45 @@ async function runLiveFunction(
                 const currentEffort = settings.current?.reasoningEffort;
 
                 if (parsedArgs.listAvailable === true || (!parsedArgs.model && !parsedArgs.reasoningEffort)) {
-                  const modelsSummary = modelsList.map((m: any) =>
+                  const modelsSummary = modelsList.map((m) =>
                     `• ${m.displayName || m.id} (id: ${m.id}${m.supportedReasoningEfforts?.length ? `, reasoning: ${m.supportedReasoningEfforts.join("/")}` : ""})`
                   ).join("\n");
                   outputText = `Pane: ${targetPaneTitle} (${targetPaneId})\nCurrent model: ${currentModelId || "unknown"} (Reasoning: ${currentEffort || "default"})\n\nAvailable models:\n${modelsSummary}`;
                 } else if (settings.isTurnActive) {
                   outputText = `The selected pane "${targetPaneTitle}" is running a task. Its model was not changed; wait for that task to finish.`;
                 } else {
-                  let targetModel: any = null;
+                  let targetModel: (typeof modelsList)[number] | null | undefined = null;
                   if (parsedArgs.model) {
                     const reqStr = String(parsedArgs.model).trim().toLowerCase();
-                    targetModel = modelsList.find((m: any) => m.id.toLowerCase() === reqStr);
+                    targetModel = modelsList.find((m) => m.id.toLowerCase() === reqStr);
                     if (!targetModel) {
-                      targetModel = modelsList.find((m: any) => (m.displayName || "").toLowerCase() === reqStr);
+                      targetModel = modelsList.find((m) => (m.displayName || "").toLowerCase() === reqStr);
                     }
                     if (!targetModel) {
-                      targetModel = modelsList.find((m: any) =>
+                      targetModel = modelsList.find((m) =>
                         m.id.toLowerCase().includes(reqStr) || (m.displayName || "").toLowerCase().includes(reqStr)
                       );
                     }
                     if (!targetModel && (reqStr.includes("free") || reqStr === "any free" || reqStr === "any_free")) {
-                      targetModel = modelsList.find((m: any) =>
+                      targetModel = modelsList.find((m) =>
                         m.id.toLowerCase().includes("free") || (m.displayName || "").toLowerCase().includes("free")
                       );
                     }
                     if (!targetModel && reqStr.includes("3.7")) {
-                      targetModel = modelsList.find((m: any) => m.id.includes("3.7") || (m.displayName || "").includes("3.7"));
+                      targetModel = modelsList.find((m) => m.id.includes("3.7") || (m.displayName || "").includes("3.7"));
                     }
                     if (!targetModel && reqStr.includes("3.8")) {
-                      targetModel = modelsList.find((m: any) => m.id.includes("3.8") || (m.displayName || "").includes("3.8"));
+                      targetModel = modelsList.find((m) => m.id.includes("3.8") || (m.displayName || "").includes("3.8"));
                     }
                     if (!targetModel && (reqStr.includes("sonnet") || reqStr.includes("claude"))) {
-                      targetModel = modelsList.find((m: any) => m.id.includes("sonnet") || (m.displayName || "").includes("sonnet"));
+                      targetModel = modelsList.find((m) => m.id.includes("sonnet") || (m.displayName || "").includes("sonnet"));
                     }
                   } else {
-                    targetModel = modelsList.find((m: any) => m.id === currentModelId) || modelsList[0];
+                    targetModel = modelsList.find((m) => m.id === currentModelId) || modelsList[0];
                   }
 
                   if (!targetModel) {
-                    const availableNames = modelsList.map((m: any) => m.displayName || m.id).join(", ");
+                    const availableNames = modelsList.map((m) => m.displayName || m.id).join(", ");
                     outputText = `Model "${parsedArgs.model}" was not found for pane "${targetPaneTitle}". Available models: ${availableNames}`;
                   } else {
                     const supportedEfforts = Array.isArray(targetModel.supportedReasoningEfforts) ? targetModel.supportedReasoningEfforts : [];
@@ -6493,8 +6496,8 @@ async function runLiveFunction(
                     const resolvedEffort = targetEffort || targetModel.defaultReasoningEffort || "default";
 
                     let finalModelId = targetModel.id;
-                    if (finalModelId.match(/-(low|medium|high)$/)) {
-                      finalModelId = finalModelId.replace(/-(low|medium|high)$/, `-${resolvedEffort}`);
+                    if (finalModelId.match(/-(minimal|low|medium|high|xhigh|max)$/)) {
+                      finalModelId = finalModelId.replace(/-(minimal|low|medium|high|xhigh|max)$/, `-${resolvedEffort}`);
                     }
 
                     let updateSuccess = false;
@@ -6507,8 +6510,8 @@ async function runLiveFunction(
                         continueActiveTurn: false
                       });
                       updateSuccess = true;
-                    } catch (err: any) {
-                      updateError = err?.message || String(err);
+                    } catch (err) {
+                      updateError = (err as Error)?.message || String(err);
                     }
 
                     if (updateSuccess) {
@@ -6533,10 +6536,10 @@ async function runLiveFunction(
             const cachedPanes = liveRoomCache.get(effectiveRoomId)?.stateRes?.result?.structuredContent?.panes;
             const stateRes = cachedPanes ? null : await api.inspectControlMcp(effectiveRoomId, "STATE");
             const rawPanes = cachedPanes || (stateRes?.result?.structuredContent?.panes || []);
-            const statePanes = ((rawPanes || []) as any[]).filter(
-              (p: any) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE"
+            const statePanes = ((rawPanes || []) as InspectedPane[]).filter(
+              (p: InspectedPane) => !p.isClosed && p.id !== paneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE"
             );
-            const cliPanes = statePanes.filter((p: any) => p.mode === "TERMINAL" || (p as any).terminalRuntimeId);
+            const cliPanes = statePanes.filter((p: InspectedPane) => p.mode === "TERMINAL" || p.terminalRuntimeId);
             if (cliPanes.length === 0) {
               outputText = "No open CLI panes (terminals) were found in the room.";
             } else {
@@ -6594,12 +6597,12 @@ async function runLiveFunction(
               });
               try {
                 window.dispatchEvent(actionEvent);
-                handledLocally = Boolean((actionEvent.detail as any)?.handled || actionEvent.defaultPrevented);
-              } catch {}
+                handledLocally = Boolean((actionEvent.detail as { handled?: boolean })?.handled || actionEvent.defaultPrevented);
+              } catch { /* best-effort: nothing to do if it fails */ }
 
               // Only fall back to backend MCP if the target pane was not mounted / handled in the UI.
               // Pass waitForCompletion: false to prevent blocking Live Voice loop for 30s.
-              let shortcutRes: any = null;
+              let shortcutRes: ControlMcpReply = null;
               if (!handledLocally) {
                 if (entry.commandId === "continue") {
                   shortcutRes = await executeControl(effectiveRoomId, [
@@ -6636,14 +6639,14 @@ async function runLiveFunction(
         } else if (name === "space_describe_pane_types") {
             try {
               const res = await fetch(`/api/control/v1/pane-types?roomId=${encodeURIComponent(effectiveRoomId)}`);
-              const data = (await res.json()) as any;
+              const data = (await res.json()) as PaneTypesReply;
               const lines = [`roomCap:${data.roomCap ?? "?"}`];
               for (const t of data.types || []) {
                 lines.push(`${t.typeId}|${t.label}|${t.kind}|counts:{"${t.countsKey}":N}|${t.available ? "ready" : `unavailable:${t.reason || "?"}`}`);
               }
               outputText = lines.join("\n");
-            } catch (err: any) {
-              outputText = `pane-types error: ${err.message || String(err)}`;
+            } catch (err) {
+              outputText = `pane-types error: ${(err as Error).message || String(err)}`;
             }
           } else if (name === "space_test_mcp_tools") {
             try {
@@ -6658,9 +6661,9 @@ async function runLiveFunction(
                 if (Array.isArray(testObj?.results)) {
                   recordMcpTestResults(testObj.results);
                 }
-              } catch {}
-            } catch (err: any) {
-              outputText = `Failed to call space_test_mcp_tools: ${err.message || String(err)}`;
+              } catch { /* best-effort: nothing to do if it fails */ }
+            } catch (err) {
+              outputText = `Failed to call space_test_mcp_tools: ${(err as Error).message || String(err)}`;
             }
           } else if (name === "space_list_mcp_tools") {
             try {
@@ -6670,8 +6673,8 @@ async function runLiveFunction(
               });
               const data = res?.result?.structuredContent || res?.result?.content?.[0]?.text || res;
               outputText = typeof data === "string" ? data : JSON.stringify(data);
-            } catch (err: any) {
-              outputText = `Failed to call space_list_mcp_tools: ${err.message || String(err)}`;
+            } catch (err) {
+              outputText = `Failed to call space_list_mcp_tools: ${(err as Error).message || String(err)}`;
             }
           } else if (name === "space_debug") {
             try {
@@ -6686,9 +6689,9 @@ async function runLiveFunction(
               try {
                 const diagObj = typeof data === "object" ? data : JSON.parse(data);
                 recordMcpDiagnostic(diagObj);
-              } catch {}
-            } catch (err: any) {
-              outputText = `Failed to call space_debug: ${err.message || String(err)}`;
+              } catch { /* best-effort: nothing to do if it fails */ }
+            } catch (err) {
+              outputText = `Failed to call space_debug: ${(err as Error).message || String(err)}`;
             }
           } else if (name === "space_plan_mission" || name === "space_synthesize_verdict") {
             outputText = JSON.stringify(await runLiveMissionAction({
@@ -6739,7 +6742,6 @@ async function runLiveFunction(
           });
         }
 
-      } else {
       }
   } catch (outerErr) {
     outputText = `Tool execution error: ${outerErr instanceof Error ? outerErr.message : String(outerErr)}`;
@@ -6773,10 +6775,10 @@ export async function openLiveConversationSession(
     return openGoogleGeminiConversationSession(options, callbacks, options.paneId ?? "live");
   }
   if (provider === "amazon") {
-    return openAmazonNovaConversationSession(options, callbacks, options.paneId ?? "live");
+    return openAmazonNovaConversationSession(options, callbacks);
   }
   if (provider === "vercel") {
-    return openVercelLiveConversationSession(options, callbacks, options.paneId ?? "live");
+    return openVercelLiveConversationSession(options, callbacks);
   }
   if (provider === "livekit") {
     // LiveKit Inference is the default while its grant lasts; when it cannot start (grant spent, key missing, call refused) Live opens on OpenAI by itself.
@@ -6816,8 +6818,6 @@ export async function openOpenAiVoiceConversationSession(
     buildLiveSessionContext(options),
     getAudioStreamWithFallback(runtime, options.audioDeviceId)
   ]);
-  const tz = ctx.tz;
-  const userName = ctx.userName;
   const effectiveOpening = ctx.effectiveOpening;
 
   for (const track of stream.getAudioTracks()) {
@@ -6884,7 +6884,7 @@ export async function openOpenAiVoiceConversationSession(
   let paneTypesContextSent = false;
 
   try {
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    const AudioContextClass = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (AudioContextClass) {
       micAudioCtx = new AudioContextClass();
       if (micAudioCtx.state === "suspended") {
@@ -6975,7 +6975,7 @@ export async function openOpenAiVoiceConversationSession(
 
   try {
     const originalChannelSend = channel.send.bind(channel);
-    channel.send = ((data: any) => {
+    channel.send = ((data: string | Blob | ArrayBuffer | ArrayBufferView<ArrayBuffer>) => {
       try {
         if (typeof data === "string") {
           const parsed = JSON.parse(data);
@@ -6989,10 +6989,10 @@ export async function openOpenAiVoiceConversationSession(
             lastEventSent: "binary"
           }));
         }
-      } catch {}
-      return originalChannelSend(data);
+      } catch { /* best-effort: nothing to do if it fails */ }
+      return originalChannelSend(data as string); // send() is one overload per type; the value passes through unchanged
     }) as typeof channel.send;
-  } catch {}
+  } catch { /* best-effort: nothing to do if it fails */ }
 
   connection.addEventListener("connectionstatechange", () => {
     updateLiveSessionStats({ connectionState: connection.connectionState });
@@ -7070,10 +7070,10 @@ export async function openOpenAiVoiceConversationSession(
       if (isGptLiveSession && sessionReady && channel.readyState === "open") {
         channel.send(JSON.stringify({ type: "session.close" }));
       }
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
     try {
       channel.close();
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
     try {
       if (remoteAudioEl) {
         remoteAudioEl.pause();
@@ -7083,7 +7083,7 @@ export async function openOpenAiVoiceConversationSession(
         }
         remoteAudioEl = null;
       }
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
     if (micAnimId !== null) {
       cancelAnimationFrame(micAnimId);
       micAnimId = null;
@@ -7093,17 +7093,17 @@ export async function openOpenAiVoiceConversationSession(
         void micAudioCtx.close();
       }
       micAudioCtx = null;
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
     try {
       if (analyserStream && analyserStream !== stream) {
         analyserStream.getTracks().forEach((t) => t.stop());
       }
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
     connection.getSenders().forEach((s) => s.track?.stop());
     stream.getTracks().forEach((t) => t.stop());
     try {
       connection.close();
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
   };
 
   for (const track of stream.getAudioTracks()) {
@@ -7192,7 +7192,7 @@ export async function openOpenAiVoiceConversationSession(
             channel.send(createLiveClientEvent("response.create"));
             await api.ackWatch(targetRoomId, w.id).catch(() => {});
           }
-        } catch {} finally {
+        } catch { /* best-effort: nothing to do if it fails */ } finally {
           watchPollInFlight = false;
         }
       }, 1000);
@@ -7304,7 +7304,7 @@ export async function openOpenAiVoiceConversationSession(
               const roomId = options.roomId || "";
               const res = await fetch(`/api/control/v1/pane-types?roomId=${encodeURIComponent(roomId)}`);
               if (!res.ok) return;
-              const data = (await res.json()) as any;
+              const data = (await res.json()) as PaneTypesReply;
               const lines = [`roomCap:${data.roomCap ?? "?"}`];
               for (const t of data.types || []) {
                 lines.push(`${t.typeId}|${t.label}|${t.kind}|counts:{"${t.countsKey}":N}|${t.available ? "ready" : `unavailable:${t.reason || "?"}`}`);
@@ -7313,7 +7313,7 @@ export async function openOpenAiVoiceConversationSession(
                 type: conversationItemEvent,
                 item: { type: "message", role: "user", content: [{ type: "input_text", text: lines.join("\n") }] }
               }));
-            } catch {}
+            } catch { /* best-effort: nothing to do if it fails */ }
           })();
         }
         break;
@@ -7762,7 +7762,7 @@ export async function openOpenAiVoiceConversationSession(
           t.direction = "sendrecv";
         }
       }
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
 
     const offer = await connection.createOffer();
     await connection.setLocalDescription(offer);
@@ -7802,7 +7802,7 @@ export async function openOpenAiVoiceConversationSession(
       language: realtimeCallPayload.language,
       webSearch: Boolean(realtimeCallPayload.delegatedWebSearch),
       toolsCount: tools?.length ?? 0,
-      toolNames: (tools || []).map((t: any) => t?.name || t?.type || "tool"),
+      toolNames: (tools || []).map((t: LiveToolDeclaration) => t?.name || t?.type || "tool"),
       rawPayload: {
         model: realtimeCallPayload.model,
         language: realtimeCallPayload.language,
@@ -7895,7 +7895,7 @@ export async function openOpenAiVoiceConversationSession(
           jitterMs: jitterMs ?? prev.jitterMs,
           roundTripTimeMs: rttMs ?? prev.roundTripTimeMs
         }));
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
     }, 1000);
   } catch (err) {
     fail(err instanceof Error ? err.message : "Failed to establish WebRTC live call.");
@@ -7978,7 +7978,7 @@ export async function openOpenAiVoiceConversationSession(
       if (isGptLiveSession && sessionReady && channel.readyState === "open") {
         try {
           channel.send(JSON.stringify({ type: val ? "session.input_audio.mute" : "session.input_audio.unmute" }));
-        } catch {}
+        } catch { /* best-effort: nothing to do if it fails */ }
       }
     },
     isMuted: () => muted,

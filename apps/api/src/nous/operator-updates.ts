@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { nousProgramGmailUrl, OPERATOR_UPDATE_KIND, operatorUpdateLinkSchema, type NousProgram, type OperatorUpdatePayload, type SpaceNotification, type UiLanguage } from "@space/contracts";
 import type { NotificationService } from "../notifications/service.js";
+import { replyOverdue } from "./programs.js";
 
 /**
  * Nous › Updates (operator 4/11 15:04 and 15:09 BKK, R73: «όταν υπάρχει έγκριση για οποιοδήποτε πρόγραμμα θέλω να μου έρχεται πλήρης αναφορά»):
@@ -107,7 +108,7 @@ export function createOperatorUpdates(deps: {
   return {
     post,
     programChanged,
-    /** Space's start: recent decisions with no entry yet get theirs (or Nous is asked for the use fields first). */
+    /** Space's start: recent decisions with no entry yet get theirs (or Nous is asked for the use fields first); programs past their reply date go to Nous. */
     async sweep(owner: string, programs: NousProgram[]): Promise<number> {
       const recent = programs.filter((program) => DECIDED.has(program.status) && program.decidedAt && Date.parse(program.decidedAt) >= now() - OPERATOR_UPDATE_RECENT_MS);
       const unreported: NousProgram[] = [];
@@ -116,6 +117,13 @@ export function createOperatorUpdates(deps: {
         unreported.push(program);
       }
       await askForUse(owner, unreported.filter(missingUse));
+      // 14/11 (12 startup programs past their reply date, GitHub SOSF's "follow up if no update by Nov 7" among them): nothing chased them.
+      const overdue = programs.filter((program) => replyOverdue(program, now()));
+      if (overdue.length) await deps.notice?.(owner, `program-reply-overdue:${overdue.map((program) => program.id).join(",").slice(0, 160)}`,
+        `${overdue.length} program${overdue.length === 1 ? " is" : "s are"} past the date ${overdue.length === 1 ? "it was" : "they were"} to answer by, with no decision: `
+        + `${overdue.map((program) => `${program.id} (${program.parent} › ${program.program}, by ${day(program.expectedReplyBy)})`).join(", ")}. Read each one's mail; `
+        + "with no answer, send the follow-up its page or notes call for and write the new expectedReplyBy with space_programs upsert; with an answer, write its decision "
+        + "and the mail as its source. A decision only with the mail or page that says it.");
       let posted = 0;
       for (const program of unreported.filter((entry) => !missingUse(entry))) if (await programChanged(owner, null, program)) posted += 1;
       return posted;
@@ -123,7 +131,10 @@ export function createOperatorUpdates(deps: {
     /** space_operator_update: the same title and body is posted once. */
     async postNote(owner: string, args: OperatorUpdateArgs) {
       const report = [args.report ?? args.body, ...(args.refs?.length ? [`\n(${args.refs.join(", ")})`] : [])].join("\n");
-      return post(owner, { title: args.title, body: args.body, payload: { report, links: args.links ?? [] }, dedupeKey: `nous:update:note:${hash(`${args.title}\n${args.body}`)}` });
+      // Plan clipboard:JD8EbQgQdRls §3: the request or plan it names puts the update on that request's Thread (inbox/service.ts).
+      const named = (prefix: string) => args.refs?.find((ref) => ref.startsWith(prefix));
+      const about = { ...(named("nous_msg:") ? { requestId: named("nous_msg:") } : {}), ...(named("clipboard:") ? { planId: named("clipboard:") } : {}) };
+      return post(owner, { title: args.title, body: args.body, payload: { report, links: args.links ?? [], ...about }, dedupeKey: `nous:update:note:${hash(`${args.title}\n${args.body}`)}` });
     }
   };
 }

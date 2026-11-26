@@ -110,7 +110,7 @@ describe("FreelanceCopilotPane", () => {
     expect(screen.getByTestId("browser")).toBeTruthy();
     expect(screen.getByTestId("terminal")).toBeTruthy();
     expect(await screen.findByText("Idle · Full")).toBeTruthy();
-    expect(screen.getByText("8/8 platforms")).toBeTruthy();
+    expect(screen.getByText("14/14 platforms")).toBeTruthy();
     const ready = await screen.findByRole("region", { name: "Clients ready for you" });
     expect(within(ready).getByText("Offer coming: $2,000 fixed, start Monday.")).toBeTruthy();
     fireEvent.change(within(ready).getByRole("spinbutton", { name: "Contract value in USD" }), { target: { value: "2000" } });
@@ -185,7 +185,7 @@ describe("FreelanceCopilotPane", () => {
     render(<FreelanceCopilotPane pane={pane} isVisible terminal={<div />} browser={<div />} />);
     fireEvent.click(await screen.findByRole("tab", { name: /Setup/ }));
     const list = await screen.findByRole("list", { name: "Platforms" });
-    expect(within(list).getAllByRole("listitem")).toHaveLength(8);
+    expect(within(list).getAllByRole("listitem")).toHaveLength(14);
     await waitFor(() => expect((screen.getByRole("combobox", { name: "Upwork account status" }) as HTMLSelectElement).value).toBe("NEEDS_OPERATOR"));
     expect(within(list).getByText("Identity check")).toBeTruthy();
     fireEvent.change(screen.getByRole("combobox", { name: "Upwork account status" }), { target: { value: "ACTIVE" } });

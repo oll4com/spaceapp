@@ -29,9 +29,10 @@ import {
   browserControlLeaseSchema,
   browserHandoffRequestSchema,
   clipboardItemSchema,
-  planDependencyProblem,
+  checkPlanDependencies,
   PLAN_MAP_KEYS,
   keepParkedClock,
+  closeOpenPlanSteps,
   planIsParked,
   cliMaintenanceAuthHandoffSchema,
   cliMaintenanceDiagnosticsSchema,
@@ -165,8 +166,7 @@ import {
   updateUserLinkRequestSchema,
   userLinkSchema,
   defaultUserSettings,
-  userSettingsSchema,
-  updateUserSettingsInputSchema
+  userSettingsSchema
 } from "@space/contracts";
 import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 import type {
@@ -684,7 +684,8 @@ function scheduledSince(nextRunAt: string | null, previous: TaskSchedule | null 
   return nextRunAt === null || previous === undefined ? undefined : previous?.nextRunAt ? previous.scheduledSince : now;
 }
 
-export interface TaskScheduleClaim { nextRunAt: string | null; outcome: string; status: Extract<TaskRunStatus, "RUNNING" | "SKIPPED" | "FAILED" | "REMINDER">; at: string }
+/** paneId/roomId: the pane a RUNNING run was typed into, when not the task's own (a rerouted run). */
+export interface TaskScheduleClaim { nextRunAt: string | null; outcome: string; status: Extract<TaskRunStatus, "RUNNING" | "SKIPPED" | "FAILED" | "REMINDER">; at: string; paneId?: string; roomId?: string }
 /** A pane report as the task run log reads it (pane_reports). */
 export interface TaskRunReport { paneId: string; at: string; status: string; summary: string }
 
@@ -1036,10 +1037,15 @@ export interface SpaceStore {
   acceptUserInvite?(input: { tokenSha256: string; passwordHash: string; now: string }): MaybePromise<AuthUser | null>;
   /** A user who may sign in with a password (not disabled). */
   getPasswordUser?(email: string): MaybePromise<OwnerCredentials | null>;
-  /** A new password hash for a user who already signs in with one (Settings → Login password); false when there is none to replace. */
-  updateUserPassword?(userId: string, passwordHash: string): MaybePromise<boolean>;
+  /** A new password hash for a user who already signs in with one (Settings → Login password); false when there is none to replace.
+   * first: the user may have none yet (a Google-only account after a fresh step-up). */
+  updateUserPassword?(userId: string, passwordHash: string, options?: { first?: boolean }): MaybePromise<boolean>;
+  /** The claimed owner (not disabled), with or without a password. */
+  getOwnerUser?(): MaybePromise<AuthUser | null>;
   setUserDisabled?(userId: string, disabled: boolean, at: string): MaybePromise<boolean>;
   isUserDisabled?(userId: string): MaybePromise<boolean>;
+  /** K1: the user's users.tenant_id, null without a row (Postgres only; read with SPACE_TENANCY_ENABLED=1). */
+  getUserTenantId?(userId: string): MaybePromise<string | null>;
   // Room sharing (SPACE_MULTI_USER_ENABLED). A pane's owner is the user who opened it in a room they do not own;
   // null means the room's owner.
   setRoomShare?(share: RoomShare): MaybePromise<RoomShare>;
@@ -1511,6 +1517,11 @@ export class SpaceFeatureDisabledError extends Error {
 }
 
 export const nowIso = () => new Date().toISOString();
+const without = <T extends object, K extends keyof T>(value: T, key: K): Omit<T, K> => {
+  const copy: Partial<T> = { ...value };
+  delete copy[key];
+  return copy as Omit<T, K>;
+};
 export const makeSpaceId = (prefix: string) => `${prefix}:${nanoid(12)}`;
 export const hashPrompt = (prompt: string) => createHash("sha256").update(prompt).digest("hex");
 
@@ -2558,7 +2569,8 @@ export interface TraceRecords {
   /** CLI sessions allocated under the trace, with their logical task and revision. */
   cliSessions?: TraceCliSession[];
   /** Space Gateway request log rows whose request id is the trace (a Space caller's x-request-id). */
-  gatewayRequests?: Array<{ provider: string; model: string; status: string; errorCode: string | null; latencyMs: number | null; requestedAt: string }>;
+  gatewayRequests?: Array<{ provider: string; model: string; status: string; errorCode: string | null; latencyMs: number | null; requestedAt: string;
+    cliSessionId?: string | null }>;
 }
 
 export interface TraceCliSession {
@@ -3264,7 +3276,7 @@ export class InMemorySpaceStore implements SpaceStore {
 
   listUserInvites(): UserInvite[] {
     return [...this.userInvites.values()]
-      .map(({ tokenSha256: _token, ...invite }) => invite)
+      .map((invite) => without(invite, "tokenSha256"))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
@@ -3293,8 +3305,13 @@ export class InMemorySpaceStore implements SpaceStore {
     return user && passwordHash && !this.disabledUsers.has(user.id) ? { user, passwordHash } : null;
   }
 
-  updateUserPassword(userId: string, passwordHash: string): boolean {
-    if (!this.userPasswordHashes.has(userId) || this.disabledUsers.has(userId)) return false;
+  getOwnerUser(): AuthUser | null {
+    const ownerUserId = this.ownerSetup?.ownerUserId;
+    return ownerUserId && !this.disabledUsers.has(ownerUserId) ? this.users.get(ownerUserId) ?? null : null;
+  }
+
+  updateUserPassword(userId: string, passwordHash: string, options?: { first?: boolean }): boolean {
+    if (!(options?.first ? this.users.has(userId) : this.userPasswordHashes.has(userId)) || this.disabledUsers.has(userId)) return false;
     this.userPasswordHashes.set(userId, passwordHash);
     return true;
   }
@@ -3378,8 +3395,9 @@ export class InMemorySpaceStore implements SpaceStore {
     const timestamp = nowIso();
     const keepsSource = existing !== undefined && isPrunableClip(parsed.source) && !isPrunableClip(existing.item.source);
     if (parsed.dependsOn?.length) {
-      const problem = planDependencyProblem(existing?.item.id ?? null, parsed.dependsOn, this.openPlanDependencies(parsed.ownerUserId));
-      if (problem) throw new SpaceConflictError(problem);
+      const checked = checkPlanDependencies(existing?.item.id ?? null, parsed.dependsOn, this.planDependencies(parsed.ownerUserId));
+      if (checked.problem) throw new SpaceConflictError(checked.problem);
+      parsed.dependsOn = checked.dependsOn;
     }
     const item = clipboardItemSchema.parse({
       id: existing?.item.id ?? makeSpaceId("clipboard"),
@@ -3427,9 +3445,9 @@ export class InMemorySpaceStore implements SpaceStore {
     return record?.ownerUserId === ownerUserId ? record.item : null;
   }
 
-  private openPlanDependencies(ownerUserId: string): Array<{ id: string; dependsOn: string[] }> {
-    return [...this.clipboardItems.values()].filter((record) => record.ownerUserId === ownerUserId && record.item.source === "PLAN" && !record.item.isCompleted)
-      .map((record) => ({ id: record.item.id, dependsOn: record.item.dependsOn }));
+  private planDependencies(ownerUserId: string): Array<{ id: string; dependsOn: string[]; done: boolean }> {
+    return [...this.clipboardItems.values()].filter((record) => record.ownerUserId === ownerUserId && record.item.source === "PLAN")
+      .map((record) => ({ id: record.item.id, dependsOn: record.item.dependsOn, done: record.item.isCompleted }));
   }
 
   listClipboardItems(
@@ -3444,6 +3462,9 @@ export class InMemorySpaceStore implements SpaceStore {
       .filter((record) => parsed.includeCompleted !== false || !record.item.isCompleted)
       .filter((record) => !parsed.paneId || record.item.paneId === parsed.paneId)
       .filter((record) => !parsed.parked || planIsParked(record.item))
+      // Same rule as the Postgres store: a step neither COMPLETED nor FAILED is work left (a133959c61).
+      .filter((record) => !parsed.unfinished || !record.item.isCompleted || record.item.progressPercentage < 100 || planIsParked(record.item)
+        || (record.item.steps ?? []).some((step) => step.status !== "COMPLETED" && step.status !== "FAILED"))
       .filter((record) => !search || record.item.text.toLocaleLowerCase().includes(search))
       .sort((left, right) => right.sequence - left.sequence);
     const offset = (parsed.page - 1) * parsed.pageSize;
@@ -3615,7 +3636,7 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!record || record.ownerUserId !== ownerUserId) {
       throw new SpaceNotFoundError(`Clipboard item ${clipboardItemId} was not found.`);
     }
-    record.item = { ...record.item, isCompleted: completed };
+    record.item = { ...record.item, isCompleted: completed, ...(completed && record.item.steps && !planIsParked(record.item) ? { steps: closeOpenPlanSteps(record.item.steps) } : {}) };
     return record.item;
   }
 
@@ -3646,12 +3667,15 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!record || record.ownerUserId !== ownerUserId) {
       throw new SpaceNotFoundError(`Clipboard item ${clipboardItemId} was not found.`);
     }
+    let dependsOn = record.item.dependsOn;
     if (input.dependsOn) {
-      const problem = planDependencyProblem(clipboardItemId, input.dependsOn, this.openPlanDependencies(ownerUserId));
-      if (problem) throw new SpaceConflictError(problem);
+      const checked = checkPlanDependencies(clipboardItemId, input.dependsOn, this.planDependencies(ownerUserId));
+      if (checked.problem) throw new SpaceConflictError(checked.problem);
+      dependsOn = checked.dependsOn;
     }
-    const map = { dependsOn: input.dependsOn ?? record.item.dependsOn, dueAt: input.dueAt !== undefined ? input.dueAt : record.item.dueAt, waitsOn: input.waitsOn !== undefined ? input.waitsOn : record.item.waitsOn,
-      parked: input.parked !== undefined ? keepParkedClock(record.item.parked, input.parked) : record.item.parked };
+    const map = { dependsOn, dueAt: input.dueAt !== undefined ? input.dueAt : record.item.dueAt, waitsOn: input.waitsOn !== undefined ? input.waitsOn : record.item.waitsOn,
+      parked: input.parked !== undefined ? keepParkedClock(record.item.parked, input.parked) : record.item.parked,
+      minimumModel: input.minimumModel ?? record.item.minimumModel, minimumReasoning: input.minimumReasoning ?? record.item.minimumReasoning };
     if (mapOnly) {
       record.item = { ...record.item, ...map, lastUsedAt: nowIso() };
       return record.item;
@@ -3708,6 +3732,8 @@ export class InMemorySpaceStore implements SpaceStore {
       executionStatus = "IN_PROGRESS";
     }
     const isCompleted = executionStatus === "COMPLETED" || finalPercentage === 100;
+    // A step reopened on a plan already closed stays open; only closing the plan (now, or explicitly) closes its steps.
+    if (isCompleted && (!record.item.isCompleted || input.executionStatus === "COMPLETED" || input.progressPercentage === 100) && !planIsParked(map)) steps = closeOpenPlanSteps(steps);
     const activeAgent = input.activeAgent !== undefined ? input.activeAgent : record.item.activeAgent;
     if (input.text !== undefined) {
       const contentHash = createHash("sha256").update(input.text).digest("hex");
@@ -3888,8 +3914,8 @@ export class InMemorySpaceStore implements SpaceStore {
     record.item = taskItemSchema.parse({ ...record.item, schedule: { ...schedule, nextRunAt: update.nextRunAt,
       lastOutcome: update.outcome.slice(0, 500), lastRunAt: typed ? update.at : schedule.lastRunAt } });
     const id = String((Number(this.taskRuns.at(-1)?.id ?? 0)) + 1);
-    this.taskRuns.push({ id, ownerUserId: record.ownerUserId, taskId: record.item.id, taskTitle: record.item.title, roomId: record.item.roomId,
-      paneId: record.item.paneId, dueAt: expectedNextRunAt, at: update.at, status: update.status, typed, detail: update.outcome.slice(0, 500), reportAt: null, report: null });
+    this.taskRuns.push({ id, ownerUserId: record.ownerUserId, taskId: record.item.id, taskTitle: record.item.title, roomId: update.roomId ?? record.item.roomId,
+      paneId: update.paneId ?? record.item.paneId, dueAt: expectedNextRunAt, at: update.at, status: update.status, typed, detail: update.outcome.slice(0, 500), reportAt: null, report: null });
     return true;
   }
 
@@ -3903,7 +3929,8 @@ export class InMemorySpaceStore implements SpaceStore {
       const task = tasks.get(run.taskId) ?? tasks.set(run.taskId, { taskId: run.taskId, title: run.taskTitle, runs: 0 }).get(run.taskId)!;
       task.runs += 1;
     }
-    const runs = page.slice(0, query.limit).map(({ ownerUserId: _owner, ...run }) => {
+    const runs = page.slice(0, query.limit).map((stored) => {
+      const run = without(stored, "ownerUserId");
       const pane = run.paneId ? this.panes.get(run.paneId) : undefined;
       const room = this.rooms.get(pane?.roomId ?? run.roomId ?? "");
       return { ...run, roomId: room?.id ?? run.roomId, roomName: room?.name ?? null, paneName: pane ? pane.paneName ?? pane.title : null };
@@ -4075,14 +4102,19 @@ export class InMemorySpaceStore implements SpaceStore {
   listRunningCliSessionCountsByRoom(runtimeIds?: string[]): RoomCliActivity[] {
     const allowedRuntimeIds = runtimeIds ? new Set(runtimeIds) : null;
     const paneCounts = new Map<string, number>();
+    const paneModes = new Map<string, Set<Pane["mode"]>>();
     for (const pane of this.panes.values()) {
-      if (!pane.isClosed) paneCounts.set(pane.roomId, (paneCounts.get(pane.roomId) ?? 0) + 1);
+      if (pane.isClosed) continue;
+      paneCounts.set(pane.roomId, (paneCounts.get(pane.roomId) ?? 0) + 1);
+      paneModes.set(pane.roomId, (paneModes.get(pane.roomId) ?? new Set()).add(pane.mode));
     }
     const runningCounts = new Map<string, number>();
     const runningRuntimeIds = new Map<string, Set<string>>();
     for (const session of this.paneCliSessions.values()) {
       if (session.status !== "RUNNING") continue;
       if (allowedRuntimeIds && !allowedRuntimeIds.has(session.runtimeId)) continue;
+      const sessionPane = this.panes.get(session.paneId);
+      if (!sessionPane || sessionPane.isClosed || sessionPane.mode !== "TERMINAL") continue;
       runningCounts.set(session.roomId, (runningCounts.get(session.roomId) ?? 0) + 1);
       const roomRuntimeIds = runningRuntimeIds.get(session.roomId) ?? new Set<string>();
       roomRuntimeIds.add(session.runtimeId);
@@ -4092,7 +4124,8 @@ export class InMemorySpaceStore implements SpaceStore {
       roomId: room.id,
       runningCliCount: runningCounts.get(room.id) ?? 0,
       paneCount: paneCounts.get(room.id) ?? 0,
-      runtimeIds: [...(runningRuntimeIds.get(room.id) ?? [])].sort()
+      runtimeIds: [...(runningRuntimeIds.get(room.id) ?? [])].sort(),
+      paneModes: [...(paneModes.get(room.id) ?? [])].sort()
     }));
   }
 
@@ -4151,7 +4184,7 @@ export class InMemorySpaceStore implements SpaceStore {
     return structuredClone(this.toolRoutingState);
   }
 
-  updateToolRoutingState(state: ToolRoutingStateV1, expectedRevision: number, _actorId: string): ToolRoutingStateV1 {
+  updateToolRoutingState(state: ToolRoutingStateV1, expectedRevision: number): ToolRoutingStateV1 {
     if (this.toolRoutingState.revision !== expectedRevision) throw new SpaceConflictError("Routing policy changed; reload before saving.");
     this.toolRoutingState = toolRoutingStateSchema.parse({ ...state, revision: expectedRevision + 1 });
     return this.getToolRoutingState();
@@ -4462,6 +4495,7 @@ export class InMemorySpaceStore implements SpaceStore {
       name: input.name,
       description: input.description ?? room.description,
       projectPath: input.projectPath !== undefined ? input.projectPath : (room.projectPath ?? null),
+      nousExcluded: input.nousExcluded ?? room.nousExcluded ?? false,
       updatedAt: nowIso(),
       traceId
     };
@@ -4508,7 +4542,6 @@ export class InMemorySpaceStore implements SpaceStore {
       throw new SpaceConflictError("Room reorder payload must include every room exactly once.");
     }
 
-    const timestamp = nowIso();
     roomIds.forEach((roomId, index) => {
       const room = this.getRoom(roomId);
       this.rooms.set(roomId, {
@@ -4821,7 +4854,7 @@ export class InMemorySpaceStore implements SpaceStore {
     return panes;
   }
 
-  getOrCreateRoomAgentPane(roomId: string, _traceId = makeSpaceId("trace")): Pane {
+  getOrCreateRoomAgentPane(roomId: string): Pane {
     this.getRoom(roomId);
     const existingPaneId = this.roomAgentPaneIds.get(roomId);
     const existing = existingPaneId ? this.panes.get(existingPaneId) : null;
@@ -4858,7 +4891,7 @@ export class InMemorySpaceStore implements SpaceStore {
     return this.roomAgentTranscriptClearedAt.get(roomId) ?? null;
   }
 
-  clearRoomAgentTranscript(roomId: string, clearedAt: string, _traceId = makeSpaceId("trace")): string {
+  clearRoomAgentTranscript(roomId: string, clearedAt: string): string {
     this.getOrCreateRoomAgentPane(roomId);
     const normalized = new Date(clearedAt).toISOString();
     this.roomAgentTranscriptClearedAt.set(roomId, normalized);
@@ -4886,7 +4919,7 @@ export class InMemorySpaceStore implements SpaceStore {
     return count;
   }
 
-  createRoomAgentRequest(input: CreateRoomAgentRequestInput, _traceId = makeSpaceId("trace")): RoomAgentRequestRecord {
+  createRoomAgentRequest(input: CreateRoomAgentRequestInput): RoomAgentRequestRecord {
     const parsed = createRoomAgentRequestInputSchema.parse(input);
     if (this.getRoomAgentRequest(parsed.roomId, parsed.clientRequestId)) {
       throw new SpaceConflictError(`Room agent request ${parsed.clientRequestId} already exists in room ${parsed.roomId}.`);
@@ -4980,7 +5013,7 @@ export class InMemorySpaceStore implements SpaceStore {
       throw new SpaceConflictError(`Room agent mission ${linkedMission.id} no longer accepts follow-up requests.`);
     }
     if (linkedMission && "pendingCompletion" in linkedMission.executionState) {
-      const { pendingCompletion: _completed, ...executionState } = linkedMission.executionState;
+      const executionState = without(linkedMission.executionState, "pendingCompletion");
       linkedMission = this.updateRoomAgentMission(linkedMission.id, {
         completedAt: null,
         executionState,
@@ -5135,7 +5168,7 @@ export class InMemorySpaceStore implements SpaceStore {
     return limit === undefined ? missions : missions.slice(-Math.max(1, Math.min(500, Math.trunc(limit))));
   }
 
-  createRoomAgentAction(input: CreateRoomAgentActionInput, _traceId = makeSpaceId("trace")): RoomAgentActionRecord {
+  createRoomAgentAction(input: CreateRoomAgentActionInput): RoomAgentActionRecord {
     const parsed = createRoomAgentActionInputSchema.parse(input);
     const mission = this.roomAgentMissions.get(parsed.missionId);
     if (!mission || mission.roomId !== parsed.roomId) {
@@ -5486,7 +5519,7 @@ export class InMemorySpaceStore implements SpaceStore {
       throw new SpaceNotFoundError(`Pane ${paneId} was not found.`);
     }
     if (current.isClosed) {
-      throw new SpaceConflictError(`Pane ${current.title} is already closed and cannot be moved.`);
+      throw new SpaceConflictError(`Pane ${current.title} is already closed and cannot be moved. Reopen it first (space_execute {kind:"pane",operation:"reopen"}), then move it.`);
     }
 
     const parsed = movePaneInputSchema.parse(input);
@@ -5632,8 +5665,7 @@ export class InMemorySpaceStore implements SpaceStore {
   }
 
   upsertAgentPaneStoredSession(
-    input: UpsertAgentPaneStoredSessionInput,
-    _traceId = makeSpaceId("trace")
+    input: UpsertAgentPaneStoredSessionInput
   ): AgentPaneStoredSession {
     const parsed = upsertAgentPaneStoredSessionInputSchema.parse(input);
     const pane = this.panes.get(parsed.paneId);
@@ -5664,7 +5696,7 @@ export class InMemorySpaceStore implements SpaceStore {
     this.upsertAgentPaneStoredSession(input);
   }
 
-  upsertAgentPaneBinding(input: UpsertAgentPaneBindingInput, _traceId = makeSpaceId("trace")): AgentPaneBinding {
+  upsertAgentPaneBinding(input: UpsertAgentPaneBindingInput): AgentPaneBinding {
     const parsed = upsertAgentPaneBindingInputSchema.parse(input);
     if (!this.panes.has(parsed.paneId)) {
       throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
@@ -5677,8 +5709,7 @@ export class InMemorySpaceStore implements SpaceStore {
 
   updateAgentPaneBinding(
     paneId: string,
-    input: UpdateAgentPaneBindingInput,
-    _traceId = makeSpaceId("trace")
+    input: UpdateAgentPaneBindingInput
   ): AgentPaneBinding {
     const current = this.agentPaneBindings.get(paneId);
     if (!current) {
@@ -5775,8 +5806,7 @@ export class InMemorySpaceStore implements SpaceStore {
   }
 
   createSpaceAgentSession(
-    input: CreateSpaceAgentSessionInput,
-    _traceId = makeSpaceId("trace")
+    input: CreateSpaceAgentSessionInput
   ): SpaceAgentSessionRecord {
     const parsed = createSpaceAgentSessionInputSchema.parse(input);
     const pane = this.panes.get(parsed.paneId);
@@ -5823,8 +5853,7 @@ export class InMemorySpaceStore implements SpaceStore {
 
   updateSpaceAgentSession(
     sessionId: string,
-    input: UpdateSpaceAgentSessionInput,
-    _traceId = makeSpaceId("trace")
+    input: UpdateSpaceAgentSessionInput
   ): SpaceAgentSessionRecord {
     return this.writeSpaceAgentSession(sessionId, input, true);
   }
@@ -5913,8 +5942,7 @@ export class InMemorySpaceStore implements SpaceStore {
   }
 
   createSpaceAgentMessage(
-    input: CreateSpaceAgentMessageInput,
-    _traceId = makeSpaceId("trace")
+    input: CreateSpaceAgentMessageInput
   ): SpaceAgentMessageRecord {
     const parsed = createSpaceAgentMessageInputSchema.parse(input);
     if (!this.spaceAgentSessions.has(parsed.sessionId)) {
@@ -5936,7 +5964,7 @@ export class InMemorySpaceStore implements SpaceStore {
   updateSpaceAgentMessage(
     messageId: string,
     input: UpdateSpaceAgentMessageInput,
-    _traceId = makeSpaceId("trace"),
+    _traceId?: string,
     expectedStatus?: SpaceAgentMessageRecord["status"]
   ): SpaceAgentMessageRecord {
     const current = this.spaceAgentMessages.get(messageId);
@@ -6225,8 +6253,7 @@ export class InMemorySpaceStore implements SpaceStore {
   }
 
   createCliTaskRevision(
-    input: CreateCliTaskRevisionInput,
-    _traceId = makeSpaceId("trace")
+    input: CreateCliTaskRevisionInput
   ): CliTaskRevisionRecord {
     const revisionId = idSchema.parse(input.revisionId);
     const taskId = idSchema.parse(input.taskId);
@@ -6274,8 +6301,7 @@ export class InMemorySpaceStore implements SpaceStore {
 
   updateCliTaskRevision(
     revisionId: string,
-    input: UpdateCliTaskRevisionInput,
-    _traceId = makeSpaceId("trace")
+    input: UpdateCliTaskRevisionInput
   ): CliTaskRevisionRecord {
     const current = this.cliTaskRevisions.get(revisionId);
     if (!current) throw new SpaceNotFoundError(`CLI task revision ${revisionId} was not found.`);
@@ -6612,8 +6638,7 @@ export class InMemorySpaceStore implements SpaceStore {
   claimPaneCliCodexThread(
     sessionId: string,
     codexThreadId: string,
-    source: Exclude<PaneCliCodexThreadOwnershipSource, "MIGRATION">,
-    _traceId = makeSpaceId("trace")
+    source: Exclude<PaneCliCodexThreadOwnershipSource, "MIGRATION">
   ): PaneCliCodexThreadOwnership {
     const session = this.paneCliSessions.get(sessionId);
     if (!session) throw new SpaceNotFoundError(`CLI session ${sessionId} was not found.`);
@@ -6750,8 +6775,7 @@ export class InMemorySpaceStore implements SpaceStore {
 
   updatePaneCliSession(
     sessionId: string,
-    input: UpdatePaneCliSessionInput,
-    _traceId = makeSpaceId("trace")
+    input: UpdatePaneCliSessionInput
   ): PaneCliSession {
     const current = this.paneCliSessions.get(sessionId);
     if (!current) {
@@ -6798,8 +6822,7 @@ export class InMemorySpaceStore implements SpaceStore {
   }
 
   touchPaneCliSessionActivity(
-    sessionId: string,
-    _traceId = makeSpaceId("trace")
+    sessionId: string
   ): void {
     const current = this.paneCliSessions.get(sessionId);
     if (!current || current.status !== "RUNNING") return;
@@ -6808,7 +6831,8 @@ export class InMemorySpaceStore implements SpaceStore {
 
   appendPaneCliTranscriptChunk(
     input: CreatePaneCliTranscriptChunkInput,
-    _traceId = makeSpaceId("trace")
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for SpaceStore signature parity; the in-memory store has no trace log
+    _traceId?: string
   ): PaneCliTranscriptChunk {
     const parsed = createPaneCliTranscriptChunkInputSchema.parse(input);
     const session = this.paneCliSessions.get(parsed.sessionId);
@@ -7223,7 +7247,7 @@ export class InMemorySpaceStore implements SpaceStore {
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
   }
 
-  createPaneBrowserSession(input: CreatePaneBrowserSessionInput, _traceId = makeSpaceId("trace")): PaneBrowserSession {
+  createPaneBrowserSession(input: CreatePaneBrowserSessionInput): PaneBrowserSession {
     const parsed = createPaneBrowserSessionInputSchema.parse(input);
     const pane = this.panes.get(parsed.paneId);
     if (!pane || pane.roomId !== parsed.roomId) {
@@ -7267,8 +7291,7 @@ export class InMemorySpaceStore implements SpaceStore {
 
   updatePaneBrowserSession(
     sessionId: string,
-    input: UpdatePaneBrowserSessionInput,
-    _traceId = makeSpaceId("trace")
+    input: UpdatePaneBrowserSessionInput
   ): PaneBrowserSession {
     const current = this.paneBrowserSessions.get(sessionId);
     if (!current) {
@@ -9419,7 +9442,7 @@ export class InMemorySpaceStore implements SpaceStore {
     if (userId) {
       try {
         userSettings = this.getUserSettings(userId);
-      } catch {}
+      } catch { /* unreadable: leave it out of the exported bundle */ }
     }
 
     const userLinks: UserLink[] = [];
@@ -9462,13 +9485,13 @@ export class InMemorySpaceStore implements SpaceStore {
     let codexCliModeDefaults: CodexCliModeDefaults | undefined;
     try {
       codexCliModeDefaults = this.getCodexCliModeDefaults();
-    } catch {}
+    } catch { /* unreadable: leave it out of the exported bundle */ }
 
     const providers = this.listProviders();
     let providerSettings: ProviderSettings | undefined;
     try {
       providerSettings = this.getProviderSettings();
-    } catch {}
+    } catch { /* unreadable: leave it out of the exported bundle */ }
 
     const instance = process.env.SPACE_INSTANCE_NAME || "local";
     const data = sanitizeConfigBundleData({

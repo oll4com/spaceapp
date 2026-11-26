@@ -310,6 +310,65 @@ describe.skipIf(unavailable !== null)(`Nous repository on PostgreSQL${unavailabl
     await expectProvenance(repository, "user:provenance");
   });
 
+  // Speed slice 19 (14/11): a kept page takes a lone write's row instead of being read again; here against the table's own statement.
+  it("answers a kept conversation page that took the written rows as a new read of the table does", async () => {
+    const user = "user:nous-kept-page";
+    await pool.query("INSERT INTO users(id, email, role) VALUES ($1, $2, 'OPERATOR')", [user, "nous-kept-page@space.local"]);
+    let pageReads = 0;
+    const counting = { query: (sql: string, values: unknown[]) => { if (sql.startsWith("WITH dialogue")) pageReads += 1; return pool.query(sql, values); },
+      connect: () => pool.connect() } as unknown as ConstructorParameters<typeof PostgresNousRepository>[0];
+    const kept = new PostgresNousRepository(counting);
+    const fresh = new PostgresNousRepository(pool, 0);
+    const shapes: Array<[number, number | undefined, { sinceClear?: boolean }]> = [[3, 2, {}], [3, 0, {}], [200, undefined, {}], [2, 5, { sinceClear: true }]];
+    const same = async () => {
+      for (const shape of shapes) expect(await kept.listMessages(user, ...shape)).toEqual(await fresh.listMessages(user, ...shape));
+      // The dock's look for older rows, as messagePage asks it.
+      const oldest = (await fresh.listMessages(user, 3)).find((row) => row.kind !== "TOOL");
+      if (oldest) expect(await kept.listMessages(user, 1, 0, { before: oldest.id })).toEqual(await fresh.listMessages(user, 1, 0, { before: oldest.id }));
+    };
+    // The table orders by microsecond, the rows carry milliseconds: rows 5 ms apart have one order in both.
+    const add = async (kind: "OPERATOR" | "ANSWER" | "TOOL", content: string, more: { turnId?: string; meta?: Record<string, unknown>; status?: "RUNNING" } = {}) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return kept.addMessage({ ownerUserId: user, turnId: more.turnId ?? null, kind, status: more.status ?? "DONE", content, meta: more.meta });
+    };
+    await same();
+    for (const [kind, content] of [["TOOL", "before the dialogue"], ["OPERATOR", "q1"], ["TOOL", "s1"], ["TOOL", "s2"], ["TOOL", "s3"], ["ANSWER", "a1"], ["OPERATOR", "q2"],
+      ["OPERATOR", "q3"], ["TOOL", "s4"]] as const) {
+      await add(kind, content, kind === "ANSWER" ? { turnId: `${user}:live`, meta: { model: "claude:claude-opus-5-5", effort: "high" } } : {});
+      await same();
+    }
+    // Rows of one millisecond and writes at once are read from the table again.
+    for (const content of ["b1", "b2", "b3"]) await kept.addMessage({ ownerUserId: user, turnId: null, kind: content === "b2" ? "TOOL" : "OPERATOR", status: "DONE", content });
+    await same();
+    await Promise.all([add("TOOL", "p1"), add("OPERATOR", "p2"), add("TOOL", "p3")]);
+    await same();
+    expect(await kept.clearMessages(user)).toBeGreaterThan(0);
+    await same();
+    await add("OPERATOR", "q4");
+    await same();
+    // A final answer saved without its model takes its turn's; a later row of that turn takes none.
+    await kept.addTurnFacts({ turnId: `${user}:old`, ownerUserId: user, reason: "OPERATOR", status: "DONE", planPoints: 0, tools: {}, outcomes: [], startedAt: "2026-11-04T00:00:00.000Z",
+      endedAt: "2026-11-04T00:01:00.000Z", model: "codex:gpt-6-astra", effort: "high", costUsd: null, tokens: null, goalId: null, error: null });
+    await add("ANSWER", "old final", { turnId: `${user}:old` });
+    await same();
+    await add("TOOL", "late step", { turnId: `${user}:old` });
+    await same();
+    expect((await kept.listMessages(user, 200)).filter((row) => row.turnId === `${user}:old`).map((row) => row.meta.model)).toEqual(["codex:gpt-6-astra", undefined]);
+
+    // A turn's tool steps, one write at a time: the page is not read again.
+    await same();
+    const before = pageReads;
+    for (const step of ["t1", "t2", "t3"]) {
+      const row = await add("TOOL", step, { status: "RUNNING", meta: { name: "space_world" } });
+      expect(await kept.listMessages(user, 200)).toEqual(await fresh.listMessages(user, 200));
+      await kept.updateMessage(user, row.id, { status: "DONE", content: `${step} done`, meta: { name: "space_world", result: "ok" } });
+      expect(await kept.listMessages(user, 200)).toEqual(await fresh.listMessages(user, 200));
+      expect(await kept.listMessages(user, 2, 5, { sinceClear: true })).toEqual(await fresh.listMessages(user, 2, 5, { sinceClear: true }));
+    }
+    expect((await kept.listMessages(user, 200)).slice(-3).map((row) => `${row.content} ${row.status}`)).toEqual(["t1 done DONE", "t2 done DONE", "t3 done DONE"]);
+    expect(pageReads).toBe(before);
+  });
+
   it("keeps one facts row per turn (migration 0212) after the conversation is cleared", async () => {
     const facts = { turnId: "nous_turn:facts1", ownerUserId: owner, reason: "OPERATOR" as const, status: "DONE" as const, planPoints: 15,
       tools: { space_world: { calls: 1, failed: 0, refused: 0 }, space_send_to_pane: { calls: 2, failed: 1, refused: 1 } },

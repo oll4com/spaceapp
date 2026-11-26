@@ -42,6 +42,11 @@ describe("room pane CLI controller", () => {
     await expect(configure("cli:codex", { accountProfileId: "work" })).rejects.toThrow("Account profile switching is supported on Gemini and Claude Code panes.");
   });
 
+  it("accepts the Space Gateway profile, which lives in no profile folder (18/11 ×12), and still names an unknown one", async () => {
+    await expect(configure("cli:gemini", { accountProfileId: "nope" })).rejects.toThrow('Antigravity account profile "nope" is not found.');
+    await expect(configure("cli:gemini", { accountProfileId: "space-gateway" })).rejects.not.toThrow("is not found");
+  });
+
   it("never opens Claude's /model menu: it names what blocks the switch instead", async () => {
     await expect(configure("cli:claude", { modelId: "opus" })).rejects.toThrow("The Claude model catalog is unavailable; try again shortly.");
     const working = async () => ({ models: [opus], isTurnActive: true, current: null });
@@ -50,6 +55,22 @@ describe("room pane CLI controller", () => {
     await expect(configure("cli:claude", { modelId: "gpt-9" }, { native: idle })).rejects.toThrow('"gpt-9" is no Claude model: Claude offers claude:opus (high/max).');
     // R74 (2026-11-05 REVIEW): an effort the family lacks is named too.
     await expect(configure("cli:claude", { modelId: "opus", reasoningEffort: "minimal" }, { native: idle })).rejects.toThrow('claude:opus has no effort "minimal": Claude offers');
+  });
+
+  it("never falls through to blind /model search on Gemini or a loaded native catalog (22/11 pane:sh994CSitcEw)", async () => {
+    const commandRoomCli = vi.fn();
+    const neon = { id: "gemini-4-neon", displayName: "Gemini 4 Neon", supportedReasoningEfforts: ["low", "high"], defaultReasoningEffort: "high" };
+    await expect(configure("cli:gemini", { modelId: "claude-opus-5-5" }, { deps: { commandRoomCli } }))
+      .rejects.toThrow("The Gemini model catalog is unavailable; try again shortly.");
+    const working = async () => ({ models: [neon], isTurnActive: true, current: null });
+    await expect(configure("cli:gemini", { modelId: "gemini-4-neon" }, { native: working, deps: { commandRoomCli } }))
+      .rejects.toThrow("Wait for this CLI turn to finish before changing models.");
+    const idle = async () => ({ models: [neon], isTurnActive: false, current: null });
+    await expect(configure("cli:gemini", { modelId: "claude-opus-5-5" }, { native: idle, deps: { commandRoomCli } }))
+      .rejects.toThrow('"claude-opus-5-5" is not available in the CLI\'s current model menu: this CLI offers gemini-4-neon (low/high).');
+    await expect(configure("cli:gemini", { modelId: "gemini-4-neon", reasoningEffort: "max" }, { native: idle, deps: { commandRoomCli } }))
+      .rejects.toThrow('gemini-4-neon has no effort "max" in the CLI\'s current model menu: this CLI offers gemini-4-neon (low/high).');
+    expect(commandRoomCli).not.toHaveBeenCalled();
   });
 
   it("changes a native mode only to one the CLI advertises and only from a mode it can see", async () => {
@@ -79,6 +100,14 @@ describe("room pane CLI controller", () => {
       await claude.controller.interrupt(pane as never, "trace:one");
       expect(claude.sent).toEqual(["\u001b"]);
     } finally { vi.useRealTimers(); }
+  });
+
+  it("stopping a pane whose host session already ended is done, not a failure (slice 23)", async () => {
+    const ended = (message: string) => fixture("cli:claude", { active: true, deps: {
+      cliTerminalManager: { sendInput: async () => { throw new SpaceConflictError(message); } } } }).controller;
+    await expect(ended("CLI host session cli:one is EXITED.").interrupt(pane as never, "trace:one"))
+      .resolves.toEqual({ sessionId: "cli:one", interrupted: false, state: "EXITED" });
+    await expect(ended("The target CLI session is unavailable or changed.").interrupt(pane as never, "trace:one")).rejects.toThrow("unavailable");
   });
 
   it("resumes a Codex pane only with a task to resume", async () => {

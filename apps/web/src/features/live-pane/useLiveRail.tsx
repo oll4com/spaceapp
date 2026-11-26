@@ -32,7 +32,7 @@ export function useLiveRail(panes: Pane[]): LiveRail {
       const next = !prev;
       try {
         getSpaceRuntime().platform.localStorage.setItem(LIVE_RAIL_GRAPHIC_DISABLED_STORAGE_KEY, String(next));
-      } catch {}
+      } catch { /* storage blocked or full: the toggle still applies for this session */ }
       return next;
     });
   }, []);

@@ -1,12 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { scoreQuery, scoreHistoryQuery } from "./nous-score-query.js";
-import { nousModelLabel, withoutNothingNew } from "@space/contracts";
+import { nousModelLabel, planShownStatus, withoutNothingNew } from "@space/contracts";
 import { openSettingsSection } from "../settings/settings-section-request.js";
 import { NousRemoteMark } from "./NousRemoteMark.js";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { NEEDS_YOU_CHECKED_HEADER, nousDecisionKind, parseNousGoalCommand, type ClipboardItem, type NousAttachment, type NousDecision, type NousMessage, type NousOverview, type NousPlanHold, type NousState,
+import { StepUpConfirm } from "../auth/StepUpConfirm.js";
+import { markStepUpResume, type StepUpResume } from "../auth/step-up-resume.js";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { NEEDS_YOU_CHECKED_HEADER, nousDecisionKind, parseNousGoalCommand, type ClipboardItem, type InboxTab, type NousAttachment, type NousDecision, type NousMessage, type NousOverview, type NousPlanHold, type NousState,
   type SpaceNotification, type UiLanguage } from "@space/contracts";
-import { api } from "../../api.js";
+import { api, SpaceApiError } from "../../api.js";
 import { ChatMarkdown } from "../agent-pane/ChatMarkdown.js";
 import { AgentFileMentions } from "../terminal-pane/AgentFileLinks.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
@@ -15,20 +17,24 @@ import { useIsDockActive } from "../docks/dock-active-context.js";
 import { requestNousFocus, useLeaveDuringNousFocus } from "../nous-focus/nous-focus-events.js";
 import { NousAppointments } from "./NousAppointments.js";
 import { clearConversationMatches, findConversationText, paintConversationMatches, searchPlans } from "./nous-search.js";
-import { Activity, ArrowLeft, CalendarCheck, ChartSpline, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, ChevronsDown, ChevronsUp, CircleStop, ClipboardList, FileSymlink, Gauge, Gavel, Briefcase, Handshake, TrendingUp, LayoutGrid, ListChecks, Maximize2, Megaphone, MessageSquare, Minimize2, Nous, Paperclip, Rocket, Search, Send, Star, Target, Trash2, UserCheck, X } from "../ui-theme/app-icons.js";
+import { Activity, ArrowLeft, Bell, CalendarCheck, ChartSpline, Check, ChevronDown, ChevronRight, ChevronUp, ChevronsDown, ChevronsUp, CircleStop, ClipboardList, FileSymlink, Gauge, Gavel, Briefcase, Handshake, TrendingUp, LayoutGrid, Maximize2, Megaphone, MessageSquare, Nous, PanelRight, Paperclip, Rocket, Search, Send, Star, Target, Trash2, X } from "../ui-theme/app-icons.js";
 import { NousBrain3D } from "./NousBrain3D.js";
+import { applyCorrection, autocorrect, desktopSpell, undoCorrection, type Correction } from "./nous-autocorrect.js";
 import { NousLiveStats } from "./NousLiveStats.js";
-import { NousDone, useDoneRequests, useDoneView } from "./NousDone.js";
-import { NousUpdates, useOperatorUpdates, useUpdatesView } from "./NousUpdates.js";
+import { openAgentsDashboard, type AgentsDashboardPreset } from "../agents-dashboard/dashboard-model.js";
+import { useDoneView } from "./NousDone.js";
+import { useUpdatesView } from "./NousUpdates.js";
+import { INBOX_TAB_KEY, InboxThreadCard, isInboxTabChoice, NousInbox as InboxView, useInboxView } from "./NousInbox.js";
+import { NousInboxQueue } from "./NousInboxQueue.js";
 import { NousShared, useSharedFiles } from "./NousShared.js";
-import { NousRequests, useRequestsInProgress } from "./NousRequests.js";
-import { decisionMarkdown, needsYouMarkdown, NousNeedsYou, PlanNeedsYou, useNeedsYouRequests } from "./NousNeedsYou.js";
+import { decisionMarkdown, needsYouMarkdown, PlanNeedsYou, useNeedsYouRequests } from "./NousNeedsYou.js";
 import { NeedsYouFiles } from "../needs-you/NeedsYouFiles.js";
 import { useNeedsYouView } from "../needs-you/needs-you-view.js";
 import { consumePlanView, NOUS_DONE_OPEN_EVENT } from "./nous-done-events.js";
-import { goToNeedsYouPane, peekNotificationStore } from "../notifications/notification-store.js";
+import { scrollWithin } from "./nous-scroll.js";
+import { goToNeedsYouPane, inboxBadge, peekNotificationStore, refreshNotifications, useNotificationStore } from "../notifications/notification-store.js";
 import { NousPaneBoard } from "./NousPaneBoard.js";
-import { NousPlanMap } from "./NousPlanMap.js";
+import { ClosedPlanDetail, NousPlanMap } from "./NousPlanMap.js";
 import { NousGoals } from "./NousGoals.js";
 import { NousPrograms } from "./NousPrograms.js";
 import { NousJobs } from "./NousJobs.js";
@@ -47,7 +53,7 @@ import { clipboardFiles, NousMessageFiles, NousPendingFiles, operatorText, usePe
 import "./nous.css";
 import { setClientView } from "../../client-context.js";
 
-type Tab = "conversation" | "needs" | "done" | "updates" | "requests" | "shared" | "decisions" | "overview" | "panes" | "plans" | "goals" | "startup" | "affiliate" | "jobs" | "crypto" | "marketing" | "quotas" | "load" | "score" | "taskRuns";
+type Tab = "conversation" | "shared" | "overview" | "panes" | "plans" | "goals" | "startup" | "affiliate" | "jobs" | "crypto" | "marketing" | "quotas" | "load" | "score" | "taskRuns" | "inbox";
 const FAST_POLL_MS = 3_000;
 const NOUS_VOICE_OWNER = "nous-dock";
 const SLOW_POLL_MS = 20_000;
@@ -62,14 +68,16 @@ const REASON_LABELS: Record<NonNullable<NousState["running"]>["reason"], string>
   OPERATOR: "Answering you", INBOX: "Reading news from the rooms", DECISION: "Acting on your answer", HEARTBEAT: "Checking every room", STANDING: "Standing orders: finished panes and stalled plans",
   REVIEW: "Daily self-review", GOAL: "Working on your goals"
 };
-const VIEW_TITLES: Record<Tab, string> = { conversation: "Conversation", needs: "Needs you", done: "Done", updates: "Updates", requests: "Requests", shared: "Shared", decisions: "Decisions", overview: "Overview", panes: "Pane board", plans: "Plans", goals: "Goals", startup: "Startup programs", affiliate: "Affiliate", jobs: "Job applications", crypto: "Crypto", marketing: "Marketing", quotas: "Quotas", load: "Load", score: "Score", taskRuns: "Task runs" };
+const VIEW_TITLES: Record<Tab, string> = { conversation: "Conversation", shared: "Shared", overview: "Overview", panes: "Pane board", plans: "Plans", goals: "Goals", startup: "Startup programs", affiliate: "Affiliate", jobs: "Job applications", crypto: "Crypto", marketing: "Marketing", quotas: "Quotas", load: "Load", score: "Score", taskRuns: "Task runs", inbox: "Inbox" };
 // The maximized rail groups the views (operator 3/11, after the Nous app's grouped tabs): what is his, the work, the system.
-const RAIL_SECTIONS: Array<[string, Tab[]]> = [["Me", ["conversation", "needs", "decisions", "done", "updates", "requests", "shared"]],
+const RAIL_SECTIONS: Array<[string, Tab[]]> = [["Me", ["conversation", "inbox", "shared"]],
   ["Work", ["overview", "panes", "plans", "goals", "startup", "affiliate", "jobs", "crypto", "marketing"]], ["System", ["quotas", "load", "score", "taskRuns"]]];
-const isDecisionFilter = (value: unknown): value is "open" | "all" => value === "open" || value === "all";
 const isTab = (value: unknown): value is Tab => typeof value === "string" && Object.hasOwn(VIEW_TITLES, value);
 // A tab stored on the removed oll4.com funding page (operator 7/11, nous_msg:e9c06cd838de45f4bccda467) opens Startup programs, where its programs went.
-const isStoredTab = (value: unknown): value is Tab | "funding" => value === "funding" || isTab(value);
+// Needs you, Done, Updates, Requests and Decisions went into the one Inbox (plan clipboard:aE7U1J_gU9OV): a tab stored on one of them opens it.
+const LEGACY_INBOX_TABS = ["needs", "done", "updates", "requests", "decisions"] as const;
+type StoredTab = Tab | "funding" | typeof LEGACY_INBOX_TABS[number];
+const isStoredTab = (value: unknown): value is StoredTab => value === "funding" || (LEGACY_INBOX_TABS as readonly unknown[]).includes(value) || isTab(value);
 const CATEGORY_LABELS: Record<NousDecision["category"], string> = { RELEASE: "Release", DESTRUCTIVE: "Irreversible", EXTERNAL: "Third parties or money", DIRECTION: "Direction" };
 const messageOf = (error: unknown, fallback: string) => (error instanceof Error && error.message ? error.message : fallback);
 const planIdsIn = (text: string) => [...new Set(text.match(/clipboard:[A-Za-z0-9_-]+/g) ?? [])];
@@ -110,6 +118,8 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   const [isFullscreen, setIsFullscreen] = useNousUiState("fullscreen", false, isFlag);
   const [planView, setPlanView] = useNousUiState("plan", null, isIdOrNull);
   const restoredPlanRef = useRef(planView);
+  // On a phone the right column cannot fit beside the stage: its button opens it over the stage (nous_msg:b44f379a).
+  const [boardOpen, setBoardOpen] = useState(false);
   const [plans, setPlans] = useState<Record<string, ClipboardItem | null>>({});
   const [state, setState] = useState<NousState | null>(null);
   const history = useNousHistory();
@@ -117,18 +127,19 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   /** The operator's messages still in Nous's queue (no answer yet), from the server. */
   const [waiting, setWaiting] = useState<string[]>([]);
   const [decisions, setDecisions] = useState<NousDecision[]>([]);
-  // Older answered decisions the operator loaded (31/10: the dock held only the newest 50 answered ones); null: none loaded yet.
-  const [earlier, setEarlier] = useState<{ decisions: NousDecision[]; hasMore: boolean } | null>(null);
   const [overview, setOverview] = useState<NousOverview | null>(null);
-  const [storedTab, setTab] = useNousUiState<Tab | "funding">("tab", "conversation", isStoredTab);
-  const tab: Tab = storedTab === "funding" ? "startup" : storedTab;
+  const [storedTab, setTab] = useNousUiState<StoredTab>("tab", "conversation", isStoredTab);
+  const tab: Tab = storedTab === "funding" ? "startup" : isTab(storedTab) ? storedTab : "inbox";
   const [everything, setEverything] = useNousUiState("everything", null, isIdOrNull);
-  const [decisionFilter, setDecisionFilter] = useNousUiState("decisions.filter", "open", isDecisionFilter);
   const [draft, setDraft] = useState("");
+  const lastFix = useRef<Correction | null>(null);
+  const keptWords = useRef(new Set<string>());
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [dragging, setDragging] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
+  const setList = useCallback((element: HTMLDivElement | null) => { listRef.current = element; setListEl(element); }, []);
   /** Where the last jump left the list: its own scroll event is not the operator scrolling. */
   const jumpTopRef = useRef<number | null>(null);
   /** At the end of the conversation it follows new messages; reading further up it stays put. */
@@ -152,43 +163,52 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   }, [addPending]);
   const voiceInput = useOptionalVoiceInput();
   const voiceOwned = voiceInput?.ownerId === NOUS_VOICE_OWNER;
-  useEffect(() => () => voiceInput?.cancel(NOUS_VOICE_OWNER), [voiceInput?.cancel]);
+  const cancelVoice = voiceInput?.cancel;
+  useEffect(() => () => cancelVoice?.(NOUS_VOICE_OWNER), [cancelVoice]);
   // The tab the operator writes from reaches Nous with each message (plan clipboard:4TXfIZzj8ITW).
   useEffect(() => { setClientView(`nous:${tab}`); return () => setClientView(undefined); }, [tab]);
   const needs = useNeedsYouRequests(isActive && canRun);
-  const done = useDoneRequests(isActive && canRun);
   const shared = useSharedFiles(isActive && canRun);
-  const inProgress = useRequestsInProgress(isActive && canRun);
-  useDoneView(() => { setPlanView(null); setTab("done"); });
-  const updates = useOperatorUpdates(isActive && canRun);
-  useUpdatesView(() => { setPlanView(null); setTab("updates"); });
+  const notificationStore = useNotificationStore();
+  // A decision answered or opened here sends no notification event: the Inbox badge (the server's count) reads again when they change.
+  const openDecisionIds = decisions.filter((decision) => decision.status === "OPEN" && !decision.runsWhen).map((decision) => decision.id).join();
+  useEffect(() => { if (canRun) void refreshNotifications({ ifChanged: true }); }, [canRun, openDecisionIds]);
+  // Plan clipboard:JD8EbQgQdRls: a toast, pop-up or push opens its own Inbox tab; the bell opens the first tab with something (null).
+  const [, setInboxTab] = useNousUiState<InboxTab | null>(INBOX_TAB_KEY, null, isInboxTabChoice);
+  const openInbox = (inboxTab: InboxTab | null = null) => { setPlanView(null); setTab("inbox"); setInboxTab(inboxTab); };
+  useInboxView(() => openInbox());
+  useDoneView(() => openInbox("DONE"));
+  useUpdatesView(() => openInbox("UPDATES"));
   // A click on a needs-you toast, the small window or a pop-up opens its card here (plan clipboard:ytwWl09xNH0Z): never the pane.
   const [needsFocus, setNeedsFocus] = useState<{ id: string | null } | null>(null);
   const clickedCard = useRef<string | null>(null);
-  useNeedsYouView((cardId) => { clickedCard.current = cardId; setPlanView(null); setTab("needs"); setNeedsFocus({ id: cardId }); });
-  // No Needs you list to open it in (an account Nous does not serve, or the tab switched off): that click takes him to its pane, as before.
-  // Decided once per click (null: the settings are not read yet), so a tab hidden later moves nothing.
-  const needsHidden = !canRun ? true : state ? state.settings.dockTabs?.needs === false : null;
+  useNeedsYouView((cardId) => { clickedCard.current = cardId; openInbox("NEEDS"); setNeedsFocus({ id: cardId }); });
+  // No Inbox to open it in (an account Nous does not serve): that click takes him to its pane, as before.
+  const needsHidden = !canRun;
   useEffect(() => {
     const id = clickedCard.current;
-    if (!id || needsHidden === null) return;
+    if (!id) return;
     clickedCard.current = null;
     const card = needsHidden ? peekNotificationStore().items.find((item) => item.id === id) : undefined;
     if (card) goToNeedsYouPane(card);
   }, [needsFocus, needsHidden]);
+  // Re-checked when the state loads: settings without dockTabs left a non-ADMIN on a remembered Task runs tab.
+  const dockTabs = state?.settings.dockTabs;
+  const stateLoaded = state !== null;
   useEffect(() => {
-    if (tab !== "conversation" && (state?.settings.dockTabs?.[tab] === false || (tab === "taskRuns" && state && !isAdmin))) {
+    if (tab !== "conversation" && tab !== "inbox" && (dockTabs?.[tab] === false || (tab === "taskRuns" && stateLoaded && !isAdmin))) {
       setPlanView(null);
       setTab("conversation");
     }
-  }, [tab, state?.settings.dockTabs, isAdmin]);
+  }, [tab, dockTabs, stateLoaded, isAdmin, setPlanView, setTab]);
 
+  const latestHistory = history.latest;
   const refresh = useCallback(async () => {
-    const [next, list, open] = await Promise.all([api.nous(), history.latest(), api.nousDecisions()]);
+    const [next, list, open] = await Promise.all([api.nous(), latestHistory(), api.nousDecisions()]);
     setState(next.state);
     setWaiting(list.waiting ?? []);
     setDecisions(open.decisions);
-  }, [history.latest]);
+  }, [latestHistory]);
 
   const thinking = state?.status === "THINKING" || sending;
   // The answer as Nous writes it (streamed from its turn, operator request 2026-10-24); the final ANSWER message replaces it.
@@ -210,7 +230,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
 
   useEffect(() => {
     // Maximized, the board shows the overview in every view.
-    if (!isActive || !canRun || (tab !== "overview" && tab !== "panes" && tab !== "plans" && tab !== "goals" && tab !== "needs" && !fullscreen)) return;
+    if (!isActive || !canRun || (tab !== "overview" && tab !== "panes" && tab !== "plans" && tab !== "goals" && tab !== "inbox" && !fullscreen)) return;
     let cancelled = false;
     const load = () => api.nousOverview().then((result) => { if (!cancelled) setOverview(result.overview); })
       .catch((err: unknown) => { if (!cancelled) setError(messageOf(err, "The overview could not be loaded.")); });
@@ -218,6 +238,8 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
     const timer = window.setInterval(() => void load(), 30_000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [isActive, canRun, tab, fullscreen]);
+
+  useEffect(() => setBoardOpen(false), [tab, planView]);
 
   // One Escape closes the open plan first, then fullscreen (useDockFullscreen would leave both at once).
   useEffect(() => {
@@ -227,7 +249,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isFullscreen, planView]);
+  }, [isFullscreen, planView, setIsFullscreen, setPlanView]);
 
   // While Nous takes the operator to a pane the dock leaves fullscreen (it would cover the pane) and returns to it after.
   useLeaveDuringNousFocus({ fullscreen: isFullscreen, plan: planView }, () => { setIsFullscreen(false); setPlanView(null); },
@@ -287,8 +309,28 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
 
   const count = messages?.length ?? 0;
   const toLatest = useCallback(() => { const list = listRef.current; if (list) list.scrollTop = list.scrollHeight; }, []);
-  useEffect(() => { stickRef.current = true; toLatest(); }, [tab, fullscreen, toLatest]);
+  useEffect(() => { stickRef.current = true; toLatest(); }, [tab, fullscreen, isActive, toLatest]);
   useEffect(() => { if (stickRef.current) toLatest(); }, [count, toLatest]);
+  // Every open lands on the newest message (operator nous_msg:ad2b3a6a): rows, images, step groups and history pages settle after the
+  // first scroll and a hidden dock measures nothing, so while the list sticks to the end it follows each size change.
+  useEffect(() => {
+    if (!listEl) return;
+    stickRef.current = true;
+    toLatest();
+    if (typeof ResizeObserver === "undefined") return;
+    let shown = listEl.clientHeight > 0;
+    const resize = new ResizeObserver(() => {
+      const visible = listEl.clientHeight > 0;
+      if (visible && !shown) stickRef.current = true;
+      shown = visible;
+      if (stickRef.current) toLatest();
+    });
+    const watch = () => { resize.observe(listEl); for (const row of listEl.children) resize.observe(row); };
+    watch();
+    const rows = new MutationObserver(watch);
+    rows.observe(listEl, { childList: true });
+    return () => { resize.disconnect(); rows.disconnect(); };
+  }, [listEl, toLatest]);
   const onScroll = () => {
     const list = listRef.current;
     if (!list || (jumpTopRef.current !== null && Math.abs(list.scrollTop - jumpTopRef.current) < 2)) return;
@@ -366,7 +408,10 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   }, [search, searchBack, messages, decisions, tab, planView, fullscreen]);
   const stepSearch = (by: number) => setSearchBack((back) => searchFound ? (back + by + searchFound) % searchFound : 0);
   const closeSearch = () => { setSearch(null); setSearchBack(0); };
-  const showMessage = (id: string) => listRef.current?.querySelector<HTMLElement>(`[data-message-id="${id}"]`)?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+  const showMessage = (id: string) => {
+    const row = listRef.current?.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+    if (row) scrollWithin(row, "center", "smooth", listRef.current);
+  };
 
   const canSend = (Boolean(draft.trim()) || pending.readyIds.length > 0) && !pending.uploading && !sending;
   const send = async (event?: FormEvent, spoken?: string) => {
@@ -391,7 +436,25 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
       setSending(false);
     }
   };
+  // Desktop app only: Gboard-style autocorrect on space/punctuation; Backspace right after brings the typed word back and keeps it.
+  const onDraftChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    const el = event.target;
+    const input = event.nativeEvent as InputEvent;
+    const spell = input.inputType === "insertText" && input.data?.length === 1 ? desktopSpell() : undefined;
+    const fix = spell ? autocorrect(el.value, el.selectionStart, spell, keptWords.current) : null;
+    lastFix.current = null;
+    if (fix) {
+      const next = applyCorrection(el.value, fix);
+      if (next.text.length <= el.maxLength) { el.value = next.text; el.setSelectionRange(next.caret, next.caret); lastFix.current = fix; }
+    }
+    setDraft(el.value);
+  };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    const fix = lastFix.current;
+    lastFix.current = null;
+    const el = event.currentTarget;
+    const undone = fix && event.key === "Backspace" && el.selectionStart === el.selectionEnd ? undoCorrection(el.value, el.selectionStart, fix) : null;
+    if (fix && undone) { event.preventDefault(); keptWords.current.add(fix.original); el.value = undone.text; el.setSelectionRange(undone.caret, undone.caret); setDraft(undone.text); return; }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); voiceInput?.cancel(NOUS_VOICE_OWNER); void send(); }
   };
   // Dictation fills the box as words come and sends when the speech ends, like every other composer.
@@ -429,16 +492,9 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
 
   const answerDecision = (decision: NousDecision) => (input: { answer: "APPROVE" | "DECLINE" | "ANSWER"; text?: string; always?: boolean }) =>
     act(() => api.answerNousDecision(decision.id, input), "Your answer could not be saved.");
-  // The board's "Needs you" leads to the decision where Nous asked it: into view, the keyboard on its first answer.
-  const showDecision = (id: string) => {
-    setPlanView(null);
-    setTab("conversation");
-    window.requestAnimationFrame(() => {
-      const card = listRef.current?.querySelector<HTMLElement>(`[data-decision-id="${id}"]`);
-      card?.scrollIntoView?.({ block: "center", behavior: "smooth" });
-      card?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
-    });
-  };
+  const inboxSources = { decisions, needs, plans: overview?.plans ?? [], onOpenPlan: openPlan,
+    // The same card as in the conversation (E5): short, "Not now", and a plan decision carries its plan card.
+    renderDecision: (decision: NousDecision) => <NousDecisionCard inline decision={decision} onAnswer={answerDecision(decision)} plan={decision.refs.planId ? planCard(decision.refs.planId, "plan") : null} /> };
 
   if (!canRun) {
     return (
@@ -448,18 +504,6 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
     );
   }
 
-  // A decision an allowance holds runs by itself (operator 31/10 17:00 BKK «You are asking me for approve AGAIN!!!»): never counted or asked.
-  const open = decisions.filter((decision) => decision.status === "OPEN" && !decision.runsWhen);
-  const allDecisions = earlier ? [...decisions, ...earlier.decisions.filter((old) => !decisions.some((decision) => decision.id === old.id))] : decisions;
-  const shownDecisions = decisionFilter === "open" ? open : allDecisions;
-  const answered = allDecisions.filter((decision) => decision.status !== "OPEN");
-  const canLoadEarlier = decisionFilter === "all" && (earlier ? earlier.hasMore : decisions.filter((decision) => decision.status !== "OPEN").length >= 50);
-  const loadEarlierDecisions = () => {
-    const oldest = answered.reduce<string | null>((min, decision) => !min || decision.createdAt < min ? decision.createdAt : min, null);
-    if (!oldest) return;
-    void api.nousEarlierDecisions(oldest).then((page) => setEarlier((current) => ({ decisions: [...current?.decisions ?? [], ...page.decisions], hasMore: page.hasMore })))
-      .catch(() => undefined);
-  };
   const byId = new Map((messages ?? []).map((entry) => [entry.id, entry]));
   // Queued until Nous answers it; "answering" once the running turn took it (the turn began after it was sent).
   const queueOf = (entry: NousMessage) => !waiting.includes(entry.id) ? null
@@ -476,16 +520,18 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   const shownFrom = history.clearedAt && oldestLoaded && oldestLoaded < history.clearedAt ? oldestLoaded : history.clearedAt;
   const entries = messages === null ? [] : [
     // An answer that was only Space's NOTHING_NEW token says nothing to the operator (stable 2/11, rows stored before the server dropped it).
-    ...messages.filter((entry) => entry.kind !== "ANSWER" || withoutNothingNew(entry.content)).map((entry) => ({ at: entry.createdAt, tool: entry.kind === "TOOL" ? entry : null, node: (
+    ...messages.filter((entry) => entry.kind !== "ANSWER" || withoutNothingNew(entry.content)).map((entry) => ({ at: entry.createdAt, fold: entry.kind === "TOOL" || entry.kind === "INBOX" ? entry : null, node: (
       <NousMessageRow key={entry.id} message={entry} files={messageFiles[entry.id] ?? []} planCard={planCard}
         queue={entry.kind === "OPERATOR" ? queueOf(entry) : null} quotes={quotesById.get(entry.id) ?? []} onShowMessage={showMessage} />
     ) })),
     // Every decision sits where Nous asked it; one about a plan carries the plan card that opens it. Clear conversation hides the ones asked
-    // before it (operator 2/11: they stay in Needs you and Decisions); "Load earlier messages" brings back those of the window it loads.
-    ...decisions.filter((decision) => !shownFrom || decision.createdAt >= shownFrom).map((decision) => ({ at: decision.createdAt, tool: null, node: (
-      <NousDecisionCard key={decision.id} inline decision={decision} onAnswer={answerDecision(decision)}
-        plan={decision.refs.planId ? planCard(decision.refs.planId, "plan") : null} />
-    ) }))
+    // before it (operator 2/11: they stay in the Inbox); "Load earlier messages" brings back those of the window it loads. One still asked
+    // shows its Inbox Thread's card, the same as in the Inbox (E5).
+    ...decisions.filter((decision) => !shownFrom || decision.createdAt >= shownFrom).map((decision) => {
+      const thread = decision.status === "OPEN" ? notificationStore.inbox?.open.find((item) => item.openAsks.some((event) => event.ref === decision.id)) : undefined;
+      return { at: decision.createdAt, fold: null, node: thread ? <InboxThreadCard key={decision.id} thread={thread} sources={inboxSources} onChanged={() => void refresh().catch(() => undefined)} />
+        : <NousDecisionCard key={decision.id} inline decision={decision} onAnswer={answerDecision(decision)} plan={decision.refs.planId ? planCard(decision.refs.planId, "plan") : null} /> };
+    })
   ].sort((a, b) => a.at.localeCompare(b.at));
   // Model first: the narrow dock cuts the line's end (stable 29/10 read "Claude (Ar…" with the provider first).
   const served = state?.execution && !state.execution.model.startsWith("auto") ? state.execution : null;
@@ -514,14 +560,13 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
     : state?.lastError ? <p className="nous-muted nous-last-error">{t("Last problem: {text}", { text: state.lastError })}</p> : null;
   const activeGoals = state?.goals?.active ?? 0;
   // Icon tabs (operator request 2026-10-27), wrapping to a second row in a narrow dock (31/10); the chosen view shows its name, a wide dock every name (nous.css).
+  // The one «Εισερχόμενα» (plan clipboard:aE7U1J_gU9OV): Needs you, Done, Updates, Requests and the bell's alerts; its count is the server's badge.
+  const badge = inboxBadge(notificationStore);
   const tabs: DockChipOption<Tab>[] = [
-    { id: "conversation", label: "Conversation", icon: MessageSquare }, { id: "needs", label: "Needs you", icon: UserCheck, tone: "attention", ...((needs?.length ?? 0) + open.length ? { count: (needs?.length ?? 0) + open.length } : {}) },
-    { id: "done", label: "Done", icon: CheckCheck, ...(done.count ? { count: done.count } : {}) },
-    // Operator 4/11 15:04 BKK (R73): approvals and what Nous carried out, each with its full report; the count is the unread ones.
-    { id: "updates", label: "Updates", icon: Megaphone, ...(updates.count ? { count: updates.count } : {}) },
-    { id: "requests", label: "Requests", icon: ListChecks, ...(inProgress ? { count: inProgress } : {}) },
+    { id: "conversation", label: "Conversation", icon: MessageSquare },
+    { id: "inbox", label: "Inbox", icon: Bell, ...(notificationStore.inbox?.attention ? { tone: "attention" as const } : {}), ...(badge ? { count: badge } : {}) },
     { id: "shared", label: "Shared", icon: FileSymlink, ...(shared.count ? { count: shared.count } : {}) },
-    { id: "decisions", label: "Decisions", icon: Gavel, tone: "attention", ...(open.length ? { count: open.length } : {}) }, { id: "overview", label: "Overview", icon: Activity },
+    { id: "overview", label: "Overview", icon: Activity },
     { id: "panes", label: "Panes", icon: LayoutGrid, ...(overview?.panes?.some((pane) => pane.overdue) ? { count: overview.panes.filter((pane) => pane.overdue).length } : {}) },
     { id: "plans", label: "Plans", icon: ClipboardList }, { id: "goals", label: "Goals", icon: Target, ...(activeGoals ? { count: activeGoals } : {}) },
     // Operator 3/11 20:09 BKK (plan clipboard:17yLAnH5ZpyF): every startup program, the oll4.com projects' ones included (7/11).
@@ -538,9 +583,11 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
     // Every run of the scheduled tasks (plan clipboard:GA__W4qBxSPR): ADMIN only, as its route.
     ...(isAdmin ? [{ id: "taskRuns" as const, label: "Task runs", icon: CalendarCheck }] : [])
   ];
-  const shownTabs = tabs.filter(({ id }) => id === "conversation" || state?.settings.dockTabs?.[id] !== false).map((option) => ({ ...option, label: t(option.label) }));
+  const shownTabs = tabs.filter(({ id }) => id === "conversation" || id === "inbox" || state?.settings.dockTabs?.[id] !== false).map((option) => ({ ...option, label: t(option.label) }));
   const goTo = (next: Tab) => { setPlanView(null); setTab(next); };
   const openLoad = shownTabs.some((option) => option.id === "load") ? () => goTo("load") : undefined;
+  // The Agents Dashboard is an ADMIN's only (App.tsx mounts it for them).
+  const openAgents = isAdmin ? openAgentsDashboard : undefined;
   const views = <DockChips label={t("Nous views")} className="nous-views" value={tab} onChange={goTo} options={shownTabs} />;
   const railViews = <DockChips label={t("Nous views")} className="nous-views" value={tab} onChange={goTo}
     options={RAIL_SECTIONS.flatMap(([section, ids]) => ids.flatMap((id) => shownTabs.filter((option) => option.id === id)).map((option) => ({ ...option, section: t(section) })))} />;
@@ -548,7 +595,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
     <>
       {tab === "conversation" && !planView ? (
         <DockIconButton label={t("Clear the conversation")} icon={Trash2} disabled={thinking || !entries.length} onClick={async () => {
-          if (!(await confirm({ title: t("Clear the conversation?"), message: t("Nous keeps its notes and decisions; the messages and decisions leave the conversation (decisions stay in Needs you and Decisions) and \"Load earlier messages\" still shows them."), confirmLabel: t("Clear") }))) return;
+          if (!(await confirm({ title: t("Clear the conversation?"), message: t("Nous keeps its notes and decisions; the messages and decisions leave the conversation (decisions stay in the Inbox) and \"Load earlier messages\" still shows them."), confirmLabel: t("Clear") }))) return;
           await act(async () => { await api.clearNousMessages(); history.cleared(); }, "The conversation could not be cleared.");
         }} />
       ) : null}
@@ -567,7 +614,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
       onClose={() => setPlanView(null)} answerDecision={answerDecision} />
   ) : tab === "conversation" ? (
     <div className={`nous-conversation${dragging ? " is-dropping" : ""}`} onDragOver={onDragOver} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
-      <div className="nous-messages" data-sensitive-masked="manual" ref={listRef} aria-live="polite" onScroll={onScroll}>
+      <div className="nous-messages" ref={setList} aria-live="polite" onScroll={onScroll}>
         {history.hasMore ? <DockButton className="nous-load-earlier" onClick={loadEarlier}>{t("Load earlier messages")}</DockButton> : null}
         {messages === null ? <DockState kind="loading" title={t("Loading the conversation")} /> : null}
         {messages?.length === 0 ? <DockState kind="empty" icon={Nous} title={t("Talk to Nous")} detail={t("Ask what is happening in every room, give it a goal, or switch it on to work on your behalf.")} /> : null}
@@ -614,20 +661,14 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
               onClick={() => search === null ? setSearch("") : closeSearch()} />
           </span>
         </div>
-        <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} onPaste={onPaste} rows={2} maxLength={8_000} data-nous-composer
+        <textarea value={draft} onChange={onDraftChange} onKeyDown={onKeyDown} spellCheck onPaste={onPaste} rows={2} maxLength={8_000} data-nous-composer
           placeholder={t("Message Nous, or paste a screenshot")} aria-label={t("Message Nous")} />
         <DockIconButton label={t("Send")} icon={Send} tone="primary" type="submit" disabled={!canSend} busy={sending} />
       </form>
       {dragging ? <div className="nous-drop-hint" aria-hidden="true">{t("Drop files to send them to Nous")}</div> : null}
     </div>
-  ) : tab === "needs" ? (
-    <NousNeedsYou requests={needs} decisions={open} plans={overview?.plans} focus={needsFocus} onOpenPlan={openPlan} renderDecision={(decision) => <NousDecisionCard decision={decision} onAnswer={answerDecision(decision)} />} />
-  ) : tab === "done" ? (
-    <NousDone requests={done.requests} error={done.error} onRetry={done.retry} onOpenPlan={openPlan} onAcknowledged={done.acknowledged} />
-  ) : tab === "updates" ? (
-    <NousUpdates updates={updates.updates} error={updates.error} onRetry={updates.retry} />
-  ) : tab === "requests" ? (
-    <NousRequests active={isActive && canRun} onOpenPlan={openPlan} />
+  ) : tab === "inbox" ? (
+    <InboxView active={isActive && canRun} sources={inboxSources} focus={needsFocus} trailing={<>{state?.inboxItems?.length ? <NousInboxQueue items={state.inboxItems} /> : null}<LinkedNousDecisions /></>} />
   ) : tab === "shared" ? (
     <NousShared files={shared.files} error={shared.error} onRetry={() => void shared.retry()} onRemoved={shared.removed} />
   ) : tab === "startup" ? (
@@ -643,25 +684,13 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   ) : tab === "goals" ? (
     <NousGoals active={isActive && canRun} overview={overview} onChanged={() => void refresh().catch(() => undefined)} onOpenPlan={openPlan} />
   ) : tab === "quotas" ? (
-    <NousQuotas active={isActive} />
+    <NousQuotas active={isActive} isAdmin={isAdmin} />
   ) : tab === "load" ? (
     <NousLoad active={isActive} />
   ) : tab === "score" ? (
     <NousScore active={isActive} />
   ) : tab === "taskRuns" && isAdmin ? (
     <NousTaskRuns active={isActive} />
-  ) : tab === "decisions" ? (
-    <div className="nous-decisions">
-      {/* Operator request 2026-10-21: only the decisions still waiting for an answer, or all of them. */}
-      <DockChips label={t("Show decisions")} value={decisionFilter} onChange={setDecisionFilter} options={[
-        { id: "open", label: t("Unanswered"), count: open.length }, { id: "all", label: t("All"), count: allDecisions.length }]} />
-      {shownDecisions.length === 0 ? <DockState kind="empty" icon={Nous} title={t(decisionFilter === "open" ? "Nothing waits for you" : "No decisions")}
-        detail={t("Nous brings you only releases, irreversible actions, anything to third parties or with money, and product direction.")} /> : null}
-      {shownDecisions.map((decision) => (
-        <NousDecisionCard key={decision.id} decision={decision} onAnswer={answerDecision(decision)} />
-      ))}
-      {canLoadEarlier ? <DockButton className="nous-decisions-earlier" onClick={loadEarlierDecisions}>{t("Load earlier decisions")}</DockButton> : null}
-    </div>
   ) : tab === "plans" ? (
     // Operator request 2026-10-25: the plan map (holds, unblock first, dates, dependencies) in any dock size; a row opens the plan.
     <section className="nous-overview" aria-label="Plans">
@@ -670,17 +699,18 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   ) : (
     tab === "panes" ? <NousPaneBoard active={isActive} decisions={decisions} overview={overview} onSent={() => void refresh().catch(() => undefined)}
       renderDecision={(decision) => <NousDecisionCard inline decision={decision} onAnswer={answerDecision(decision)} />} />
-      : <NousOverviewView overview={overview} active={isActive} onOpenLoad={openLoad} />
+      : <NousOverviewView overview={overview} active={isActive} onOpenLoad={openLoad} onOpenAgents={openAgents} />
   );
 
   // Only the dialogue stays open (operator request 2026-10-21, every dock size): each run of tool steps, its helpers' included,
-  // folds into one line that opens to the whole list.
+  // folds into one line that opens to the whole list; so does each run of news from the rooms (operator 16/11 05:24Z: 25 rows in a row).
   const folded: ReactNode[] = [];
-  for (let index = 0; index < entries.length; index += 1) {
-    const steps: NousMessage[] = [];
-    while (entries[index]?.tool) steps.push(entries[index++]!.tool!);
-    if (steps.length) folded.push(<NousSteps key={steps[0]!.id} steps={steps} />);
-    if (index < entries.length) folded.push(entries[index]!.node);
+  for (let index = 0; index < entries.length;) {
+    const kind = entries[index]!.fold?.kind;
+    if (!kind) { folded.push(entries[index++]!.node); continue; }
+    const run: NousMessage[] = [];
+    while (entries[index]?.fold?.kind === kind) run.push(entries[index++]!.fold!);
+    folded.push(kind === "TOOL" ? <NousSteps key={run[0]!.id} steps={run} /> : <NousInbox key={run[0]!.id} messages={run} />);
   }
 
   if (fullscreen) {
@@ -688,7 +718,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
     // what waits for the operator on the right.
     const turns = state?.turnsThisHour ?? 0;
     return (
-      <section className={`dock-panel nous-dock is-fullscreen nous-workspace${thinking ? " is-thinking" : ""}${tab === "panes" && !planView ? " is-pane-board" : ""}${planView ? " has-plan" : ""}`} aria-label="Nous">
+      <section className={`dock-panel nous-dock is-fullscreen nous-workspace${thinking ? " is-thinking" : ""}${tab === "panes" && !planView ? " is-pane-board" : ""}${planView ? " has-plan" : ""}${boardOpen ? " is-board-open" : ""}`} aria-label="Nous">
         <AgentFileMentions>
         <aside className="nous-rail" aria-label="Nous status">
           <div className="nous-rail-identity">
@@ -703,12 +733,12 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
           </div>
           {lastError}
           {railViews}
-          {/* Each count opens the view that explains it (operator 3/11): the open decisions, the panes whose news fill the inbox, the load. */}
+          {/* Each count opens the view that explains it (operator 3/11): the open decisions, the inbox lines themselves (nous_msg:eb36261e), the load. */}
           <div className="nous-gauges" role="group" aria-label={t("Live counts")}>
-            {([["Decisions waiting", open.length, "decisions", open.length > 0], ["Inbox", state?.inbox ?? 0, "panes", false], ["Turns this hour", turns, "load", false]] as const)
-              .map(([label, value, target, attention]) => shownTabs.some((option) => option.id === target) ? (
+            {([["Inbox", badge, "inbox", Boolean(notificationStore.inbox?.attention)], ["Turns this hour", turns, "load", false]] as const)
+              .map(([label, value, target, attention]) => target === "inbox" || shownTabs.some((option) => option.id === target) ? (
                 <button key={label} type="button" className={attention ? "is-attention" : undefined} title={t(VIEW_TITLES[target])}
-                  onClick={() => { if (target === "decisions") setDecisionFilter("open"); goTo(target); }}>
+                  onClick={() => goTo(target)}>
                   <span className="nous-gauge-value">{value}</span> <span className="nous-gauge-label">{t(label)}</span>
                 </button>
               ) : (
@@ -725,8 +755,11 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
           {view(folded, draftNode)}
         </div>
         {/* The dock's own controls sit at its far right edge (operator request 2026-10-17, plan clipboard:wr9yNPJwkDrp). */}
-        <div className="nous-workspace-tools">{actions}</div>
-        <NousBoard overview={overview} open={open} onShowDecision={showDecision} openPlan={openPlan} live={isActive} onOpenLoad={openLoad} />
+        <div className="nous-workspace-tools">
+          <DockIconButton label={t("Side board")} icon={PanelRight} className="nous-board-toggle" aria-expanded={boardOpen} onClick={() => setBoardOpen(!boardOpen)} />
+          {actions}
+        </div>
+        <NousBoard overview={overview} openPlan={openPlan} live={isActive} onOpenLoad={openLoad} onOpenAgents={openAgents} />
         {confirmDialog}
         </AgentFileMentions>
       </section>
@@ -738,7 +771,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
       <AgentFileMentions>
       <header className="nous-hero">
         <NousBrain3D size={60} animate={isActive} thinking={thinking} />
-        {/* The dock's header already says "The mind of SpaceApp"; the narrow hero keeps one line each for the model and the status. */}
+        {/* The dock's header already says "The mind of SpaceApp"; the model and the status wrap between words in a narrow dock (nous.css). */}
         <div className="nous-hero-text">
           <h2>Nous</h2>
           <p className="nous-tagline">{modelLink}</p>
@@ -749,7 +782,8 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
         <div className="nous-hero-side">{power}<div className="nous-hero-actions">{actions}</div></div>
       </header>
       {lastError}
-      <div className="nous-toolbar">{views}</div>
+      {/* Under 21rem no tab has room for its name (nous.css): the open view is named under the bar; the pressed tab already says it to a screen reader. */}
+      <div className="nous-toolbar">{views}<p className="nous-view-name" aria-hidden="true">{t(VIEW_TITLES[tab])}</p></div>
       {notice}
       {/* Operator request 2026-10-17: Nous's questions are answered in the conversation too; the entries place every decision where it was asked. */}
       {view(folded, draftNode)}
@@ -805,49 +839,46 @@ function NousElapsed({ since }: { since: string }) {
   return <>{seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`}</>;
 }
 
-/** The maximized view's right column: what waits for the operator and where every plan stands, always in sight. */
-function NousBoard({ overview, open, onShowDecision, openPlan, live, onOpenLoad }: {
-  overview: NousOverview | null; open: NousDecision[]; onShowDecision(id: string): void; openPlan(id: string): void; live: boolean; onOpenLoad?(): void;
+/**
+ * The maximized view's right column: live stats and where every plan stands, always in sight. What waits for the operator is in the Inbox
+ * only (plan clipboard:aE7U1J_gU9OV G.3, nous_msg:9019890f): the rail's Inbox count opens it, no second list here.
+ */
+function NousBoard({ overview, openPlan, live, onOpenLoad, onOpenAgents }: {
+  overview: NousOverview | null; openPlan(id: string): void; live: boolean; onOpenLoad?(): void; onOpenAgents?(preset: AgentsDashboardPreset): void;
 }) {
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [query, setQuery] = useState("");
   const plans = searchPlans(overview?.plans ?? [], query);
+  // Operator nous_msg:8076f33e: plans closed with work left (closed under 100%, operator 22/11) stay in sight, after the open ones.
+  const closed = searchPlans(overview?.closedPlans ?? [], query);
+  const anyPlan = Boolean(overview?.plans.length || overview?.closedPlans?.length);
+  const planButton = (plan: NousOverview["plans"][number]) => (
+    <button key={plan.id} type="button" className={`nous-board-plan is-${plan.status.toLowerCase()}`} onClick={() => openPlan(plan.id)}
+      aria-label={`Open the plan ${plan.title}, ${plan.progress}%`}>
+      <span className="nous-plan-head"><strong>{plan.title}</strong><span>{plan.progress}%</span></span>
+      <span className="nous-progress" aria-hidden="true"><span style={{ width: `${plan.progress}%` }} /></span>
+      <span className="nous-muted">{t(statusText(planShownStatus(plan).status))}{plan.pane ? ` · ${plan.pane}` : ` · ${t(plan.paneClosed ? "pane closed" : "no pane yet")}`}{plan.room ? ` ${t("in {room}", { room: plan.room })}` : ""}</span>
+      {plan.nextStep ? <span className="nous-muted">{t("Next: {step}", { step: plan.nextStep })}</span> : null}
+    </button>
+  );
   return (
-    <aside className="nous-board" aria-label={t("Needs you and the plans")}>
+    <aside className="nous-board" aria-label={t("Live and the plans")}>
       {/* Appointments at the very top (operator 2/11 15:22 BKK), then Live stats, in sight without scrolling; they replace the raw release-train text (releases reach the operator as RELEASE decisions). */}
       <NousAppointments />
-      <NousLiveStats overview={overview} active={live} onOpenLoad={onOpenLoad} />
-      <section aria-label={t("Needs you")}>
-        <h3>{t("Needs you")}{open.length ? <span className="nous-board-count is-attention">{open.length}</span> : null}</h3>
-        {open.length === 0 ? <p className="nous-muted">{t("Nothing waits for you. Nous brings releases, irreversible actions, third parties or money, and direction here.")}</p> : null}
-        {/* Each one is answered once, where Nous asked it in the conversation; here it is a line that leads there. */}
-        {open.map((decision) => (
-          <button key={decision.id} type="button" className="nous-board-ask" onClick={() => onShowDecision(decision.id)}>
-            <span className={`nous-category is-${decision.category.toLowerCase()}`}>{t(CATEGORY_LABELS[decision.category])}</span>
-            <strong>{decision.title}</strong>
-            <span className="nous-muted">{t("Asked {time}", { time: clock(decision.createdAt) })}{decision.recommendation ? ` · ${t("Nous recommends:")} ${decision.recommendation}` : ""}</span>
-          </button>
-        ))}
-      </section>
+      <NousLiveStats overview={overview} active={live} onOpenLoad={onOpenLoad} onOpenAgents={onOpenAgents} />
       <section aria-label={t("Plans")}>
         <h3>{t("Plans")}{overview?.plans.length ? <span className="nous-board-count">{plans.length}</span> : null}</h3>
-        {overview?.plans.length ? (
+        {anyPlan ? (
           <div className="nous-board-search" onKeyDown={(event) => { if (event.key === "Escape" && query) { event.stopPropagation(); setQuery(""); } }}>
             <DockSearch value={query} onChange={setQuery} label={t("Search plans")} name="nous-plans-search" />
           </div>
         ) : null}
         {!overview ? <p className="nous-muted">{t("Loading the plans…")}</p> : overview.plans.length === 0 ? <p className="nous-muted">{t("No open plans.")}</p>
           : plans.length === 0 ? <p className="nous-muted">{t("No plan matches.")}</p> : null}
-        {plans.map((plan) => (
-          <button key={plan.id} type="button" className={`nous-board-plan is-${plan.status.toLowerCase()}`} onClick={() => openPlan(plan.id)}
-            aria-label={`Open the plan ${plan.title}, ${plan.progress}%`}>
-            <span className="nous-plan-head"><strong>{plan.title}</strong><span>{plan.progress}%</span></span>
-            <span className="nous-progress" aria-hidden="true"><span style={{ width: `${plan.progress}%` }} /></span>
-            <span className="nous-muted">{statusText(plan.status)}{plan.pane ? ` · ${plan.pane}` : ` · ${t("no pane yet")}`}{plan.room ? ` ${t("in {room}", { room: plan.room })}` : ""}</span>
-            {plan.nextStep ? <span className="nous-muted">{t("Next: {step}", { step: plan.nextStep })}</span> : null}
-          </button>
-        ))}
+        {plans.map(planButton)}
+        {closed.length ? <h4 className="nous-board-subhead">{t("Closed with work left")}<span className="nous-board-count">{closed.length}</span></h4> : null}
+        {closed.map((plan) => <div key={plan.id} className="nous-board-closed">{planButton(plan)}<ClosedPlanDetail plan={plan} /></div>)}
       </section>
       <section aria-label={t("Needs your hands")}>
         <h3>{t("Needs your hands")}{overview?.needsHands.length ? <span className="nous-board-count is-attention">{overview.needsHands.length}</span> : null}</h3>
@@ -887,26 +918,71 @@ function NousMessageRow({ message, files, planCard, queue, quotes, onShowMessage
       </div>
     );
     case "TOOL": return <div className={`nous-tool is-${message.status.toLowerCase()}`}>{message.content}</div>;
-    case "INBOX": return <NousInbox message={message} />;
     case "DECISION": return <div className="nous-message is-decision"><p>{message.content}</p></div>;
     default: return <div className="nous-message is-error" role="alert"><p>{message.content}</p></div>;
   }
 }
 
-/** The news Nous read in a turn, folded; open ones stay open on this device. */
-function NousInbox({ message }: { message: NousMessage }) {
+/** A run of news Nous read, folded into one line; open ones stay open on this device (keyed on the run's first message). */
+function NousInbox({ messages }: { messages: NousMessage[] }) {
   const opened = useNousUiIds("inbox");
   const agents = useAgentLanguage();
+  const id = messages[0]!.id;
   return (
-    <details className="nous-inbox" open={opened.has(message.id)} onToggle={(event) => opened.setOpen(message.id, event.currentTarget.open)}>
-      <summary>{uiText(agents, "From the rooms and the notifications")}</summary><pre>{message.content}</pre>
+    <details className="nous-inbox" open={opened.has(id)} onToggle={(event) => opened.setOpen(id, event.currentTarget.open)}>
+      <summary>{uiText(agents, "From the rooms and the notifications")}{messages.length > 1 ? ` · ${messages.length}` : null}</summary>
+      {messages.map((message) => <pre key={message.id}><time dateTime={message.createdAt}>{clock(message.createdAt)}</time> {message.content}</pre>)}
     </details>
   );
 }
 
+/** Space Link v2 step 9c: the open decisions of SpaceApps whose Nous answers to this one; an answer goes signed by this SpaceApp, and their own person may answer first. */
+function LinkedNousDecisions() {
+  const language = useUiLanguage();
+  const [items, setItems] = useState<Awaited<ReturnType<typeof api.linkedNousDecisions>>["decisions"]>([]);
+  const [error, setError] = useState<string | null>(null);
+  // Approving or answering from above asks to confirm it is you first (STEP_UP_REQUIRED, plan step 9): Google (its return sends the answer,
+  // step-up-resume.ts) or a mailed link (StepUpConfirm; the password stays behind a link); the same answer is sent once confirmed.
+  const [held, setHeld] = useState<{ work: () => Promise<void>; resume: StepUpResume } | null>(null);
+  const load = useCallback(() => api.linkedNousDecisions().then((answer) => setItems(answer.decisions ?? []), () => setItems([])), []);
+  useEffect(() => { void load(); }, [load]);
+  const confirmed = async () => {
+    const work = held?.work;
+    setHeld(null);
+    try { await work?.(); } catch (err) { setError(messageOf(err, "Your answer could not be saved.")); await load(); }
+  };
+  if (!items.length && !error) return null;
+  return (
+    <section className="nous-decisions-linked" aria-label={uiText(language, "From linked SpaceApps")}>
+      <h3>{uiText(language, "From linked SpaceApps")}</h3>
+      {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
+      {held ? (
+        <StepUpConfirm dock reason={uiText(language, "Confirm it is you; then your answer is sent.")} google={!("spaceDesktop" in window)}
+          beforeGoogle={() => markStepUpResume(held.resume)} onConfirmed={confirmed} onCancel={() => setHeld(null)} />
+      ) : null}
+      {items.map(({ linkId, label, decision }) => (
+        <NousDecisionCard key={`${linkId} ${decision.id}`} remote={label} decision={{ ...decision, ownerUserId: linkId, answer: null, outcome: null, answeredAt: null }}
+          onAnswer={async (input) => {
+            setError(null);
+            const work = async () => { await api.answerLinkedNousDecision(linkId, decision.id, { answer: input.answer, ...(input.text ? { text: input.text } : {}) }); await load(); };
+            try { await work(); }
+            catch (err) {
+              if (err instanceof SpaceApiError && err.code === "STEP_UP_REQUIRED") {
+                setHeld({ work, resume: { purpose: "linked-decision", linkId, decisionId: decision.id, answer: input.answer, ...(input.text ? { text: input.text } : {}) } });
+              }
+              else { setError(messageOf(err, "Your answer could not be saved.")); await load(); }
+            }
+          }} />
+      ))}
+    </section>
+  );
+}
+
 /** The Decisions tab's card; inline (in the conversation) it keeps the body short and says "Not now" instead of "Decline". */
-function NousDecisionCard({ decision, onAnswer, inline = false, plan = null }: {
+function NousDecisionCard({ decision, onAnswer, inline = false, plan = null, remote }: {
   decision: NousDecision; onAnswer(input: { answer: "APPROVE" | "DECLINE" | "ANSWER"; text?: string; always?: boolean }): Promise<void>; inline?: boolean; plan?: ReactNode;
+  /** A linked SpaceApp's decision (its label): no Always approve or Show everything here; its files stay there. */
+  remote?: string;
 }) {
   const language = useUiLanguage();
   const agents = useAgentLanguage();
@@ -921,7 +997,7 @@ function NousDecisionCard({ decision, onAnswer, inline = false, plan = null }: {
     try { await onAnswer(input); setText(""); setEverything(false); } finally { setBusy(false); }
   };
   const open = decision.status === "OPEN" && !decision.runsWhen;
-  const kind = open ? nousDecisionKind(decision) : null;
+  const kind = open && !remote ? nousDecisionKind(decision) : null;
   // As on a Needs you card, what Nous checked before asking (pane-notices.ts) folds away under the question; "Show everything" keeps it in place.
   const checkedOpen = useNousUiIds("decision.checkedOpen");
   const split = decision.body.lastIndexOf(NEEDS_YOU_CHECKED_HEADER);
@@ -955,6 +1031,7 @@ function NousDecisionCard({ decision, onAnswer, inline = false, plan = null }: {
       <header>
         <span className={`nous-category is-${decision.category.toLowerCase()}`}>{t(CATEGORY_LABELS[decision.category])}</span>
         <h3>{decision.title}</h3>
+        {remote ? <small className="nous-muted">{t("From {label}", { label: remote })}</small> : null}
       </header>
       {own ? <ChatMarkdown content={decisionMarkdown(agents, own)} /> : null}
       <NeedsYouFiles refs={decision.refs.files} />
@@ -966,7 +1043,7 @@ function NousDecisionCard({ decision, onAnswer, inline = false, plan = null }: {
       {decision.runsWhen ? <p className="nous-muted" role="status">{t("Runs by itself when this clears: {what}", { what: decision.runsWhen })}</p> : open ? (
         <>
           {/* Operator request 2026-10-21: the whole decision and every text it sends, read before Approve. */}
-          <DockButton className="nous-decision-everything" onClick={() => setEverything(true)}>{t("Show everything")}</DockButton>
+          {remote ? null : <DockButton className="nous-decision-everything" onClick={() => setEverything(true)}>{t("Show everything")}</DockButton>}
           {everything ? null : answers}
           {everything ? <NousDecisionEverything decision={decision} answers={answers} onClose={() => setEverything(false)} /> : null}
         </>
@@ -1041,8 +1118,10 @@ function NousDecisionEverything({ decision, answers, onClose }: { decision: Nous
 
 /** A plan in the conversation; undefined while it loads, null when the clipboard has no such plan. The same button opens and closes it. */
 function NousPlanCard({ plan, open, onToggle }: { plan: ClipboardItem | null | undefined; open: boolean; onToggle(): void }) {
+  const language = useUiLanguage();
   const title = plan ? plan.title ?? plan.text.split("\n")[0]!.replace(/^#+\s*/, "").slice(0, 120) : plan === null ? "Plan not found" : "Loading the plan…";
   const next = plan ? [...plan.steps].sort((a, b) => a.order - b.order).find((step) => step.status !== "COMPLETED") : undefined;
+  const shown = plan ? planShownStatus({ status: plan.isCompleted ? "COMPLETED" : plan.executionStatus, progress: plan.progressPercentage, steps: plan.steps, parked: plan.parked }) : null;
   return (
     <article className="nous-plan nous-plan-card" aria-label={`Plan: ${title}`}>
       <div className="nous-plan-head"><strong>{title}</strong>{plan ? <span>{plan.progressPercentage}%</span> : null}</div>
@@ -1051,12 +1130,14 @@ function NousPlanCard({ plan, open, onToggle }: { plan: ClipboardItem | null | u
           <div className="nous-progress" role="progressbar" aria-valuenow={plan.progressPercentage} aria-valuemin={0} aria-valuemax={100} aria-label={`${title} progress`}>
             <span style={{ width: `${plan.progressPercentage}%` }} />
           </div>
-          <p className="nous-muted">{plan.isCompleted ? "completed" : statusText(plan.executionStatus)}{next ? ` · next: ${next.order}. ${next.title}` : ""}</p>
+          {shown?.status === "PARKED" ? (
+            <p className="nous-muted"><span className="dock-kit-badge is-warning">{uiText(language, "Parked")}</span>
+              {shown.waitsOn ? ` ${uiText(language, "waits on: {what}", { what: shown.waitsOn })}` : ""}{shown.reason ? ` · ${uiText(language, "Why: {reason}", { reason: shown.reason })}` : ""}</p>
+          ) : <p className="nous-muted">{shown?.status === "COMPLETED" ? "completed" : statusText(plan.executionStatus)}{next ? ` · next: ${next.order}. ${next.title}` : ""}</p>}
         </>
       ) : null}
-      <DockButton icon={open ? Minimize2 : Maximize2} aria-pressed={open} disabled={plan === null && !open} onClick={onToggle}>
-        {open ? "Close the plan" : "Open the plan"}
-      </DockButton>
+      {/* Open, the header's "Back to …" leaves the plan view: a second close button here read as closing the plan itself (operator 23/11). */}
+      {open ? null : <DockButton icon={Maximize2} disabled={plan === null} onClick={onToggle}>Open the plan</DockButton>}
     </article>
   );
 }
@@ -1115,7 +1196,9 @@ function describeAction(language: UiLanguage, action: NonNullable<NousDecision["
   return t("{decision} the {copilot} copilot's {item}", { decision: action.decision, copilot: action.copilot.toLowerCase(), item: action.item.toLowerCase() });
 }
 
-function NousOverviewView({ overview, active, onOpenLoad }: { overview: NousOverview | null; active: boolean; onOpenLoad?(): void }) {
+function NousOverviewView({ overview, active, onOpenLoad, onOpenAgents }: {
+  overview: NousOverview | null; active: boolean; onOpenLoad?(): void; onOpenAgents?(preset: AgentsDashboardPreset): void;
+}) {
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [liveStats, setLiveStats] = useNousUiState("overview.liveStats", true, isFlag);
@@ -1124,7 +1207,7 @@ function NousOverviewView({ overview, active, onOpenLoad }: { overview: NousOver
     <div className="nous-overview">
       <details className="nous-live-collapsible" open={liveStats} onToggle={(event) => setLiveStats(event.currentTarget.open)}>
         <summary>{t("Live stats")}</summary>
-        <NousLiveStats overview={overview} active={active} onOpenLoad={onOpenLoad} />
+        <NousLiveStats overview={overview} active={active} onOpenLoad={onOpenLoad} onOpenAgents={onOpenAgents} />
       </details>
       <section aria-label={t("Open plans")}>
         <h3>{t("Open plans")}</h3>

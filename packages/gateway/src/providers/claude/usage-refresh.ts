@@ -12,6 +12,9 @@ export async function storeClaudeUsage(repository: GatewayRepository, account: G
     ...(usage.fiveHourUsedPercent !== null ? [{ window: "PRIMARY" as const, usedPercent: usage.fiveHourUsedPercent, resetAt: usage.fiveHourResetAt, windowMinutes: FIVE_HOURS_MINUTES }] : []),
     ...(usage.weeklyUsedPercent !== null ? [{ window: "SECONDARY" as const, usedPercent: usage.weeklyUsedPercent, resetAt: usage.weeklyResetAt, windowMinutes: WEEK_MINUTES }] : [])
   ]);
+  // Limit-reset grants count like Codex's reset credits (operator 14/11 11:06 BKK); an answer without them leaves the last read.
+  if (usage.resetGrants) await repository.saveResetCredits(account.id, usage.resetGrants.reduce((sum, grant) => sum + grant.left, 0),
+    usage.resetGrants.map(({ kind, left, endsAt }) => ({ kind, left, endsAt })));
 }
 
 /** Whether the usage shows neither the 5-hour nor the weekly window used up. */

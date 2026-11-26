@@ -6,6 +6,7 @@ type IconRenderer = (props: LucideProps) => ReactNode;
 
 function makeMotionIcon(name: string, render: IconRenderer): LucideIcon {
   const Component = forwardRef<SVGSVGElement, LucideProps>(function MotionGeometricIcon(
+    // The underscore-named props are listed only to keep them out of ...props.
     {
       absoluteStrokeWidth: _absoluteStrokeWidth,
       children: _children,

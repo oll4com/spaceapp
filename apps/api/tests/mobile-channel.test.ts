@@ -1,23 +1,28 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, createPublicKey, createSign, generateKeyPairSync, randomBytes, sign, verify, type KeyObject } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import {
-  LINK_APP, MobileNoiseHandshake, decodeMobileFrame, decodeMobilePairQr, encodeMobileFrame, encodeMobilePairQr, mobileHandshakePrologue, mobileIntegrityRequestHash, mobilePairingPsk, noiseKeyPair, vaultBase64url as b64,
+  LINK_APP, MobileNoiseHandshake, signNousSuperior, type NousSuperiorStatement, decodeMobileFrame, decodeMobilePairQr, encodeMobileFrame, encodeMobilePairQr, mobileHandshakePrologue, mobileIntegrityRequestHash, mobilePairingPsk, noiseKeyPair, vaultBase64url as b64,
   type MobileFrame, type MobileNoiseTransport, type MobilePairQr
 } from "@space/contracts";
-import { InMemoryAppDeviceSessionRepository } from "@space/db";
+import { InMemoryAppDeviceSessionRepository, InMemoryGatewayRepository } from "@space/db";
 import { InMemorySpaceStore, SpaceEventBus } from "@space/runtime";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { persistAgentFile } from "../src/cli-agent-files.js";
 import { noteOperatorPaneInput } from "../src/queue-operator-grants.js";
 import { InstanceLinkError } from "../src/instance-link/client.js";
-import { instanceLinksFor } from "../src/instance-link/routes.js";
+import { pullLinkFile, pushLinkFile, type LinkCall } from "../src/instance-link/files.js";
+import { instanceLinksFor, registerInstanceLinks } from "../src/instance-link/routes.js";
+import { linkAiPathAllowed } from "../src/instance-link/ai-lend.js";
+import { createGatewayAdminService } from "../src/gateway/gateway-service.js";
+import { createConnectorCrypto } from "../src/dot-connectors.js";
+import Fastify from "fastify";
 import { cookieName, createCsrfToken, hashPassword, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
 import { MOBILE_APP_SIGNERS, verifyDecideKeyAttestation } from "../src/mobile/attestation.js";
@@ -145,6 +150,8 @@ describe("pairing a phone over the channel", () => {
   const eventBus = new SpaceEventBus();
   let app: Awaited<ReturnType<typeof createApp>>;
   const licenceKey = generateKeyPairSync("ed25519").privateKey;
+  // Plan step 6: this SpaceApp's Gateway address, free, so a linked SpaceApp's AI lending opens its stand-in there (4920 is a real Gateway here).
+  const gatewayPort = (() => { const probe = createServer(); return listenOn(probe).then((host) => new Promise<number>((resolve) => probe.close(() => resolve(Number(host.split(":")[1]))))); })();
   let services: Awaited<ReturnType<typeof cloud>>;
   const as = (token: string) => ({ cookie: `${cookieName}=${token}`, "x-space-csrf-token": createCsrfToken(token, secret)! });
   const person = as(signSession(operator, secret));
@@ -271,13 +278,16 @@ describe("pairing a phone over the channel", () => {
     await store.upsertUser(operator);
     await store.linkGoogleAccount(operator.id, { sub: "google-operator", email: operator.email });
     app = await createApp({ store, eventBus, config: getApiConfig({ SPACE_LOG_LEVEL: "silent", SPACE_CONNECTOR_KEY_FILE: join(dir, "connector.key"),
-      SPACE_MOBILE_RELAY_URL: services.relay, SPACE_MOBILE_PUSH_URL: services.push, SPACE_PLAY_INTEGRITY_SERVICE_ACCOUNT_FILE: join(dir, "play-integrity.json"), SPACE_ARTIFACT_ROOT: dir }),
+      SPACE_GATEWAY_URL: `http://127.0.0.1:${await gatewayPort}`, SPACE_MOBILE_RELAY_URL: services.relay, SPACE_MOBILE_PUSH_URL: services.push, SPACE_PLAY_INTEGRITY_SERVICE_ACCOUNT_FILE: join(dir, "play-integrity.json"), SPACE_ARTIFACT_ROOT: dir }),
       auth: { sessionSecret: secret, devLogin: false, secureCookies: false, googleClientId: clientId }, mailCopilotGoogle: google, mailCopilotGmailFetch: gmailFetch });
     await app.ready();
     await stepUp();
     expect((await app.inject({ method: "POST", url: "/api/mobile/instance", headers: person, payload: {} })).json()).toMatchObject({ configured: true });
   });
-  afterAll(async () => { await app?.close(); await services?.close(); });
+  afterAll(async () => {
+    try { await app?.close(); await services?.close(); }
+    finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 
   it("pairs with the code, held with read only and an URGENT card until the person allows it", async () => {
     const { closed, paired, phone: session } = await pair(await offer());
@@ -325,6 +335,10 @@ describe("pairing a phone over the channel", () => {
     const allowed = await connect(qr, device, { deviceId });
     expect(allowed.welcome.scopes).toEqual(["read", "act"]);
     expect((await allowed.phone.request("POST", "/api/notifications/read-all", {})).status).toBe(200);
+    // A paired phone registers its own FCM token, so the app opened again gets pushes with no other step (operator 17/11, nous_msg:e58363a2).
+    expect(await allowed.phone.request("POST", "/api/notifications/push-devices", { token: `fcm:${"p".repeat(40)}`, platform: "ANDROID", appVersion: "0.6.1" }))
+      .toMatchObject({ status: 200, body: { registered: true } });
+    expect(await allowed.phone.request("DELETE", "/api/notifications/push-devices", { token: `fcm:${"p".repeat(40)}` })).toMatchObject({ status: 200, body: { removed: true } });
     // An upload in chunk frames is one request once its last chunk is in; the app's X-Space-Client rides in the frame (plan 4TXfIZzj8ITW step 5).
     allowed.phone.send({ type: "req", header: { id: 90, m: "POST", p: "/api/notifications/read-all", h: { "content-type": "application/json", "x-space-client": "app=NOUS_ANDROID; v=0.2.22" }, more: true }, body: new TextEncoder().encode("{") });
     allowed.phone.send({ type: "chunk", header: { id: 90, seq: 1, more: false }, body: new TextEncoder().encode("}") });
@@ -373,6 +387,63 @@ describe("pairing a phone over the channel", () => {
     expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/revoke`, headers: person })).statusCode).toBe(200);
   });
 
+  // Space Link v2 (ADR-014 v2): the owner grants an allowed link manage, upgrade or nous on a computer, with a fresh step-up, an URGENT card and a
+  // mail; an older link client still parses the welcome (v1 scopes only) and learns the rest from a ctl scopes frame.
+  it("grants a link manage, upgrade or nous only from a computer with a fresh step-up, and says so", async () => {
+    const qr = await offer();
+    const { paired, phone: pairing, device } = await pair(qr, { deviceName: "SpaceApp grant", app: LINK_APP, appVersion: "1.3.0", platform: "server", wantScopes: ["read", "act"] });
+    pairing.ws.terminate();
+    const deviceId = paired!.deviceId as string, url = `/api/auth/devices/${deviceId}/scopes`;
+    const grant = (headers: Record<string, string>, scopes: unknown) => app.inject({ method: "POST", url, headers, payload: { scopes } });
+    // Held: no grant before Allow.
+    expect((await grant(person, ["manage"])).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/allow`, headers: person })).statusCode).toBe(200);
+    expect((await grant(phone, ["manage"])).json().error.code).toBe("LINK_GRANT_FROM_COMPUTER");
+    expect((await grant(person, ["nous"])).json().error.code).toBe("LINK_NOUS_NEEDS_MANAGE");
+    expect((await grant(person, ["decide"])).statusCode).toBe(400);
+    expect((await grant(person, ["read", "manage"])).statusCode).toBe(400);
+    // Another web session of the same person has not stepped up.
+    const unconfirmed = await grant(as(signSession(operator, secret, Date.now() - 5_000)), ["manage"]);
+    expect(unconfirmed.statusCode).toBe(401);
+    expect(unconfirmed.json().error).toMatchObject({ code: "STEP_UP_REQUIRED", details: { passwordUrl: "/api/auth/step-up/password" } });
+    const mailed = sentMail.length;
+    const granted = await grant(person, ["manage", "nous", "manage"]);
+    expect(granted.statusCode).toBe(200);
+    expect(granted.json().device.paired.scopes).toEqual(["read", "act", "manage", "nous"]);
+    expect(await audit("mobile.link.scopes_granted", deviceId)).toMatchObject({ metadata: { added: ["manage", "nous"], removed: [] } });
+    const open = (await app.inject({ method: "GET", url: "/api/notifications?status=OPEN", headers: person })).json().notifications as Array<Record<string, unknown>>;
+    expect(open).toContainEqual(expect.objectContaining({ kind: "MOBILE_LINK_GRANTED", severity: "URGENT", title: "SpaceApp grant may now manage, nous here", payload: { deviceId } }));
+    await vi.waitFor(() => expect(sentMail.slice(mailed).join("\n")).toContain("SpaceApp link granted: SpaceApp grant"));
+    // The welcome names only what an older client parses; the full list follows as a ctl frame.
+    const connected = await connect(qr, device, { deviceId, appVersion: "1.3.0" });
+    expect(connected.welcome.scopes).toEqual(["read", "act"]);
+    await vi.waitFor(() => expect(connected.phone.frames()).toContainEqual(expect.objectContaining({ type: "ctl", header: { op: "scopes", scopes: ["read", "act", "manage", "nous"] } })));
+    expect(await connected.phone.request("GET", "/api/auth/me")).toMatchObject({ status: 200 });
+    // manage (plan step 3): notifications, pane text and plans; the clipboard's other records and a capture of its dock stay private.
+    const refused = { status: 400, body: { error: { code: "MOBILE_BODY" } } };
+    expect(await connected.phone.request("GET", "/api/notifications")).toMatchObject({ status: 200 });
+    expect((await connected.phone.request("POST", "/api/control/v1/inspect", { section: "CONTENT" })).status).not.toBe(400);
+    expect(await connected.phone.request("POST", "/api/control/v1/inspect", { section: "CLIPBOARD" })).toMatchObject(refused);
+    expect(await connected.phone.request("POST", "/api/clipboard-items", { source: "MANUAL_NOTE", text: "x" })).toMatchObject(refused);
+    expect(await connected.phone.request("POST", "/api/control/v1/screenshot", { roomId: "room:a", dock: "clipboard" })).toMatchObject(refused);
+    expect(await connected.phone.request("GET", "/api/clipboard-items")).toMatchObject({ status: 403 });
+    expect(await connected.phone.request("GET", "/api/user-settings")).toMatchObject({ status: 403 });
+    // Security review 15/11: a link changes a plan by id, never another clipboard record (a copied password, a note).
+    const clip = async (payload: object) => (await app.inject({ method: "POST", url: "/api/clipboard-items", headers: person, payload })).json().id as string;
+    const note = await clip({ source: "MANUAL_NOTE", text: "private" });
+    expect(await connected.phone.request("PATCH", `/api/clipboard-items/${note}`, { completed: true })).toMatchObject({ status: 403 });
+    expect(await connected.phone.request("PATCH", `/api/clipboard-items/${note}/progress`, {})).toMatchObject({ status: 403 });
+    const plan = await clip({ source: "PLAN", text: "a plan", title: "Plan", minimumModel: "gpt-5.6-sol", minimumReasoning: "high" });
+    expect(await connected.phone.request("PATCH", `/api/clipboard-items/${plan}`, { completed: true })).toMatchObject({ status: 200 });
+    connected.phone.ws.terminate();
+    // Narrowing needs no step-up and raises no card.
+    const narrowed = await grant(as(signSession(operator, secret, Date.now() - 6_000)), []);
+    expect(narrowed.json().device.paired.scopes).toEqual(["read", "act"]);
+    expect(await audit("mobile.link.scopes_granted", deviceId)).toBeDefined();
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/revoke`, headers: person })).statusCode).toBe(200);
+    expect((await grant(person, ["manage"])).statusCode).toBe(404);
+  });
+
   // Space Link slice 2 (ADR-014): this SpaceApp's own client pairs with a listening SpaceApp (here itself, on a real socket) from the code
   // its person pastes, keeps the device key sealed, connects with IK once allowed, and forgets the key when the link is removed.
   it("links another SpaceApp from its pairing code, connects once allowed, and forgets the link when removed", async () => {
@@ -381,14 +452,14 @@ describe("pairing a phone over the channel", () => {
     expect((await app.inject({ method: "POST", url: "/api/instance-links", headers: phone, payload: { code } })).statusCode).toBe(403);
     expect((await app.inject({ method: "POST", url: "/api/instance-links", headers: person, payload: { code: "SPACEAPP-PAIR:1:bad" } })).statusCode).toBe(400);
     const linked = await app.inject({ method: "POST", url: "/api/instance-links", headers: person, payload: { code } });
-    expect(linked.json()).toMatchObject({ link: { id: expect.stringMatching(/^link:/), origins: [origin], scopes: ["read"], connected: false }, pending: ["read", "act"] });
+    expect(linked.json()).toMatchObject({ link: { id: expect.stringMatching(/^link:/), origins: [origin], scopes: ["read"], connected: false, sync: null }, pending: ["read", "act"] });
     expect(linked.body).not.toContain(code.slice(16));
     const { id, deviceId } = linked.json().link as { id: string; deviceId: string };
     expect(await cards()).toContainEqual(expect.objectContaining({ title: expect.stringMatching(/^New SpaceApp link: SpaceApp /), payload: { deviceId } }));
     expect(await audit("instance_link.paired", id)).toMatchObject({ metadata: { deviceId, pending: ["read", "act"] } });
     expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/allow`, headers: person })).statusCode).toBe(200);
     const checked = await app.inject({ method: "POST", url: `/api/instance-links/${id}/check`, headers: person });
-    expect(checked.json()).toMatchObject({ status: 200, scopes: ["read", "act"], link: { connected: true, scopes: ["read", "act"], lastSeenAt: expect.any(String) } });
+    expect(checked.json()).toMatchObject({ status: 200, scopes: ["read", "act"], link: { connected: true, scopes: ["read", "act"], lastSeenAt: expect.any(String), sync: null } });
     // A second check reuses the open session.
     expect((await app.inject({ method: "POST", url: `/api/instance-links/${id}/check`, headers: person })).json()).toMatchObject({ status: 200 });
     expect((await app.inject({ method: "GET", url: "/api/instance-links", headers: person })).json().links).toEqual([expect.objectContaining({ id, connected: true })]);
@@ -399,19 +470,29 @@ describe("pairing a phone over the channel", () => {
     expect(await links.request(operator.id, label, "GET", "/api/rooms")).toMatchObject({ status: 200, link: { id }, rttMs: expect.any(Number) });
     await expect(links.request(operator.id, id, "GET", "/api/space-vault/items")).rejects.toThrow(/answers only GET \/api\/auth\/me/);
     await expect(links.request(operator.id, id, "GET", "/api/control/v1/layout/../../space-vault/items")).rejects.toThrow(InstanceLinkError);
-    await expect(links.request(operator.id, "nope", "GET", "/api/rooms")).rejects.toThrow("No linked SpaceApp is nope.");
+    await expect(links.request(operator.id, "nope", "GET", "/api/rooms")).rejects.toThrow(`No linked SpaceApp is nope. Linked: ${label} (${id}).`);
+    // 14/11: its address's host name finds it too.
+    expect(await links.request(operator.id, new URL(origin).hostname, "GET", "/api/rooms")).toMatchObject({ status: 200, link: { id } });
+    // Slice 25: its URL or host:port too.
+    for (const ref of [`${origin}/`, new URL(origin).host]) expect(await links.request(operator.id, ref, "GET", "/api/rooms")).toMatchObject({ status: 200, link: { id } });
     await expect(links.request("user:other", id, "GET", "/api/rooms")).rejects.toThrow(InstanceLinkError);
-    // Λ7: each linked SpaceApp's own load, read through its link; a phone never reaches it.
+    // Λ7: each linked SpaceApp's own load, read through its link, with its row (nous_msg:766c70a6); a phone gets only the rows.
     expect((await app.inject({ method: "GET", url: "/api/instance-links/load?range=24h", headers: person })).json())
-      .toMatchObject({ instances: [{ link: { id }, error: null, load: { range: "24h", target: expect.any(Number) } }] });
+      .toMatchObject({ instances: [{ link: { id }, error: null, load: { range: "24h", target: expect.any(Number) },
+        row: { id, host: "127.0.0.1", answering: true, answeredAt: expect.any(String), parts: expect.any(Array) } }] });
     expect((await app.inject({ method: "GET", url: "/api/instance-links/load?range=1y", headers: person })).statusCode).toBe(400);
-    expect((await app.inject({ method: "GET", url: "/api/instance-links/load", headers: phone })).statusCode).toBe(403);
-    // Λ6: Nous's world reads each link's overview in the background, never waiting for it.
-    expect(await links.peers(operator.id)).toEqual([expect.objectContaining({ link: expect.objectContaining({ id }), at: null })]);
+    const phoneLoad = await app.inject({ method: "GET", url: "/api/instance-links/load", headers: phone });
+    expect(phoneLoad.json()).toEqual({ instances: [{ row: expect.objectContaining({ id, answering: true }) }] });
+    expect(phoneLoad.body).not.toContain(origin);
+    // Λ6: Nous's world reads each link's overview in the background, never waiting for it (EXT-C-F15: a world build above may have finished it under load).
+    expect(await links.peers(operator.id)).toEqual([expect.objectContaining({ link: expect.objectContaining({ id }), at: expect.toBeOneOf([null, expect.any(String)]) })]);
     expect(await vi.waitFor(async () => { const [peer] = await links.peers(operator.id); expect(peer!.at).not.toBeNull(); return peer; }))
       .toMatchObject({ error: null, overview: { live: { agents: expect.any(Object) }, plans: expect.any(Array) } });
-    expect(await links.request(operator.id, id, "POST", "/api/control/v1/commands", { roomId: "room:a", requestId: "r2", userExplicitlyAuthorized: true,
-      actions: [{ kind: "pane", operation: "close", target: {} }] })).toMatchObject({ status: 400, body: { error: { code: "MOBILE_BODY" } } });
+    // An approval B would refuse (MOBILE_BODY) is refused here, never sent (plan clipboard:1NF6u6gcCwtj step 4); its act then goes.
+    await expect(links.request(operator.id, id, "POST", "/api/control/v1/commands", { roomId: "room:a", requestId: "r2", userExplicitlyAuthorized: true,
+      actions: [{ kind: "pane", operation: "close", target: {} }] })).rejects.toThrow(/^Not sent: .*cannot approve for this SpaceApp's operator/);
+    const actStatus = (await links.request(operator.id, id, "POST", "/api/control/v1/commands", { roomId: "room:a", requestId: "r2",
+      actions: [{ kind: "pane", operation: "close", target: {} }] })).status;
     // Λ4: that act is audited on both sides under one trace id; the reads above are not. History lists this side's rows.
     const acted = await vi.waitFor(async () => {
       const rows = (await store.listAuditEvents()).filter((event) => event.action === "instance_link.request");
@@ -421,8 +502,8 @@ describe("pairing a phone over the channel", () => {
     });
     const out = acted.find((row) => row.targetType === "instance_link")!;
     expect(acted).toHaveLength(2);
-    expect(out).toMatchObject({ targetId: id, traceId: expect.stringMatching(/^lnk:/), metadata: { via: "link-out", method: "POST", path: "/api/control/v1/commands", status: 400 } });
-    expect(acted.find((row) => row.targetType === "app_device")).toMatchObject({ targetId: deviceId, traceId: out.traceId, metadata: { via: "link", status: 400 } });
+    expect(out).toMatchObject({ targetId: id, traceId: expect.stringMatching(/^lnk:/), metadata: { via: "link-out", method: "POST", path: "/api/control/v1/commands", status: actStatus } });
+    expect(acted.find((row) => row.targetType === "app_device")).toMatchObject({ targetId: deviceId, traceId: out.traceId, metadata: { via: "link", status: actStatus } });
     expect((await app.inject({ method: "GET", url: `/api/instance-links/${id}/history`, headers: person })).json().events).toEqual([
       expect.objectContaining({ action: "instance_link.request", requestId: out.traceId }), expect.objectContaining({ action: "instance_link.paired" })]);
     expect((await app.inject({ method: "GET", url: "/api/instance-links/link:none/history", headers: person })).statusCode).toBe(404);
@@ -461,6 +542,282 @@ describe("pairing a phone over the channel", () => {
     expect((await app.inject({ method: "POST", url: `/api/instance-links/${id}/check`, headers: person })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/revoke`, headers: person })).statusCode).toBe(200);
   });
+
+  // Space Link v2 step 5: files both ways through a manage link, in Range and chunk pieces with their SHA-256; a link opens screenshots, a phone does not.
+  it("pulls an Agent File and pushes a file through a manage link, resumably, with their SHA-256", async () => {
+    const listening = app.server.listening ? (app.server.address() as AddressInfo).port : Number(new URL(await app.listen({ port: 0, host: "127.0.0.1" })).port);
+    const code = encodeMobilePairQr({ ...(await offer()), u: [`http://127.0.0.1:${listening}`], r: null });
+    const { id, deviceId } = (await app.inject({ method: "POST", url: "/api/instance-links", headers: person, payload: { code } })).json().link as { id: string; deviceId: string };
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/allow`, headers: person })).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/scopes`, headers: person, payload: { scopes: ["manage"] } })).statusCode).toBe(200);
+    const links = instanceLinksFor(store)!;
+    const call: LinkCall = (method, path, body, headers) => links.request(operator.id, id, method, path, body, headers);
+    const room = store.createRoom({ name: "Link files", initialPaneCount: 0 }, undefined, operator.id);
+    const bytes = randomBytes(40 * 1024 * 1024);
+    writeFileSync(join(dir, "staged-big.bin"), bytes);
+    const { artifact } = await persistAgentFile({ store, artifactRoot: dir, roomId: room.id, paneId: null, cliSessionId: null, runtimeId: "user", originalFilename: "big.bin",
+      declaredMimeType: "application/octet-stream", sourcePath: join(dir, "staged-big.bin"), traceId: "trace:link-files", source: "AGENT_OUTPUT" });
+    const sha = (data: Buffer) => createHash("sha256").update(data).digest("hex");
+    const target = join(dir, "pulled", "big.bin");
+    // A pull cut off after its first 5 MiB goes on from there (two 32 MiB Range pieces at most), then checks the SHA-256.
+    mkdirSync(join(dir, "pulled"), { recursive: true });
+    writeFileSync(`${target}.part`, bytes.subarray(0, 5 * 1024 * 1024));
+    expect(await pullLinkFile(call, { artifactId: artifact.id }, () => ({ absolute: target, shown: "nous/big.bin" })))
+      .toMatchObject({ size: bytes.length, sha256: sha(bytes), resumedFrom: 5 * 1024 * 1024, already: false });
+    expect(sha(readFileSync(target))).toBe(sha(bytes));
+    expect(await pullLinkFile(call, { artifactId: artifact.id }, () => ({ absolute: target, shown: "nous/big.bin" }))).toMatchObject({ already: true });
+    // A push in 16 MiB pieces lands in the room's Agent Files; asked again it answers the same Agent File.
+    const pushed = randomBytes(20 * 1024 * 1024 + 7);
+    writeFileSync(join(dir, "push.bin"), pushed);
+    const sent = await pushLinkFile(call, { file: join(dir, "push.bin"), name: "push.bin" }, room.id, "From A");
+    expect(sent).toMatchObject({ size: pushed.length, sha256: sha(pushed) });
+    expect(store.getArtifact(sent.artifactId)).toMatchObject({ roomId: room.id, byteSize: pushed.length, metadata: expect.objectContaining({ folder: "From A" }) });
+    expect((await pushLinkFile(call, { file: join(dir, "push.bin"), name: "push.bin" }, room.id, "From A")).artifactId).toBe(sent.artifactId);
+    // A push cut off after 5 MiB (the chunk route holds them, under the upload id pushLinkFile derives) goes on from byte 5 MiB, not from 0.
+    const cut = randomBytes(20 * 1024 * 1024 + 3);
+    writeFileSync(join(dir, "cut.bin"), cut);
+    const heldBytes = 5 * 1024 * 1024;
+    const cutUploadId = createHash("sha256").update(`${sha(cut)}:${room.id}`).digest("base64url").slice(0, 43);
+    expect(await call("POST", `/api/rooms/${room.id}/agent-files/chunks?${new URLSearchParams({ uploadId: cutUploadId, offset: "0", total: String(cut.length), name: "cut.bin", sha256: sha(cut) })}`,
+      new Uint8Array(cut.subarray(0, heldBytes)))).toMatchObject({ status: 200, body: { received: heldBytes } });
+    const resumed = await pushLinkFile(call, { file: join(dir, "cut.bin"), name: "cut.bin" }, room.id);
+    expect(resumed).toMatchObject({ size: cut.length, sha256: sha(cut), resumedFrom: heldBytes });
+    expect(store.getArtifact(resumed.artifactId)).toMatchObject({ roomId: room.id, byteSize: cut.length, sha256: sha(cut) });
+    // A wrong SHA-256 files nothing.
+    const bad = await call("POST", `/api/rooms/${room.id}/agent-files/chunks?uploadId=badsha001&offset=0&total=3&name=x.txt&sha256=${"0".repeat(64)}`, new Uint8Array([1, 2, 3]));
+    expect(bad).toMatchObject({ status: 422, body: { error: { code: "SHA256_MISMATCH" } } });
+    // A screenshot by id: a link reads it, a phone never does.
+    const shot = store.createArtifact({ roomId: room.id, kind: "SCREENSHOT", mimeType: "text/plain", storageUri: "space-artifact://browser-evidence/fixture/shot.txt",
+      sha256: "a".repeat(64), byteSize: 4, metadata: {}, expiresAt: null }).artifact;
+    expect(await call("GET", `/api/artifacts/${shot.id}/metadata`)).toMatchObject({ status: 200, body: { artifact: { id: shot.id } } });
+    const qr = await offer();
+    const { paired, phone: pairing, device } = await pair(qr);
+    pairing.ws.terminate();
+    const { phone } = await connect(qr, device, { deviceId: paired!.deviceId });
+    expect(await phone.request("GET", `/api/artifacts/${shot.id}/metadata`)).toMatchObject({ status: 403 });
+    phone.ws.terminate();
+    expect((await app.inject({ method: "DELETE", url: `/api/instance-links/${id}`, headers: person })).json()).toEqual({ ok: true });
+    // Both devices go, so the later tests keep their room under the owner's paired-device cap.
+    for (const one of [deviceId, paired!.deviceId]) expect((await app.inject({ method: "POST", url: `/api/auth/devices/${one}/revoke`, headers: person })).statusCode).toBe(200);
+  }, 120_000);
+
+  // Space Link v2 step 6: a linked SpaceApp (A, its own app and Gateway here) lends this one (B) its Claude accounts. B's panes call B's
+  // Gateway address with B's keys; the request crosses the link and A's Gateway answers under the link's own key, which never reaches B.
+  it("lends only the Gateway's model routes, on normal paths", () => {
+    for (const path of ["/v1/messages", "/v1/models/x?y=1", "/backend-api/codex/responses", "/backend-api/transcribe", "/v1/chat/completions"]) expect(linkAiPathAllowed("POST", path)).toBe(true);
+    for (const path of ["/v1/../__space-gateway/status", "/v1/%2e%2e/pools", "/v1beta/models", "//evil/v1/messages", "/v1\\..\\pools", "/pools", "/v1/messages#x", "v1/messages"])
+      expect(linkAiPathAllowed("POST", path)).toBe(false);
+    expect(linkAiPathAllowed("DELETE", "/v1/messages")).toBe(false);
+  });
+
+  it("lends AI accounts over a link: streams through A's Gateway under A's key, cancels, and refuses without the grant, a key or the route", async () => {
+    const seen: Array<{ url: string; auth: string; body: string }> = [];
+    let hungClosed = false;
+    const upstream = createServer((req, res) => {
+      const parts: Buffer[] = [];
+      req.on("data", (part: Buffer) => parts.push(part)).on("end", () => {
+        seen.push({ url: req.url!, auth: String(req.headers.authorization), body: Buffer.concat(parts).toString() });
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        if (req.url!.includes("hang")) { res.write("event: ping\n\n"); res.on("close", () => { hungClosed = true; }); return; }
+        res.write("event: message_start\n\n");
+        setTimeout(() => res.end("event: message_stop\n\n"), 20);
+      });
+    });
+    const upstreamUrl = `http://${await listenOn(upstream)}`;
+    const lender = { id: "user:lender", email: "lender@example.test", role: "ADMIN" as const };
+    const aStore = new InMemorySpaceStore();
+    await aStore.upsertUser(lender);
+    const aGateway = createGatewayAdminService({ repository: new InMemoryGatewayRepository(), gatewayUrl: upstreamUrl });
+    const a = Fastify();
+    a.addHook("onRequest", async (request) => { request.user = lender as never; });
+    registerInstanceLinks(a, { store: aStore, crypto: createConnectorCrypto({ key: randomBytes(32).toString("base64"), legacySecrets: [] }), databaseUrl: null,
+      routeOptions: {}, assertPerson: () => undefined, version: "1.0.0", gateway: { service: () => aGateway, url: upstreamUrl } });
+    const listening = app.server.listening ? (app.server.address() as AddressInfo).port : Number(new URL(await app.listen({ port: 0, host: "127.0.0.1" })).port);
+    const code = encodeMobilePairQr({ ...(await offer()), u: [`http://127.0.0.1:${listening}`], r: null });
+    const { id, deviceId } = (await a.inject({ method: "POST", url: "/api/instance-links", payload: { code } })).json().link as { id: string; deviceId: string };
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/allow`, headers: person })).statusCode).toBe(200);
+    const lend = (on: boolean) => a.inject({ method: "POST", url: `/api/instance-links/${id}/ai`, payload: { on } }).then((reply) => reply.json());
+    // Without B's AI accounts grant: A's key is made and B refuses it, by name.
+    expect(await lend(true)).toMatchObject({ ai: true, aiError: expect.stringContaining("grants AI accounts") });
+    expect((await a.inject({ method: "GET", url: "/api/instance-links" })).json().links).toEqual([expect.objectContaining({ id, ai: true, aiError: expect.any(String) })]);
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/scopes`, headers: person, payload: { scopes: ["manage", "ai"] } })).statusCode).toBe(200);
+    // The open session reads its row again within 10 s (channel.ts), so the grant reaches it without a reconnect.
+    await vi.waitFor(async () => expect(await lend(true)).toEqual({ ai: true, aiError: null }), { timeout: 15_000, interval: 1_000 });
+    const aKey = (await aGateway.listApiKeys()).data.find((key) => key.name.endsWith(`(${id})`))!;
+    expect(aKey).toMatchObject({ isActive: true, name: expect.stringMatching(/^Space Link AI: /) });
+
+    const bKey = (await app.inject({ method: "POST", url: "/api/admin/gateway/keys", headers: person, payload: { name: "B pane" } })).json().plainKey as string;
+    const gateway = `http://127.0.0.1:${await gatewayPort}`;
+    const ask = (path: string, key: string | null, init: RequestInit = {}) => fetch(`${gateway}${path}`, { method: "POST", ...init,
+      headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", ...(key ? { "x-api-key": key } : {}) }, body: init.method === "GET" ? undefined : '{"model":"m"}' });
+    const answer = await ask("/v1/messages", bKey);
+    expect(answer.status).toBe(200);
+    expect(answer.headers.get("content-type")).toBe("text/event-stream");
+    expect(await answer.text()).toBe("event: message_start\n\nevent: message_stop\n\n");
+    expect(seen.at(-1)).toMatchObject({ url: "/v1/messages", body: '{"model":"m"}', auth: expect.stringMatching(/^Bearer sk-sgw-/) });
+    expect(seen.at(-1)!.auth).not.toContain(bKey);
+    expect((await ask("/v1/messages", "sk-sgw-notakeyofthisspaceapp0000000000")).status).toBe(401);
+    expect((await ask("/v1/messages", null)).status).toBe(401);
+    // Step 4 (plan clipboard:TcX66vjNuZDv): every Gateway model route crosses (Codex, Copilot, Antigravity), never its admin or status routes.
+    expect((await ask("/backend-api/codex/responses", bKey, { headers: { "content-type": "application/json", "user-agent": "codex_cli_rs/1", "x-api-key": bKey } })).status).toBe(200);
+    expect(seen.at(-1)).toMatchObject({ url: "/backend-api/codex/responses" });
+    expect((await ask("/__space-gateway/status", bKey, { method: "GET" })).status).toBe(404);
+    expect(seen).toHaveLength(2);
+    // A pane that stops reading cancels the request on A's Gateway too.
+    const stop = new AbortController();
+    const hung = await ask("/v1/messages?hang=1", bKey, { signal: stop.signal });
+    expect(hung.status).toBe(200);
+    stop.abort();
+    await vi.waitFor(() => expect(hungClosed).toBe(true));
+    // Off: A's key is deactivated, never deleted, and B's stand-in closes with the link session.
+    expect(await lend(false)).toEqual({ ai: false, aiError: null });
+    expect((await aGateway.listApiKeys()).data.find((key) => key.id === aKey.id)).toMatchObject({ isActive: false });
+    await vi.waitFor(async () => expect(await ask("/v1/messages", bKey).then(() => "open", () => "closed")).toBe("closed"));
+    expect(await aStore.listAuditEvents()).toContainEqual(expect.objectContaining({ action: "instance_link.ai_lending", targetId: id, metadata: { on: false } }));
+    // Operator 22/11: Nous switches it through the same code (space_link_lend), audited as Nous's; an unknown link is refused by name.
+    const nous = instanceLinksFor(aStore)!;
+    expect(await nous.lend(lender.id, id, true)).toMatchObject({ ai: true, link: expect.objectContaining({ id }) });
+    expect((await aGateway.listApiKeys()).data.find((key) => key.id === aKey.id)).toMatchObject({ isActive: true });
+    expect(await nous.lend(lender.id, id, false)).toMatchObject({ ai: false, aiError: null });
+    expect((await aGateway.listApiKeys()).data.find((key) => key.id === aKey.id)).toMatchObject({ isActive: false });
+    expect(await aStore.listAuditEvents()).toContainEqual(expect.objectContaining({ action: "instance_link.ai_lending", targetId: id, metadata: { on: false, via: "nous" } }));
+    await expect(nous.lend(lender.id, "link:nope", true)).rejects.toThrow(/No linked SpaceApp is link:nope/);
+
+    // Removing a lending link deactivates its key too (security review 15/11).
+    expect(await lend(true)).toMatchObject({ ai: true });
+    expect((await a.inject({ method: "DELETE", url: `/api/instance-links/${id}` })).json()).toEqual({ ok: true });
+    expect((await aGateway.listApiKeys()).data.find((key) => key.id === aKey.id)).toMatchObject({ isActive: false });
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/revoke`, headers: person })).statusCode).toBe(200);
+    await a.close();
+    upstream.closeAllConnections();
+    upstream.close();
+  }, 60_000);
+
+  // Space Link v2 step 9a: a link holding nous names its Nous superior, signed; one superior; a chain back to this SpaceApp is refused.
+  it("takes one signed Nous superior over a nous link, refuses a second and every cycle, and shows it on the Remote mark", async () => {
+    const qr = await offer();
+    const { paired, phone: pairing, device } = await pair(qr, { deviceName: "SpaceApp boss", app: LINK_APP, appVersion: "1.3.0", platform: "server", wantScopes: ["read", "act"] });
+    pairing.ws.terminate();
+    const deviceId = paired!.deviceId as string;
+    const scopes = (id: string, list: string[]) => app.inject({ method: "POST", url: `/api/auth/devices/${id}/scopes`, headers: person, payload: { scopes: list } });
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/allow`, headers: person })).statusCode).toBe(200);
+    expect((await scopes(deviceId, ["manage", "nous"])).statusCode).toBe(200);
+    const connected = await connect(qr, device, { deviceId, appVersion: "1.3.0" });
+    await vi.waitFor(() => expect(connected.phone.frames()).toContainEqual(expect.objectContaining({ type: "ctl", header: { op: "scopes", scopes: ["read", "act", "manage", "nous"] } })));
+    const jwk = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" }) as { d: string; x: string };
+    const boss = { privateKey: b64.decode(jwk.d), publicKey: b64.decode(jwk.x) };
+    const statement = (chain: string[], extra: Partial<NousSuperiorStatement> = {}): NousSuperiorStatement =>
+      ({ v: 1, to: qr.i, device: deviceId, identity: jwk.x, label: "SpaceApp boss", host: "boss", chain, ...extra });
+    const send = (body: NousSuperiorStatement, signature = signNousSuperior(body, boss.privateKey)) => connected.phone.request("POST", "/api/nous/link/superior", { statement: body, signature });
+    // Signed for another SpaceApp, another link, or by another key: refused.
+    expect(await send(statement([], { device: "app_device:other" }))).toMatchObject({ status: 403, body: { error: { code: "NOUS_SUPERIOR_SIGNATURE" } } });
+    expect(await send(statement([]), signNousSuperior(statement([]), randomBytes(32)))).toMatchObject({ status: 403, body: { error: { code: "NOUS_SUPERIOR_SIGNATURE" } } });
+    // Step 9b: commands come only from the superior.
+    const command = (text: string, clientId: string) => connected.phone.request("POST", "/api/nous/link/commands", { text, clientId });
+    expect(await command("Report the disk use.", "order-0000")).toMatchObject({ status: 403, body: { error: { code: "NOUS_NOT_SUPERIOR" } } });
+    expect(await connected.phone.request("PATCH", "/api/nous/link/settings", { enabled: false })).toMatchObject({ status: 403, body: { error: { code: "NOUS_NOT_SUPERIOR" } } });
+    const other = b64.encode(randomBytes(32));
+    expect(await send(statement([other]))).toMatchObject({ status: 200, body: { superior: { identityPublic: jwk.x, chain: [other], since: expect.any(String) } } });
+    expect(await audit("nous.link.superior_set", deviceId)).toBeDefined();
+    expect((await app.inject({ method: "GET", url: "/api/auth/devices/live", headers: person })).json().superior)
+      .toEqual({ deviceId, label: "SpaceApp boss", host: "boss", since: expect.any(String), scopes: ["read", "act", "manage", "nous"] });
+    // The Nous app's mark reads the same superior from its own route (nuHo1D4ia1UA).
+    expect((await app.inject({ method: "GET", url: "/api/instance-links/status", headers: person })).json().superior)
+      .toEqual({ deviceId, label: "SpaceApp boss", host: "boss", since: expect.any(String), scopes: ["read", "act", "manage", "nous"] });
+    // The superior's command is an operator message here under the phone rule, stored once per client id, and its report comes back.
+    const order = await command("Report the disk use.", "order-0001") as { status: number; body: { message: { id: string } } };
+    expect(order).toMatchObject({ status: 202, body: { message: { kind: "OPERATOR", content: "Report the disk use.", meta: { person: false, superior: { device: deviceId }, mobile: { device: deviceId } } } } });
+    expect(((await command("Report the disk use.", "order-0001")) as typeof order).body.message.id).toBe(order.body.message.id);
+    expect(await connected.phone.request("GET", "/api/nous/link/reports"))
+      .toMatchObject({ status: 200, body: { reports: [{ messageId: order.body.message.id, text: "Report the disk use.", status: expect.any(String) }] } });
+    // Step 9d: the superior sets start/stop, turns an hour, the goal loop, the spend mode and the goals; never a grant or allowance.
+    expect(await connected.phone.request("PATCH", "/api/nous/link/settings", { enabled: false, maxTurnsPerHour: 7, lowSpend: { mode: "ON" }, goals: { loop: false } }))
+      .toMatchObject({ status: 200, body: { settings: { enabled: false, maxTurnsPerHour: 7, lowSpend: { mode: "ON" }, goals: { loop: false } } } });
+    for (const grant of [{ mayPromote: true }, { alwaysApprove: [] }, { lowSpend: { mode: "OFF", maxTurnsPerHour: 120 } }, { shell: true }]) {
+      expect(await connected.phone.request("PATCH", "/api/nous/link/settings", grant)).toMatchObject({ status: 422 });
+    }
+    expect(await connected.phone.request("POST", "/api/nous/stop", {})).toMatchObject({ status: 200 });
+    const goal = await connected.phone.request("POST", "/api/nous/link/goals", { text: "Keep the disk under 80 %." }) as { status: number; body: { goal: { id: string } } };
+    expect(goal).toMatchObject({ status: 201, body: { goal: { text: "Keep the disk under 80 %.", status: "ACTIVE" } } });
+    expect(await connected.phone.request("PATCH", `/api/nous/link/goals/${goal.body.goal.id}`, { status: "PAUSED" })).toMatchObject({ status: 200, body: { goal: { status: "PAUSED" } } });
+    expect(await connected.phone.request("POST", "/api/nous/link/goals/reorder", { ids: [goal.body.goal.id] })).toMatchObject({ status: 200 });
+    // This SpaceApp's own session is not a link: the link routes refuse it.
+    expect((await app.inject({ method: "PATCH", url: "/api/nous/link/settings", headers: person, payload: { enabled: true } })).json().error.code).toBe("NOUS_SUPERIOR_LINK_ONLY");
+    // One superior: a second link gets nous only after the first gives it up.
+    const second = await offer();
+    const { paired: paired2, phone: pairing2 } = await pair(second, { deviceName: "SpaceApp rival", app: LINK_APP, appVersion: "1.3.0", platform: "server", wantScopes: ["read", "act"] });
+    pairing2.ws.terminate();
+    const rival = paired2!.deviceId as string;
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${rival}/allow`, headers: person })).statusCode).toBe(200);
+    expect((await scopes(rival, ["manage", "nous"])).json().error.code).toBe("NOUS_LINK_ONE_SUPERIOR");
+    // Linking from here a SpaceApp whose Nous is above this one's would close a loop.
+    const upward = encodeMobilePairQr({ ...(await offer()), i: jwk.x, u: ["http://127.0.0.1:1"], r: null });
+    expect((await app.inject({ method: "POST", url: "/api/instance-links", headers: person, payload: { code: upward } })).json().error.code).toBe("NOUS_LINK_CYCLE");
+    // A chain that holds this SpaceApp: refused, and the link keeps manage without nous (and without the superior).
+    expect(await send(statement([other, qr.i]))).toMatchObject({ status: 409, body: { error: { code: "NOUS_LINK_CYCLE" } } });
+    expect(await audit("nous.link.cycle_refused", deviceId)).toBeDefined();
+    expect((await app.inject({ method: "GET", url: "/api/auth/devices/live", headers: person })).json().superior).toBeNull();
+    expect((await app.inject({ method: "GET", url: "/api/instance-links/status", headers: person })).json().superior).toBeNull();
+    expect((await scopes(rival, ["manage", "nous"])).statusCode).toBe(200);
+    connected.phone.ws.terminate();
+    for (const id of [deviceId, rival]) expect((await app.inject({ method: "POST", url: `/api/auth/devices/${id}/revoke`, headers: person })).statusCode).toBe(200);
+
+    // This SpaceApp linked to itself with nous: its own announce is a cycle, refused, and Settings says so.
+    const listening = app.server.listening ? (app.server.address() as AddressInfo).port : Number(new URL(await app.listen({ port: 0, host: "127.0.0.1" })).port);
+    const code = encodeMobilePairQr({ ...(await offer()), u: [`http://127.0.0.1:${listening}`], r: null });
+    const { id, deviceId: self } = (await app.inject({ method: "POST", url: "/api/instance-links", headers: person, payload: { code } })).json().link as { id: string; deviceId: string };
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${self}/allow`, headers: person })).statusCode).toBe(200);
+    expect((await scopes(self, ["manage", "nous"])).statusCode).toBe(200);
+    await vi.waitFor(async () => expect((await app.inject({ method: "POST", url: `/api/instance-links/${id}/sync`, headers: person })).json().link.nousError)
+      .toContain("answer to itself"), { timeout: 15_000, interval: 500 });
+    expect(await audit("nous.link.cycle_refused", self)).toBeDefined();
+    expect((await app.inject({ method: "GET", url: "/api/auth/devices", headers: person })).json().devices.find((row: { id: string }) => row.id === self).paired.scopes).toEqual(["read", "act", "manage"]);
+    expect((await app.inject({ method: "DELETE", url: `/api/instance-links/${id}`, headers: person })).json()).toEqual({ ok: true });
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${self}/revoke`, headers: person })).statusCode).toBe(200);
+  }, 60_000);
+
+  // Space Link v2 step 9c: A's person answers B's RELEASE decision; it goes signed by A's identity key over the decision as A showed it.
+  it("lets the superior's person answer a linked Nous's decision under the superior's signature, never its Nous", async () => {
+    const boss = { id: "user:boss", email: "boss@example.test", role: "ADMIN" as const };
+    const aStore = new InMemorySpaceStore();
+    await aStore.upsertUser(boss);
+    const jwk = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" }) as { d: string; x: string };
+    let steppedUp = false;
+    const a = Fastify();
+    a.addHook("onRequest", async (request) => { request.user = boss as never; });
+    registerInstanceLinks(a, { store: aStore, crypto: createConnectorCrypto({ key: randomBytes(32).toString("base64"), legacySecrets: [] }), databaseUrl: null,
+      routeOptions: {}, assertPerson: () => undefined, version: "1.0.0", stepUp: { fresh: () => steppedUp },
+      nous: { identity: async () => ({ privateKey: b64.decode(jwk.d), publicKey: b64.decode(jwk.x) }), chain: async () => [] } });
+    const listening = app.server.listening ? (app.server.address() as AddressInfo).port : Number(new URL(await app.listen({ port: 0, host: "127.0.0.1" })).port);
+    const code = encodeMobilePairQr({ ...(await offer()), u: [`http://127.0.0.1:${listening}`], r: null });
+    const { id, deviceId } = (await a.inject({ method: "POST", url: "/api/instance-links", payload: { code } })).json().link as { id: string; deviceId: string };
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/allow`, headers: person })).statusCode).toBe(200);
+    // The session opens before the grant, so nous arrives as a live scopes frame, which A keeps (its list and send preflight read it).
+    await a.inject({ method: "POST", url: `/api/instance-links/${id}/sync` });
+    expect((await a.inject({ method: "GET", url: "/api/instance-links" })).json().links[0].scopes).not.toContain("nous");
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/scopes`, headers: person, payload: { scopes: ["manage", "nous"] } })).statusCode).toBe(200);
+    const asked = (await app.inject({ method: "POST", url: "/api/nous/decisions/vault-broker-reinstall", headers: person, payload: { reason: "Link proof." } })).json().decision as { id: string; title: string };
+    // The open session learns nous within 10 s; then A names itself superior and reads B's open decisions on the same pass.
+    const linked = async () => { await a.inject({ method: "POST", url: `/api/instance-links/${id}/sync` }); return (await a.inject({ method: "GET", url: "/api/instance-links/decisions" })).json().decisions; };
+    await vi.waitFor(async () => expect(await linked()).toContainEqual({ linkId: id, label: expect.any(String), decision: expect.objectContaining({ id: asked.id, category: "RELEASE", title: asked.title }) }),
+      { timeout: 15_000, interval: 1_000 });
+    expect((await a.inject({ method: "GET", url: "/api/instance-links" })).json().links[0].scopes).toEqual(expect.arrayContaining(["manage", "nous"]));
+    // A's Nous never sends the signed answer: space_remote refuses the route.
+    await expect(instanceLinksFor(aStore)!.request(boss.id, id, "POST", `/api/nous/link/decisions/${asked.id}/answer`, {})).rejects.toThrow("answers only");
+    // A's person declines (Approve would run the reinstall); B records it as its superior's person's answer, and the first answer wins.
+    const answer = (input: object) => a.inject({ method: "POST", url: `/api/instance-links/${id}/decisions/${asked.id}/answer`, payload: input });
+    expect((await answer({ answer: "ANSWER" })).statusCode).toBe(400);
+    // Approving or answering from above needs A's person's own step-up (plan step 9); declining does not.
+    const unconfirmed = await answer({ answer: "APPROVE" });
+    expect(unconfirmed.statusCode).toBe(401);
+    expect(unconfirmed.json().error).toMatchObject({ code: "STEP_UP_REQUIRED", details: { passwordUrl: "/api/auth/step-up/password" } });
+    expect((await answer({ answer: "DECLINE" })).json()).toMatchObject({ decision: { id: asked.id, status: "DECLINED", answer: expect.stringContaining("superior SpaceApp's person") } });
+    steppedUp = true;
+    expect((await answer({ answer: "APPROVE" })).json().error.code).toBe("NOT_FOUND");
+    expect(await linked()).toEqual([]);
+    expect((await app.inject({ method: "POST", url: `/api/auth/devices/${deviceId}/revoke`, headers: person })).statusCode).toBe(200);
+    await a.close();
+  }, 60_000);
 
   // Nous Pro phase 2b (plan clipboard:kTV3y2lwO-99 step 6, design §5, §8.1): a phone behind NAT pairs and connects through the instance's
   // outbound relay listener, bound to its rendezvous id, and a Pro phone's push handle is woken with an opaque id only.
@@ -816,3 +1173,17 @@ describe("pairing a phone over the channel", () => {
     expect((await audit("mobile.instance.rotated"))!.metadata).toMatchObject({ compromised: true, revokedDevices: expect.arrayContaining([deviceId]) });
   });
 }, 300_000);
+
+// Security review 15/11: A refuses a link's model request at its first frame, before holding its body, unless it lends to that link and the route is a model route.
+it("A's link server accepts a request only while it lends and only on a model route", async () => {
+  const { linkAiServe } = await import("../src/instance-link/ai-lend.js");
+  let lending = false;
+  const serve = linkAiServe("http://127.0.0.1:1", async () => null, () => lending);
+  expect(serve.accepts?.({ m: "POST", p: "/v1/messages", h: {} })).toBe(false);
+  lending = true;
+  expect(serve.accepts?.({ m: "POST", p: "/v1/messages", h: {} })).toBe(true);
+  expect(serve.accepts?.({ m: "GET", p: "/__space-gateway/status", h: {} })).toBe(false);
+  // One way (ADR-014 v2): B reaches no Nous or Space route on its superior, even while A lends.
+  for (const p of ["/api/nous/link/commands", "/api/nous/link/settings", "/api/nous/link/decisions", "/api/nous/messages"]) expect(serve.accepts?.({ m: "POST", p, h: {} })).toBe(false);
+});
+

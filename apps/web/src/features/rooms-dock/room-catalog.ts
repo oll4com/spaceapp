@@ -53,5 +53,5 @@ export async function ensureProjectFolder(targetPath: string) {
   try {
     // The shared client attaches the CSRF token that this mutation requires.
     await api.ensureProject({ path: targetPath.trim() });
-  } catch {}
+  } catch { /* Best effort: the room still saves when the folder cannot be created. */ }
 }

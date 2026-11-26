@@ -66,7 +66,7 @@ export async function readableTaskImages(paths: readonly string[], scope: TaskIm
       const real = await realpath(path);
       const realRoots = await Promise.all(roots.map((root) => realpath(root).catch(() => null)));
       if (realRoots.some((root) => root && pathInside(root, real))) readable.push(real);
-    } catch {}
+    } catch { /* a missing or unreadable image is skipped */ }
   }
   return readable;
 }

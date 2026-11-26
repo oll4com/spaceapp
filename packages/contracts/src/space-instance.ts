@@ -89,20 +89,21 @@ export const instanceBackgroundJobs = [
 ] as const;
 export type InstanceBackgroundJob = (typeof instanceBackgroundJobs)[number];
 
+const listedJobs = (value: string | undefined) => value?.split(",").map((entry) => entry.trim()).filter(Boolean) ?? [];
+
 /**
  * Stable runs every job. Dev runs none of them unless the operator lists the
  * job in SPACE_INSTANCE_ENABLED_JOBS (comma separated) to test it on purpose.
+ * SPACE_INSTANCE_DISABLED_JOBS turns a job off on any instance, stable included (17/11, spaceapp-hz: a stable-mode clone
+ * whose copied campaigns must never send again once its reset mail gets an SMTP route).
  */
 export function instanceBackgroundJobEnabled(env: Env, job: InstanceBackgroundJob): boolean {
+  if (listedJobs(env.SPACE_INSTANCE_DISABLED_JOBS).includes(job)) return false;
   // A self-hosted install has no Space Gateway: its down card only misled Nous (1.2.0 lab, 2/11), and its priority-pane push
   // only logged "Space Gateway answered 503" (1.2.0 c13 lab, 9/11).
   if ((job === "gateway-down-notify" || job === "gateway-priority-panes") && env.SPACE_PUBLIC_DISTRIBUTION === "true") return false;
   if (resolveSpaceInstance(env) === "stable") return true;
-  const enabled = (env.SPACE_INSTANCE_ENABLED_JOBS ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-  return enabled.includes(job);
+  return listedJobs(env.SPACE_INSTANCE_ENABLED_JOBS).includes(job);
 }
 
 function databaseNameOf(url: string | undefined): string | null {

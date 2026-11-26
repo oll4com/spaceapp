@@ -16,6 +16,8 @@ export type SetupCapabilityChecks = Partial<Record<SetupFeatureId, (ownerId: str
 export type SetupFunctionalChecks = Partial<Record<SetupFeatureId, {
   fingerprint: (ownerId: string) => Promise<string>;
   exercise: (ownerId: string) => Promise<void>;
+  /** False when this installation lacks what the check exercises; setup then offers the feature as unavailable. */
+  available?: () => Promise<boolean>;
 }>>;
 
 type Context = {

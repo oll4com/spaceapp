@@ -81,6 +81,7 @@ export const controlResourceRoutes:Partial<Record<ResourceAction["operation"],{m
  "settings.task_titles":{method:"PATCH",path:"/api/settings/task-titles"},
  "models.list":{method:"GET",path:"/api/models"}
 };
+// eslint-disable-next-line no-control-regex -- rejects control characters on purpose
 export const controlPublishInput=z.object({filename:z.string().min(1).max(200).regex(/^[^/\\\x00-\x1f]+$/),mimeType:z.string().min(1).max(100),
  text:z.string().max(200_000).optional(),base64:z.string().max(400_000).regex(/^[A-Za-z0-9+/]*={0,2}$/).optional()}).strict()
  .refine(v=>(v.text!==undefined)!==(v.base64!==undefined),"Supply text or base64, not both.");

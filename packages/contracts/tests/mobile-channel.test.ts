@@ -3,7 +3,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
 import {
   MOBILE_FRAME_MAX_PLAINTEXT, MOBILE_PAIR_PREFIX, MOBILE_ROUTE_SCOPES, NOUS_APP_MIN_VERSION, decodeMobileFrame, decodeMobilePairQr, encodeMobileFrame, encodeMobilePairQr,
-  LINK_APP, LINK_INSPECT_SECTIONS, LINK_ROUTE_SCOPES, mobileAnswerSigningInput, mobileAppUpdateRequired, mobileAppVersionCode, mobileAskContentHash, mobileIntegrityRequestHash, mobilePairRequestSchema, mobileBodyProblem, mobileDecisionContentHash, mobileFrames, mobileHandshakePrologue, mobileRouteAllows, signMobileRotation,
+  LINK_APP, LINK_INSPECT_SECTIONS, LINK_ROUTE_SCOPES, linkGrantScopeSchema, mobileAnswerSigningInput, mobileAppUpdateRequired, mobileAppVersionCode, mobileAskContentHash, mobileIntegrityRequestHash, mobilePairRequestSchema, mobileBodyProblem, mobileDecisionContentHash, mobileFrames, mobileHandshakePrologue, mobileRouteAllows, signMobileRotation,
   verifyMobileRotation, type MobilePairQr, type MobileRotationStatement
 } from "../src/mobile-channel.js";
 import { MobileNoiseHandshake, noiseKeyPair } from "../src/mobile-noise.js";
@@ -92,14 +92,15 @@ describe("what a SpaceApp link may reach", () => {
   it("uses its own table: each listed route with its scope, nothing of the phone's", () => {
     for (const [key, rule] of Object.entries(LINK_ROUTE_SCOPES)) {
       const [method, pattern] = key.split(" ") as [string, string];
-      expect(mobileRouteAllows([rule.scope], method, pattern, {}, LINK_APP), key).toBe(rule);
-      expect(mobileRouteAllows(["read", "act", "decide"].filter((scope) => scope !== rule.scope), method, pattern, {}, LINK_APP), key).toBeNull();
+      expect(mobileRouteAllows([rule.scope], method, pattern, rule.query ?? {}, LINK_APP), key).toBe(rule);
+      expect(mobileRouteAllows(["read", "act", "decide", ...linkGrantScopeSchema.options].filter((scope) => scope !== rule.scope), method, pattern, rule.query ?? {}, LINK_APP), key).toBeNull();
     }
-    const all = ["read", "act", "decide", "admin"];
+    const all = ["read", "act", "decide", "admin", ...linkGrantScopeSchema.options];
     for (const [method, pattern] of [["GET", "/api/nous"], ["GET", "/api/space-vault/items"], ["GET", "/api/nous/messages/:id"], ["POST", "/api/nous/decisions/:id/answer"],
-      ["PUT", "/api/user-settings"], ["POST", "/api/mobile/pairing"], ["GET", "/api/clipboard-items"], ["POST", "/api/control/v1/schedules"], ["POST", "/api/control/v1/screenshot"]] as const) {
+      ["PUT", "/api/user-settings"], ["POST", "/api/mobile/pairing"], ["DELETE", "/api/clipboard-items/:id"], ["PATCH", "/api/clipboard-items/:id/text"], ["PATCH", "/api/nous/settings"], ["POST", "/api/nous/messages"], ["POST", "/api/nous/goals"], ["GET", "/api/user-settings"], ["POST", "/api/notifications/:id/answer"]] as const) {
       expect(mobileRouteAllows(all, method, pattern, { source: "PLAN" }, LINK_APP), `${method} ${pattern}`).toBeNull();
     }
+    for (const source of [undefined, "COPY", "MANUAL_NOTE"]) expect(mobileRouteAllows(all, "GET", "/api/clipboard-items", { source }, LINK_APP), String(source)).toBeNull();
     // The phone never gets the link's routes.
     expect(mobileRouteAllows(all, "POST", "/api/control/v1/commands")).toBeNull();
   });
@@ -124,10 +125,31 @@ describe("what a SpaceApp link may reach", () => {
     expect(run({ kind: "resource", operation: "tasks.update", input: { confirmed: true } })).toMatch(/approve here/);
     expect(mobileBodyProblem("linkExecute", { roomId: "room:a" })).toMatch(/actions/);
   });
+  it("with manage reads pane text, logs and screenshots, writes plans only, and schedules only what it could run now", () => {
+    const manage = ["read", "act", "manage"];
+    for (const section of ["CONTENT", "TERMINAL_RENDER", "SETTINGS", "VPN", "AUDIT"]) expect(mobileBodyProblem("linkInspect", { section }, manage), section).toBeNull();
+    for (const section of ["CLIPBOARD", "FILES", "MEDIA"]) expect(mobileBodyProblem("linkInspect", { section }, manage), section).toMatch(/reads only/);
+    const run = (...actions: unknown[]) => mobileBodyProblem("linkExecute", { roomId: "room:a", requestId: "r1", actions }, manage);
+    expect(run({ kind: "resource", operation: "ops.logs" }, { kind: "pane", operation: "visual_audit" }, { kind: "pane", operation: "focus", captureScreenshot: true })).toBeNull();
+    for (const operation of ["ops.deploy", "settings.update", "files.delete", "tasks.delete"]) expect(run({ kind: "resource", operation }), operation).toMatch(/runs rooms, panes/);
+    expect(run({ kind: "pane", operation: "close", confirm: true })).toMatch(/approve here/);
+    expect(mobileBodyProblem("planOnly", { source: "PLAN", text: "x" }, manage)).toBeNull();
+    expect(mobileBodyProblem("planOnly", { source: "MANUAL_NOTE", text: "x" }, manage)).toMatch(/plans only/);
+    expect(mobileBodyProblem("linkScreenshot", { roomId: "room:a", dock: "nous" }, manage)).toBeNull();
+    expect(mobileBodyProblem("linkScreenshot", { roomId: "room:a", dock: "clipboard" }, manage)).toMatch(/clipboard/);
+    expect(mobileBodyProblem("linkScreenshot", { roomId: "room:a", video: { steps: [{ dock: "nous" }, { dock: "clipboard" }] } }, manage)).toMatch(/clipboard/);
+    const command = (actions: unknown[]) => ({ roomId: "room:a", operation: "create", dueAt: "2026-11-16T00:00:00Z", command: { roomId: "room:a", requestId: "r1", actions } });
+    expect(mobileBodyProblem("linkSchedule", { roomId: "room:a", operation: "list" }, manage)).toBeNull();
+    expect(mobileBodyProblem("linkSchedule", command([{ kind: "pane", operation: "stop", target: { paneIds: ["pane:a"] } }]), manage)).toBeNull();
+    expect(mobileBodyProblem("linkSchedule", command([{ kind: "resource", operation: "ops.deploy" }]), manage)).toMatch(/runs rooms, panes/);
+    expect(mobileBodyProblem("linkSchedule", command([{ kind: "pane", operation: "close", confirm: true }]), manage)).toMatch(/approve here/);
+  });
   it("pairs as a server and never asks for decide", () => {
     const link = { deviceName: "SpaceApp vm207", app: LINK_APP, appVersion: "1.3.0", platform: "server", wantScopes: ["read", "act"] };
     expect(mobilePairRequestSchema.parse(link).app).toBe(LINK_APP);
     expect(() => mobilePairRequestSchema.parse({ ...link, wantScopes: ["read", "decide"] })).toThrow(/never asks for decide/);
+    // ADR-014 v2: manage, upgrade and nous come only from a grant on this SpaceApp, never from pairing.
+    for (const scope of linkGrantScopeSchema.options) expect(mobilePairRequestSchema.safeParse({ ...link, wantScopes: ["read", scope] }).success, scope).toBe(false);
   });
 });
 
@@ -140,7 +162,7 @@ describe("what a phone may reach", () => {
     }
   });
   it("refuses unlisted routes, the admin scope's reach and unmatched requests", () => {
-    const all = ["read", "act", "decide", "admin"];
+    const all = ["read", "act", "decide", "admin", ...linkGrantScopeSchema.options];
     for (const [method, pattern] of [["PUT", "/api/user-settings"], ["GET", "/api/space-vault/items"], ["POST", "/api/admin/releases/hotfixes/:ticketId/approve"],
       ["GET", "/api/auth/devices"], ["POST", "/api/mobile/pairing"], ["POST", "/api/control/v1/execute"], ["DELETE", "/api/artifacts/:id"],
       ["GET", "/api/artifacts/:id/download"], ["POST", "/api/nous/decisions/vault-broker-reinstall"], ["GET", "/api/nous/messages/:id"],
@@ -179,6 +201,19 @@ describe("what a phone may reach", () => {
     for (const route of ["PUT /api/signature", "DELETE /api/signature", "PUT /api/signature/details", "POST /api/artifacts/:id/sign"]) expect(MOBILE_ROUTE_SCOPES[route], route).toBeUndefined();
     expect(mobileRouteAllows(["read"], "POST", "/api/signatures")).toBeNull();
   });
+  // Goal e803a663: the Nous app's Load and Resources views read the host's resources on a paired phone, nothing that changes them.
+  it("lets the phone read the load and the host's resources, no host action", () => {
+    for (const route of ["GET /api/system-health", "GET /api/nous/load", "GET /api/admin/host-memory", "GET /api/admin/cli-sessions"]) {
+      expect(MOBILE_ROUTE_SCOPES[route], route).toEqual({ scope: "read" });
+    }
+    for (const route of ["POST /api/admin/memory-reclaims", "POST /api/admin/cli-session-reaps", "POST /api/admin/cli-session-cleanups"]) expect(MOBILE_ROUTE_SCOPES[route], route).toBeUndefined();
+  });
+
+  it("lets the phone read only the music library's links, page by page", () => {
+    expect(mobileRouteAllows(["read"], "GET", "/api/links", { category: "MUSIC_LIBRARY", page: "2", pageSize: "100" })).not.toBeNull();
+    for (const query of [{}, { category: "GENERAL" }, { category: ["MUSIC_LIBRARY", "GENERAL"] }]) expect(mobileRouteAllows(["read"], "GET", "/api/links", query), JSON.stringify(query)).toBeNull();
+    for (const route of ["POST /api/links", "PATCH /api/links/:id", "DELETE /api/links/:id"]) expect(MOBILE_ROUTE_SCOPES[route], route).toBeUndefined();
+  });
   // Teleport (operator 13/11 nous_msg:6d87d2a6): the phone drives a pane browser by touch in person; its other browser routes stay on the computer.
   it("lets the phone teleport a pane browser and drive it in person, nothing more of the browser", () => {
     for (const route of ["POST /api/panes/:id/browser/teleport", "POST /api/panes/:id/browser/teleport/input", "POST /api/panes/:id/browser/teleport/upload",
@@ -187,11 +222,24 @@ describe("what a phone may reach", () => {
     }
     expect(MOBILE_ROUTE_SCOPES["GET /api/panes/:id/browser/teleport/frame"]).toEqual({ scope: "read" });
     for (const route of ["POST /api/panes/:id/browser/navigate", "POST /api/panes/:id/browser/action", "POST /api/panes/:id/browser/input"]) expect(MOBILE_ROUTE_SCOPES[route], route).toBeUndefined();
+    expect(MOBILE_ROUTE_SCOPES["POST /api/panes/:id/browser/session"]).toEqual({ scope: "act", person: true, body: "startAsWas" });
+    expect(mobileBodyProblem("startAsWas", {})).toBeNull();
+    expect(mobileBodyProblem("startAsWas", { targetUrl: "https://example.com" })).toMatch(/starts as it was/);
+  });
+  // Go to pane (operator 15/11 nous_msg:8f6f7226): the phone reads one pane's screen through Space Control, no other section.
+  it("lets the phone read one pane's screen text and nothing else of Space Control", () => {
+    expect(MOBILE_ROUTE_SCOPES["POST /api/control/v1/inspect"]).toEqual({ scope: "read", body: "paneContent" });
+    expect(MOBILE_ROUTE_SCOPES["POST /api/control/v1/commands"]).toBeUndefined();
+    expect(mobileBodyProblem("paneContent", { roomId: "room:a", section: "CONTENT", paneId: "pane:b", limit: 1, styled: true })).toBeNull();
+    expect(mobileBodyProblem("paneContent", { section: "AUDIT" })).toMatch(/one pane's screen/);
+    expect(mobileBodyProblem("paneContent", { section: "CONTENT" })).toMatch(/one pane's screen/);
   });
   it("body rules", () => {
     expect(mobileBodyProblem("settingsEnabledAndTabs", { enabled: false })).toBeNull();
     expect(mobileBodyProblem("settingsEnabledAndTabs", { dockTabs: { done: false } })).toBeNull();
-    expect(mobileBodyProblem("settingsEnabledAndTabs", { enabled: true, mayPromote: true })).toMatch(/only enabled and dockTabs/);
+    expect(mobileBodyProblem("settingsEnabledAndTabs", { mediaPresets: [{ label: "Jazz", url: "https://youtu.be/4xDzrJKXOOY" }] })).toBeNull();
+    expect(mobileBodyProblem("settingsEnabledAndTabs", { liveVoice: { provider: "google", model: "gemini-3.1-flash-live-preview", voice: "Kore" } })).toBeNull();
+    expect(mobileBodyProblem("settingsEnabledAndTabs", { enabled: true, mayPromote: true })).toMatch(/only enabled, dockTabs, mediaPresets and liveVoice/);
     expect(mobileBodyProblem("awayNoGrant", { until: "2026-11-01T00:00:00Z" })).toBeNull();
     expect(mobileBodyProblem("awayNoGrant", { grant: ["PROMOTE"] })).toMatch(/computer/);
     expect(mobileBodyProblem("noAlways", { option: "Approve" })).toBeNull();
@@ -265,4 +313,25 @@ describe("MASVS L2 core gaps (plan clipboard:kTV3y2lwO-99 step 7)", () => {
     const frame = { type: "req", header: { id: 1, m: "POST", p: "/api/nous/decisions/x/answer", sig: "s".repeat(86), int: token }, body: new Uint8Array(0) } as const;
     expect(decodeMobileFrame(encodeMobileFrame(frame))).toEqual(frame);
   });
+});
+
+// Plan clipboard:zqVWdClsx_pA step 7 security review: a new link route must never open sign-in, pairing, grants, Vault items, user settings,
+// Nous's allowances or this operator's own decisions, and no rule gives decide (ADR-014 v2 "Never" list).
+it("the link's routes never reach auth, pairing, the Vault, user settings or the operator's decisions", () => {
+  const never = /^\w+ \/api\/(?:auth\/(?!me$)|mobile\/|vault|user-settings|nous\/settings|nous\/decisions|admin\/(?:releases|deploy-queue\/(?:promote|approve)))/;
+  expect(Object.keys(LINK_ROUTE_SCOPES).filter((key) => never.test(key))).toEqual([]);
+  expect(Object.values(LINK_ROUTE_SCOPES).filter((rule) => rule.scope === "decide")).toEqual([]);
+  expect(never.test("POST /api/auth/devices/:id/scopes") && never.test("GET /api/vault/items") && !never.test("GET /api/auth/me")).toBe(true);
+});
+
+// The Nous app's Appointments tab (plan clipboard:ZLZgTYU1O-RD): a phone reads the list and changes only an appointment's status.
+it("lets a phone read appointments and mark them, nothing else of them", () => {
+  expect(mobileRouteAllows(["read"], "GET", "/api/appointments")).not.toBeNull();
+  expect(mobileRouteAllows(["read"], "PATCH", "/api/appointments/:id")).toBeNull();
+  expect(mobileRouteAllows(["read", "act", "decide"], "POST", "/api/appointments")).toBeNull();
+  const rule = mobileRouteAllows(["act"], "PATCH", "/api/appointments/:id");
+  expect(rule?.body).toBe("statusOnly");
+  expect(mobileBodyProblem("statusOnly", { status: "DONE" })).toBeNull();
+  expect(mobileBodyProblem("statusOnly", { status: "DONE", notes: "HOW TO JOIN: https://evil.example" })).toMatch(/only its status/);
+  expect(mobileBodyProblem("statusOnly", {})).toMatch(/only its status/);
 });

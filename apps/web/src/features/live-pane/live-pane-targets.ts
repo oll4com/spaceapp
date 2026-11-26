@@ -1,5 +1,40 @@
 import { resolvePaneByName } from "@space/contracts";
 
+/** A pane as Space Control's inspect returns it (loose JSON): only the fields Live reads. */
+export interface InspectedPane {
+  id: string;
+  paneName?: string;
+  title?: string;
+  mode?: string;
+  runtimeId?: string;
+  terminalRuntimeId?: string;
+  status?: string;
+  isClosed?: boolean;
+  isMinimized?: boolean;
+  isMaximized?: boolean;
+  isUnused?: boolean;
+  hasUserInput?: boolean;
+  paneId?: string;
+  runtime?: string;
+  state?: string;
+  modelId?: string;
+  effectiveModelId?: string;
+  configuredModelId?: string;
+  order?: number;
+  categoryColor?: string | null;
+  mediaTitle?: string | null;
+  titleSource?: string;
+  nativeTaskRef?: unknown;
+}
+
+/** Tool arguments as the voice model sent them: loose JSON read field by field across ~150 call sites. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- one named escape hatch instead of inline `any`s
+export type LiveToolArgs = Record<string, any>;
+
+/** A Space Control receipt as far as prompt receipts read it (loose JSON). */
+type ReceiptEvidence = { turnId?: string; nativeTaskRef?: string; watchId?: string };
+type PromptReceipt = { results?: Array<{ paneId?: string; status?: string; detail?: string; evidence?: ReceiptEvidence & { result?: ReceiptEvidence } }> };
+
 export interface LivePaneGroupScope { userId?: string; liveSessionId?: string }
 const groups = new Map<string, string[]>();
 const keyFor = (roomId: string, scope: LivePaneGroupScope) => scope.userId && scope.liveSessionId
@@ -15,12 +50,12 @@ export function rememberLivePaneGroup(roomId: string, paneIds: string[], scope: 
 
 /** Resolve every explicit ID before any effect. Never broaden a missing selection. */
 export function resolveLivePaneTargets(
-  roomId: string, panes: any[], args: Record<string, any>, scope: LivePaneGroupScope,
+  roomId: string, panes: InspectedPane[], args: LiveToolArgs, scope: LivePaneGroupScope,
   promptOnly: boolean, livePaneId?: string
 ): string[] {
   const explicitNames = args.paneNames !== undefined || args.paneName !== undefined;
   const explicit = args.paneIds !== undefined || args.paneId !== undefined || explicitNames;
-  const ofType = (p: any) => !args.cliType || String(p.terminalRuntimeId || p.runtimeId || p.mode).toLowerCase().replace(/^cli:/, "") === String(args.cliType).toLowerCase().replace(/^cli:/, "");
+  const ofType = (p: InspectedPane) => !args.cliType || String(p.terminalRuntimeId || p.runtimeId || p.mode).toLowerCase().replace(/^cli:/, "") === String(args.cliType).toLowerCase().replace(/^cli:/, "");
   if (args.targetGroup !== undefined && args.targetGroup !== "lastOpened") throw Error("Unknown targetGroup.");
   if (args.targetGroup && (args.all || args.filter || args.unusedOnly))
     throw Error("targetGroup cannot be combined with all, filter or unusedOnly. Nothing was submitted.");
@@ -31,7 +66,7 @@ export function resolveLivePaneTargets(
     if (!key) throw Error("The authenticated Live session identity is unavailable.");
     let remembered = groups.get(key);
     if (!remembered) {
-      try { const stored: unknown = JSON.parse(sessionStorage.getItem(key) ?? "null"); if (Array.isArray(stored)) remembered = stored; } catch {}
+      try { const stored: unknown = JSON.parse(sessionStorage.getItem(key) ?? "null"); if (Array.isArray(stored)) remembered = stored; } catch { /* best-effort: nothing to do if it fails */ }
     }
     if (!remembered?.length) throw Error("No last-opened pane group exists for this room and Live session.");
     // Panes of the group closed since it was opened drop out and cliType only narrows; the group never widens.
@@ -41,7 +76,7 @@ export function resolveLivePaneTargets(
   } else if (explicit) {
     if (args.paneIds !== undefined && !Array.isArray(args.paneIds)) throw Error("paneIds must be an array.");
     if (args.paneNames !== undefined && !Array.isArray(args.paneNames)) throw Error("paneNames must be an array.");
-    let idsFromNames: string[] = [];
+    const idsFromNames: string[] = [];
     if (explicitNames) {
       const names = [
         ...(Array.isArray(args.paneNames) ? args.paneNames : args.paneNames ? [args.paneNames] : []),
@@ -79,10 +114,10 @@ export function resolveLivePaneTargets(
   return [...new Set(ids as string[])];
 }
 
-export function livePromptPaneReceipts(paneIds: string[], receipt: any, panes?: any[]) {
+export function livePromptPaneReceipts(paneIds: string[], receipt: PromptReceipt | null | undefined, panes?: InspectedPane[]) {
   return paneIds.map(paneId => {
     const pane = panes?.find(p => p.id === paneId);
-    const result = receipt?.results?.find((entry: any) => entry.paneId === paneId);
+    const result = receipt?.results?.find((entry) => entry.paneId === paneId);
     const evidence = result?.evidence?.result ?? result?.evidence;
     return {
       paneId,

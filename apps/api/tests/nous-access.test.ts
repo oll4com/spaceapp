@@ -297,7 +297,7 @@ describe("Nous Council and mail tools", () => {
     const read = (threadId: string, account = "op@example.com") => nous.execute("space_mail_read", { account, threadId }, ctx);
     mail.read.mockRejectedValueOnce(new Error("op@example.com: Gmail no longer has that message or thread."));
     const missing = await read("19a2c0ffee");
-    expect(missing).toMatchObject({ ok: false, display: "Reading a mail thread failed: no such thread in that account", meta: { mailCode: "NOT_FOUND" } });
+    expect(missing).toMatchObject({ ok: false, refused: true, display: "Reading a mail thread failed: no such thread in that account", meta: { mailCode: "NOT_FOUND" } });
     expect(missing.result).toContain("Connected Gmail accounts: op@example.com, info@example.com.");
     expect(missing.result).toContain("a messageId is not a threadId");
     mail.read.mockRejectedValueOnce(new Error("bank@example.com is not a mail account of this pane."));
@@ -329,7 +329,7 @@ describe("Nous Council and mail tools", () => {
     };
     const nous = tools({ mail: mail as unknown as NousToolDeps["mail"] });
     const read = await nous.execute("space_mail_read", { account: "op@example.com", threadId: "t9" }, ctx);
-    expect(read.result).toContain("Attachments: statement.pdf (application/pdf, 51 KB, attachmentId ANGjdJ8w); data.zip (application/zip, 4 KB, attachmentId zip1)");
+    expect(read.result).toContain('Attachments (read one with "attachment": "#n"): #1 statement.pdf (application/pdf, 51 KB); #2 data.zip (application/zip, 4 KB)');
     expect(read.result).not.toContain("logo.png");
     const text = await nous.execute("space_mail_read", { account: "op@example.com", threadId: "t9", attachment: "statement.pdf" }, ctx);
     expect(text).toMatchObject({ ok: true, display: 'Read the attachment "statement.pdf"' });
@@ -399,7 +399,7 @@ describe("Nous Council and mail tools", () => {
     try {
       const byMessage = await nous.execute("space_mail_read", { account: "op@example.com", threadId: "m12" }, ctx);
       expect(byMessage.result).toMatch(/^\(m12 is a message id; its thread is t11: use that id\.\)\nSubject: Minutes/);
-      expect((await nous.execute("space_mail_read", { account: "op@example.com", threadId: "t11" }, ctx)).result).toContain("attachmentId att-2");
+      expect((await nous.execute("space_mail_read", { account: "op@example.com", threadId: "t11" }, ctx)).result).toContain("#1 Πρακτικό ΓΣ 2025.pdf");
       // Past the 2-minute cache the thread is fetched again and att-2 is gone; it is the file it was.
       clock.mockReturnValue(Date.parse("2026-11-01T12:03:00.000Z"));
       expect(await nous.execute("space_mail_read", { account: "op@example.com", threadId: "t11", attachment: "att-2" }, ctx)).toMatchObject({ ok: true, display: 'Read the attachment "Πρακτικό ΓΣ 2025.pdf"' });
@@ -408,7 +408,7 @@ describe("Nous Council and mail tools", () => {
       expect(await nous.execute("space_mail_read", { account: "op@example.com", threadId: "t11", attachment: " πρακτικό  ΓΣ 2025.PDF".normalize("NFD") }, ctx)).toMatchObject({ ok: true });
       const missing = await nous.execute("space_mail_read", { account: "op@example.com", threadId: "t11", attachment: "Πρακτικό 2025.pdf" }, ctx);
       expect(missing).toMatchObject({ ok: false, meta: { mailCode: "NO_ATTACHMENT" } });
-      expect(missing.result).toBe('No attachment "Πρακτικό 2025.pdf" in this thread. Its attachments (pass the file name as "attachment"): "Πρακτικό ΓΣ 2025.pdf" (application/pdf).');
+      expect(missing.result).toBe('No attachment "Πρακτικό 2025.pdf" in this thread. Its attachments (pass "#n" or the file name as "attachment"): #1 "Πρακτικό ΓΣ 2025.pdf" (application/pdf).');
     } finally { clock.mockRestore(); }
   });
 

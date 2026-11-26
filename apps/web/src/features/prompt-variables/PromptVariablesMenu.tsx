@@ -582,7 +582,7 @@ export function PromptVariablesMenu({
                     <label htmlFor="pvm-form-value">Definition / Injected Prompt</label>
                     <textarea
                       id="pvm-form-value"
-                      placeholder="e.g. Computer with IP 192.168.10.50 accessed via RT-BKK-01"
+                      placeholder="e.g. Computer with IP 192.168.88.50 accessed via RT-BKK-01"
                       value={formValue}
                       onChange={(e) => setFormValue(e.target.value)}
                       rows={3}

@@ -22,7 +22,10 @@ describe("CLI canary health check", () => {
       verdict("codex", "2026-10-25T02:00:00Z"),
       verdict("qwen", "2026-10-18T02:00:00Z", { verdict: "BLOCKED", blockedReason: "PATCH_REBASE_REQUIRED" }),
       verdict("qwen", "2026-10-25T02:00:00Z", { verdict: "BLOCKED", blockedReason: "PATCH_REBASE_REQUIRED", candidateVersion: "0.26.1", liveCurrentTarget: "0.23.2-space.2" }),
-      verdict("kimi", "2026-10-11T02:00:00Z")
+      verdict("kimi", "2026-10-11T02:00:00Z"),
+      verdict("claude", "2026-10-25T02:00:00Z", { candidateVersion: null, liveCurrentTarget: "2.1.323" }),
+      verdict("grok", "2026-10-25T02:00:00Z", { candidateVersion: null, liveCurrentTarget: null }),
+      verdict("gemini", "2026-10-25T02:00:00Z", { candidateVersion: "1.5.7", liveCurrentTarget: "1.5.7" })
     ]);
     try {
       const health = await cliCanaryHealth(dir, now);
@@ -30,9 +33,12 @@ describe("CLI canary health check", () => {
       expect(health.detail).toBe("Needs review: kimi verdict 17 days old; qwen BLOCKED (PATCH_REBASE_REQUIRED)");
       expect(health.values).toEqual([
         { label: "Last run", value: "2026-10-25T02:00:00.000Z" },
-        { label: "codex", value: "PASS 2.0.0 (runs 1.0.0)" },
-        { label: "kimi", value: "PASS 2.0.0 (runs 1.0.0)" },
-        { label: "qwen", value: "BLOCKED 0.26.1 (runs 0.23.2-space.2)" }
+        { label: "claude", value: "PASS · 2.1.323" },
+        { label: "codex", value: "PASS · 2.0.0 (runs 1.0.0)" },
+        { label: "gemini", value: "PASS · 1.5.7" },
+        { label: "grok", value: "PASS" },
+        { label: "kimi", value: "PASS · 2.0.0 (runs 1.0.0)" },
+        { label: "qwen", value: "BLOCKED · 0.26.1 (runs 0.23.2-space.2)" }
       ]);
     } finally {
       await rm(dir, { recursive: true, force: true });

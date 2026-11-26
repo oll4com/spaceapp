@@ -1,4 +1,6 @@
+import { z } from "zod";
 import { APPOINTMENT_FORMATS } from "./appointments.js";
+import { isValidTimeZone } from "./dot-schedules.js";
 
 // What every upcoming appointment must hold (operator 4/11 14:39 BKK, nous_msg:a60162597d984866b79b9a2f «όλες αυτές οι πληροφορίες
 // πρέπει ΠΑΝΤΑ να είναι μέσα στο ραντεβού … ΥΠΟΧΡΕΩΤΙΚΟ»): sections of its notes, a heading at a line's start, in English or Greek
@@ -12,8 +14,11 @@ export const APPOINTMENT_SECTIONS = {
   why: ["WHY IT MATTERS", "WHY", "ΓΙΑΤΙ ΑΞΙΖΕΙ"],
   prepare: ["WHAT YOU NEED", "PREPARE", "ΤΙ ΧΡΕΙΑΖΕΣΑΙ"],
   source: ["SOURCE", "ΠΗΓΗ"],
-  /** Why a FLEXIBLE one we time may run past 18:00 (to 21:00): the other side's time zone. */
-  late: ["TIME ZONE REASON", "ΛΟΓΟΣ ΖΩΝΗΣ ΩΡΑΣ"]
+  // Operator 25/11 (nous_msg:805b3110): notes written after the call, from the record's editor; optional.
+  after: ["AFTER THE CALL", "POST-CALL NOTES", "ΣΗΜΕΙΩΣΕΙΣ ΜΕΤΑ ΤΗΝ ΚΛΗΣΗ"],
+  // Operator 26/11 (nous_msg:cfce1783): Set recontact links the two records, each naming the other's date and id; optional.
+  recontact: ["RECONTACT", "ΕΠΑΝΕΠΙΚΟΙΝΩΝΙΑ"],
+  recontactOf: ["RECONTACT OF", "ΣΥΝΕΧΕΙΑ ΤΟΥ"]
 } as const;
 export type AppointmentSectionKey = keyof typeof APPOINTMENT_SECTIONS;
 
@@ -62,13 +67,35 @@ export function appointmentContentMissing(item: { status?: string | null; notes?
   return missing;
 }
 
-// Operator 6/11 10:15 BKK (nous_msg:ea6f0792 «μετά τις 11:00 και πριν τις 18:00 ώρα Ταϊλάνδης, εκτός αν η διαφορά ώρας … ως 21:00»): the hours
-// a time we choose (FLEXIBLE) must fall in, in the owner's working zone; a FIXED one the other side set is kept and flagged outside them.
-export const APPOINTMENT_HOURS = { from: "11:00", to: "18:00", lateTo: "21:00" } as const;
+// Operator 17/11 09:54 BKK (nous_msg:266ee062, replaces 6/11's 11:00-18:00 and its 21:00 time-zone exception): every appointment starts at or
+// after `start` and ENDS by `end` in `timeZone` (null: the owner's working zone), Settings → Notifications → Appointment hours.
+const clockSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "Use HH:MM (24 hours).");
+export const appointmentHoursSchema = z.object({
+  start: clockSchema.default("11:00"),
+  end: clockSchema.default("20:00"),
+  timeZone: z.string().trim().min(1).max(100).refine(isValidTimeZone, "Use an IANA time zone such as Asia/Bangkok.").nullable().default(null)
+}).strict().refine((hours) => hours.start < hours.end, "Appointment hours end after they start.");
+export type AppointmentHoursSetting = z.infer<typeof appointmentHoursSchema>;
+/** The hours with their zone resolved. */
+export interface AppointmentHours { start: string; end: string; timeZone: string }
+
+/** The owner's appointment hours: the setting (its defaults when unset or invalid), its zone else `workingZone`. */
+export function appointmentHoursOf(setting: unknown, workingZone: string): AppointmentHours {
+  const parsed = appointmentHoursSchema.safeParse(setting ?? {});
+  const hours = parsed.success ? parsed.data : appointmentHoursSchema.parse({});
+  return { start: hours.start, end: hours.end, timeZone: hours.timeZone ?? workingZone };
+}
+
+/** The line agents read before they propose, book or accept a time (Nous's world, the tools' answers). */
+export const appointmentHoursRule = (hours: AppointmentHours) => `Appointment hours (Settings → Notifications): ${hours.start}-${hours.end} ${hours.timeZone}. `
+  + `Every time you propose, book or accept starts at or after ${hours.start} and ends by ${hours.end} there (a 30-minute call at `
+  + `${clockMinus(hours.end, 15)} is outside); convert the other side's zone first. A fixed time the other side set outside them is kept, marked outOfHours: ask them to move it.`;
+const clockMinus = (clock: string, by: number) => { const at = minutes(clock) - by; return `${String(Math.floor(at / 60)).padStart(2, "0")}:${String(at % 60).padStart(2, "0")}`; };
+
 export const APPOINTMENT_SCHEDULE_RULE = `An UPCOMING appointment also needs format (${APPOINTMENT_FORMATS.join(" | ")}: who or what is on the other side) and timing `
-  + "(FIXED: only at that exact start; FLEXIBLE: can be done any time until deadlineAt, which it then needs). A FLEXIBLE one's time (start to end) must be "
-  + `within ${APPOINTMENT_HOURS.from}-${APPOINTMENT_HOURS.to} in the operator's zone, to ${APPOINTMENT_HOURS.lateTo} only with a TIME ZONE REASON (ΛΟΓΟΣ ΖΩΝΗΣ ΩΡΑΣ) `
-  + "line in its notes saying which time zone forces it. FIXED times the other side set are kept as they are. One joined online (format "
+  + "(FIXED: only at that exact start; FLEXIBLE: can be done any time until deadlineAt, which it then needs). Every time we propose, book or "
+  + "accept starts and ends within the operator's appointment hours (space_appointments returns them as `hours`); a FLEXIBLE one outside them is "
+  + "refused; a FIXED one the other side set outside them is kept and marked outOfHours, and the other side is asked to move it. One joined online (format "
   + "AI_INTERVIEW | RECORDED_VIDEO | LIVE_HUMAN_VIDEO | WEBINAR | TEST) needs location to start with its real join link as an http(s) URL, taken from "
   + "the mail or invite (for a button that exists only in the mail, the Gmail thread URL), never text such as \"link in the mail\"; PHONE and "
   + "IN_PERSON may give a number or place as text.";
@@ -95,16 +122,22 @@ const minutes = (clock: string) => Number(clock.slice(0, 2)) * 60 + Number(clock
 const minuteOfDay = (iso: string, zone: string) =>
   minutes(new Date(iso).toLocaleTimeString("en-GB", { timeZone: zone, hourCycle: "h23", hour: "2-digit", minute: "2-digit" }));
 
-/** Whether start to end (the start alone without one) lies within the operator's hours in `zone`; `late` allows to 21:00. Past midnight is outside. */
-export function appointmentWithinHours(item: { startsAt: string; endsAt?: string | null }, zone: string, late = false): boolean {
-  const start = minuteOfDay(item.startsAt, zone);
-  const end = start + Math.max(0, Date.parse(item.endsAt ?? item.startsAt) - Date.parse(item.startsAt)) / 60_000;
-  return start >= minutes(APPOINTMENT_HOURS.from) && end <= minutes(late ? APPOINTMENT_HOURS.lateTo : APPOINTMENT_HOURS.to);
+/** Whether it starts at or after `hours.start` and ends by `hours.end` in their zone. Without an end it takes its start minute; past midnight is outside. */
+export function appointmentWithinHours(item: { startsAt: string; endsAt?: string | null }, hours: AppointmentHours): boolean {
+  const start = minuteOfDay(item.startsAt, hours.timeZone);
+  const end = start + Math.max(1, (Date.parse(item.endsAt ?? item.startsAt) - Date.parse(item.startsAt)) / 60_000);
+  return start >= minutes(hours.start) && end <= minutes(hours.end);
+}
+
+/** An UPCOMING meeting (not a DEADLINE, a cut-off) outside the hours: the flag Nous and the copilots read to ask the other side to move it. */
+export function appointmentOutOfHours(item: { status?: string | null; kind?: string | null; startsAt: string; endsAt?: string | null }, hours: AppointmentHours): string | null {
+  return item.status === "UPCOMING" && item.kind !== "DEADLINE" && !appointmentWithinHours(item, hours)
+    ? `OUT_OF_HOURS: outside the appointment hours ${hours.start}-${hours.end} ${hours.timeZone}; ask the other side to move it into them.` : null;
 }
 
 /** What an UPCOMING appointment's format and time still miss or break, by the names the refusal gives; none for DONE and CANCELLED ones. */
 export function appointmentScheduleMissing(item: { status?: string | null; format?: string | null; timing?: string | null; deadlineAt?: string | null;
-  startsAt: string; endsAt?: string | null; notes?: string | null; location?: string | null }, zone: string): string[] {
+  startsAt: string; endsAt?: string | null; notes?: string | null; location?: string | null }, hours: AppointmentHours): string[] {
   if (item.status && item.status !== "UPCOMING") return [];
   const missing: string[] = [];
   if (!item.format) missing.push(`format (${APPOINTMENT_FORMATS.join(" | ")})`);
@@ -116,10 +149,9 @@ export function appointmentScheduleMissing(item: { status?: string | null; forma
   if (item.timing !== "FLEXIBLE") return missing;
   if (!item.deadlineAt) missing.push("deadlineAt (a FLEXIBLE one can be done any time until it)");
   else if (Date.parse(item.deadlineAt) < Date.parse(item.endsAt ?? item.startsAt)) missing.push("a deadlineAt at or after its end");
-  const late = appointmentSections(item.notes).some((section) => section.key === "late" && section.text);
-  if (!appointmentWithinHours(item, zone, late)) {
-    missing.push(`a time within ${APPOINTMENT_HOURS.from}-${late ? APPOINTMENT_HOURS.lateTo : APPOINTMENT_HOURS.to} ${zone} (a FLEXIBLE one is timed by us`
-      + `${late ? "" : `; to ${APPOINTMENT_HOURS.lateTo} only with a TIME ZONE REASON line`})`);
+  if (!appointmentWithinHours(item, hours)) {
+    missing.push(`a time within the appointment hours ${hours.start}-${hours.end} ${hours.timeZone}: start at or after ${hours.start}, end by ${hours.end} `
+      + "(a FLEXIBLE one is timed by us)");
   }
   return missing;
 }

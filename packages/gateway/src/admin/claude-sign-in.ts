@@ -8,7 +8,7 @@ import { claudeCredentialsFromTokens } from "../providers/claude/credentials.js"
 import {
   buildClaudeAuthorizationUrl, ClaudeOAuthError, exchangeClaudeCode, generateClaudePkce, parseClaudeAuthorizationCode, type ClaudeTokens
 } from "../providers/claude/oauth.js";
-import { fetchClaudeProfile, fetchClaudeUsage } from "../providers/claude/usage.js";
+import { claimClaudeReset, claudeResetGrantFor, fetchClaudeProfile, fetchClaudeUsage } from "../providers/claude/usage.js";
 import { refreshClaudeAccountUsage, storeClaudeUsage } from "../providers/claude/usage-refresh.js";
 import { createAdminGuard, publicAccountSummary, type ProviderAccountActions } from "./codex-sign-in.js";
 
@@ -125,6 +125,20 @@ export function claudeAccountActions(options: { repository: GatewayRepository; p
     async refreshUsage(account) {
       if (isClaudeApiKeyAccount(account)) return; // An API key has no plan usage windows.
       await refreshClaudeAccountUsage({ repository: options.repository, pool: options.pool, account, fetchImpl: options.fetchImpl });
+    },
+    async resetCredit(account, requestId) {
+      if (isClaudeApiKeyAccount(account)) return { outcome: "NO_CREDIT", windowsReset: [] };
+      const credentials = await options.pool.credentials(account);
+      // Read fresh: the grant must clear a window Anthropic says is used up now, the earliest to expire first.
+      const usage = await fetchClaudeUsage(credentials.accessToken, options.fetchImpl);
+      const grant = claudeResetGrantFor(usage.resetGrants ?? [], usage.exhausted);
+      if (!grant) return { outcome: usage.exhausted.length ? "NO_CREDIT" : "NOTHING_TO_RESET", windowsReset: [] };
+      const { organizationUuid } = await fetchClaudeProfile(credentials.accessToken, options.fetchImpl);
+      if (!organizationUuid) throw new Error("The Claude profile names no organization.");
+      const result = await claimClaudeReset({ accessToken: credentials.accessToken, organizationUuid, grantId: grant.id, requestId, fetchImpl: options.fetchImpl });
+      await refreshClaudeAccountUsage({ repository: options.repository, pool: options.pool, account, fetchImpl: options.fetchImpl }).catch(() => undefined);
+      if (result.outcome === "RESET") await options.pool.markSuccess(account.id);
+      return { outcome: result.outcome, windowsReset: result.cleared };
     }
   };
 }

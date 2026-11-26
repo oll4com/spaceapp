@@ -36,6 +36,14 @@ export function cursorNativeSessionId(spaceSessionId: string): string {
   return spaceNamedSessionId("cursor", spaceSessionId);
 }
 
+/**
+ * The Claude session a Space CLI session runs in: `claude --session-id <uuid>` starts it, `claude --resume <uuid>` reopens it.
+ * Space passes it in SPACE_CLAUDE_SESSION_ID and keeps it on the task revision from the start, so a reopen never needs the title.
+ */
+export function claudeNativeSessionId(spaceSessionId: string): string {
+  return spaceNamedSessionId("claude", spaceSessionId);
+}
+
 function spaceNamedSessionId(runtime: string, spaceSessionId: string): string {
   const hex = createHash("sha256").update(`space-${runtime}-session:${spaceSessionId}`).digest("hex");
   const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);

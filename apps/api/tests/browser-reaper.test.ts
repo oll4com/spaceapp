@@ -3,7 +3,7 @@
 import { defaultFreelanceCopilotPaneMetadata } from "@space/contracts";
 import { SpaceConflictError, SpaceFeatureDisabledError } from "@space/runtime";
 import { describe, expect, it, vi } from "vitest";
-import { BROWSER_REAPED_ACTION, BROWSER_RELEASED_ACTION, browserInUse, driverWorkEnded, operatorFirstBrowsers, startBrowserReaper, unusedBrowsers, type BrowserRow,
+import { BROWSER_PANE_CLOSED_ACTION, BROWSER_REAPED_ACTION, BROWSER_RELEASED_ACTION, BROWSER_TABS_CLOSED_ACTION, browserInUse, driverWorkEnded, idleRoomBrowser, operatorFirstBrowsers, startBrowserReaper, unusedBrowsers, type BrowserRow,
   type ReleaseDeps } from "../src/browser-reaper.js";
 import { browserMemoryBytes, browserSessionCap } from "../src/browser-sessions.js";
 
@@ -98,6 +98,65 @@ describe("release when the driver is done (score lever Idle open browsers, 14/11
   });
 });
 
+describe("a terminal pane's done or failed report releases its own CLI browser at once (plan clipboard:nLYbDf3TqBPm step 3)", () => {
+  it("releases the browsers the reporter drove last even while its drive is recent or attached; keeps another driver's and what a handoff, the operator or a typed form holds", async () => {
+    const panes: Record<string, object> = { "pane:kate": { id: "pane:kate", roomId: "room:a", mode: "TERMINAL", title: "Claude", paneName: "kate", isClosed: false },
+      "pane:hugo": { id: "pane:hugo", roomId: "room:a", mode: "TERMINAL", title: "Claude", paneName: "hugo", isClosed: false } };
+    const driver: Record<string, string> = { "pane:k-own": "pane:kate", "pane:k-handoff": "pane:kate", "pane:k-viewed": "pane:kate", "pane:k-typed": "pane:kate", "pane:h-other": "pane:hugo" };
+    const drivenAt = Date.parse(ago(1));
+    const release: ReleaseDeps = {
+      agentFor: (paneId) => driver[paneId] ? { paneId: driver[paneId], at: drivenAt, active: true } : null,
+      reports: async () => [{ at: ago(0), status: "DONE" }],
+      typedForm: async (paneId) => paneId === "pane:k-typed"
+    };
+    const active = (paneId: string) => ({ updatedAt: ago(1), agent: { paneId: driver[paneId], title: "Claude", paneName: null, roomId: "room:a", roomName: "A", drivenAt: ago(1), active: true } });
+    const sessions = [row("pane:k-own", active("pane:k-own")), row("pane:k-handoff", { ...active("pane:k-handoff"), handoff: { status: "PENDING", requestedAt: ago(1) } }),
+      row("pane:k-viewed", active("pane:k-viewed")), row("pane:k-typed", active("pane:k-typed")), row("pane:h-other", active("pane:h-other"))] as BrowserRow[];
+    const stopPane = vi.fn(async () => undefined);
+    const closePane = vi.fn(async () => undefined);
+    const recordAuditEvent = vi.fn(async (input: unknown) => input);
+    const reaper = startBrowserReaper({ store: { dueTaskSchedules: async () => [], getRoom: async () => ({ ownerUserId: "user:operator" }), listRooms: async () => [],
+      getPane: async (paneId: string) => panes[paneId], recordAuditEvent } as never, census: async () => ({ sessions }),
+      usedAt: (paneId) => paneId === "pane:k-viewed" ? Date.parse(ago(0)) : null, release, stopPane, closePane, warn: vi.fn(), now: () => NOW });
+    await reaper.releaseFor("pane:kate");
+    // The sweep alone keeps them all: every drive is recent.
+    await reaper.sweep();
+    reaper.stop();
+    expect(stopPane.mock.calls.map(([paneId]) => paneId)).toEqual(["pane:k-own"]);
+    expect(closePane.mock.calls.map(([paneId]) => paneId)).toEqual(["pane:k-own"]);
+    expect(recordAuditEvent.mock.calls.map(([event]) => [(event as { targetId: string }).targetId, (event as { action: string }).action])).toEqual([["pane:k-own", BROWSER_RELEASED_ACTION]]);
+  });
+});
+
+describe("stopped or empty browser panes close (operator 14/11 09:42 BKK, nous_msg:efbc6ddef88f4e2daebfa884)", () => {
+  it("closes a BROWSER pane whose browser is stopped or has no tab, with no pane check verdict read; keeps a fresh one and one a handoff, lease, tab or other mode holds", async () => {
+    const pane = (id: string, extra: object = {}) => ({ id, roomId: "room:a", mode: "BROWSER", title: "Browser", paneName: id.slice(5), isClosed: false, updatedAt: ago(60), ...extra });
+    const panes = [pane("pane:stopped"), pane("pane:empty"), pane("pane:idle"), pane("pane:fresh", { updatedAt: ago(1) }), pane("pane:handoff"), pane("pane:lease"),
+      pane("pane:tabs"), pane("pane:job", { mode: "JOB_APPLY" })];
+    const tab = { pageId: "p", title: "Shop", url: "https://example.com/", isActive: true };
+    const sessions = [row("pane:empty", { updatedAt: ago(10) }), row("pane:idle", { tabs: [tab] }), row("pane:tabs", { tabs: [tab], updatedAt: ago(5) })];
+    const stopPane = vi.fn(async () => undefined);
+    const closePane = vi.fn(async () => undefined);
+    const recordAuditEvent = vi.fn(async (input: unknown) => input);
+    const reaper = startBrowserReaper({ store: { dueTaskSchedules: async () => [], getRoom: async () => ({ ownerUserId: "user:operator" }), recordAuditEvent,
+      listRooms: async () => [{ id: "room:a" }], listPanes: async () => panes,
+      getLatestPaneBrowserSession: async (paneId: string) => ({ sessionId: `session:${paneId}`, paneId, isActive: false, status: "CLOSED", updatedAt: ago(10) }),
+      getActiveBrowserHandoffRequest: async (sessionId: string) => sessionId.endsWith("handoff") ? { status: "REQUESTED" } : null,
+      getActiveBrowserControlLease: async (sessionId: string) => sessionId.endsWith("lease") ? { leaseId: "lease" } : null } as never,
+      census: async () => ({ sessions }), usedAt: () => null, stopPane, closePane, warn: vi.fn(), now: () => NOW });
+    await reaper.sweep();
+    reaper.stop();
+    expect(recordAuditEvent.mock.calls.map(([event]) => [(event as { targetId: string }).targetId, (event as { action: string }).action,
+      (event as { metadata: { why: string; paneClosed: boolean } }).metadata.why, (event as { metadata: { paneClosed: boolean } }).metadata.paneClosed])).toEqual([
+      ["pane:idle", BROWSER_REAPED_ACTION, "no agent or operator use for 60 min", true],
+      ["pane:stopped", BROWSER_PANE_CLOSED_ACTION, "its browser is stopped", true],
+      ["pane:empty", BROWSER_PANE_CLOSED_ACTION, "its browser has no open tab", true]
+    ]);
+    expect(closePane.mock.calls.map(([paneId]) => paneId)).toEqual(["pane:idle", "pane:stopped", "pane:empty"]);
+    expect(stopPane.mock.calls.map(([paneId]) => paneId)).toEqual(["pane:idle", "pane:empty"]);
+  });
+});
+
 describe("operatorFirstBrowsers", () => {
   const operator = { holderType: "OPERATOR" as const, holderId: "user:operator" };
   const pane = (id: string, mode = "BROWSER", extra: Record<string, unknown> = {}) => ({ id, roomId: "room:a", mode, ...extra });
@@ -164,5 +223,55 @@ describe("operatorFirstBrowsers", () => {
     expect(browserMemoryBytes(3 * GiB, 47 * GiB)).toBe(3 * GiB); // a container or systemd MemoryMax
     expect(browserMemoryBytes(0, 23 * GiB)).toBe(23 * GiB); // no limit
     expect(browserMemoryBytes(2 ** 64, 23 * GiB)).toBe(23 * GiB); // a limit above the RAM
+  });
+});
+
+describe("an agent's browser comes from its room before a new pane (operator 14/11 09:42 BKK, room Felix)", () => {
+  it("hands over a pane-profile browser of the same room whose terminal driver ended its turn; never another room's, a signed-in profile or a busy driver's", async () => {
+    const terminal = { id: "pane:dana", roomId: "room:a", mode: "TERMINAL", title: "Claude", paneName: "Dana", isClosed: false };
+    const driver: Record<string, boolean> = { "pane:busy": true, "pane:other-room": false, "pane:google": false, "pane:done": false };
+    const release: ReleaseDeps = { agentFor: (paneId) => paneId in driver ? { paneId: "pane:dana", at: Date.parse(ago(12)), active: driver[paneId]! } : null,
+      reports: async () => [{ at: ago(5), status: "TURN_END" }], typedForm: async () => false };
+    const rows = [row("pane:busy"), row("pane:other-room", { roomId: "room:b" }), row("pane:google", { profile: "google-accounts/abc" }), row("pane:done")];
+    const input = { store: { getPane: async () => terminal } as never, usedAt: () => null, scheduled: new Set<string>(), release };
+    expect(await idleRoomBrowser(rows, "room:a", input)).toBe("pane:done");
+    expect(await idleRoomBrowser(rows.slice(0, 3), "room:a", input)).toBeNull();
+  });
+});
+
+describe("finished runs' tabs close (operator 14/11 10:18 BKK, nous_msg:2e8a3dac6ce0495e9b414a77: Dino/Emma kept 9 tabs)", () => {
+  it("closes every tab but the active one, its popups and fenced tabs once the agent is done or a handoff waits; keeps a running agent's, a lease's and the operator's own", async () => {
+    const page = (pageId: string, extra: object = {}) => ({ pageId, kind: "PAGE", url: `https://example.com/${pageId}`, title: pageId, isActive: false, openerPageId: null, ...extra });
+    const tabs = (paneId: string) => [page(`${paneId}/active`, { isActive: true }), page(`${paneId}/popup`, { kind: "POPUP", openerPageId: `${paneId}/active` }),
+      page(`${paneId}/old`), page(`${paneId}/fenced`)];
+    const censusTabs = (paneId: string) => tabs(paneId).map((tab) => tab.pageId.endsWith("fenced") ? { fenced: true as const, isActive: false }
+      : { pageId: tab.pageId, title: tab.title, url: tab.url, isActive: tab.isActive });
+    const panes: Record<string, object> = { "pane:emma": { id: "pane:emma", roomId: "room:a", mode: "FREELANCE_COPILOT", title: "Freelance Copilot", paneName: "Emma", isClosed: false },
+      "pane:cli": { id: "pane:cli", roomId: "room:a", mode: "TERMINAL", title: "Claude", paneName: "Cody", isClosed: false },
+      "pane:busy": { id: "pane:busy", roomId: "room:a", mode: "TERMINAL", title: "Claude", paneName: "Busy", isClosed: false } };
+    const browsers = ["pane:emma", "pane:handoff", "pane:running", "pane:lease", "pane:mine", "pane:nodriver"];
+    for (const id of browsers.slice(1)) panes[id] = { id, roomId: "room:a", mode: "BROWSER", title: "Browser", paneName: id.slice(5), isClosed: false };
+    const driver: Record<string, string> = { "pane:emma": "pane:emma", "pane:handoff": "pane:busy", "pane:running": "pane:busy", "pane:lease": "pane:cli", "pane:mine": "pane:cli" };
+    const reports: Record<string, Array<{ at: string; status: string }>> = { "pane:emma": [{ at: ago(1), status: "TURN_END" }], "pane:cli": [{ at: ago(1), status: "DONE" }],
+      "pane:busy": [{ at: ago(1), status: "PROGRESS" }] };
+    browsers.push("pane:stopped");
+    panes["pane:stopped"] = { id: "pane:stopped", roomId: "room:a", mode: "BROWSER", title: "Browser", paneName: "stopped", isClosed: false };
+    driver["pane:stopped"] = "pane:cli";
+    const sessions = browsers.map((id) => row(id, { runtimeState: id === "pane:stopped" ? "STOPPED" : "READY", mode: (panes[id] as { mode: BrowserRow["mode"] }).mode, tabs: censusTabs(id), fencedTabs: 1,
+      ...(id === "pane:handoff" ? { handoff: { status: "PENDING", requestedAt: ago(2) } } : {}),
+      ...(id === "pane:lease" ? { control: { holderType: "OPERATOR", heartbeatAt: ago(0), operatorIdleSeconds: 5 } } : {}) }));
+    const closeTab = vi.fn(async () => undefined);
+    const recordAuditEvent = vi.fn(async (input: unknown) => input);
+    const reaper = startBrowserReaper({ store: { dueTaskSchedules: async () => [], getRoom: async () => ({ ownerUserId: "user:operator" }), recordAuditEvent,
+      getPane: async (paneId: string) => panes[paneId], getActivePaneBrowserSession: async (paneId: string) => ({ paneId, pages: tabs(paneId) }) } as never,
+      census: async () => ({ sessions }), usedAt: (paneId) => paneId === "pane:mine" ? Date.parse(ago(1)) : null, stopPane: vi.fn(), warn: vi.fn(), closeTab, now: () => NOW,
+      release: { agentFor: (paneId) => driver[paneId] ? { paneId: driver[paneId], at: Date.parse(ago(5)), active: true } : null,
+        reports: async (pane) => reports[pane.id] ?? [], typedForm: async () => false } });
+    await reaper.trim();
+    reaper.stop();
+    expect(closeTab.mock.calls.map(([pane, pageId]) => [(pane as { id: string }).id, pageId])).toEqual([["pane:emma", "pane:emma/old"], ["pane:handoff", "pane:handoff/old"]]);
+    expect(recordAuditEvent.mock.calls.map(([event]) => [(event as { action: string }).action, (event as { targetId: string }).targetId,
+      (event as { metadata: { why: string; closed: number } }).metadata.why])).toEqual([
+      [BROWSER_TABS_CLOSED_ACTION, "pane:emma", "its driver Emma ended its turn"], [BROWSER_TABS_CLOSED_ACTION, "pane:handoff", "a handoff waits on its active tab"]]);
   });
 });

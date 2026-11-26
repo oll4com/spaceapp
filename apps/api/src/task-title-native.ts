@@ -50,7 +50,7 @@ export async function runNativeMetadataCommand(
         if (process.platform !== "win32" && child.pid)
           process.kill(-child.pid, "SIGKILL");
         else child.kill("SIGKILL");
-      } catch {}
+      } catch { /* the child already exited */ }
     };
     const timeout = setTimeout(stop, timeoutMs);
     signal?.addEventListener("abort", stop, { once: true });

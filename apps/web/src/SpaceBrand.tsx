@@ -19,7 +19,6 @@ function getInitialIsLight(): boolean {
 }
 
 export function SpaceBrand({ orbital = false, onActivate }: { orbital?: boolean; onActivate?: () => void } = {}) {
-  const [isLight, setIsLight] = useState(getInitialIsLight);
   const [staticSource, setStaticSource] = useState<StaticLogoSource>(() => orbital ? ORBITAL_LOGO_SRC : getInitialIsLight() ? STATIC_LIGHT_LOGO_SRC : STATIC_LOGO_SRC);
   const [isAnimating, setIsAnimating] = useState(false);
   const [animationRun, setAnimationRun] = useState(0);
@@ -30,7 +29,6 @@ export function SpaceBrand({ orbital = false, onActivate }: { orbital?: boolean;
     if (typeof MutationObserver === "undefined") return;
     const checkLight = () => {
       const light = getInitialIsLight();
-      setIsLight(light);
       setStaticSource((prev) => {
         if (prev === STATIC_LOGO_SRC && light) return STATIC_LIGHT_LOGO_SRC;
         if (prev === STATIC_LIGHT_LOGO_SRC && !light) return STATIC_LOGO_SRC;

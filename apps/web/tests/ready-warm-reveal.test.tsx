@@ -184,3 +184,17 @@ it.each([[1200, 780], [1440, 1000]])("prepares a resident room again after the v
   expect(alpha.dataset.presentationState).toBe("preparing");
   expect(beta.dataset.presentationState).toBe("held");
 });
+
+it("never rewrites the app's inputs on a room switch (PERF-001 C-2 pattern)", async () => {
+  const { alpha } = await readyRooms();
+  const inputs = [...document.querySelectorAll("input")];
+  expect(inputs.map(input => input.name)).toEqual(expect.arrayContaining(["clip-tool-image", "room-search"]));
+  const writes: string[] = [];
+  const observer = new MutationObserver(records => writes.push(...records.map(record => `${(record.target as HTMLInputElement).name}:${record.attributeName}`)));
+  inputs.forEach(input => observer.observe(input, { attributes: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Open Alpha" }));
+  await waitFor(() => expect(alpha.dataset.presentationState).toBe("displayed"));
+  writes.push(...observer.takeRecords().map(record => `${(record.target as HTMLInputElement).name}:${record.attributeName}`));
+  observer.disconnect();
+  expect(writes).toEqual([]);
+});

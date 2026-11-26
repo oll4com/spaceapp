@@ -58,6 +58,13 @@ export const NOUS_WAIT_WINDOW_MS = 120_000;
  * the operator at once): a missed continue is tried again at the following 30 s sweeps for this long, then it is the operator's.
  */
 export const CONTINUE_RETRY_MS = 5 * 60_000;
+/**
+ * Goal 401b115b (20-22/11: 4 API-error stops escalated after CONTINUE_RETRY_MS sat 20-54 min until an API restart re-detected them,
+ * then the continue landed in 2 s): an escalated continue that missed the empty prompt is tried again at every sweep until it lands
+ * or the monitor resolves the stop. The draft guard and CONTINUES_PER_HOUR still hold.
+ */
+export const missedContinue = (event: Pick<RoomAgentEvent, "kind" | "status" | "decision">) => event.kind === "STUCK" && event.status === "ESCALATED"
+  && /^Needs you: the Room Agent could not (find the pane's empty prompt|tell the pane to continue)/.test(event.decision ?? "");
 /** Typed into a CLI whose turn broke on a server error (operator decision 2026-10-15: the Room Agent continues the task). */
 export const AUTOPILOT_CONTINUE_PROMPT = "Continue the task: your last response was cut off by an API error.";
 
@@ -98,6 +105,7 @@ export function parseAutopilotDecision(raw: string | null): AutopilotDecision | 
     const reason = typeof value.reason === "string" ? value.reason.trim().slice(0, 300) : "";
     if (value.action === "ESCALATE") return { action: "ESCALATE", reason: reason || "The Room Agent asked for the operator." };
     if (value.action !== "ANSWER" || typeof value.answer !== "string") return null;
+    // eslint-disable-next-line no-control-regex -- stripping control characters is the point
     const answer = value.answer.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").trim();
     if (!answer || answer.length > MAX_ANSWER_CHARS) return null;
     return { action: "ANSWER", answer, submit: value.submit !== false, reason: reason || "Answered to keep the task moving." };
@@ -117,13 +125,14 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
   const continueMisses = new Map<string, number>();
 
   async function settle(event: RoomAgentEvent, status: "HANDLED" | "ESCALATED", decision: string, question?: string) {
-    const updated = await options.repository.updateEvent(event.eventId, { status, decision, ...(question ? { detail: question } : {}) }, ["OPEN"]);
+    const updated = await options.repository.updateEvent(event.eventId, { status, decision, ...(question ? { detail: question } : {}) }, [event.status]);
     if (updated) await options.onEvent?.(updated);
     return updated;
   }
 
-  /** A missed continue stays open for the next sweep until CONTINUE_RETRY_MS after its first miss. */
+  /** A missed continue stays open for the next sweep until CONTINUE_RETRY_MS after its first miss; once escalated it is retried silently. */
   async function continueMissed(event: RoomAgentEvent, decision: string) {
+    if (event.status === "ESCALATED") return null;
     for (const [id, at] of continueMisses) if (now() - at > 2 * CONTINUE_RETRY_MS) continueMisses.delete(id);
     const first = continueMisses.get(event.eventId) ?? now();
     continueMisses.set(event.eventId, first);
@@ -138,7 +147,8 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
     if (!await options.repository.autopilotEnabled(event.roomId)) return settle(event, "ESCALATED", "Needs you: tell the pane to continue, or turn on auto-answer so the Room Agent does it.");
     const pane = await options.getPane(event.paneId);
     const observed = pane.mode === "TERMINAL" ? await options.inspect(pane) : null;
-    if (observed?.state === "RUNNING") return settle(event, "HANDLED", "The pane continued on its own.");
+    // An escalated stop that runs again was not the Room Agent's doing: the monitor resolves it when the pane moves on.
+    if (observed?.state === "RUNNING") return event.status === "ESCALATED" ? null : settle(event, "HANDLED", "The pane continued on its own.");
     if (!observed || !atEmptyPrompt(observed)) {
       return continueMissed(event, "Needs you: the Room Agent could not find the pane's empty prompt to continue the task.");
     }
@@ -224,8 +234,9 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
   };
 
   async function handle(event: RoomAgentEvent): Promise<RoomAgentEvent | null> {
-    if (event.status !== "OPEN" || event.severity !== "ATTENTION" || inFlight.has(event.eventId)) return null;
-    if (await options.deferTo?.(event).catch(() => false) && !await expiring(event)) return null;
+    const retry = missedContinue(event);
+    if ((event.status !== "OPEN" && !retry) || event.severity !== "ATTENTION" || inFlight.has(event.eventId)) return null;
+    if (!retry && await options.deferTo?.(event).catch(() => false) && !await expiring(event)) return null;
     inFlight.add(event.eventId);
     try {
       return await decide(event);
@@ -239,10 +250,10 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
 
   return {
     handle,
-    /** Picks up open attention events left by a restart. */
+    /** Picks up open attention events left by a restart, and escalated continues that missed their empty prompt. */
     async sweep(roomIds: string[]) {
       for (const roomId of roomIds) {
-        for (const event of await options.repository.listEvents(roomId, { statuses: ["OPEN"] })) {
+        for (const event of await options.repository.listEvents(roomId, { statuses: ["OPEN", "ESCALATED"] })) {
           if (event.severity === "ATTENTION") await handle(event);
         }
       }

@@ -93,11 +93,20 @@ export function linkDomains(content: string): string[] {
   return [...new Set([...content.matchAll(/https:\/\/([^/"'?#:\s<>]+)/gi)].map((match) => match[1]!.toLowerCase().replace(/[.,;)]+$/, "")))];
 }
 /** The template version's content: plain text, size (Gmail clips at 102 KB), images against text, link domains, hidden text, the subject. */
-export function lintCheck(content: Pick<MailTemplateContent, "subject" | "preheader" | "html" | "text">, senderDomain: string): LabCheck {
+/** A built message as text: its headers, and its base64 parts and encoded-word headers decoded. */
+export function mimeText(raw: Buffer): string {
+  return raw.toString("utf8")
+    .replace(/=\?UTF-8\?B\?([A-Za-z0-9+/=]*)\?=/gi, (_, part: string) => Buffer.from(part, "base64").toString("utf8"))
+    .replace(/(Content-Transfer-Encoding: base64\r\n(?:[^\r\n]+\r\n)*\r\n)((?:[A-Za-z0-9+/=]+\r\n)+)/gi, (_, head: string, body: string) => head + Buffer.from(body.replace(/\r\n/g, ""), "base64").toString("utf8"));
+}
+/** The template version's content and, with `sent` (plan vxtgxdSGE586 step 7b), the built message: one-click unsubscribe and no host of the
+ * shared endpoints in mail from a domain with its own (operator 23/11: unboxexpert.com mail never names oll4.com). Authentication and ARC are
+ * the DNS check and the seed verdict. */
+export function lintCheck(content: Pick<MailTemplateContent, "subject" | "preheader" | "html" | "text">, senderDomain: string, sent?: { text: string; foreignHosts: string[] }): LabCheck {
   const findings: string[] = []; const fixes: string[] = []; let fails = 0; let warns = 0;
   const htmlBytes = Buffer.byteLength(content.html, "utf8");
   if (htmlBytes > 90_000) { fails++; findings.push(`HTML is ${Math.round(htmlBytes / 1024)} KB`); fixes.push("cut the HTML under 90 KB (Gmail clips at 102 KB and hides the unsubscribe line)"); }
-  const visible = content.html.replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").replace(/\s+/g, " ").trim();
+  const visible = content.html.replace(/<(style|script)[\s\S]*?<\/\1>/gi, "").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").replace(/\s+/g, " ").trim();
   const images = (content.html.match(/<img\b/gi) ?? []).length;
   if (images && visible.length < 200) { warns++; findings.push(`${images} image(s) with only ${visible.length} characters of text`); fixes.push("write the offer in real text; images alone read as spam and show nothing when images are off"); }
   if (content.text.trim().length < Math.min(200, visible.length / 3)) { warns++; findings.push("the plain-text part is much shorter than the HTML"); fixes.push("make the plain-text part say what the HTML says"); }
@@ -115,5 +124,10 @@ export function lintCheck(content: Pick<MailTemplateContent, "subject" | "prehea
   const trigger = SPAM_WORDS.exec(fold(`${content.subject} ${visible}`));
   if (trigger) { warns++; findings.push(`spam-trigger wording ("${trigger[0]}")`); fixes.push("say the offer plainly without trigger words"); }
   if (!content.preheader) { warns++; findings.push("no preheader"); fixes.push("add a preheader: the line inboxes show after the subject"); }
+  if (sent) {
+    if (!/^List-Unsubscribe: <https:/m.test(sent.text) || !/^List-Unsubscribe-Post: List-Unsubscribe=One-Click\r?$/m.test(sent.text)) { warns++; findings.push("no one-click unsubscribe (mailto only)"); fixes.push("give the instance an https unsubscribe endpoint (SPACE_MAIL_UNSUBSCRIBE_BASE_URL or _URLS)"); }
+    const named = sent.foreignHosts.filter((host) => sent.text.toLowerCase().includes(host.toLowerCase()));
+    if (named.length) { fails++; findings.push(`the message names ${named.join(", ")}`); fixes.push(`keep ${senderDomain} mail on its own domain: take ${named.join(", ")} out of the template, the sender's footer and the endpoints`); }
+  }
   return { kind: "LINT", status: status(fails, warns), score: score(warns, fails), details: { findings, fixes, htmlBytes, images, linkDomains: domains } };
 }

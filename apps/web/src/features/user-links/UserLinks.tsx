@@ -46,7 +46,7 @@ function getSavedCategory(): CategoryFilter {
     if (saved === "GENERAL" || saved === "MUSIC_LIBRARY" || saved === "ALL") {
       return saved;
     }
-  } catch {}
+  } catch { /* storage blocked: the default category */ }
   return "ALL";
 }
 
@@ -196,7 +196,7 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
     setSelectedCategory(category);
     try {
       localStorage.setItem(STORAGE_KEY_SELECTED_CATEGORY, category);
-    } catch {}
+    } catch { /* storage blocked: the pick lives for this session */ }
   }
 
   async function inspectUrl(targetUrl: string, currentCategory: UserLinkCategory) {
@@ -235,7 +235,7 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
         if (isGenericTitle(current.title, current.url)) {
           try {
             return { ...current, url: normalized, title: clientTitle || new URL(normalized).hostname };
-          } catch {}
+          } catch { /* not a URL: keep the draft title */ }
         }
         return { ...current, url: normalized };
       });
@@ -514,7 +514,7 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
               <button className="links-item-open" type="button" onClick={() => onOpen(link)} aria-label={`Open ${link.title}`} title={link.url}>
                 <span className="link-favicon"><LinkFavicon link={link} /></span>
                 <span className="links-item-text">
-                  <span className="dock-kit-card-title" data-sensitive-masked="manual">{link.title}</span>
+                  <span className="dock-kit-card-title">{link.title}</span>
                   <span className="dock-kit-meta">
                     <span className="dock-kit-meta-text">{hostnameOf(link.url)}</span>
                     {link.category === "MUSIC_LIBRARY" ? <span className="dock-kit-badge is-accent">Music</span> : null}
@@ -570,7 +570,7 @@ export function resetQuickLinksCache(): void {
     if (typeof localStorage !== "undefined") {
       localStorage.removeItem(STORAGE_KEY_QUICK_LINKS_CACHE);
     }
-  } catch {}
+  } catch { /* storage blocked: no cache to clear */ }
 }
 
 export function readQuickLinksCache(): QuickLinksCache | null {
@@ -599,7 +599,7 @@ export function writeQuickLinksCache(data: UserLink[], total: number): QuickLink
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(STORAGE_KEY_QUICK_LINKS_CACHE, JSON.stringify(cache));
     }
-  } catch {}
+  } catch { /* storage blocked or full: the cache stays in memory */ }
   return cache;
 }
 
@@ -708,6 +708,8 @@ export function QuickLinksPopover({
       window.removeEventListener("keydown", dismiss);
       document.removeEventListener("pointerdown", handleOutside, true);
     };
+    // Runs on open only: load and onClose are new each render, and re-running would reload the list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   if (!open) return null;

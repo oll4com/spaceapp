@@ -153,4 +153,23 @@ describe("app diagnostics bootstrap", () => {
     bootstrap.stop();
     expect(channel.close).toHaveBeenCalledTimes(1);
   });
+
+  it("rejects malformed auth and diagnostics status payloads without @space/contracts runtime Zod", async () => {
+    const badAuth = vi.fn(async () => new Response(JSON.stringify({
+      user: { id: "user:1", email: "not-an-email", role: "SUPERADMIN" },
+      isAuthenticated: true,
+      isSetupRequired: false
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    await expect(appDiagnosticsSessionIsAuthenticated(badAuth)).resolves.toBe(false);
+    expect(consumeAuthBootstrap()).toBeNull();
+
+    const bootstrap = createAppDiagnosticsBootstrap({
+      fetchStatus: async () => ({ isEnabled: true, captureId: "bad" } as unknown as AppDiagnosticsStatus),
+      pollIntervalMs: 60_000
+    });
+    await bootstrap.refresh();
+    expect(bootstrap.getState().status).toBeNull();
+    expect(bootstrap.getState().lastErrorCode).toBe("INVALID_STATUS_PAYLOAD");
+    bootstrap.stop();
+  });
 });

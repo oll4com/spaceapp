@@ -48,7 +48,19 @@ export const CHESS_CLI_PROVIDERS: readonly ChessCliProviderSpec[] = [
   { id: "qoder", runtimeId: "cli:qoder", name: "Qoder", efforts: null, catalog: "tsv" },
   { id: "kimi", runtimeId: "cli:kimi", name: "Kimi Code", efforts: null, catalog: "tsv" },
   { id: "autohand", runtimeId: "cli:autohand", name: "Autohand", efforts: null, catalog: "tsv" },
-  { id: "opencode", runtimeId: "cli:opencode", name: "OpenCode", efforts: null, catalog: "opencode" },
+  { id: "opencode", runtimeId: "cli:opencode", name: "OpenCode", efforts: "tsv", catalog: "opencode" },
+  { id: "space-gateway-claude", runtimeId: "cli:opencode", name: "Space Gateway Claude", efforts: "tsv", catalog: "opencode" },
+  { id: "space-gateway-nvidia", runtimeId: "cli:opencode", name: "Space Gateway Nvidia", efforts: "tsv", catalog: "opencode" },
+  { id: "space-gateway-groq", runtimeId: "cli:opencode", name: "Space Gateway Groq", efforts: "tsv", catalog: "opencode" },
+  { id: "space-gateway-mistral", runtimeId: "cli:opencode", name: "Space Gateway Mistral", efforts: "tsv", catalog: "opencode" },
+  { id: "space-gateway-adaption", runtimeId: "cli:opencode", name: "Space Gateway Adaption", efforts: "tsv", catalog: "opencode" },
+  { id: "space-gateway-amd", runtimeId: "cli:opencode", name: "Space Gateway AMD", efforts: "tsv", catalog: "opencode" },
+  { id: "space-gateway-ovh", runtimeId: "cli:opencode", name: "Space Gateway OVH", efforts: "tsv", catalog: "opencode" },
+  { id: "space-gateway-gemini", runtimeId: "cli:opencode", name: "Space Gateway Gemini", efforts: "tsv", catalog: "opencode" },
+  { id: "space-gateway-cloudflare", runtimeId: "cli:opencode", name: "Space Gateway Cloudflare", efforts: "tsv", catalog: "opencode" },
+  { id: "space-gateway-zai", runtimeId: "cli:opencode", name: "Space Gateway ZAI", efforts: "tsv", catalog: "opencode" },
+  { id: "space-gateway-inception", runtimeId: "cli:opencode", name: "Space Gateway Inception", efforts: "tsv", catalog: "opencode" },
+  { id: "space-gateway-freeai", runtimeId: "cli:opencode", name: "Space Gateway Free.ai", efforts: "tsv", catalog: "opencode" },
 ];
 
 export const CLI_PROVIDER_IDS = new Set(CHESS_CLI_PROVIDERS.map((provider) => provider.id));
@@ -195,7 +207,9 @@ export function createWorkerCliMoveRunner(
             let payload: { text?: unknown; error?: unknown } = {};
             try {
               payload = JSON.parse(data) as typeof payload;
-            } catch {}
+            } catch {
+              // Not JSON: the HTTP status below names the failure.
+            }
             if (response.statusCode === 200 && typeof payload.text === "string") finish(null, payload.text);
             else finish(new Error(typeof payload.error === "string" ? payload.error : `Worker answered HTTP ${response.statusCode ?? 0}.`));
           });

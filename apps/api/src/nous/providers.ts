@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { GATEWAY_DEFAULT_PROVIDER_ORDER, NOUS_FREE_ROUTE_MODELS, NOUS_PROVIDER_GATEWAY, nousFreeRouteProvider, NOUS_PROVIDER_NAMES, NOUS_SPACE_AUTO, NOUS_SPACE_ROUTES, type GatewayProviderOrder,
+import { antigravityModelRequiresPaidPlan, GATEWAY_DEFAULT_PROVIDER_ORDER, isGatewayFreePlan, NOUS_FREE_ROUTE_MODELS, NOUS_PROVIDER_GATEWAY, nousFreeRouteProvider, NOUS_PROVIDER_NAMES, NOUS_SPACE_AUTO, NOUS_SPACE_ROUTES, type GatewayApiBudgetPace, type GatewayProviderOrder,
   type GatewayProviderRoute, type NousProvider, type NousProviderModel, type NousProviderOption } from "@space/contracts";
 import type { SpaceRoute } from "./space-provider.js";
 import { CODEX_LB_BASE_URL, codexAuthHeaders } from "../asteroids-arena/providers.js";
@@ -7,11 +7,14 @@ import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 type SupportedProvider = Exclude<NousProvider, "space">;
 type Window = { resetAt?: string | null; usedPercent?: number | null } | null | undefined;
-type CatalogAccount = { id?: string; provider: string; status: string; planType?: string | null; primaryWindow?: Window; secondaryWindow?: Window };
+type CatalogAccount = { id?: string; provider: string; status: string; planType?: string | null; primaryWindow?: Window; secondaryWindow?: Window;
+  quotaGroups?: Array<{ key: string; primaryWindow?: Window; secondaryWindow?: Window }> };
 type ModelLoader = () => Promise<NousProviderModel[]>;
 export interface NousProviderCatalogOptions {
   /** Sanitized gateway account metadata, never credentials. Re-read on every selection and validation. */
   listAccounts?: () => Promise<{ data: CatalogAccount[] }>;
+  /** Claude API key monthly budget pace from Space Gateway. */
+  apiBudget?: () => Promise<GatewayApiBudgetPace | null>;
   /** Public credential containers currently implement only Claude's Nous tool loop. */
   publicCredentialHost?: boolean;
   modelLoaders?: Partial<Record<SupportedProvider, ModelLoader>>;
@@ -78,6 +81,8 @@ function claudeModels(payload: unknown): NousProviderModel[] {
 }
 
 /** Live gateway catalogs and the native Gemini catalog snapshot; never an installed-CLI or hardcoded-model inventory. */
+/** Clean-install lab 23/11: a public install without Claude still answers (wiring.ts, free OpenCode model) and takes an Anthropic API key. */
+export const NOUS_PUBLIC_NO_CLAUDE = "Claude Code is not signed in, so Nous answers on OpenCode's free model (the Getting Started pane's). For a stronger Nous, sign in to Claude Code under the CLI providers, or add an Anthropic API key (credentials set claude).";
 export function createNousProviderCatalog(options: NousProviderCatalogOptions = {}) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const authHeaders = options.authHeaders ?? codexAuthHeaders;
@@ -95,17 +100,34 @@ export function createNousProviderCatalog(options: NousProviderCatalogOptions = 
     return response.json();
   }
   const loaders: Record<SupportedProvider, ModelLoader> = {
-    codex: options.modelLoaders?.codex ?? (async () => codexModels(await gateway("/backend-api/codex/models"))),
+    codex: options.modelLoaders?.codex ?? (async () => {
+      try {
+        return codexModels(await gateway("/backend-api/codex/models"));
+      } catch {
+        return codexModels(await gateway("/v1/models"));
+      }
+    }),
     claude: options.modelLoaders?.claude ?? (async () => claudeModels(await gateway("/v1/models?limit=100", {
       "anthropic-version": "2023-06-01", "user-agent": "claude-code/space-nous-catalog"
     }))),
     gemini: options.modelLoaders?.gemini ?? (async () => {
-      const payload = object(JSON.parse(await read(GEMINI_MODELS_FILE)));
-      return string(payload?.models).split("\n").flatMap((line) => {
+      let payload: Record<string, unknown> | null = null;
+      try {
+        payload = object(JSON.parse(await read(GEMINI_MODELS_FILE)));
+      } catch { /* missing or invalid snapshot */ }
+      const models = string(payload?.models).split("\n").flatMap((line) => {
         const [id, label] = line.split("\t").map((part) => part.trim());
         // This native runner targets Gemini and Antigravity's Claude models. Thinking variants are encoded in the native model id.
         return id && /^(?:gemini|claude)-/.test(id) ? [{ id, label: label || id, efforts: ["none"] }] : [];
       });
+      if (!models.length) {
+        return [
+          { id: "gemini-4-neon", label: "Gemini 4 Neon", efforts: ["none"] },
+          { id: "gemini-4-neon-high", label: "Gemini 4 Neon (High)", efforts: ["none"] },
+          { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", efforts: ["none"] }
+        ];
+      }
+      return models;
     })
   };
 
@@ -143,16 +165,19 @@ export function createNousProviderCatalog(options: NousProviderCatalogOptions = 
   }
 
   // The Gemini provider itself offers Gemini models only; Antigravity's Claude models are its own Space route (`antigravityClaude`).
-  async function providerOption({ id, name, gateway: provider }: typeof PROVIDERS[number], { accounts, accountsAvailable }: Awaited<ReturnType<typeof accountState>>, antigravityClaude = false): Promise<NousProviderOption> {
+  async function providerOption({ id, name, gateway: provider }: typeof PROVIDERS[number], { accounts, accountsAvailable }: Awaited<ReturnType<typeof accountState>>, antigravityClaude = false, apiKey = false): Promise<NousProviderOption> {
     const base = { id, name, available: false, models: [] as NousProviderModel[] };
     if (options.publicCredentialHost && id !== "claude") {
       return { ...base, reason: "This installation's credential container does not support this Nous provider yet." };
     }
     if (!accountsAvailable) return { ...base, reason: "The active provider accounts could not be checked." };
+    const pace = (id === "claude" && apiKey && options.apiBudget) ? await options.apiBudget().catch(() => null) : null;
+    const keyBlocked = Boolean(pace?.stop || (typeof pace?.remainingUsd === "number" && pace.remainingUsd <= 0));
     const active = accounts.some((account) => account.provider === provider && quotaState(account).eligible
-      && (id !== "claude" || account.planType?.toLowerCase() !== "api"));
+      && (id !== "claude" || (!keyBlocked && apiKey) || account.planType?.toLowerCase() !== "api"));
     if (!active) return { ...base, reason: id === "claude"
-      ? "No active Claude subscription account. Claude API credits do not serve Nous."
+      ? (apiKey && keyBlocked ? "Claude API monthly budget reached." : options.publicCredentialHost ? NOUS_PUBLIC_NO_CLAUDE
+        : "No active Claude subscription account. Claude API credits do not serve Nous.")
       : accounts.some((account) => account.provider === provider) ? `Its Space Gateway accounts are paused or out of quota.`
       : `No active ${name} account in Space Gateway. Add one under Space Gateway → Accounts.` };
     try {
@@ -164,11 +189,34 @@ export function createNousProviderCatalog(options: NousProviderCatalogOptions = 
     }
   }
 
-  /** The soonest reset among a pool's accounts, when they have one in the future (only a known time, never a guess). */
+  /** When the first of a pool's accounts is back: the last reset of its full windows, an unknown use counting as full (17/11: Codex said back at its 5h reset, its week full to 21/11). */
   function poolReset(accounts: CatalogAccount[], gateway: string): string | null {
-    const at = accounts.filter((account) => account.provider === gateway).flatMap((account) => [account.primaryWindow?.resetAt, account.secondaryWindow?.resetAt])
-      .map((value) => Date.parse(value ?? "")).filter((value) => Number.isFinite(value) && value > now()).sort((a, b) => a - b)[0];
+    const at = accounts.filter((account) => account.provider === gateway).map((account) => Math.max(...[account.primaryWindow, account.secondaryWindow]
+      .filter((window) => (window?.usedPercent ?? 100) >= 100).map((window) => Date.parse(window?.resetAt ?? "")).filter((value) => Number.isFinite(value) && value > now())))
+      .filter(Number.isFinite).sort((a, b) => a - b)[0];
     return at === undefined ? null : new Date(at).toISOString();
+  }
+
+  /** Gemini 4 Neon's ids (gemini-4-neon-high…), not the Neon orchestrator's. */
+  const NEON = /^gemini-\d+-neon\b/;
+  /**
+   * 17/11: an Antigravity account's room is its quota group's (Claude routes "claude", Gemini "gemini"), never its empty own windows, which showed
+   * spent Argon and Claude ready. The Gemini 5-hour bucket is Argon's (its reset is Argon's): Flash answered with it full, so Flash reads the week only.
+   */
+  function antigravityView(state: Awaited<ReturnType<typeof accountState>>, route: GatewayProviderRoute): Awaited<ReturnType<typeof accountState>> {
+    if (!route.startsWith("ANTIGRAVITY")) return state;
+    const key = route === "ANTIGRAVITY_CLAUDE" ? "claude" : route === "ANTIGRAVITY" ? "argon" : "gemini";
+    return { ...state, accounts: state.accounts.map((account) => {
+      const group = account.provider === "ANTIGRAVITY"
+        ? (account.quotaGroups?.find((entry) => entry.key === key) ?? (key === "argon" ? account.quotaGroups?.find((entry) => entry.key === "gemini") : undefined))
+        : undefined;
+      // 22/11 (c74c7453): Argon's 5-hour window full while Gemini/Neon has room reads the Gemini group too.
+      const effectiveGroup = route === "ANTIGRAVITY" && ((group?.primaryWindow?.usedPercent ?? 0) >= 100 || (group?.secondaryWindow?.usedPercent ?? 0) >= 100)
+        ? (account.quotaGroups?.find((entry) => entry.key === "gemini") ?? group)
+        : group;
+      const isFree = isGatewayFreePlan(account.planType);
+      return effectiveGroup ? { ...account, primaryWindow: (route === "ANTIGRAVITY_FLASH" || isFree) ? undefined : effectiveGroup.primaryWindow, secondaryWindow: effectiveGroup.secondaryWindow } : account;
+    }) };
   }
 
   /** The Space provider's routes in the Gateway's order, each with its own models (unprefixed), availability and reason. */
@@ -181,26 +229,29 @@ export function createNousProviderCatalog(options: NousProviderCatalogOptions = 
       return own && meta && meta.provider ? [{ route: route as GatewayProviderRoute, enabled, own, provider: meta.provider, meta }] : [];
     }).map(async ({ route, enabled, own, provider, meta }) => {
       const base = { route, name: meta.name, runtime: meta.runtime, prefix: meta.prefix, provider, enabled };
-      let option: Pick<NousProviderOption, "available" | "reason" | "models">;
-      if (route === "CLAUDE_OPENCODE") {
-        // Operator decision 8/11: Nous never spends the Claude API budget; the Gateway also refuses the key to Nous projects (isClaudeCodeRequest).
-        option = { available: false, reason: "Off for Nous: the Claude API budget is never spent by Nous (operator decision 8/11).", models: [] };
-      } else {
-        option = await providerOption(PROVIDERS.find((item) => item.id === own)!, accounts, true);
-        // "No … model" only when the provider itself is up: an unavailable one keeps its own reason (no account, quota, catalog down).
-        if (route === "ANTIGRAVITY") {
-          const argon = option.models.filter((m) => m.id.includes("argon"));
-          option = { ...option, models: argon, available: option.available && argon.length > 0,
-            reason: argon.length || !option.available ? option.reason : "No Argon model in provider catalog." };
-        } else if (route === "ANTIGRAVITY_FLASH") {
-          const flash = option.models.filter((m) => m.id.startsWith("gemini-") && !m.id.includes("argon"));
-          option = { ...option, models: flash, available: option.available && flash.length > 0,
-            reason: flash.length || !option.available ? option.reason : "No 3.8 Flash model in provider catalog." };
-        } else if (route === "ANTIGRAVITY_CLAUDE") {
-          const claude = option.models.filter((m) => m.id.startsWith("claude-"));
-          option = { ...option, models: claude, available: option.available && claude.length > 0,
-            reason: claude.length || !option.available ? option.reason : "No Claude model in the Antigravity catalog." };
-        }
+      const view = antigravityView(accounts, route);
+      // Operator 17/11 (nous_msg:35d3e36f8d414784bde8e43f): CLAUDE_OPENCODE is a normal route again; the Gateway serves it from Max first and
+      // from the Claude API key once Max is out, so an active key account keeps it available.
+      let option: Pick<NousProviderOption, "available" | "reason" | "models"> = await providerOption(PROVIDERS.find((item) => item.id === own)!, view, true, route === "CLAUDE_OPENCODE");
+      // "No … model" only when the provider itself is up: an unavailable one keeps its own reason (no account, quota, catalog down).
+      if (route === "ANTIGRAVITY") {
+        const argonGroup = (a: (typeof accounts.accounts)[number]) => a.quotaGroups?.find((g) => g.key === "argon");
+        const hasArgonQuota = accounts.accounts.some((a) => a.provider === "ANTIGRAVITY" && (argonGroup(a)?.primaryWindow?.usedPercent ?? 0) < 100 && (argonGroup(a)?.secondaryWindow?.usedPercent ?? 0) < 100);
+        const top = option.models.filter((m) => NEON.test(m.id) || m.id.includes("argon") || m.id.includes("hydrogen"));
+        // Operator 22/11 c74c7453 («gemini 4 neon και οχι το argon»): Argon only while the catalog has no Neon and Argon has quota.
+        const rest = top.filter((m) => !m.id.includes("argon"));
+        const models = (top.some((m) => NEON.test(m.id)) || !hasArgonQuota) && rest.length ? rest : top;
+        option = { ...option, models, available: option.available && models.length > 0,
+          reason: models.length || !option.available ? option.reason : "No Argon model in provider catalog." };
+      } else if (route === "ANTIGRAVITY_FLASH") {
+        const flash = option.models.filter((m) => m.id.startsWith("gemini-") && !NEON.test(m.id) && !m.id.includes("argon") && !m.id.includes("hydrogen") && !m.id.includes("orchestrator"));
+        option = { ...option, models: flash, available: option.available && flash.length > 0,
+          reason: flash.length || !option.available ? option.reason : "No 3.8 Flash model in provider catalog." };
+      } else if (route === "ANTIGRAVITY_CLAUDE") {
+        const paidActive = view.accounts.some((account) => account.provider === "ANTIGRAVITY" && !isGatewayFreePlan(account.planType) && quotaState(account).eligible);
+        const claude = option.models.filter((m) => m.id.startsWith("claude-") && (paidActive || !antigravityModelRequiresPaidPlan(m.id)));
+        option = { ...option, models: claude, available: option.available && claude.length > 0,
+          reason: claude.length || !option.available ? option.reason : "No Claude model in the Antigravity catalog." };
       }
       const pool = accounts.accounts.filter((account) => account.provider === NOUS_PROVIDER_GATEWAY[own]
         && (route !== "CLAUDE" || account.planType?.toLowerCase() !== "api"));
@@ -210,7 +261,7 @@ export function createNousProviderCatalog(options: NousProviderCatalogOptions = 
         key: JSON.stringify(pool.map((account) => [account.id, account.status, account.primaryWindow, account.secondaryWindow, quotaState(account)]).sort())
       } : undefined;
       const cool = options.cooling?.(route);
-      const resetAt = cool?.until ?? (route === "CLAUDE_OPENCODE" ? null : poolReset(accounts.accounts, NOUS_PROVIDER_GATEWAY[own]));
+      const resetAt = cool?.until ?? (route === "CLAUDE_OPENCODE" ? null : poolReset(view.accounts, NOUS_PROVIDER_GATEWAY[own]));
       return { ...base, ...option, name: meta.name, quota, reason: option.available && cool ? `Cooling down after a refusal: ${cool.reason.slice(0, 200)}` : option.reason, resetAt: option.available && !cool ? null : resetAt };
     })).then((own) => {
       // The free and granted pools (nous_msg:d9b67550), each with its one tool-taking model, in the Gateway's order after the routes above.
@@ -232,12 +283,18 @@ export function createNousProviderCatalog(options: NousProviderCatalogOptions = 
 
   async function spaceOption(state: Awaited<ReturnType<typeof accountState>>): Promise<NousProviderOption> {
     const all = await routes(state);
-    const usable = all.filter((route) => route.available);
-    const auto = all.some((route) => route.enabled && route.available)
+    const usable = all.filter((route) => route.available || Boolean(options.cooling?.(route.route)));
+    const auto = usable.some((route) => route.enabled)
       ? Object.entries(NOUS_SPACE_AUTO).map(([id, entry]) => ({ id, label: entry.label, efforts: ["auto", "low", "medium", "high", "xhigh", "max"] })) : [];
-    const models = [...auto, ...usable.flatMap((route) => route.models.map((model) => ({ id: `${route.prefix}:${model.id}`, label: `${model.label} · ${route.name}`, efforts: model.efforts })))];
-    return { id: "space", name: NOUS_PROVIDER_NAMES.space, available: models.length > 0, models,
-      reason: models.length ? null : options.publicCredentialHost ? "This installation's credential container does not support this Nous provider yet."
+    const seen = new Set<string>();
+    const models = [...auto, ...usable.flatMap((route) => route.models.map((model) => ({ id: `${route.prefix}:${model.id}`, label: `${model.label} · ${route.name}`, efforts: model.efforts })))]
+      .filter((model) => {
+        if (seen.has(model.id)) return false;
+        seen.add(model.id);
+        return true;
+      });
+    return { id: "space", name: NOUS_PROVIDER_NAMES.space, available: usable.length > 0 && models.length > 0, models: usable.length > 0 ? models : [],
+      reason: usable.length ? null : options.publicCredentialHost ? "This installation's credential container does not support this Nous provider yet."
         : `No Space Gateway route can serve now: ${all.map((route) => `${route.name}: ${route.reason ?? "off"}`).join("; ")}`,
       routes: all.map(({ route, name, runtime, enabled, available, reason, resetAt }) => ({ route, name, runtime, enabled, available, reason, resetAt: resetAt ?? null })) };
   }

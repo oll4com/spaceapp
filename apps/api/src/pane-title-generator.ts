@@ -55,6 +55,7 @@ export interface TerminalPaneTitleGenerationOptions {
 
 function boundedText(value: unknown, maxLength: number): string {
   if (typeof value !== "string") return "";
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point
   return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
@@ -355,7 +356,7 @@ function buildMessages(input: PaneTitleMessageSource, options?: { allowEmpty?: b
 export function sanitizeGeneratedPaneTitle(value: string, fallback = "CLI"): string {
   const firstLine = boundedText(value.split(/\r?\n/u).find((line) => line.trim()) ?? "", 160);
   const stripped = firstLine
-    .replace(/^(title|suggested title)\s*[:\-]\s*/i, "")
+    .replace(/^(title|suggested title)\s*[:-]\s*/i, "")
     .replace(/^["'`]+|["'`]+$/g, "")
     .replace(/[.!?;:,]+$/g, "")
     .trim();

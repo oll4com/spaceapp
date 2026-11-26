@@ -4,11 +4,12 @@ import { markPairAfterStepUp, takePairAfterStepUp } from "./mobile-pair-resume.j
 import { pairingQrPath } from "./pairing-qr.js";
 import { useUiText } from "../ui-language/ui-language.js";
 import { SettingsLabel } from "../settings/SettingsLabel.js";
+import { StepUpConfirm } from "./StepUpConfirm.js";
 
 /**
  * Settings > Account > Mobile app (Nous Pro 1b, ADR-013): pair the Nous app straight to this SpaceApp, end to end encrypted. Setting up and
- * pairing take your SpaceApp password or a fresh Google sign-in (the server answers STEP_UP_REQUIRED with where to go; the password
- * also serves installs without Google sign-in). The QR carries a one-time code for 120 s and
+ * pairing take a fresh Google sign-in or a link by mail (StepUpConfirm; the server answers STEP_UP_REQUIRED with where to go; the
+ * SpaceApp password stays behind a link). The QR carries a one-time code for 120 s and
  * shows only in this tab (capture sessions are read-only and cannot ask for one); agents' pictures of the page blur it (data-sensitive-masked="pairing",
  * PAIRING_MASK in browser-sessions.ts), the operator's own Hide sensitive data does not (12/11: it hid the code he had to scan).
  * A paired phone only reads until it is allowed under Devices. Pair a phone also sets the keys up when there are none (7/11: Set up was a
@@ -16,15 +17,14 @@ import { SettingsLabel } from "../settings/SettingsLabel.js";
  */
 const WRAP = { display: "flex", flexWrap: "wrap", gap: "0.5rem 0.75rem", alignItems: "center" } as const;
 
-export function MobileAppManager() {
+export function MobileAppManager({ googleAuthEnabled = true }: { googleAuthEnabled?: boolean } = {}) {
   const [status, setStatus] = useState<MobileInstanceStatus | null>(null);
   const [offer, setOffer] = useState<MobilePairingOffer | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The server asked to confirm it is you: why, the action to run again after the password, and Google's step-up page.
+  // The server asked to confirm it is you: the action to run again once confirmed, and Google's step-up page.
   const [stepUp, setStepUp] = useState<{ reason: string; retry: () => Promise<void>; googleUrl?: string } | null>(null);
-  const [password, setPassword] = useState("");
   const [copied, setCopied] = useState(false);
   const t = useUiText();
 
@@ -53,10 +53,10 @@ export function MobileAppManager() {
     } catch (failure) {
       const details = failure instanceof SpaceApiError && failure.code === "STEP_UP_REQUIRED" ? failure.details as { stepUpUrl?: string; passwordUrl?: string } | undefined : undefined;
       if (details?.passwordUrl) {
-        // The desktop app turns /api/auth/google/start into a plain desktop sign-in that drops stepUp=mobile: only the password works there.
-        // Say why the password field appeared (7/11: four Set up clicks answered 401 STEP_UP_REQUIRED and no password followed), as a
-        // request, not an error (8/11: the operator read the red alert in the desktop app as a failed pairing and stopped there).
-        setStepUp({ reason: (failure as Error).message.replace(/^STEP_UP_REQUIRED: /, ""), retry: work, googleUrl: "spaceDesktop" in window ? undefined : details.stepUpUrl });
+        // The desktop app turns /api/auth/google/start into a plain desktop sign-in that drops stepUp=mobile: the mailed link there.
+        // Ask inline (7/11: four Set up clicks answered 401 STEP_UP_REQUIRED and nothing followed), as a request, not an error
+        // (8/11: the operator read the red alert in the desktop app as a failed pairing and stopped there).
+        setStepUp({ reason: (failure as Error).message.replace(/^STEP_UP_REQUIRED: /, ""), retry: work, googleUrl: "spaceDesktop" in window || !googleAuthEnabled ? undefined : details.stepUpUrl });
         return;
       }
       if (details?.stepUpUrl) { markPairAfterStepUp(); window.location.assign(details.stepUpUrl); return; }
@@ -71,39 +71,22 @@ export function MobileAppManager() {
     // A pairing code shown before names the old keys, which the phone would refuse: it goes with them.
     if (window.confirm(question)) { setStatus(await api.rotateMobileInstance(compromised)); setOffer(null); }
   });
-  const confirmPassword = () => run(async () => {
-    const retry = stepUp!.retry;
-    await api.stepUpWithPassword(password);
-    setPassword("");
-    setStepUp(null);
-    await retry();
-  });
+  const confirmed = () => { const retry = stepUp!.retry; setStepUp(null); return run(retry); };
   // Pair a phone: the server sets the keys up first when there are none, so the status follows.
   async function pair() {
     setCopied(false);
     setOffer(await api.createMobilePairing());
     if (!status?.configured) setStatus(await api.mobileInstance());
   }
-  const goToGoogle = (url: string) => { markPairAfterStepUp(); window.location.assign(url); };
   const cancel = () => run(async () => { if (offer) await api.cancelMobilePairing(offer.offerId); setOffer(null); });
 
   return <section aria-label="Mobile app" className="google-accounts-manager">
     <div className="settings-flat-row" style={{ gridTemplateColumns: "1fr" }}>
       <SettingsLabel label="Mobile app" help="Pair the Nous app on your phone with this SpaceApp; it connects here directly, end to end encrypted. Pair a phone sets up the mobile keys when needed and first asks you to confirm it is you." />
     </div>
-    {stepUp ? <form onSubmit={(event) => { event.preventDefault(); void confirmPassword(); }}>
-      <div className="settings-flat-row" style={WRAP}>
-        <p className="settings-flat-row-copy" role="status" style={{ flex: "1 1 100%", margin: 0 }}><small>{stepUp.reason}{stepUp.googleUrl ? null
-          : " Google confirmation is not available in the desktop app: type your SpaceApp password, or open SpaceApp in a web browser and pair from there."}</small></p>
-        <label className="settings-flat-row-copy" style={{ flex: "1 1 100%" }}><small>Your SpaceApp password</small>
-          <input type="password" autoComplete="current-password" autoFocus value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
-      </div>
-      <div className="settings-flat-actions">
-        <button type="submit" className="button" disabled={busy || !password}>Confirm</button>
-        {stepUp.googleUrl ? <button type="button" className="button" disabled={busy} onClick={() => goToGoogle(stepUp.googleUrl!)}>Sign in to Google instead</button> : null}
-        <button type="button" className="button" disabled={busy} onClick={() => { setStepUp(null); setPassword(""); setError(null); }}>Cancel</button>
-      </div>
-    </form> : null}
+    {stepUp ? <StepUpConfirm reason={t("Confirm it is you to pair a phone.")}
+      google={Boolean(stepUp.googleUrl)} beforeGoogle={markPairAfterStepUp}
+      onConfirmed={confirmed} onCancel={() => { setStepUp(null); setError(null); }} /> : null}
     {status && !status.configured ? <>
       <p className="settings-flat-note">No phone paired yet.</p>
       <div className="settings-flat-actions">

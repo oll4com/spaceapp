@@ -32,3 +32,14 @@ export function consumePlanView(): string | null {
   planPending = null;
   return requested;
 }
+/** The bell (plan clipboard:aE7U1J_gU9OV): it opens Nous's «Εισερχόμενα», the one place every notice is read and answered. */
+let inboxPending = false;
+export function requestInboxView(): void {
+  inboxPending = true;
+  window.dispatchEvent(new Event(NOUS_DONE_OPEN_EVENT));
+}
+export function consumeInboxView(): boolean {
+  const requested = inboxPending;
+  inboxPending = false;
+  return requested;
+}

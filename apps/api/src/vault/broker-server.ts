@@ -11,7 +11,7 @@ import {
   vaultSignupGrantCertificateSchema, vaultSignupGrantOperatorMessage, vaultSignupGrantRequestSchema, VAULT_SIGNUP_GRANT_LIMITS,
   vaultSignupSite, vaultUnlockChallengeMessage, vaultUseCapabilitySchema, verifyVaultCertificate, verifyVaultMessage, wipeVaultBytes, VAULT_FIELD_ROLES,
   VAULT_BROKER_API_MAX_BYTES, VAULT_CARD_ROLES, VAULT_DELEGATION_TECHNICAL_MAX_ITEMS, isVaultCardRole, vaultDelegationClaimsSchema,
-  VaultCryptoError, canonicalVaultOrigin, vaultOriginCovers, type VaultUseClaims
+  VaultCryptoError, canonicalVaultOrigin, vaultOriginCovers, vaultLinkSyncSchema, vaultOperatorRequestMessage, type VaultLinkSync, type VaultUseClaims
 } from "@space/contracts";
 
 // The Vault fill broker (ADR-012), the only process that holds the ARK. It runs as the space-vault user from a root-owned
@@ -29,6 +29,8 @@ const KEY_VERSION = 1;
 const USE_TTL_MS = 60_000;
 /** The other broker of a server move (docs/agents/space-transfer.md), named only by root: { transportKey, signingKey }. */
 export const VAULT_MOVE_PEER_PATH = "/etc/space-vault-broker/move-peer.json";
+/** Space Link Vault sync without an unlock: root's pin per link, `<linkId>.json` (space-transfer.mjs vault-link-pin). */
+export const VAULT_LINK_PEER_DIR = "/etc/space-vault-broker/link-peers";
 
 export const VAULT_BROKER_SOCKET = "/run/space-vault-broker/broker.sock";
 export const VAULT_CLIENT_GROUP = "space-vault-client";
@@ -103,21 +105,31 @@ const schemas = {
   delegatePending: z.object({
     ownerUserId: owner, vaultId, certificate: vaultDelegationCertificateSchema, keyEnvelope: vaultSymmetricEnvelopeSchema, inboxKeyEnvelope: vaultSymmetricEnvelopeSchema,
     entry: z.object({ handle: z.string().regex(/^vault_item:[A-Za-z0-9_-]{16,64}$/), origin: z.string().max(300),
-      sealedUsername: vaultTransportEnvelopeSchema.nullable(), sealedPassword: vaultTransportEnvelopeSchema.nullable() }).strict()
+      sealedUsername: vaultTransportEnvelopeSchema.nullable(), sealedPassword: vaultTransportEnvelopeSchema.nullable(),
+      /** An authenticator key an agent's browser read from a setup QR (SET_OTP); absent from APIs before 14/11. */
+      sealedOtp: vaultTransportEnvelopeSchema.optional() }).strict()
   }).strict(),
   movePeer: z.object({ transportKey: key, signingKey: key }).strict(),
+  /** deviceId: the receiving side's pin (the linked device that may push); its keys are the sender's. Without it, the sending side's. */
+  linkPeer: z.object({ linkId: z.string().regex(/^link:[A-Za-z0-9_-]{8,64}$/), ownerUserId: owner, transportKey: key, signingKey: key,
+    deviceId: z.string().regex(/^appdev:[A-Za-z0-9_-]{8,64}$/).optional() }).strict(),
+  linkPin: z.object({ linkId: z.string().regex(/^link:[A-Za-z0-9_-]{8,64}$/) }).strict(),
   moveOut: z.object({
     ownerUserId: owner, vaultId, unlockPublicKey: key, serverShareEnvelope: vaultSymmetricEnvelopeSchema,
-    delegation: z.object({ certificate: vaultDelegationCertificateSchema, keyEnvelope: vaultSymmetricEnvelopeSchema, inboxKeyEnvelope: vaultSymmetricEnvelopeSchema.optional() }).strict().optional()
+    delegation: z.object({ certificate: vaultDelegationCertificateSchema, keyEnvelope: vaultSymmetricEnvelopeSchema, inboxKeyEnvelope: vaultSymmetricEnvelopeSchema.optional() }).strict().optional(),
+    /** Space Link Vault sync: the operator's consent names the receiving broker instead of root's pinned peer. */
+    link: vaultLinkSyncSchema.optional()
   }).strict(),
-  moveIn: z.object({ ownerUserId: owner, vaultId, certificate: vaultDelegationCertificateSchema, sealedFillKey: vaultTransportEnvelopeSchema, sealedInboxKey: vaultTransportEnvelopeSchema.optional() }).strict()
+  moveIn: z.object({ ownerUserId: owner, vaultId, certificate: vaultDelegationCertificateSchema, sealedFillKey: vaultTransportEnvelopeSchema, sealedInboxKey: vaultTransportEnvelopeSchema.optional(),
+    /** Space Link Vault sync: the consent, checked against this side's enrolled unlock key (pinned through its server share). */
+    link: vaultLinkSyncSchema.optional(), unlockPublicKey: key.optional(), serverShareEnvelope: vaultSymmetricEnvelopeSchema.optional() }).strict()
 };
 /** Grants minted under the delegation: one site, one use, short-lived; no daily cap (operator request 2026-10-20). */
 export const VAULT_AUTO_GRANT = { ttlMs: 10 * 60_000 } as const;
 
 // The operator-signed delegation (and sign-up grant) is the whole authorization for a fill (operator decision 2026-10-18,
 // plan clipboard:Ml8zElMcc4Ac): no custody report is consulted any more.
-export async function createVaultBroker(options: { ark: Uint8Array; stateDir: string; now?: () => Date; movePeerPath?: string; movePeerOwnerUid?: number }) {
+export async function createVaultBroker(options: { ark: Uint8Array; stateDir: string; now?: () => Date; movePeerPath?: string; movePeerOwnerUid?: number; linkPeerDir?: string }) {
   const { ark, stateDir } = options;
   const now = options.now ?? (() => new Date());
   if (ark.length !== 32) throw new Error("The ARK must be 32 bytes.");
@@ -167,15 +179,35 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
     try { return await verifyVaultCertificate(signing.publicKey, certificate, vaultDelegationCertificateSchema, now()); } catch { throw new VaultBrokerRefusal("CERTIFICATE_REFUSED"); }
   };
   // The other broker of a server move: a root-owned file (and folder) nobody else writes. Reaching the socket is never enough.
-  const movePeer = () => {
-    const path = options.movePeerPath ?? VAULT_MOVE_PEER_PATH;
+  const rootFile = <T>(path: string, schema: z.ZodType<T>, reason: string): T => {
     const rootUid = options.movePeerOwnerUid ?? 0;
     try {
       const file = lstatSync(path);
       const dir = statSync(dirname(path));
       if (!file.isFile() || file.uid !== rootUid || (file.mode & 0o022) !== 0 || dir.uid !== rootUid || (dir.mode & 0o022) !== 0) throw new Error("posture");
-      return schemas.movePeer.parse(JSON.parse(readFileSync(path, "utf8")));
-    } catch { throw new VaultBrokerRefusal("MOVE_NOT_PINNED"); }
+      return schema.parse(JSON.parse(readFileSync(path, "utf8")));
+    } catch { throw new VaultBrokerRefusal(reason); }
+  };
+  const movePeer = () => rootFile(options.movePeerPath ?? VAULT_MOVE_PEER_PATH, schemas.movePeer, "MOVE_NOT_PINNED");
+  const linkPeer = (linkId: string) => {
+    const pin = rootFile(join(options.linkPeerDir ?? VAULT_LINK_PEER_DIR, `${linkId}.json`), schemas.linkPeer, "LINK_NOT_PINNED");
+    if (pin.linkId !== linkId) throw new VaultBrokerRefusal("LINK_NOT_PINNED");
+    return pin;
+  };
+  // Space Link Vault sync (plan clipboard:TcX66vjNuZDv step 2): the unlock key's signature over the link and both brokers' keys stands in
+  // for root's pinned peer, so neither API nor a session cookie can point the Vault at another broker. An unsigned consent (step 7,
+  // operator rule 4d47dcab) stands only on root's pin for that link and owner, naming the same peer key on this side.
+  const linkConsent = async (input: { ownerUserId: string; vaultId: string }, unlockPublicKey: string, link: VaultLinkSync, side: "out" | "in") => {
+    const { operatorSignature, ...body } = link;
+    if (!operatorSignature) {
+      const pin = linkPeer(link.linkId);
+      const matches = side === "out" ? !pin.deviceId && pin.transportKey === link.transportKey : Boolean(pin.deviceId) && pin.signingKey === link.signingKey;
+      if (pin.ownerUserId !== input.ownerUserId || !matches) throw new VaultBrokerRefusal("LINK_PIN_MISMATCH");
+      return body;
+    }
+    const message = vaultOperatorRequestMessage("link-sync", { ownerUserId: input.ownerUserId, vaultId: input.vaultId, ...body });
+    if (!await verifyVaultMessage(b64.decode(unlockPublicKey), message, operatorSignature)) throw new VaultBrokerRefusal("LINK_SIGNATURE_REFUSED");
+    return body;
   };
   const verifyCapability = async (capability: unknown) => {
     try { return await verifyVaultCertificate(signing.publicKey, capability, vaultUseCapabilitySchema, now()); } catch { throw new VaultBrokerRefusal("CAPABILITY_REFUSED"); }
@@ -184,6 +216,11 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
   const handlers: Record<string, (body: unknown) => Promise<unknown>> = {
     async "GET /v1/transport-key"() { return { publicKey: b64.encode(transport.publicKey), keyVersion: KEY_VERSION }; },
     async "GET /v1/delegation-key"() { return { publicKey: b64.encode(signing.publicKey), keyVersion: KEY_VERSION }; },
+    // Public keys only: what root pinned for a link, so the API can build the unsigned consent and check who may push.
+    async "POST /v1/link-pin"(raw) {
+      const { linkId } = schemas.linkPin.parse(raw);
+      try { return { pinned: true, ...linkPeer(linkId) }; } catch { return { pinned: false }; }
+    },
     // Read only, on the API's socket (hardening plan step 16): the newest audit entries' times, ops, results and hashes,
     // never an owner, vault or value. shortcut: reads the whole file; rotate it if it ever grows past a few MB.
     async "GET /v1/audit"() {
@@ -248,7 +285,8 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
       if (delegation.generation < (floors[floorKey(input)] ?? 0)) throw new VaultBrokerRefusal("GENERATION_RETIRED");
       const { entry } = input;
       const existing = delegation.items.find((item) => item.handle === entry.handle);
-      if (existing ? Boolean(entry.sealedUsername) || !entry.sealedPassword : canonicalVaultOrigin(entry.origin)?.origin !== entry.origin || !entry.sealedPassword && !entry.sealedUsername) {
+      if (existing ? Boolean(entry.sealedUsername) || !entry.sealedPassword && !entry.sealedOtp
+        : canonicalVaultOrigin(entry.origin)?.origin !== entry.origin || !entry.sealedPassword && !entry.sealedUsername && !entry.sealedOtp) {
         throw new VaultBrokerRefusal("BAD_ENTRY");
       }
       if (!existing && delegation.items.length >= VAULT_DELEGATION_TECHNICAL_MAX_ITEMS) throw new VaultBrokerRefusal("DELEGATION_FULL");
@@ -261,14 +299,14 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
         const inboxKey = await openVaultEnvelope(generationKey, input.inboxKeyEnvelope, { ...context, purpose: "INBOX_KEY" }).catch(() => { throw new VaultBrokerRefusal("KEY_REFUSED"); });
         keys.push(inboxKey);
         const inboxPublicKey = await vaultPublicKeyOf("X25519", inboxKey);
-        const fieldEnvelopes: Partial<Record<"USERNAME" | "PASSWORD", unknown>> = {};
-        for (const [role, sealed] of [["USERNAME", entry.sealedUsername], ["PASSWORD", entry.sealedPassword]] as const) {
+        const fieldEnvelopes: Partial<Record<"USERNAME" | "PASSWORD" | "OTP", unknown>> = {};
+        for (const [role, sealed] of [["USERNAME", entry.sealedUsername], ["PASSWORD", entry.sealedPassword], ["OTP", entry.sealedOtp]] as const) {
           if (!sealed) continue;
           const plain = await openWithVaultPrivateKey(inboxKey, inboxPublicKey, sealed, scope(input)).catch(() => { throw new VaultBrokerRefusal("ENTRY_REFUSED"); });
           keys.push(plain);
           fieldEnvelopes[role] = await sealVaultEnvelope(fillKey, plain, { ...context, purpose: "FILL_FIELD", itemId: entry.handle, field: role });
         }
-        const roles = Object.keys(fieldEnvelopes) as Array<"USERNAME" | "PASSWORD">;
+        const roles = Object.keys(fieldEnvelopes) as Array<"USERNAME" | "PASSWORD" | "OTP">;
         const items = existing
           ? delegation.items.map((item) => item.handle === entry.handle ? { ...item, fields: [...new Set([...item.fields, ...roles])] } : item)
           : [...delegation.items, { handle: entry.handle, origins: [entry.origin], fields: roles, approvalMode: "FULL" as const, submit: true }];
@@ -400,8 +438,13 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
     // own ARK (/v1/server-share, /v1/move-in). No value leaves in the clear; the delegation still carries the operator's signature.
     async "POST /v1/move-out"(raw) {
       const input = schemas.moveOut.parse(raw);
-      const peer = b64.decode(movePeer().transportKey);
       const keys: Uint8Array[] = [await openShare(input)];
+      let peer: Uint8Array;
+      try {
+        const link = input.link && await linkConsent(input, input.unlockPublicKey, input.link, "out");
+        if (link && link.signingKey !== b64.encode(signing.publicKey)) throw new VaultBrokerRefusal("LINK_NOT_THIS_BROKER");
+        peer = b64.decode(link ? link.transportKey : movePeer().transportKey);
+      } catch (error) { wipeVaultBytes(...keys); throw error; }
       try {
         const sealedServerShare = await sealToVaultPublicKey(peer, keys[0]!, scope(input));
         if (!input.delegation) return { sealedServerShare };
@@ -425,7 +468,15 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
     // here, with the same claims; its keys are rewrapped under this ARK, so agents keep filling without an unlock.
     async "POST /v1/move-in"(raw) {
       const input = schemas.moveIn.parse(raw);
-      const peer = b64.decode(movePeer().signingKey);
+      let peerKey: string;
+      if (input.link) {
+        if (!input.unlockPublicKey || !input.serverShareEnvelope) throw new VaultBrokerRefusal("LINK_SIGNATURE_REFUSED");
+        const link = await linkConsent(input, input.unlockPublicKey, input.link, "in");
+        if (link.transportKey !== b64.encode(transport.publicKey)) throw new VaultBrokerRefusal("LINK_NOT_THIS_BROKER");
+        await openShare({ ...input, unlockPublicKey: input.unlockPublicKey, serverShareEnvelope: input.serverShareEnvelope }).then((share) => wipeVaultBytes(share));
+        peerKey = link.signingKey;
+      } else peerKey = movePeer().signingKey;
+      const peer = b64.decode(peerKey);
       let claims;
       try { claims = await verifyVaultCertificate(peer, input.certificate, vaultDelegationCertificateSchema, now()); } catch { throw new VaultBrokerRefusal("CERTIFICATE_REFUSED"); }
       if (claims.ownerUserId !== input.ownerUserId || claims.vaultId !== input.vaultId) throw new VaultBrokerRefusal("CERTIFICATE_REFUSED");
@@ -505,7 +556,7 @@ export function createVaultBrokerHttpServer(core: VaultBrokerCore, channel: Vaul
     request.on("data", (chunk: Buffer) => { size += chunk.length; if (size > maxBytes) request.destroy(); else chunks.push(chunk); });
     request.on("end", () => {
       void (async () => {
-        let body: unknown = undefined;
+        let body: unknown;
         try { body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined; } catch { body = null; }
         const answer = await core.handle(request.method ?? "GET", (request.url ?? "/").split("?")[0]!, body, channel);
         response.writeHead(answer.status, { "content-type": "application/json" });

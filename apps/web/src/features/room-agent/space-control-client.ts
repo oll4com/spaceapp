@@ -4,9 +4,10 @@ import type { ControlAction, ControlLayout } from "@space/contracts";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { inspectPlaybackTargets, runExtendedPlaybackCommand } from "./room-playback-control.js";
 import { applyControlVoicePreferences } from "./control-voice-preferences.js";
-import { readUiTheme, writeUiTheme, type UiTheme, readModernAppearance, writeModernAppearance, UI_THEME_STORAGE_KEY, MODERN_APPEARANCE_STORAGE_KEY } from "../../ui-theme.js";
+import { readUiTheme, writeUiTheme, type UiTheme, readModernAppearance, writeModernAppearance } from "../../ui-theme.js";
 const TERMINAL_FONT_SIZE_STORAGE_KEY = "space.terminal.fontSize";
 const UI_ZOOM_STORAGE_KEY = "space.ui.zoom.v1";
+type ControlResult = boolean | { ok: boolean; evidence: Record<string, unknown> };
 let csrfCache:{value:string;expiresAt:number}|null=null;
 export async function controlRequest<T>(path:string,body?:unknown):Promise<T>{
  const runtime=getSpaceRuntime();
@@ -100,14 +101,14 @@ export function verifyControlLayout(roomId:string,layout:ControlLayout|null,orde
 export function useSpaceControlClient(roomId:string|null,enabled:boolean,activateRoom:(id:string)=>Promise<void>,focusPane:(id:string)=>void,pollIntervalMs=2500){
  const id=useRef(`control-client:${crypto.randomUUID()}`);
  const callbacks=useRef({activateRoom,focusPane});callbacks.current={activateRoom,focusPane};
- const applied=useRef(new Map<string,{promise:Promise<any>;settled:boolean}>());
+ const applied=useRef(new Map<string,{promise:Promise<ControlResult>;settled:boolean}>());
  const [layouts,setLayouts]=useState<Record<string,ControlLayout|null>>({});
  useEffect(()=>{
   if(!roomId||!enabled||getSpaceRuntime().kind!=="live")return;
   let disposed=false,running=false;
   const pollAbort = new AbortController();
   const isCurrent=(expiresAt:number)=>!disposed&&expiresAt>Date.now()&&document.visibilityState==="visible"&&document.hasFocus();
-  const run=async(action:ControlAction,expiresAt:number):Promise<any>=>{
+  const run=async(action:ControlAction,expiresAt:number):Promise<ControlResult>=>{
    if (!isCurrent(expiresAt)&&action.kind==="pane"&&action.operation==="visual_audit")return {ok:false,evidence:{observation:null,reason:"CLIENT_CHANGED",capture:action.captureScreenshot?"UNAVAILABLE":"NOT_REQUESTED"}};
    if (!isCurrent(expiresAt)) return { ok: false, evidence: { applied: false, reason: "The selected control client changed or the command expired." } };
    if(action.kind==="resource"&&action.operation==="settings.voice")return applyControlVoicePreferences(action.input,()=>isCurrent(expiresAt));
@@ -142,7 +143,7 @@ export function useSpaceControlClient(roomId:string|null,enabled:boolean,activat
     do{await new Promise(r=>setTimeout(r,50));if(verifyControlLayout(roomId,snapshot.layout,order))return true;}while(Date.now()<until&&!disposed);
    }
    if(action.kind==="screenshot"){
-    return captureClientScreenshot(roomId, action);
+    return captureClientScreenshot();
    }
    return false;
   };
@@ -166,8 +167,8 @@ export function useSpaceControlClient(roomId:string|null,enabled:boolean,activat
       void entry.promise.finally(()=>{entry.settled=true;});pending=entry;applied.current.set(command.id,entry);
      }
      void pending.promise.then(async res=>{
-       const ok = typeof res === "boolean" ? res : Boolean(res?.ok);
-       const evidence = typeof res === "object" && res && "evidence" in res && res.evidence ? res.evidence : { applied: ok };
+       const ok = typeof res === "boolean" ? res : res.ok;
+       const evidence = typeof res === "object" && res.evidence ? res.evidence : { applied: ok };
        await controlRequest("client/ack",{clientId:id.current,id:command.id,ok,evidence});
      }).catch(()=>{});
     }
@@ -182,7 +183,7 @@ export function useSpaceControlClient(roomId:string|null,enabled:boolean,activat
  return layouts;
 }
 
-export function captureClientScreenshot(_roomId: string, _action?: { format?: string; quality?: number; maxWidth?: number; maxHeight?: number }) {
+export function captureClientScreenshot() {
   // Drawing DOM boxes/text on a canvas is not a capture of the screen. Browser
   // display capture requires an explicit user gesture and a browser permission.
   return { ok: false, evidence: { applied: false, reason: "No authenticated screen capture source is available to this control. Use the Live Screen button to share a real image." } };

@@ -39,7 +39,7 @@ async function jsonRequest(
     signal: AbortSignal.timeout(context.timeoutMs)
   });
   const text = await response.text().catch(() => "");
-  let body: unknown = null;
+  let body: unknown;
   try {
     body = text.length > 0 ? JSON.parse(text) : null;
   } catch {

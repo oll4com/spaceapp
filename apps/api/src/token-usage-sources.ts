@@ -1,3 +1,4 @@
+import { promisify } from "node:util";
 import { execFile } from "./safe-child-process.js";
 import { claudeCostUsd, costUsd, geminiCostUsd } from "@space/gateway";
 import type { GatewayClaudeLogKey, GatewayRepository, SystemAnalyticsModelEventRecord, SystemAnalyticsRepository } from "@space/db";
@@ -333,12 +334,8 @@ export function readKimiHistory(): Promise<unknown | null> {
   return runHelper(["--kimi-history"]);
 }
 
+// Promisified: runs in the exec helper, not in a fork of the API (docs/agents/server-cpu.md).
 function runHelper(args: string[]): Promise<unknown | null> {
-  return new Promise((resolve) => {
-    execFile("sudo", ["-n", "-u", SPACE_AGENT_USER, HELPER, ...args],
-      { timeout: 180_000, maxBuffer: 128 * 1024 * 1024, encoding: "utf8" }, (error, stdout) => {
-        if (error) return resolve(null);
-        try { resolve(JSON.parse(stdout)); } catch { resolve(null); }
-      });
-  });
+  return promisify(execFile)("sudo", ["-n", "-u", SPACE_AGENT_USER, HELPER, ...args],
+    { timeout: 180_000, maxBuffer: 128 * 1024 * 1024, encoding: "utf8" }).then(({ stdout }) => JSON.parse(stdout) as unknown).catch(() => null);
 }

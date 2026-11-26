@@ -14,6 +14,7 @@ const strictlyInside = (root: string, path: string) => {
   return rel !== "" && rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel);
 };
 const safeCandidate = (candidate: unknown): candidate is string =>
+  // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
   typeof candidate === "string" && candidate.length <= 4096 && isAbsolute(candidate) && !/[\x00-\x1f\x7f]/.test(candidate);
 
 /**

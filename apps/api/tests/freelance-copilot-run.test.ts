@@ -117,7 +117,7 @@ describe("freelance copilot run loop", () => {
       const state = (await app.inject({ method: "GET", url: `${cli}/state`, headers: agent })).json();
       expect(state.channels.UPWORK).toMatchObject({ effectiveAutonomy: "FULL", signIn: "GOOGLE", alias: null });
       expect(state.channels.CONTRA).toMatchObject({ signIn: "EMAIL", alias: "contra@brand.example" });
-      expect(state.accounts.map((account: { channel: string }) => account.channel)).toEqual(["UPWORK", "CONTRA", "FIVERR", "TOPTAL", "ARC", "BRAINTRUST", "GURU", "PEOPLEPERHOUR"]);
+      expect(state.accounts.map((account: { channel: string }) => account.channel)).toEqual(["UPWORK", "CONTRA", "FIVERR", "TOPTAL", "ARC", "BRAINTRUST", "GURU", "PEOPLEPERHOUR", "WELLFOUND", "WEWORKREMOTELY", "REMOTEOK", "WORKINGNOMADS", "SUPERTEAM", "CRYPTOJOBSLIST"]);
 
       const brief = (await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json();
       expect(brief).toMatchObject({ done: false, kind: "BRIEF" });
@@ -128,6 +128,13 @@ describe("freelance copilot run loop", () => {
       const guru = await app.inject({ method: "POST", url: `${cli}/leads`, headers: agent, payload: { channel: "GURU", url: "https://www.guru.com/work/detail/2104521", externalId: "2104521", title: "Node API integration", status: "NEW" } });
       expect(guru.statusCode).toBe(200);
       expect(guru.json().lead).toMatchObject({ channel: "GURU" });
+      // 23/11: Dana's leads on the remote job boards were refused the same way.
+      for (const [channel, url] of [["WELLFOUND", "https://wellfound.com/jobs/31"], ["WEWORKREMOTELY", "https://weworkremotely.com/remote-jobs/31"], ["REMOTEOK", "https://remoteok.com/remote-jobs/31"],
+        ["WORKINGNOMADS", "https://www.workingnomads.com/jobs/31"], ["SUPERTEAM", "https://earn.superteam.fun/listing/31"], ["CRYPTOJOBSLIST", "https://cryptojobslist.com/jobs/31"]]) {
+        const board = await app.inject({ method: "POST", url: `${cli}/leads`, headers: agent, payload: { channel, url, externalId: `${channel}-31`, title: "Node API integration", status: "NEW" } });
+        expect(board.statusCode, channel).toBe(200);
+        expect(board.json().lead).toMatchObject({ channel });
+      }
       const drafted = (await app.inject({ method: "POST", url: `${cli}/messages`, headers: agent, payload: { leadId, kind: "PROPOSAL", body: "You want your API usable by AI agents. I built SpaceApp (https://spaceapp.dev). First milestone: three read-only tools, $600.", bid: { type: "FIXED", amount: 1500 }, connects: 12 } })).json();
       expect(drafted.wordingIssues).toEqual([]);
       const messageId = drafted.message.id as string;
@@ -210,6 +217,60 @@ describe("freelance copilot run loop", () => {
     clock += 11 * 60_000;
     expect(await kick.tick()).toBe(0);
     expect(kickoffs).toEqual([run.id, run.id]);
+  });
+
+  it("types a kickoff that started no Claude turn again at the next tick, three times in a row at most (14/11 Dino/Emma, nous_msg:cbc40ebc)", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Freelance", initialPaneCount: 0 }, "trace:t", "user:owner");
+    const pane = store.createPane({ roomId: room.id, title: "Freelance Copilot", mode: "FREELANCE_COPILOT", terminalRuntimeId: "cli:claude" });
+    const service = createFreelanceCopilotService({ repository: new InMemoryFreelanceCopilotRepository(), crypto: {} as never, mailboxes });
+    await service.startRun("user:owner", pane.id);
+    await service.createBrief("user:owner", pane, { text: "Find two React leads on Upwork." });
+    const screen = { sessionId: "cli_session:1", promptFingerprint: "f", state: "IDLE", usageLimited: false, text: "✻ Done.\n────\n❯ \n────" };
+    let clock = 1_000_000;
+    let turnAt = 0;
+    const warnings: string[] = [];
+    const kick = createCopilotRunKick({ mode: "FREELANCE_COPILOT", store, log: { warn: (_details, message) => { warnings.push(message); } }, now: () => clock,
+      paused: (candidate) => service.settingsOf(candidate).paused, runView: (owner, candidate) => service.runView(owner, candidate),
+      inspect: async () => screen as RoomPaneObservation, kickoff: async () => undefined, started: async (_pane, since) => turnAt >= since });
+    expect(await kick.tick()).toBe(1);
+    for (const retry of [1, 2, 3]) {
+      clock += 61_000;
+      expect(await kick.tick(), `retry ${retry}`).toBe(1);
+    }
+    clock += 61_000;
+    expect(await kick.tick()).toBe(0);
+    // After three retries the same work is typed every 10 minutes again; a kickoff whose turn started is not retried.
+    clock += 10 * 60_000;
+    expect(await kick.tick()).toBe(1);
+    turnAt = clock;
+    clock += 61_000;
+    expect(await kick.tick()).toBe(0);
+    expect(warnings.filter((message) => message.includes("started no turn"))).toHaveLength(4);
+  });
+
+  it("backs off re-kicks whose turns start and change nothing (10, 20, 40, 40 minutes); new work kicks at once (plan clipboard:nsWKwUFhUFWA slice 5)", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Freelance", initialPaneCount: 0 }, "trace:t", "user:owner");
+    const pane = store.createPane({ roomId: room.id, title: "Freelance Copilot", mode: "FREELANCE_COPILOT", terminalRuntimeId: "cli:claude" });
+    const service = createFreelanceCopilotService({ repository: new InMemoryFreelanceCopilotRepository(), crypto: {} as never, mailboxes });
+    await service.startRun("user:owner", pane.id);
+    await service.createBrief("user:owner", pane, { text: "Find two React leads on Upwork." });
+    const screen = { sessionId: "cli_session:1", promptFingerprint: "f", state: "IDLE", usageLimited: false, text: "✻ Done.\n────\n❯ \n────" };
+    let clock = 1_000_000;
+    const kick = createCopilotRunKick({ mode: "FREELANCE_COPILOT", store, log: { warn: () => undefined }, now: () => clock,
+      paused: (candidate) => service.settingsOf(candidate).paused, runView: (owner, candidate) => service.runView(owner, candidate),
+      inspect: async () => screen as RoomPaneObservation, kickoff: async () => undefined, started: async () => true });
+    expect(await kick.tick()).toBe(1);
+    const at = (minutes: number) => { clock += minutes * 60_000 - 1_000; return kick.tick().then(async (early) => { clock += 1_000; return [early, await kick.tick()]; }); };
+    expect(await at(10)).toEqual([0, 1]);
+    expect(await at(20)).toEqual([0, 1]);
+    expect(await at(40)).toEqual([0, 1]);
+    expect(await at(40)).toEqual([0, 1]);
+    clock += 61_000;
+    await service.createBrief("user:owner", pane, { text: "And one on Contra." });
+    expect(await kick.tick()).toBe(1);
+    expect(await at(10)).toEqual([0, 1]);
   });
 
   it("shares the operator's bookmarks with the agent, saved in the pane's own account", async () => {

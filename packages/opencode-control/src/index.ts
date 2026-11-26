@@ -12,13 +12,14 @@ export const opencodeServerControlHealthTimeoutMs = 1_500;
 
 /**
  * Static bridge address of the cli:opencode runtime netns, assigned by the
- * `runtimes` table in `<install root>/bin/space-cli-vpn-broker`
- * (`{ id: "cli:opencode", key: "opencode", address: "10.254.240.13" }`).
+ * `runtimes` table in `<install root>/bin/space-cli-vpn-broker` and set in the
+ * local env only (SPACE_OPENCODE_SERVER_HOST, review 1.2.1).
  * The shared OpenCode server binds 0.0.0.0:47047 inside that netns, so the
  * Space API (root netns) can only reach it via this address — never via the
- * loopback hosts that fast-path wrapper control files write.
+ * loopback hosts that fast-path wrapper control files write. Unset (no runtime
+ * netns), the server is on this host's loopback.
  */
-export const openCodeSharedServerHost = "10.254.240.13";
+export const openCodeSharedServerHost = process.env.SPACE_OPENCODE_SERVER_HOST?.trim() || "127.0.0.1";
 export const openCodeSharedServerPort = 47047;
 
 const openCodeLoopbackHosts = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -47,17 +48,6 @@ export interface OpenCodeModelDescriptor {
   variants: string[];
   defaultVariant: string | null;
 }
-
-export const openCodeReasoningEfforts = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-  "ultra"
-] as const;
 
 export const openCodeDefaultReasoningEffort = "medium" as const;
 
@@ -393,8 +383,7 @@ export async function updateOpenCodeSessionTitle(
  */
 export async function readOpenCodeSessionTurnActive(
   control: OpenCodeServerControl,
-  nativeSessionId: string,
-  _directory?: string
+  nativeSessionId: string
 ): Promise<boolean | null> {
   try {
     // OpenCode 2 lists only the sessions that are running.
@@ -409,10 +398,9 @@ export async function readOpenCodeSessionTurnActive(
 /** Display-only busy flag: an unknown state reads as idle. Guards use readOpenCodeSessionTurnActive. */
 export async function fetchOpenCodeSessionIsTurnActive(
   control: OpenCodeServerControl,
-  nativeSessionId: string,
-  directory?: string
+  nativeSessionId: string
 ): Promise<boolean> {
-  return (await readOpenCodeSessionTurnActive(control, nativeSessionId, directory)) === true;
+  return (await readOpenCodeSessionTurnActive(control, nativeSessionId)) === true;
 }
 
 export async function abortOpenCodeSession(
@@ -484,11 +472,6 @@ export async function listOpenCodeServerControls(stateRoot?: string): Promise<Op
     if (control) controls.push(control);
   }
   return controls.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
-}
-
-export async function resolveLatestOpenCodeControl(stateRoot?: string): Promise<OpenCodeServerControl | null> {
-  const controls = await listOpenCodeServerControls(stateRoot);
-  return controls[0] ?? null;
 }
 
 /**
@@ -595,57 +578,4 @@ export async function openCodeSessionExists(
   }
 }
 
-export function openCodeSpaceChatControlPath(): string {
-  return `${SPACE_INSTALL_ROOT}/var/opencode-space-chat-control.json`;
-}
-
-/**
- * Reads the Space-chat OpenCode control written by the API next to its own
- * state root (usable without an active OpenCode CLI pane).
- */
-export async function readOpenCodeSpaceChatControl(): Promise<OpenCodeServerControl | null> {
-  const path = openCodeSpaceChatControlPath();
-  try {
-    const metadata = await stat(path);
-    if (!metadata.isFile() || metadata.size <= 0 || metadata.size > opencodeServerControlMaxBytes) return null;
-    const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
-    if (!parsed || typeof parsed !== "object") return null;
-    const control = parsed as Record<string, unknown>;
-    const serverPort = typeof control.serverPort === "number" && Number.isSafeInteger(control.serverPort)
-      ? control.serverPort
-      : typeof control.serverPort === "string"
-        ? Number.parseInt(control.serverPort, 10)
-        : NaN;
-    const nativeSessionId = typeof control.nativeSessionId === "string" ? control.nativeSessionId : "";
-    const serverUsername = typeof control.serverUsername === "string" ? control.serverUsername : "";
-    const serverPassword = typeof control.serverPassword === "string" ? control.serverPassword : "";
-    const rawServerHost = typeof control.serverHost === "string" && control.serverHost.length > 0
-      ? control.serverHost
-      : openCodeSharedServerHost;
-    if (
-      control.version !== 1 ||
-      control.spaceSessionId !== "space-chat" ||
-      !opencodeNativeSessionIdPattern.test(nativeSessionId) ||
-      !(Number.isSafeInteger(serverPort) && serverPort > 0 && serverPort < 65_536) ||
-      serverUsername.length === 0 ||
-      serverPassword.length === 0
-    ) {
-      return null;
-    }
-    return {
-      version: 1,
-      spaceSessionId: "space-chat",
-      nativeSessionId,
-      serverPort,
-      serverHost: isOpenCodeLoopbackHost(rawServerHost) ? openCodeSharedServerHost : rawServerHost,
-      serverUsername,
-      serverPassword,
-      updatedAt: typeof control.updatedAt === "string" ? control.updatedAt : new Date(0).toISOString()
-    };
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
-    if (error && typeof error === "object" && "code" in error && error.code === "EACCES") return null;
-    return null;
-  }
-}
 export * from "./free-model.js";

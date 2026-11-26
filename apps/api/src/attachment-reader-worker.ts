@@ -25,6 +25,7 @@ function bounded(text: string): { text: string; truncated: boolean } {
   return text.length > maxChars ? { text: text.slice(0, maxChars), truncated: true } : { text, truncated: false };
 }
 function result(method: string, raw: string, pages: number | null, partialReason: string | null = null): Promise<void> {
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point
   const clean = raw.replace(/\u0000/g, "").replace(/[ \t]+\n/g, "\n").replace(/\n{4,}/g, "\n\n\n").trim();
   if (!clean) return finish({ status: "UNAVAILABLE", method, chars: 0, pages, truncated: false, reason: partialReason ?? "The file contains no readable text." }, null);
   const { text, truncated } = bounded(clean);

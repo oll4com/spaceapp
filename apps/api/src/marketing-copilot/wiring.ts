@@ -8,6 +8,7 @@ import { createCopilotRunKick } from "../copilot-run-kick.js";
 import { atEmptyPrompt } from "../room-agent-autopilot.js";
 import type { RoomPaneObservation } from "../room-pane-control.js";
 import type { CliTerminalManager } from "../cli-terminal.js";
+import { isClaudeDirectParityRuntime } from "../cli-parity.js";
 import type { PaneBrowserAccountControl } from "../pane-browser-routes.js";
 import { GitControlError } from "../source-control/errors.js";
 import type { NotificationService } from "../notifications/service.js";
@@ -27,7 +28,7 @@ export interface MarketingCopilotWiring extends Omit<MarketingCopilotRouteDepend
   repository?: MarketingCopilotRepository;
   /** Tests replace the CLI kickoff of a run. */
   kickoff?: (pane: Pane, run: MarketingRun) => Promise<void>;
-  terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput" | "observeRoomScreenUndimmed">;
+  terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput" | "observeRoomScreenUndimmed"> & Partial<Pick<CliTerminalManager, "claudeTurnStartedSince">>;
   notifications: Pick<NotificationService, "raise" | "resolve">;
   roomOwner(roomId: string): Promise<string | null>;
   /** Where room artifacts live (config.browserEvidenceArtifactRoot): captured post media are read from there. */
@@ -111,8 +112,9 @@ export function registerMarketingCopilot(app: FastifyInstance, deps: MarketingCo
     await notifications.raise({ ownerUserId: owner, roomId: pane.roomId, paneId: pane.id, source: "MARKETING_COPILOT", kind: event.type, severity: plan.action === "published" ? "INFO" : "ATTENTION",
       title: plan.action === "published" ? `Published by Marketing Copilot (${pane.title})` : `Marketing Copilot needs you (${pane.title})`, body: event.message,
       link: { roomId: pane.roomId, paneId: pane.id, target: event.postId ? `post:${event.postId}` : `event:${event.id}` }, dedupeKey, payload: { eventId: event.id, ...(ask ? { ask } : {}),
-        // R24-2: a review goes to Nous first, and its inbox line carries the post's text.
-        ...(event.type === "REVIEW_REQUESTED" && event.postId ? await repository.getPost(owner, event.postId).then((post) => post ? { review: { id: post.id, channel: post.channel, text: post.body } } : {}, () => ({})) : {}) },
+        // R24-2: a review goes to Nous first, and its inbox line carries the post's text; a reply names its person, so a connection note and DM share one Thread.
+        ...(event.type === "REVIEW_REQUESTED" && event.postId ? await repository.getPost(owner, event.postId).then((post) => post ? { review: { id: post.id, channel: post.channel, text: post.body,
+          ...(post.kind === "REPLY" && post.target ? { target: post.target } : {}) } } : {}, () => ({})) : {}) },
       telegram: settings.telegram ? true : null });
   }
 
@@ -163,9 +165,15 @@ export function registerMarketingCopilot(app: FastifyInstance, deps: MarketingCo
     if (!session) throw new SpaceConflictError("Open the copilot's terminal first: the pane has no running CLI session to receive the run.");
     const traceId = `marketing-copilot:${run.id}`;
     await terminal.runSerializedTerminalMutation(session.sessionId, async () => {
-      await submitCliPrompt(terminal, session.sessionId, KICKOFF(run.id), traceId, `${traceId}:kickoff`);
+      // The host keeps an input key until the CLI exits: createCopilotRunKick's re-kick under the first kick's key typed nothing.
+      await submitCliPrompt(terminal, session.sessionId, KICKOFF(run.id), traceId, `${traceId}:${makeSpaceId("kickoff")}`, { paneId: session.paneId });
     });
   });
+  // A Claude kickoff that started no turn in Claude's own transcript is typed again (createCopilotRunKick, 14/11 Dino/Emma).
+  const started = async (pane: Pane, sinceMs: number) => {
+    const session = await activeSession(pane);
+    return !session || !isClaudeDirectParityRuntime(session.runtimeId) || !terminal.claudeTurnStartedSince || terminal.claudeTurnStartedSince(session.sessionId, sinceMs);
+  };
   registerMarketingCopilotRoutes(app, service, { ...deps, kickoff });
 
   if (deps.scheduler) {
@@ -192,7 +200,7 @@ export function registerMarketingCopilot(app: FastifyInstance, deps: MarketingCo
     app.addHook("onClose", async () => scheduler.stop());
     if (deps.inspect) {
       const kick = createCopilotRunKick({ mode: "MARKETING_COPILOT", store, log: deps.log, inspect: deps.inspect, paused: (pane) => service.settingsOf(pane).paused,
-        runView: (owner, pane) => service.runView(owner, pane), kickoff });
+        runView: (owner, pane) => service.runView(owner, pane), kickoff, ...(deps.kickoff ? {} : { started }) });
       kick.start();
       app.addHook("onClose", async () => kick.stop());
     }

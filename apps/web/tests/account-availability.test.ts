@@ -24,6 +24,13 @@ describe("account availability", () => {
     expect(classifyQuota({ fiveHourRemainingPercent: null, weeklyRemainingPercent: null }, clock)).toEqual({ state: "unknown", backAt: null });
   });
 
+  it("treats a spent week with a reset credit at hand as a reached limit, and counts each credit as a week", () => {
+    expect(classifyQuota({ fiveHourRemainingPercent: 100, weeklyRemainingPercent: 0, weeklyResetAt: at(3 * 24 * 60), resetCredits: 2 }, clock))
+      .toEqual({ state: "soon", backAt: null });
+    expect(quotaCapacity([{ fiveHourRemainingPercent: 100, weeklyRemainingPercent: 0, resetCredits: 2 }])).toBe(100);
+    expect(quotaCapacity([{ fiveHourRemainingPercent: 30, weeklyRemainingPercent: 0, resetCredits: 1 }])).toBe(30);
+  });
+
   it("reports a weekly limit that resets within one 5h window as back soon", () => {
     expect(classifyQuota({ fiveHourRemainingPercent: 0, weeklyRemainingPercent: 0.4, weeklyResetAt: at(150) }, clock))
       .toEqual({ state: "soon", backAt: at(150) });
@@ -59,13 +66,13 @@ describe("account availability", () => {
   });
 
   it("formats when an account is usable again", () => {
-    expect(formatUntil(at(52), clock, settings)).toBe("in 52m");
-    expect(formatUntil(at(200), clock, settings)).toBe("in 3h 20m");
-    expect(formatUntil(at(120), clock, settings)).toBe("in 2h");
+    expect(formatUntil(at(52), clock, settings)).toBe("in 52m · 10:52");
+    expect(formatUntil(at(200), clock, settings)).toBe("in 3h 20m · 13:20");
+    expect(formatUntil(at(120), clock, settings)).toBe("in 2h · 12:00");
     expect(formatUntil(at(-5), clock, settings)).toBe("now");
     expect(formatUntil(at(3 * 24 * 60 + 8), clock, settings)).toBe("Wed 14 Oct 10:08");
     expect(formatUntil(null, clock, settings)).toBeNull();
-    expect(availabilityLabel({ state: "soon", backAt: at(52) }, clock, settings)).toBe("Back in 52m");
+    expect(availabilityLabel({ state: "soon", backAt: at(52) }, clock, settings)).toBe("Back in 52m · 10:52");
     expect(availabilityLabel({ state: "soon", backAt: null }, clock, settings)).toBe("Limit reached");
     expect(availabilityLabel({ state: "exhausted", backAt: at(3000) }, clock, settings)).toBe("Week exhausted");
   });

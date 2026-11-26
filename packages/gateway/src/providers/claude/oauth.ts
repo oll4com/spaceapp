@@ -95,7 +95,7 @@ async function postToken(body: Json, fetchImpl: typeof fetch): Promise<{ status:
     throw new ClaudeOAuthError("transport_error", `Could not reach the Claude sign-in service: ${error instanceof Error ? error.message : "network error"}`);
   }
   const text = await response.text();
-  let payload: Json = {};
+  let payload: Json;
   try { payload = obj(JSON.parse(text)) ?? {}; } catch { payload = { error: text.slice(0, 300) }; }
   return { status: response.status, payload };
 }

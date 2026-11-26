@@ -83,7 +83,7 @@ import {
 } from "@space/contracts";
 import type { JobApplicationFieldRecord, JobApplicationRecord, JobApplyEventRecord, JobApplyMemoryRecord, JobApplyProfileRecord, JobApplyRepository, JobApplyRunRecord } from "@space/db";
 import type { RailAnswerBy } from "@space/db";
-import { forbiddenByMemoryText, forbiddingMemory, questionMemoryTerms } from "@space/db";
+import { forbiddenByMemoryText, forbiddingMemory, questionMemoryTerms, questionWordMatch } from "@space/db";
 import type { PinnedMemoryHit } from "../nous/operator-facts.js";
 import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import { localArtifactFilePath } from "../artifact-storage.js";
@@ -114,7 +114,7 @@ export interface JobApplyServiceOptions {
   repository: JobApplyRepository;
   crypto: ConnectorCrypto;
   /** Artifacts, and the owner's Tasks for test and interview reminders. */
-  store: Pick<SpaceStore, "getArtifact" | "listTaskItems" | "upsertTaskItem" | "updateTaskItem" | "getUserSettings">;
+  store: Pick<SpaceStore, "getArtifact" | "getPane" | "listTaskItems" | "upsertTaskItem" | "updateTaskItem" | "getUserSettings">;
   artifactRoot: string;
   /** Extracted CV text and read cache live here, outside any agent workspace. */
   jobApplyRoot: string;
@@ -145,6 +145,7 @@ export interface JobApplyEventContext { paneId?: string | null; runId?: string |
 
 const MAX_CV_TEXT = 200_000;
 const APPLIED_STATUSES: JobApplicationStatus[] = ["SUBMITTED", "VERIFIED"];
+const SALARY_WORDS = /salar|compensation|remuneration|\bwages?\b|\bpay\b|μισθ|αμοιβ/iu;
 const STATUS_EVENT: Partial<Record<JobApplicationStatus, JobApplyEventType>> = {
   FILLING: "STARTED", NEEDS_USER: "QUESTION", SUBMITTED: "SUBMITTED", VERIFIED: "VERIFIED", FAILED: "FAILED", QUEUED: "NOTE"
 };
@@ -925,6 +926,12 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     async listApplications(owner: string, filter: { status?: JobApplicationStatus; limit?: number }): Promise<JobApplication[]> {
       return (await repository.listApplications(owner, filter)).map(toApplication);
     },
+    /** The tracker for a poll that names the version it holds: null while nothing changed (stable 14/11: the open pane read 5,133 applications every 8 s, 188 ms each). */
+    async applicationsUnless(owner: string, filter: { status?: JobApplicationStatus; limit?: number }, unless?: string) {
+      // The version first: a write between the two reads leaves the caller an older version, so its next poll reads again.
+      const version = await repository.applicationsVersion(owner);
+      return { applications: version === unless ? null : await this.listApplications(owner, filter), version };
+    },
     /** The Nous "Job applications" page (operator 3/11 22:33 BKK): every application, its company's mails and test/interview records, read now. */
     async report(owner: string): Promise<NousJobReport> {
       const [applications, events, settings] = await Promise.all([repository.listApplications(owner, {}), repository.listEvents(owner, { types: ["MAIL"] }),
@@ -1307,13 +1314,28 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
      * The agent's loop: waits (up to `waitMs`) until the run is RUNNING, the queue has a posting and
      * pacing allows its site, then takes it (FILLING) and returns the task packet. `done` ends the loop.
      */
-    async nextJob(owner: string, paneId: string, input: { waitMs: number; metadata: JobApplyPaneMetadata | null | undefined }) {
+    async nextJob(owner: string, paneId: string, input: { waitMs: number; metadata: JobApplyPaneMetadata | null | undefined; profileHash?: string | undefined }) {
       const deadline = Date.now() + Math.min(input.waitMs, NEXT_JOB_MAX_WAIT_MS);
       nextJobWaiters.set(paneId, (nextJobWaiters.get(paneId) ?? 0) + 1);
       try {
         for (;;) {
           const run = await repository.getActiveRun(paneId);
-          if (!run || run.ownerUserId !== owner) return { done: true as const, reason: "NO_RUN" as const, application: null };
+          if (!run || run.ownerUserId !== owner) {
+            // 21/11 (goal 91e45be1): a discover run that space_job_next finished on an empty queue left the copilot no start tool for the
+            // postings it then queued (NO_RUN until the keeper's next hourly start). A run Space finished (never the operator's Stop) restarts.
+            const [latest] = run ? [] : await repository.listEvents(owner, { paneId, types: ["RUN_STARTED", "RUN_STOPPED", "RUN_FINISHED"], limit: 1 });
+            if (latest?.type !== "RUN_FINISHED" || !jobApplicationQueueHolds((await repository.listQueue(owner, paneId)).map(toApplication), now()).eligible.length) {
+              return { done: true as const, reason: "NO_RUN" as const, application: null };
+            }
+            // DEV3D-015: one run per owner, as the daily-target keeper holds it (a run in another open pane keeps this one off).
+            for (const other of await repository.listActiveRuns(owner)) {
+              if (other.paneId !== paneId && (await Promise.resolve(options.store.getPane(other.paneId)).catch(() => null))?.isClosed === false) {
+                return { done: true as const, reason: "NO_RUN" as const, application: null };
+              }
+            }
+            await this.startRun(owner, paneId);
+            continue;
+          }
           let waitReason: "PAUSED" | "PACING" | "SETTINGS_PAUSED" = "PAUSED";
           let nextAllowedAt: string | null = null;
           if (run.status === "RUNNING") {
@@ -1348,7 +1370,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
                 const counters = { ...run.counters, taken: (run.counters.taken ?? 0) + 1 };
                 await repository.updateRun(owner, run.id, { currentApplicationId: picked.id, counters, lastActivityAt: now() });
                 const application = await this.updateApplication(owner, picked.id, { status: "FILLING" }, { paneId, runId: run.id });
-                return { done: false as const, ...(await this.taskPacket(owner, application, settings, { ...run, counters }, queue.length - 1)) };
+                return { done: false as const, ...(await this.taskPacket(owner, application, settings, { ...run, counters }, queue.length - 1, input.profileHash)) };
               }
               waitReason = "PACING";
             }
@@ -1361,27 +1383,38 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
         if (remaining > 0) nextJobWaiters.set(paneId, remaining); else nextJobWaiters.delete(paneId);
       }
     },
-    /** Everything the agent needs for one posting: profile facts, CV path, scoped memories and the answer bank. */
-    async taskPacket(owner: string, application: JobApplication, settings: JobApplyPaneMetadata["settings"], run: JobApplyRunRecord, remaining: number) {
-      const [profile, cv, photo, memories, answers] = await Promise.all([
-        this.getProfile(owner), this.cvText(owner), this.photo(owner),
+    /** The profile facts space_job_profile_get and the task packet share, and their hash. */
+    async profileFacts(owner: string) {
+      const [profile, cv, photo] = await Promise.all([this.getProfile(owner), this.cvText(owner), this.photo(owner)]);
+      const facts = {
+        candidate: profile.candidate,
+        cv: { artifactId: cv.artifactId, path: cv.path, chars: cv.text?.length ?? 0 },
+        coverLetter: { artifactId: profile.coverLetterArtifactId, path: profile.coverLetterArtifactId ? await this.artifactPath(profile.coverLetterArtifactId) : null },
+        photo,
+        mailboxConnected: jobApplyMailboxConnected(profile),
+        google: profile.google,
+        googleAccounts: profile.googleAccounts
+      };
+      return { profile, facts, profileHash: createHash("sha256").update(JSON.stringify(facts)).digest("hex").slice(0, 16) };
+    },
+    /** Everything the agent needs for one posting: profile facts (unless `knownProfileHash` is current), CV path, scoped memories and the answer bank. */
+    async taskPacket(owner: string, application: JobApplication, settings: JobApplyPaneMetadata["settings"], run: JobApplyRunRecord, remaining: number, knownProfileHash?: string) {
+      const [{ facts, profileHash }, memories, answers] = await Promise.all([
+        this.profileFacts(owner),
         this.listMemory(owner, { site: application.ats, company: application.company }),
         this.listMemory(owner, { kinds: ["ANSWER"], site: application.ats, company: application.company })
       ]);
       await repository.touchMemory(owner, [...new Set([...memories, ...answers].map((memory) => memory.id))], now());
-      const coverLetterPath = profile.coverLetterArtifactId ? await this.artifactPath(profile.coverLetterArtifactId) : null;
-      const { experience, education, extra, ...facts } = profile.candidate;
+      const { experience, education, extra, ...candidate } = facts.candidate;
+      // Plan clipboard:nsWKwUFhUFWA slice 5: the session's space_job_profile_get already holds these facts; only a changed profile is sent again.
+      const profile = knownProfileHash === profileHash
+        ? { profileHash, profileUnchanged: "Same as this session's space_job_profile_get: candidate facts, CV, cover letter and photo paths, mailbox and Google accounts." }
+        : { profileHash, ...facts, candidate: { ...candidate, experience: experience.slice(0, 10), education: education.slice(0, 6), extra } };
       return {
         application,
         run: { id: run.id, counters: run.counters as JobApplyRunCounters, remaining },
         settings: { submitMode: settings.submitMode, minDelayMs: settings.minDelayMs, maxDelayMs: settings.maxDelayMs, dailyCap: settings.dailyCaps[application.ats as JobApplySite] },
-        candidate: { ...facts, experience: experience.slice(0, 10), education: education.slice(0, 6), extra },
-        cv: { artifactId: cv.artifactId, path: cv.path, chars: cv.text?.length ?? 0 },
-        coverLetter: { artifactId: profile.coverLetterArtifactId, path: coverLetterPath },
-        photo,
-        mailboxConnected: jobApplyMailboxConnected(profile),
-        google: profile.google,
-        googleAccounts: profile.googleAccounts,
+        ...profile,
         memories: memories.filter((memory) => memory.kind !== "ANSWER"),
         answers: answers.map((memory) => ({ id: memory.id, question: memory.key, answer: memory.text, source: memory.source, confidence: memory.confidence, site: memory.site }))
       };
@@ -1422,7 +1455,11 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
         return { questionId: null, answered: true as const, answer: known.text, source: known.source, memoryId: known.id };
       }
       // R12-5: a question the copilot's own memory forbids (scoped to the company or site, or about the same words) is never asked.
-      const ban = await forbiddingMemory((query) => this.listMemory(owner, { query, kinds: ["FACT", "LESSON", "PREFERENCE"], site: application.ats as JobApplySite, company: application.company }),
+      // Sur 16/11 (jobapp:80pB5y-0BPL-): salary rule jobmem:5LIIFGJWHYCL ("do NOT ask the operator ... Software Engineer") refused a voice-recording
+      // link by the role's words; a salary rule forbids only a salary question.
+      const salaryQuestion = SALARY_WORDS.test(input.question);
+      const ban = await forbiddingMemory(async (query) => (await this.listMemory(owner, { query, kinds: ["FACT", "LESSON", "PREFERENCE"], site: application.ats as JobApplySite, company: application.company }))
+        .filter((memory) => salaryQuestion || !SALARY_WORDS.test(`${memory.key ?? ""} ${memory.text}`)),
         input.question, (memory) => Boolean(memory.site || memory.company));
       if (ban) throw new SpaceConflictError(forbiddenByMemoryText("Job Copilot", ban));
       // Plan clipboard:7L5KyWp3kQsP step 3: the operator's pinned Space Memory entries holding the question's words join the memories shown first.
@@ -1436,7 +1473,10 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
             found.set(memory.id, { memory, hits: (found.get(memory.id)?.hits ?? 0) + 1 });
           }
         }
-        const memoryHits = [...[...found.values()].sort((left, right) => right.hits - left.hits)
+        // Cause row 15 (nous_msg:adc1046a): an ANSWER fits a question through the question it answered, not its answer's words (Collabify's
+        // "paying customers?" met the Z Fellows essay jobmem:OeeOW8HYoGcI by "SpaceApp … not proven yet", and Nous answered No).
+        const memoryHits = [...[...found.values()].filter(({ memory }) => memory.kind !== "ANSWER" || questionWordMatch(input.question, memory.key ?? "").matched > 0)
+          .sort((left, right) => right.hits - left.hits)
           .map(({ memory }) => ({ id: memory.id, key: memory.key, text: memory.text, source: memory.source as string })),
           ...pinned.map((entry) => ({ id: entry.id, key: entry.title, text: entry.body, source: entry.rule ? "SPACE_MEMORY_OPERATOR_RULE" : "SPACE_MEMORY_OPERATOR_FACT" }))];
         if (memoryHits.length) {

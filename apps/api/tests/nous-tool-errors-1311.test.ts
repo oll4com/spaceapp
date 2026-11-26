@@ -49,7 +49,7 @@ describe("Daily Nous errors 13/11: residual tool failures", () => {
 
   it("names the arguments zod dropped when the call then fails (12:54 space_plan_update \"Nothing to update\")", async () => {
     const failed = await tools().execute("space_plan_update", { plan: plan.id, notes: "step 3 done", percent: 60 } as never, ctx);
-    expect(failed).toMatchObject({ ok: false, display: "Nothing to update", result: expect.stringContaining("(Ignored notes, percent: not arguments of this tool, which takes {plan: string, ") });
+    expect(failed).toMatchObject({ ok: false, refused: true, display: "Nothing to update", result: expect.stringContaining("(Ignored notes, percent: not arguments of this tool, which takes {plan: string, ") });
     expect(failed.result).toContain("progressPercentage?: ");
     expect(ignoredArgsNote(z.object({ a: z.string() }), { a: "x" })).toBe("");
   });
@@ -80,16 +80,16 @@ describe("Daily Nous errors 13/11: residual tool failures", () => {
 
   it("holds a card asking the operator to put a key into the Vault when a Vault key has its tail (13/11 13:24 Stripe ...mFuf)", async () => {
     const call = vi.fn(async ({ path, body }: { path: string; body: { q?: string } }) => path === "key-list"
-      ? { status: "LISTED", auditId: null, keys: body.q === "mFuf" ? [{ id: "vault_key:LFoT7bmzb7sx9ptuvffoPQ", label: "Stripe sk_live example.invalid 1006 mFuf 13/11", savedBy: "pane:sW4WhTxOJJwG" }] : [] }
+      ? { status: "LISTED", auditId: null, keys: body.q === "mFuf" ? [{ id: "vault_key:LFoT7bmzb7sx9ptuvffoPQ", label: "Stripe sk_live example.invalid 1006 mFuf 13/11", savedBy: "pane:sW4WhTxOJJwG" }] : [] } // opaque Vault key handle, not a secret; gitleaks:allow
       : { status: "LISTED", auditId: null, items: [] });
     const f = tools({ vault: { agent: { call } } as never });
     const card = (checked: string[]) => ({ room: "Felix", pane: "Andy", title: "New Stripe key in the Vault by 20:49",
       items: [{ text: "Copy the new Stripe key ...mFuf (copy icon on the page) into Vault > Passwords & keys, label «Stripe sk_live 1006 mFuf»." }], checked });
     const held = await f.execute("space_notify_operator", card(["Bob: the old Vault copy gets 401"]) as never, ctx);
-    expect(held).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("the Vault already holds the key ending mFuf: «Stripe sk_live example.invalid 1006 mFuf 13/11» (vault_key:LFoT7bmzb7sx9ptuvffoPQ, saved by pane:sW4WhTxOJJwG)") });
+    expect(held).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("the Vault already holds the key ending mFuf: «Stripe sk_live example.invalid 1006 mFuf 13/11» (vault_key:LFoT7bmzb7sx9ptuvffoPQ, saved by pane:sW4WhTxOJJwG)") }); // opaque Vault key handle, not a secret; gitleaks:allow
     expect(call).toHaveBeenCalledWith(expect.objectContaining({ path: "key-list", body: { q: "mFuf" } }));
     // Naming the key's id in `checked` (looked at, and why it does not do) passes; a key no Vault label carries is never held.
-    const named = await f.execute("space_notify_operator", card(["vault_key:LFoT7bmzb7sx9ptuvffoPQ gets 401 at Stripe"]) as never, ctx);
+    const named = await f.execute("space_notify_operator", card(["vault_key:LFoT7bmzb7sx9ptuvffoPQ gets 401 at Stripe"]) as never, ctx); // opaque Vault key handle, not a secret; gitleaks:allow
     expect(named.result ?? "").not.toContain("the Vault already holds");
     const other = await tools({ vault: { agent: { call } } as never }).execute("space_notify_operator",
       { ...card(["Bob: no key yet"]), items: [{ text: "Copy the new Stripe key ...z2k0 into the Vault." }] } as never, ctx);
@@ -105,6 +105,17 @@ describe("Daily Nous errors 13/11 evening: failures after the 17:30/17:47 promot
     expect(JSON.stringify(update.mock.calls[0])).toContain("2026-11-20T00:00:00.000Z");
     // Text that is no ISO date still fails: "Nov 20" would parse as 2001.
     expect((await f.execute("space_plan_update", { plan: plan.id, dueAt: "Nov 20" }, ctx)).ok).toBe(false);
+  });
+
+  it("refuses a plan's OPERATOR wait for a site or a sign-in with no link: it becomes the plan's Needs you card (14/11 correction 824bd787)", async () => {
+    const update = vi.fn(async () => plan);
+    const f = tools({ plans: { list: async () => [plan], get: async () => plan, update } as never });
+    const wait = (what: string) => f.execute("space_plan_update", { plan: plan.id, waitsOn: { kind: "OPERATOR", what } }, ctx);
+    expect(await wait("npm login για το latest του run-spaceapp 1.2.2")).toMatchObject({ ok: false, display: "The wait needs its link", result: expect.stringContaining("https link") });
+    expect(await wait("Open the product page and accept the new layout")).toMatchObject({ ok: false, display: "The wait needs its link", result: expect.stringContaining("url:https://") });
+    expect(update).not.toHaveBeenCalled();
+    expect((await wait("npm login για το latest του run-spaceapp 1.2.2: https://www.npmjs.com/login")).ok).toBe(true);
+    expect((await wait("the go-ahead for the promote")).ok).toBe(true);
   });
 
   it("checks http when space_net_check names no check (17:48, asked again with http at once)", () => {
@@ -125,6 +136,25 @@ describe("Daily Nous errors 13/11 evening: failures after the 17:30/17:47 promot
     const roomTool = vi.fn(async () => ({ ok: false, display: "Close refused", result: "Pane Andy stays open: its Marketing Copilot has 1 approved post(s) scheduled, the next 2026-11-19 09:00 UTC. It closes once nothing is scheduled; only the operator can force-close it." }));
     const closed = await tools({ roomTool }).execute("space_close_pane", { room: "Felix", panes: ["Andy"] }, ctx);
     expect(closed).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("do not close it again before then") });
+  });
+
+  it("holds a restart whose pane folder is gone before sending it (11/11 16:52 Hugo, slice 12); a folder that exists restarts as asked", async () => {
+    const failed = { ok: false, display: "Restart failed", result: "CLI session cli_session:WoPtbmC2nMfP closed before input could be sent." };
+    const roomTool = vi.fn(async () => failed);
+    const at = (cwd: string) => async (roomId: string) => roomId === "room:felix001" ? [{ ...pane("pane:andy0001", "Andy", roomId), cwd } as Pane] : [];
+    const gone = await tools({ roomTool, listPanes: at("/opt/spaceapp/var/worktrees/space/wt-gone-000000") }).execute("space_restart_pane", { room: "Felix", panes: ["Andy"] }, ctx);
+    expect(gone).toMatchObject({ ok: false, refused: true, result: expect.stringMatching(/^Andy's folder \/opt\/spaceapp\/var\/worktrees\/space\/wt-gone-000000 no longer exists.*space_close_pane.*space_open_panes.*Nothing was restarted\.$/) });
+    expect(roomTool).not.toHaveBeenCalled();
+    expect(await tools({ roomTool, listPanes: at(process.cwd()) }).execute("space_restart_pane", { room: "Felix", panes: ["Andy"] }, ctx)).toMatchObject({ ok: false, result: failed.result });
+    expect(roomTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("a restart that did not complete names the pane, why and what to do before the receipt (slice 17: \"status FAILED ... results[{paneId…\" ×1)", async () => {
+    const receipt = JSON.stringify({ status: "FAILED", operationId: "op1", results: [{ index: 0, paneId: "pane:andy0001", status: "FAILED",
+      detail: "CLI session cli_session:WoPtbmC2nMfP closed before input could be sent." }] });
+    const listPanes = async (roomId: string) => roomId === "room:felix001" ? [{ ...pane("pane:andy0001", "Andy", roomId), cwd: process.cwd() } as Pane] : [];
+    const restarted = await tools({ roomTool: vi.fn(async () => ({ ok: false, display: "Restart failed", result: receipt })), listPanes }).execute("space_restart_pane", { room: "Felix", panes: ["Andy"] }, ctx);
+    expect(restarted).toMatchObject({ ok: false, result: expect.stringMatching(/^FAILED Andy: CLI session cli_session:WoPtbmC2nMfP closed before input could be sent\.\nRead the pane \(space_read_pane\).*space_close_pane.*space_open_panes\)\.\n\{"status":"FAILED"/) });
   });
 });
 
@@ -246,6 +276,15 @@ describe("Daily Nous errors 14/11: the tool round after the 13/11 promotes", () 
   it("refuses a git path that is no repository with the repositories it reads (git ×2)", async () => {
     const git = { run: vi.fn(async () => { throw new Error('Repositories: stable, dev or a Space worktree under /opt/spaceapp/var/worktrees/space (wt-...).'); }) };
     expect(await tools({ git: git as never }).execute("space_git", { repo: "/home/x/site", op: "log" }, ctx)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Repositories: stable, dev") });
+    // Slice 6 (14/11 01:47 ×2): a guessed path whose answer lists the nearest real paths is refused too; one with no hint stays a failure.
+    git.run.mockRejectedValueOnce(new Error("git: fatal: path 'apps/api/src/cli-routes.ts' does not exist in 'HEAD'\nNearest paths at HEAD: apps/api/src/cli-account-routes.ts."));
+    expect(await tools({ git: git as never }).execute("space_git", { repo: "stable", op: "file", path: "apps/api/src/cli-routes.ts" }, ctx)).toMatchObject({ ok: false, refused: true });
+    git.run.mockRejectedValueOnce(new Error("git: fatal: path 'x.ts' does not exist in 'HEAD'"));
+    expect((await tools({ git: git as never }).execute("space_git", { repo: "stable", op: "file", path: "x.ts" }, ctx)).refused).toBeFalsy();
+    // 14/11 (7/11 15:45 ×6): a short id several objects share; git.ts's answer names the longer id to send.
+    git.run.mockRejectedValueOnce(new Error("git: error: short object ID 2e50 is ambiguous\nhint: The candidates are:\nhint:   2e501993a6 commit 2026-11-07 - x\n"
+      + "fatal: ambiguous argument '2e50': unknown revision or path not in the working tree.\n2e50 names several objects: call again with a longer id (7 or more characters) of the commit, or find it with op \"log\"."));
+    expect(await tools({ git: git as never }).execute("space_git", { repo: "stable", op: "show", rev: "2e50" }, ctx)).toMatchObject({ ok: false, refused: true });
   });
 
   it("refuses a read-on of an answer that is not kept, naming the kept ones (tool_result ×1)", async () => {
@@ -289,6 +328,42 @@ describe("Daily Nous errors 14/11: the tool round after the 13/11 promotes", () 
     expect(read.result).not.toContain("space_mail_search");
   });
 
+  // 23/11 nous_msg:92f82fc2: an 85k Moonstone thread hid which message was SENT and which a DRAFT.
+  it("reads a thread as a table of ids and Gmail labels first, the newest message whole and older ones trimmed", async () => {
+    const pdf = (id: string) => ({ attachmentId: `${id}-${"x".repeat(600)}`, filename: "receipt.pdf", mimeType: "application/pdf", size: 4096, contentId: null });
+    const message = (messageId: string, at: string, from: string, labelIds: string[], text: string, attachments: ReturnType<typeof pdf>[] = []) => ({ messageId,
+      from: { name: "", address: from }, to: [{ name: "", address: "owner@example.com" }], receivedAt: at, labelIds, text, attachments });
+    const old = "Old letter. ".repeat(500);
+    const mail = { search: vi.fn(async () => ({ threads: [{ account: "op@example.com", threadId: "t1", messageId: "m4", from: { name: "", address: "mailer-daemon@googlemail.com" }, subject: "Letter",
+      snippet: "", receivedAt: "2026-11-23T02:42:00.000Z", unread: true, starred: false, hasAttachment: true, messageCount: 4, labelIds: ["INBOX", "DRAFT", "SENT"], newestLabelIds: ["INBOX"] }],
+      nextPageToken: null, errors: [] })), attachmentText: vi.fn(async () => ({ status: "OK", text: "Receipt text." })), accounts: vi.fn(async () => ["op@example.com"]), read: vi.fn(async () => ({ account: "op@example.com", threadId: "t1", subject: "Letter", messages: [
+      message("m1", "2026-11-23T02:00:00.000Z", "owner@example.com", ["INBOX"], old),
+      message("m2", "2026-11-23T02:32:00.000Z", "op@example.com", ["DRAFT"], `Draft. ${old}`, [pdf("draft")]),
+      message("m3", "2026-11-23T02:41:00.000Z", "op@example.com", ["SENT"], `Sent letter. ${old}`, [pdf("sent")]),
+      message("m4", "2026-11-23T02:42:00.000Z", "mailer-daemon@googlemail.com", ["INBOX", "UNREAD"], "Delivery failed.")] })) };
+    const f = tools({ mail: mail as unknown as NousToolDeps["mail"] });
+    const read = await f.execute("space_mail_read", { account: "op@example.com", threadId: "t1" }, ctx);
+    const table = read.result.slice(0, read.result.indexOf("Message m1"));
+    expect(table).toContain("- m2 · 2026-11-23T02:32 · op@example.com → owner@example.com · DRAFT · 1 files");
+    expect(table).toContain("- m3 · 2026-11-23T02:41 · op@example.com → owner@example.com · SENT · 1 files");
+    expect(table).toMatch(/- m4 .* · INBOX,UNREAD .* · BOUNCE \(mailer-daemon, after our m3\)/);
+    // Short numbers instead of Gmail's ~600-character ids; the same file name in the draft and the sent message is told apart by its number.
+    expect(read.result).not.toContain("x".repeat(600));
+    expect(read.result).toContain('Attachments (read one with "attachment": "#n"): #2 receipt.pdf (application/pdf, 4 KB)');
+    await f.execute("space_mail_read", { account: "op@example.com", threadId: "t1", attachment: "#2" }, ctx);
+    expect(mail.attachmentText).toHaveBeenLastCalledWith(owner, "op@example.com", "m3", pdf("sent").attachmentId, "receipt.pdf");
+    expect((await f.execute("space_mail_search", { q: "Moonstone" }, ctx)).result).toContain("thread labels INBOX,DRAFT,SENT · newest message m4: INBOX");
+    expect(read.result).toContain(`[… trimmed: ${old.trim().length} characters; whole with "messageId": "m1"]`);
+    expect(read.result).not.toContain(old.trim());
+    const sent = await f.execute("space_mail_read", { account: "op@example.com", threadId: "t1", messageId: "m3" }, ctx);
+    expect(sent.result).toContain(`Sent letter. ${old}`.trim());
+    expect(sent.result).toContain('whole with "messageId": "m2"');
+    const missing = await f.execute("space_mail_read", { account: "op@example.com", threadId: "t1", messageId: "m9" }, ctx);
+    expect(missing).toMatchObject({ ok: true, result: expect.stringContaining("(Message m9 was not found in thread t1; showing newest message instead. Thread messages: m1, m2, m3, m4)") });
+    expect(missing.result).toContain("Delivery failed.");
+    expect(missing.result).toContain('whole with "messageId": "m3"');
+  });
+
   // Daily Nous errors 14/11 slice 5.
   it("refuses helpers called with both tasks and runId, or neither, naming which to give (subagents ×1)", async () => {
     const subagents = { run: vi.fn(), wait: vi.fn() };
@@ -298,4 +373,18 @@ describe("Daily Nous errors 14/11: the tool round after the 13/11 promotes", () 
     expect(subagents.run).not.toHaveBeenCalled();
   });
 
+  // Daily Nous errors 14/11 slice 11: answers that name the next call are refusals.
+  it("refuses a note key no note has, naming the keys sharing its words (notes ×1)", async () => {
+    const listNotes = async () => [{ key: "goal-e803-daily", text: "Daily", updatedAt: "2026-11-09T05:00:00.000Z" }, { key: "lessons-1027-postal-code", text: "Postal", updatedAt: "2026-11-01T05:00:00.000Z" }];
+    expect(await tools({ listNotes }).execute("space_notes", { key: "goal-e803-daily-20261109" }, ctx))
+      .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("keys sharing its words: goal-e803-daily.") });
+  });
+
+  it("refuses a browser route for a pane without a browser, naming the pane kinds (browser_set_route ×1)", async () => {
+    const setBrowserRoute = vi.fn(async () => { throw new Error("Pane pane:andy0001 is TERMINAL; browser sessions require BROWSER, YOUTUBE, JOB_APPLY, MARKETING_COPILOT or FREELANCE_COPILOT panes."); });
+    expect(await tools({ setBrowserRoute: setBrowserRoute as never }).execute("space_browser_set_route", { room: "Felix", pane: "Andy", route: "greece" }, ctx))
+      .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("space_browser_tabs") });
+    setBrowserRoute.mockImplementationOnce(async () => { throw new Error("Boom."); });
+    expect((await tools({ setBrowserRoute: setBrowserRoute as never }).execute("space_browser_set_route", { room: "Felix", pane: "Andy", route: "greece" }, ctx)).refused).toBeFalsy();
+  });
 });

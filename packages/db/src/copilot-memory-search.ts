@@ -124,35 +124,81 @@ const REVIEW_QUERY = "always or must or πάντα or παντα";
 // Words every mail rule and summary uses, and the "including …" qualifier, never name the kind of mail a review is required for.
 const MAIL_WORDS = new Set("mail mails email emails message messages thread threads exception".split(" "));
 const stem = (word: string) => word.length > 4 ? word.replace(/s$/, "") : word;
-/** Whether a sentence of the memory requires a review for mail of a kind the item names (one shared word, plurals folded). */
-function requiresReview(text: string, words: Set<string>): boolean {
+/**
+ * 21/11 lessons-1121-investor-review-autosent (mailrev:nH4I_tSo5hnu "Follow-up to Metavallon VC … deck/demo" went out under maySend): the
+ * funding rule names "funding / startup program / credits", the mail said "VC". A funding-kind mail carries the family's words, so a rule
+ * naming any of them requires its review. Read folded; "VC" has two letters, below contentWords' three.
+ */
+const FUNDING_MAIL = /(?<![\p{L}\p{N}])(?:fund(?:s|ing|raising)?|investors?|investments?|vcs?|venture capital|grants?|accelerators?|credits|startup programs?|χρηματοδοτ\p{L}*|επενδυτ\p{L}*)(?![\p{L}\p{N}])/u;
+const FUNDING_WORDS = "funding investor grant credits startup program accelerator".split(" ");
+const reviewWords = (item: string) => {
+  const words = withVariants(contentWords(item));
+  if (FUNDING_MAIL.test(fold(item))) for (const word of FUNDING_WORDS) words.add(word);
+  return words;
+};
+type Scope = ReturnType<typeof namedScope>;
+const elsewhere = (named: Set<string>, mine: Set<string>) => named.size > 0 && ![...named].some((value) => mine.has(value));
+const scopedElsewhere = (text: string, own: Scope) => { const scope = namedScope(text); return elsewhere(scope.ids, own.ids) || elsewhere(scope.addresses, own.addresses); };
+/**
+ * Whether a sentence of the memory requires a review for mail of a kind the item names (one shared word, plurals folded). With `own`, that
+ * sentence must not name other items' ids or addresses (funding-review-auto-sent 13/11 17:23Z: mailmem:SLvZ9IZgCRc4's "first case: Turso …
+ * jeff@turso.tech … mailrev:T56R0JPCPzGG" sentence scoped its rule for all funding mail to Turso, so a Google review went out unread).
+ */
+function requiresReview(text: string, words: Set<string>, own?: Scope): boolean {
   const item = new Set([...words].map(stem));
-  return fold(text).split(/[.;!?\n]+\s/).some((sentence) => {
+  return text.split(/[.;!?\n]+\s/).some((raw) => {
+    const sentence = fold(raw);
     const found = REVIEW_REQUIRED.exec(sentence);
-    if (!found) return false;
+    if (!found || (own && scopedElsewhere(raw, own))) return false;
     const kinds = sentence.slice(0, found.index).replace(/\([^)]*\)/g, " ").split(/(?<![\p{L}\p{N}])(?:including|even)(?![\p{L}\p{N}])/u)[0]!;
     return [...contentWords(kinds)].some((word) => !MAIL_WORDS.has(word) && item.has(stem(word)));
   });
 }
 
+/**
+ * 15/11 (mailrev:L4KcChb7M_P9, a plain "Yes" to an invitation, refused by mailmem:j6H55OdbjIyR «Ποτέ μην αφήνεις πρόχειρο … που λέει ότι έχει
+ * συνημμένο … χωρίς να το έχει»; same class as WIM 2/11): a rule about a draft claiming an attachment it lacks forbids only such a draft.
+ * Both read folded.
+ */
+const ATTACHMENT_RULE = /(?=[\s\S]*(?:attach|συνημμ|επισυναπ))(?=[\s\S]*(?:without|missing|χωρις|λειπ))/u;
+const ATTACHMENT_CLAIM = /attach|enclosed|screenshot|συνημμ|επισυναπ|στιγμιοτυπ|αρχει|(?<![\p{L}\p{N}])(?:png|jpe?g|pdf|files?)(?![\p{L}\p{N}])/u;
+/** The draft a review would send: its text (subject and body) and how many files it carries. */
+export interface ForbiddingDraft { text: string; files: number }
+const claimsMissingAttachment = (item: string, draft?: ForbiddingDraft) => ATTACHMENT_CLAIM.test(fold(draft?.text ?? item)) && !draft?.files;
+
+/**
+ * 20/11 (mktmem:D6zG6M9OgGXq, whose quoted "Never ask the agent…" refused two Reddit replies): the LESSON a copilot learns when the operator
+ * edits a draft is an example of their style, never a ban nor a review requirement. Every copilot writes it here, so `isReviewEditMemory` reads it.
+ */
+const REVIEW_EDIT_DRAFT = ". Copilot draft:\n";
+export const reviewEditMemoryText = (change: string, draft: string, version: string) => `${change}${REVIEW_EDIT_DRAFT}${draft}\n\nOperator's version:\n${version}`;
+export const isReviewEditMemory = (text: string) => text.includes(REVIEW_EDIT_DRAFT);
+
 type RuleMemory = { id: string; kind?: string; key?: string | null; text: string; updatedAt?: string };
 const memoryText = (memory: RuleMemory) => `${memory.key ?? ""} ${memory.text}`;
+const ruleKind = (memory: RuleMemory) => (memory.kind === undefined || RULE_MEMORY_KINDS.has(memory.kind)) && !isReviewEditMemory(memory.text);
+const itemScope = (item: string, about: readonly string[]) => namedScope(`${about.join(" ")} ${item}`);
+/**
+ * 23/11 (mailmem:gB0ps5bFH8-7, an old-brand rule naming four archived Gmail threads, refused the Datouboss, Linkwise and Nous Pro ICAP
+ * reviews on shared words): a ban naming Gmail thread or message ids (16 hex) speaks only of those threads. Bans only: a review
+ * requirement keeps its wider reading (requiresReview), so naming a thread never lets other mail out unread.
+ */
+const gmailIds = (text: string) => new Set((text.toLowerCase().match(/\b[0-9a-f]{16}\b/g) ?? []).filter((id) => /[a-f]/.test(id) && /\d/.test(id)));
 /** R16-10: a rule memory that applies to the item; one naming item ids or addresses (Cleo/Kate 18:17, Cleo/Emma 19:33) speaks only of them. */
 function appliesTo(item: string, about: readonly string[]): (memory: RuleMemory) => boolean {
-  const own = namedScope(`${about.join(" ")} ${item}`);
-  const elsewhere = (named: Set<string>, mine: Set<string>) => named.size > 0 && ![...named].some((value) => mine.has(value));
-  return (memory) => {
-    if (memory.kind !== undefined && !RULE_MEMORY_KINDS.has(memory.kind)) return false;
-    const scope = namedScope(memoryText(memory));
-    return !elsewhere(scope.ids, own.ids) && !elsewhere(scope.addresses, own.addresses);
-  };
+  const own = itemScope(item, about);
+  const threads = gmailIds(`${about.join(" ")} ${item}`);
+  return (memory) => ruleKind(memory) && !scopedElsewhere(memoryText(memory), own) && !elsewhere(gmailIds(memoryText(memory)), threads);
 }
 
-/** The rule memories that require a review of this item (`requiresReview`, Arize 13/11). Nous 13/11: such a review is the operator's to read. */
+/**
+ * The rule memories that require a review of this item (`requiresReview`, Arize 13/11). Nous 13/11: such a review is the operator's to read.
+ * Scope is read per requiring sentence, not the whole memory: requiring a review too often only shows the operator one more mail.
+ */
 export async function reviewRequiringMemories<T extends RuleMemory>(list: (query: string) => Promise<T[]>, item: string, about: readonly string[] = []): Promise<T[]> {
-  const words = withVariants(contentWords(item));
-  const applies = appliesTo(item, about);
-  return (await list(REVIEW_QUERY)).filter((memory) => applies(memory) && requiresReview(memoryText(memory), words));
+  const words = reviewWords(item);
+  const own = itemScope(item, about);
+  return (await list(REVIEW_QUERY)).filter((memory) => ruleKind(memory) && requiresReview(memoryText(memory), words, own));
 }
 
 /**
@@ -162,13 +208,15 @@ export async function reviewRequiringMemories<T extends RuleMemory>(list: (query
  * scoped to the item's correspondent, channel or company). `list` is the copilot's memory search; `scoped` tells a scoped memory;
  * `about` holds the item's own ids and addresses (its id, the mail account and correspondent). Only a rule kind (`RULE_MEMORY_KINDS`) may
  * forbid: a FACT, CLIENT or other record says what happened, never what to do. For a `review`, a memory never forbids what it itself, or a
- * rule memory updated since, requires a review for (`requiresReview`, Arize 13/11); a question stays forbidden.
+ * rule memory updated since, requires a review for (`requiresReview`, Arize 13/11); a question stays forbidden. A rule about claimed attachments
+ * (`ATTACHMENT_RULE`) forbids only a `draft` (else the item's text) that claims an attachment and carries no file (15/11).
  */
 export async function forbiddingMemory<T extends RuleMemory>(list: (query: string) => Promise<T[]>,
-  item: string, scoped: (memory: T) => boolean = () => false, about: readonly string[] = [], review = false): Promise<T | null> {
+  item: string, scoped: (memory: T) => boolean = () => false, about: readonly string[] = [], review = false, draft?: ForbiddingDraft): Promise<T | null> {
   const words = withVariants(contentWords(item));
   const applies = appliesTo(item, about);
   const bans = (await list(COPILOT_NEVER_QUERY)).filter((memory) => applies(memory) && forbids(memoryText(memory))
+    && (!ATTACHMENT_RULE.test(fold(memoryText(memory))) || claimsMissingAttachment(item, draft))
     && [...contentWords(memoryText(memory))].filter((word) => words.has(word)).length >= (scoped(memory) ? 1 : 2));
   if (!review || !bans.length) return bans[0] ?? null;
   const required = await reviewRequiringMemories(list, item, about);

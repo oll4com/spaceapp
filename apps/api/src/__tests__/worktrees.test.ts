@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,6 +81,19 @@ describe("WorktreeService", () => {
     // Now main repo should have feature.txt
     const mainFeature = await readFile(join(tempRepo, "feature.txt"), "utf8");
     expect(mainFeature).toBe("New feature created by agent");
+  });
+
+  it("refuses an existing branch with an explicit base, reuses it without one (23/11)", async () => {
+    await execGit(tempRepo, ["branch", "feat/old-sweep"]);
+    const oldTip = (await execGit(tempRepo, ["rev-parse", "feat/old-sweep"])).stdout.trim();
+    await execGit(tempRepo, ["commit", "--allow-empty", "-m", "main moves on"]);
+    const before = (await service.listWorktrees(tempRepo)).length;
+    await expect(service.createWorktree({ repoPath: tempRepo, roomId: "room:test-existing", branchName: "feat/old-sweep", baseBranch: "main", linkModules: false }))
+      .rejects.toMatchObject({ code: "BRANCH_EXISTS", statusCode: 409, message: expect.stringContaining("drop --base or use a new branch name") });
+    expect((await service.listWorktrees(tempRepo)).length).toBe(before);
+
+    const reused = await service.createWorktree({ repoPath: tempRepo, roomId: "room:test-existing", branchName: "feat/old-sweep", linkModules: false });
+    expect(reused.baseCommit).toBe(oldTip);
   });
 
   it("keeps checkouts group-writable for pane CLIs running as another user", async () => {
@@ -166,6 +179,12 @@ describe("WorktreeService", () => {
     expect(getRes.statusCode).toBe(200);
     const getJson = JSON.parse(getRes.payload);
     expect(Array.isArray(getJson.data)).toBe(true);
+    // DEV3D-014: ?fresh=false keeps the cached list; ?fresh=true asks for a fresh one.
+    const list = vi.spyOn(service, "listWorktrees");
+    await app.inject({ method: "GET", url: `/api/worktrees?repoPath=${encodeURIComponent(tempRepo)}&fresh=false` });
+    await app.inject({ method: "GET", url: `/api/worktrees?repoPath=${encodeURIComponent(tempRepo)}&fresh=true` });
+    expect(list.mock.calls.map((call) => call[1])).toEqual([{ fresh: false }, { fresh: true }]);
+    list.mockRestore();
 
     // 2. POST /api/worktrees
     const postRes = await app.inject({
@@ -236,6 +255,8 @@ describe("WorktreeService", () => {
       baseBranch: "main",
       linkModules: false
     });
+    // DEV3D-006: the dock's list (cached up to 20 s) saw it clean; the work written after must still be seen.
+    expect((await service.listWorktrees(tempRepo)).find((item) => item.worktreePath === wtDirty.worktreePath)?.isDirty).toBe(false);
     await writeFile(join(wtDirty.worktreePath, "dirty-uncommitted.txt"), "wip");
 
     // 3. Run cleanCompletedWorktrees

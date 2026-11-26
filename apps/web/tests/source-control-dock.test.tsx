@@ -3,6 +3,7 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { SourceControlDock } from "../src/features/source-control/SourceControlDock.js";
+import { formatReviewNotes } from "../src/features/source-control/SourceControlDiffModal.js";
 import { DockActiveContext } from "../src/features/docks/dock-active-context.js";
 import type { SourceControlClient } from "../src/features/source-control/client.js";
 import { SOURCE_CONTROL_CONNECTION_EVENT, SourceControlRequestError } from "../src/features/source-control/client.js";
@@ -14,6 +15,8 @@ const worktreeApi = vi.hoisted(() => ({
   removeWorktree: vi.fn(async () => undefined)
 }));
 vi.mock("../src/features/worktrees/worktree-client.js", () => worktreeApi);
+const clipboardApi = vi.hoisted(() => ({ writeClipboardText: vi.fn<(text: string) => Promise<"live">>(async () => "live") }));
+vi.mock("../src/features/clipboard-dock/clipboard-events.js", async (importOriginal) => ({ ...await importOriginal<object>(), ...clipboardApi }));
 
 afterEach(() => { cleanup(); localStorage.clear(); worktreeApi.listWorktrees.mockReset().mockResolvedValue([]); worktreeApi.mergeWorktree.mockClear(); worktreeApi.removeWorktree.mockClear(); });
 /** Derives the provider API from the legacy connection fixtures so both shapes stay in one place. */
@@ -66,6 +69,39 @@ describe("Source Control dock", () => {
     expect(api.diff).toHaveBeenCalledWith("binding:1", "committed.txt", false, expect.anything(), true);
     expect(screen.queryByRole("button", { name: "Stage hunk 1" })).toBeNull();
     await waitFor(() => expect(api.operate).toHaveBeenCalledWith("fetch", expect.objectContaining({ bindingId: "binding:1" })));
+  });
+
+  it("formats review notes for the agent by line, with removed lines named as removed", () => {
+    expect(formatReviewNotes("src/a.ts", [
+      { removed: false, line: 12, code: "  const x = 1;", note: "Rename x\nto count" },
+      { removed: true, line: 3, code: "old()", note: "Why removed?" },
+      { removed: false, line: 3, code: "", note: " Keep " }
+    ])).toBe([
+      "Review notes on src/a.ts. Please address each one:",
+      "- src/a.ts, removed line 3 (`old()`): Why removed?",
+      "- src/a.ts:3: Keep",
+      "- src/a.ts:12 (`const x = 1;`): Rename x\n  to count"
+    ].join("\n"));
+  });
+
+  it("adds a note on a changed line and copies the notes as a prompt for the agent", async () => {
+    clipboardApi.writeClipboardText.mockClear();
+    render(<SourceControlDock userId="user:a" projects={[{ label: "Proof", path: "/proof" }]} client={client()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open diff for file.txt" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add a note on line 1" }));
+    fireEvent.change(screen.getByLabelText("Note on line 1"), { target: { value: "Use a constant" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save note" }));
+    expect(screen.getByRole("button", { name: "Edit the note on line 1" })).toBeTruthy();
+    // A removed line gets its own button with its old number.
+    expect(screen.getByRole("button", { name: "Add a note on removed line 1" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy note for the agent" }));
+    await waitFor(() => expect(clipboardApi.writeClipboardText).toHaveBeenCalledWith("Review notes on file.txt. Please address each one:\n- file.txt:1 (`new`): Use a constant"));
+    expect(await screen.findByText("Copied. Paste it into the agent's pane.")).toBeTruthy();
+    // Escape closes the open note first, then the dialog.
+    fireEvent.click(screen.getByRole("button", { name: "Edit the note on line 1" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByLabelText("Note on line 1")).toBeNull();
+    expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
   it("shows a diff failure inside the dialog instead of leaving it loading", async () => {

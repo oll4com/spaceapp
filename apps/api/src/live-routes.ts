@@ -68,7 +68,7 @@ export function registerLiveRoutes(app: FastifyInstance, options: {
             url: targetUrl
           });
         }
-      } catch {}
+      } catch { /* site lookup is best-effort: the other sources still answer */ }
     }
 
     // 2. If query mentions weather or temperature, query Open-Meteo for real-time weather
@@ -94,7 +94,7 @@ export function registerLiveRoutes(app: FastifyInstance, options: {
             });
           }
         }
-      } catch {}
+      } catch { /* weather is best-effort: the other sources still answer */ }
     }
 
     // 3. Wikipedia search for factual knowledge, definitions, history, people, geography
@@ -120,7 +120,7 @@ export function registerLiveRoutes(app: FastifyInstance, options: {
           }
         }
       }
-    } catch {}
+    } catch { /* Wikipedia is best-effort: return what the other sources found */ }
 
     return { results: results.slice(0, limit) };
   });

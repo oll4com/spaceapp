@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { NOUS_MESSAGE_MAX_CHARS } from "@space/contracts";
 import { InMemoryNousRepository, type NousNote } from "@space/db";
 import { createNousAppParityWatch } from "../src/nous/app-parity.js";
 import { renderNousWorld } from "../src/nous/digest.js";
@@ -135,6 +136,33 @@ describe("Nous's lesson memory (repeat-mistake upgrade 31/10)", () => {
     expect(world).not.toContain("jobmem:postal");
   });
 
+  it("fits a done claim's lessons in one inbox line and names the rest; a line past the bound says Space cut it (20/11 nous_msg:0885e76f)", async () => {
+    const many = Array.from({ length: 5 }, (_, index) => ({ key: `lessons-1031-requests-${index}`, text: `31/10 #${index}: the Requests tab still showed In progress after I said fixed. `
+      + `Do instead: read GET /api/nous/requests counts before saying the In progress count fell. ${"w".repeat(5_000)}` }));
+    const repository = await seeded(many);
+    const requests: Array<Parameters<NousRunner>[0]> = [];
+    const answers = ["Διορθώθηκε: στο Requests tab τα In progress έπεσαν, ο count είναι τώρα 11."];
+    const service = createNousService({ repository, runner: async (input) => { requests.push(input); return { text: answers.shift() ?? "NOTHING_NEW", isError: false }; },
+      tools: { execute: vi.fn() } as never, world: async () => ({ text: "# The world now", overview: { plans: [], needsHands: [], trains: "", planMap: null } }),
+      settings: async () => ({ enabled: true, maxTurnsPerHour: 20 }) as never, saveSettings: async (_owner, value) => value, notifications: { raise: vi.fn(), resolve: vi.fn() } as never,
+      executeAction: vi.fn(), limits: { inboxDebounceMs: 10 }, lessons: createNousLessons({ notes: (who) => repository.listNotes(who) }) });
+    await service.send(owner, "Τι έγινε;");
+    await vi.waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
+    await service.idle(owner);
+    const inbox = (await repository.listMessages(owner, 50)).filter((message) => message.kind === "INBOX").map((message) => message.content);
+    const claim = inbox.find((line) => line.startsWith("Your answer to the operator says it is done or ready."))!;
+    expect(claim.length).toBeLessThanOrEqual(NOUS_MESSAGE_MAX_CHARS);
+    expect(claim).toMatch(/more matches \(space_lessons \{"query": …\} reads them\): lessons-1031-requests-\d+/);
+    expect(claim).toContain("answer NOTHING_NEW (he has the answer already).");
+    expect(claim).not.toContain("Space cut this inbox line");
+    await service.notice(owner, "big", "y".repeat(NOUS_MESSAGE_MAX_CHARS + 500));
+    await vi.waitFor(async () => expect((await repository.listMessages(owner, 50)).some((message) => message.content.startsWith("yyy"))).toBe(true), { timeout: 10_000 });
+    await service.idle(owner);
+    const big = (await repository.listMessages(owner, 50)).find((message) => message.content.startsWith("yyy"))!.content;
+    expect(big).toHaveLength(NOUS_MESSAGE_MAX_CHARS);
+    expect(big.endsWith(`y [Space cut this inbox line at ${NOUS_MESSAGE_MAX_CHARS} chars; it is Space's own text, not the operator's]`)).toBe(true);
+  });
+
   it("holds an ask once with its lessons, then lets the same call through in that turn", async () => {
     const repository = await seeded();
     const tools = createNousTools({ lessons: createNousLessons({ notes: (who) => repository.listNotes(who) }), setNote: (who, key, text) => repository.setNote(who, key, text) } as unknown as NousToolDeps);
@@ -168,6 +196,63 @@ describe("Nous's lesson memory (repeat-mistake upgrade 31/10)", () => {
     // An inbox turn's reply answers no waiting operator: held once, as before.
     expect(await tools.execute("space_reply_now", { text: "Fixed: the pane opens again." }, ctx("turn:s2", "INBOX"))).toMatchObject({ ok: false, refused: true });
     expect(replyNow).toHaveBeenCalledTimes(3);
+  });
+
+  it("Daily Nous errors 20/11: an order to a pane, an answer for it and a close of a Needs you item meet their lessons once (orders in their result)", async () => {
+    const match = { key: "lessons-1113-forward-agent-held-card", text: "A held agent card waits for the operator: never answer it for them.", updatedAt: "", similarity: 0.8, shared: [] };
+    const recall = vi.fn(async (_owner: string, text: string) => /card|code/i.test(text) ? [match] : []);
+    const pane = { id: "pane:gate0001", name: "Bob", mode: "TERMINAL", isClosed: false };
+    const room = { id: "room:gate0001", name: "Work", ownerUserId: owner };
+    const notification: { id: string; title: string; body: null; source: string; kind: string; status?: string } = { id: "notification:gate0001", title: "Bob needs you: the AWS code card", body: null, source: "NOUS", kind: "NEEDS_YOU" };
+    const resolve = vi.fn(async () => true);
+    const panes = [pane];
+    const tools = createNousTools({ lessons: { recall }, rooms: async () => [room], listPanes: async () => panes, inspectPane: async () => ({ state: "IDLE", text: "" }), allowances: async () => ({}),
+      roomTool: async () => ({ ok: true, display: "Sent", result: "sent" }),
+      notifications: { list: async () => [notification], get: async () => notification, resolve }, paneNeeds: async () => [] } as unknown as NousToolDeps);
+    const ctx = (turnId: string) => ({ owner, turnId, callId: "call:g1", traceId: "trace:g1", turn: { reason: "INBOX", operatorMessage: null } }) as never;
+    expect(await tools.execute("space_resolve_notification", { notification: notification.id }, ctx("turn:g1"))).toMatchObject({ ok: false, refused: true, display: "Held once: a lesson is about this" });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(await tools.execute("space_resolve_notification", { notification: notification.id }, ctx("turn:g1"))).toMatchObject({ ok: true, display: "Closed a notification" });
+    // Slice 4: an item already closed is a no-op, before any gate (21/11: the same closed ask retried 8 times).
+    notification.status = "RESOLVED";
+    expect(await tools.execute("space_resolve_notification", { notification: notification.id }, ctx("turn:g9"))).toMatchObject({ ok: true, display: "Already closed" });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    delete notification.status;
+    const send = await tools.execute("space_send_to_pane", { room: room.id, panes: [pane.id], text: "Type the code from the card." }, ctx("turn:g2"));
+    expect(send.display).not.toMatch(/^Held once/);
+    expect(send.result).toContain(match.text);
+    // 21/11: the pane met these lessons on turn g2, so the next turn's answer and order for it pass; another pane meets them once.
+    expect((await tools.execute("space_answer_pane", { room: room.id, pane: pane.id, answer: "Use the code on the card" }, ctx("turn:g3"))).display).not.toMatch(/^Held once/);
+    expect((await tools.execute("space_send_to_pane", { room: room.id, panes: [pane.id], text: "Type the code from the card." }, ctx("turn:g5"))).display).not.toMatch(/^Held once/);
+    const other = { ...pane, id: "pane:gate0002", name: "Kate" };
+    panes.push(other);
+    const answer = await tools.execute("space_answer_pane", { room: room.id, pane: other.id, answer: "Use the code on the card" }, ctx("turn:g6"));
+    expect(answer.display).not.toMatch(/^Held once/);
+    expect(answer.result).toContain(match.text);
+    // A save request is the operator's routine order: no lesson hold.
+    expect((await tools.execute("space_send_to_pane", { room: room.id, panes: [pane.id], text: "Run space-memory-save about the code card." }, ctx("turn:g4"))).display).not.toMatch(/^Held once/);
+  });
+
+  it("Repeated Nous errors 21/11: an order to a pane is never held; it goes with its unseen lessons in its result", async () => {
+    // 21/11: one dispatch turn was held once per pane briefed (8 holds), and later each first order of a turn, each resent unchanged 0-8 s later.
+    const match = (key: string) => ({ key, text: `${key} says brief the pane its whole task.`, updatedAt: "", similarity: 0.8, shared: [] });
+    const recall = vi.fn(async (_owner: string, text: string) => [match(text.includes("deploy") ? "lessons-1120-deploy-brief" : "lessons-1119-plan-brief")]);
+    const panes = [{ id: "pane:order001", name: "Bob", mode: "TERMINAL", isClosed: false }, { id: "pane:order002", name: "Max", mode: "TERMINAL", isClosed: false }];
+    const room = { id: "room:order001", name: "Work", ownerUserId: owner };
+    const tools = createNousTools({ lessons: { recall }, rooms: async () => [room], listPanes: async () => panes, inspectPane: async () => null, paneNeeds: async () => [] } as unknown as NousToolDeps);
+    const ctx = (turnId: string, callId: string) => ({ owner, turnId, callId, traceId: "trace:o1", turn: { reason: "INBOX", operatorMessage: null } }) as never;
+    const toBob = { room: room.id, panes: [panes[0]!.id], text: "Take step 2 of the plan." };
+    const toMax = { room: room.id, panes: [panes[1]!.id], text: "Run the deploy of step 3." };
+    const first = await tools.execute("space_send_to_pane", toBob, ctx("turn:o1", "call:o1"));
+    expect(first.display).not.toMatch(/^Held once/);
+    expect(first.result).toContain("lessons-1119-plan-brief says brief the pane its whole task.");
+    const later = await tools.execute("space_send_to_pane", toMax, ctx("turn:o1", "call:o3"));
+    expect(later.display).not.toMatch(/^Held once/);
+    expect(later.result).toContain("A lesson this turn had not seen is about it.");
+    expect(later.result).toContain("lessons-1120-deploy-brief says brief the pane its whole task.");
+    // Shown once: the same order again carries no lessons, nor does a new turn's order to that pane within 6 h (21/11 q-20261121-112622-870d).
+    expect((await tools.execute("space_send_to_pane", toMax, ctx("turn:o1", "call:o4"))).result).not.toContain("lessons-1120-deploy-brief");
+    expect((await tools.execute("space_send_to_pane", toMax, ctx("turn:o2", "call:o5"))).display).not.toMatch(/^Held once/);
   });
 
   it("holds a call once per turn and subject, even when its rewrite matches other lessons (R42)", async () => {
@@ -215,6 +300,45 @@ describe("Nous's lesson memory (repeat-mistake upgrade 31/10)", () => {
     expect(await tools.execute("space_request_done", done, unseen)).toMatchObject({ ok: false, refused: true, display: "Held once: a lesson is about this" });
   });
 
+  it("holds no space_request_done whose request is already in Done (Daily Nous errors 22/11: 6 of 22 lesson holds)", async () => {
+    const repository = await seeded();
+    const run = vi.fn(async () => ({ ok: true, display: "This request is already in Done", result: "Already recorded" }));
+    const recorded = vi.fn(async () => true);
+    const tools = createNousTools({ lessons: createNousLessons({ notes: (who) => repository.listNotes(who) }), requestDone: { run, recorded } } as unknown as NousToolDeps);
+    const done = { id: "nous_msg:dd22", request: "Βάλε τον ταχυδρομικό κώδικα στο Upwork", summary: "The Upwork profile now has the postal code of the residence address from the memory.", where: "no code" };
+    const ctx = (turnId: string) => ({ owner, turnId, callId: `call:${turnId}`, traceId: `trace:${turnId}`, turn: { reason: "INBOX", operatorMessage: null } }) as never;
+    expect(await tools.execute("space_request_done", done, ctx("turn:dd22a"))).toMatchObject({ ok: true, display: "This request is already in Done" });
+    expect(recorded).toHaveBeenCalledWith(owner, expect.objectContaining({ id: "nous_msg:dd22" }), "turn:dd22a");
+    // Not yet recorded: the lesson hold stands.
+    recorded.mockResolvedValue(false);
+    expect(await tools.execute("space_request_done", done, ctx("turn:dd22b"))).toMatchObject({ ok: false, refused: true, display: "Held once: a lesson is about this" });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows any inbox batch the lessons about its lines, so a lesson-gated call passes the first time (queue: ~200 'Held once: N lessons' in 21 h)", async () => {
+    const repository = await seeded();
+    const run = vi.fn(async () => ({ ok: true, display: "Recorded the completed request in Done", result: "ok" }));
+    const lessons = createNousLessons({ notes: (who) => repository.listNotes(who) });
+    const tools = createNousTools({ lessons, requestDone: { run } } as unknown as NousToolDeps);
+    const done = { id: "nous_msg:q200", request: "Βάλε τον ταχυδρομικό κώδικα στο Upwork", summary: "The Upwork profile now has the postal code of the residence address from the memory.", where: "no code" };
+    const prompts: string[] = [];
+    const outcomes: Array<{ ok: boolean; display: string }> = [];
+    const service = createNousService({ repository, tools, world: async () => ({ text: "# The world now", overview: { plans: [], needsHands: [], trains: "", planMap: null } }),
+      runner: async (input) => {
+        prompts.push(input.prompt);
+        outcomes.push(await service.callTool(owner, input.turnId, "space_request_done", done, "call:q200"));
+        return { text: "NOTHING_NEW", isError: false };
+      },
+      settings: async () => ({ enabled: true, maxTurnsPerHour: 20 }) as never, saveSettings: async (_owner, value) => value, notifications: { raise: vi.fn(), resolve: vi.fn() } as never,
+      executeAction: vi.fn(), limits: { inboxDebounceMs: 10 }, lessons });
+    // A plain pane report, no REQUEST item: before, such a batch got no lessons and its first gated call was held.
+    await service.notice(owner, "pane-report:q200", "Cleo/Finn reports: the Upwork profile postal code of the residence address is set.", undefined, { soonMs: 10 });
+    await vi.waitFor(() => expect(outcomes).toHaveLength(1), { timeout: 10_000 });
+    expect(prompts[0]).toContain("matched to this inbox batch");
+    expect(prompts[0]).toContain(`[lessons-1027-postal-code] ${OLD_LESSON}`);
+    expect(outcomes[0]).toMatchObject({ ok: true, display: "Recorded the completed request in Done" });
+  });
+
   it("adds a lesson of a known cause to that lesson as an incident, keeps a distinct one apart, and merges a group", async () => {
     const repository = await seeded([{ key: "lessons-1030-vault-unlock", text: "Never make his list depend on a Vault unlock." }]);
     const lessons = createNousLessons({ notes: (who) => repository.listNotes(who), embed: fakeEmbed, setNote: (who, key, text) => repository.setNote(who, key, text) });
@@ -236,6 +360,22 @@ describe("Nous's lesson memory (repeat-mistake upgrade 31/10)", () => {
     const after = await repository.listNotes(owner);
     expect(after.find((note) => note.key === "lessons-1031-vault-other")).toBeUndefined(); // a note name, not a credential; gitleaks:allow
     expect(after.find((note) => note.key === "lessons-1030-vault-unlock")?.text).toContain("--- Incident (merged from lessons-1031-vault-other");
+  });
+
+  it("keeps an existing lesson's text when Nous saves over its key, the new text an incident the Score counts (23/11 lessons-funding-review-auto-sent)", async () => {
+    const old = "Nous observation (no authority to change user choices):\n13/11: a funding review went out under maySend. Do instead: keep it on the card.";
+    const repository = await seeded([{ key: "lessons-funding-review-auto-sent", text: old }]);
+    const tools = createNousTools({ listNotes: (who: string) => repository.listNotes(who), setNote: (who: string, key: string, text: string) => repository.setNote(who, key, text) } as unknown as NousToolDeps);
+    const ctx = { owner, turnId: "turn:lessons04", callId: "call:4", traceId: "trace:4", turn: { reason: "OPERATOR", operatorMessage: null } } as never;
+    const text = async () => (await repository.listNotes(owner)).find((note) => note.key === "lessons-funding-review-auto-sent")?.text;
+    expect(await tools.execute("space_note", { key: "lessons-funding-review-auto-sent", text: "23/11: same cause, Moonstone review approved at once." }, ctx))
+      .toMatchObject({ ok: true, display: "Added the lesson to lessons-funding-review-auto-sent as an incident" });
+    const saved = await text();
+    expect(saved).toMatch(new RegExp(`^${old.replace(/[()]/g, "\\$&")}\n\n--- Incident \\(\\d{4}-\\d{2}-\\d{2}T[\\d:.]+Z, saved again as lessons-funding-review-auto-sent\\):\nNous observation`));
+    expect(saved).toContain("Moonstone review approved at once.");
+    // A save that keeps the old text (an edit that adds to it) is written as given.
+    expect(await tools.execute("space_note", { key: "lessons-funding-review-auto-sent", text: `${saved}\nAlso: name the rule.` }, ctx)).toMatchObject({ display: "Saved the note lessons-funding-review-auto-sent" });
+    expect(await text()).toBe(`${saved}\nAlso: name the rule.`);
   });
 
   it("keeps operator instructions intact: the one in a group becomes the merge target (9/11 REVIEW), two of them are refused", async () => {

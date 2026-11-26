@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { eventSchema } from "@space/contracts";
 import { InMemorySpaceNotificationsRepository } from "@space/db";
 import { InMemorySpaceStore, SpaceEventBus, makeSpaceId } from "@space/runtime";
-import { browserHandoffNotificationKey, browserHandoffTarget, browserHandoffTitle, settleBrowserHandoffNotifications, startBrowserHandoffNotifications } from "../src/notifications/browser-handoff.js";
+import { browserHandoffNotificationKey, browserHandoffTarget, operatorWaitCloseGuard, browserHandoffTitle, nightHandoffLine, settleBrowserHandoffNotifications, startBrowserHandoffNotifications } from "../src/notifications/browser-handoff.js";
 import { createNotificationService } from "../src/notifications/service.js";
 import { renderDailyReview } from "../src/nous/daily-review.js";
 
@@ -17,13 +17,13 @@ function setup() {
     recordRoomEvent: async (input) => eventSchema.parse({ ...input, id: makeSpaceId("event"), workflowId: null, createdAt: new Date().toISOString() }) });
   const room = store.createRoom({ name: "Handoffs", initialPaneCount: 0 });
   /** A browser pane whose agent asked for a handoff, and the notification the producer raised for it. */
-  async function handoffPane(title: string, ttlSeconds = 1800) {
+  async function handoffPane(title: string, ttlSeconds = 1800, reason = "CAPTCHA: solve it") {
     const pane = store.createPane({ roomId: room.id, title, mode: "BROWSER" });
     const sessionId = `browser_session:${pane.id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
     store.createPaneBrowserSession({ sessionId, paneId: pane.id, roomId: room.id, ownerAgentId: "agent:1", agentNumber: 1, profileId: `profile:${pane.id}`,
       profilePath: `/tmp/${pane.id}`, viewport: "desktop", targetUrl: "https://example.test/", currentUrl: "https://example.test/", title, status: "READY", isActive: true });
     const handoff = store.createBrowserHandoffRequest({ sessionId, paneId: pane.id, roomId: room.id, requestedByType: "AGENT", requestedById: "cli:cli_session:test",
-      reason: "CAPTCHA: solve it", ttlSeconds });
+      reason, ttlSeconds });
     const { notification } = await repository.raise({ ownerUserId: owner, roomId: room.id, paneId: pane.id, source: "BROWSER_HANDOFF", kind: "BROWSER_HANDOFF_REQUESTED",
       severity: "ATTENTION", title: "The browser needs you", body: "", link: { roomId: room.id, paneId: pane.id }, dedupeKey: browserHandoffNotificationKey(pane.id), payload: {}, telegram: null });
     return { pane, handoff, notification };
@@ -116,6 +116,38 @@ describe("browser handoff notifications", () => {
     expect(await settleBrowserHandoffNotifications({ store, notifications })).toBe(0);
   });
 
+  it("tells a night handoff's agent after the operator's quiet hours: done, a closed browser's page to reopen, a kept one's card run out (Nous goal 91e45be1)", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const { store, notifications, handoffPane, complete } = setup();
+    let night = true;
+    const quiet = vi.fn(async () => night);
+    const tell = vi.fn<(cliSessionId: string, text: string) => Promise<void>>(async () => {});
+    const done = await handoffPane("Done", 36_000, `CAPTCHA: Shop: tick the box${nightHandoffLine("https://shop.test/cart")}`);
+    await handoffPane("Closed", 36_000, "LOGIN: Bank: sign in\nClosed for the night; Take control reopens it on https://bank.test/login.");
+    await handoffPane("Kept", 3_600, `CAPTCHA: Jobs: match the shapes${nightHandoffLine("https://jobs.test/apply")}`);
+    await handoffPane("Day", 36_000);
+    const stop = startBrowserHandoffNotifications({ store, notifications, eventBus: new SpaceEventBus(), roomOwner: async () => owner, log: { warn: () => {} }, wake: { quiet, tell } });
+    // At night nobody is told; the day handoff is never a night one.
+    await vi.waitFor(() => expect(quiet).toHaveBeenCalledTimes(1)); // only Closed: kept browsers (Done, Kept) wait for their end without asking
+    expect(tell).not.toHaveBeenCalled();
+    // The operator took Done overnight; its card resolves, its agent is still told in the morning.
+    complete(done);
+    night = false;
+    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.waitFor(() => expect(tell).toHaveBeenCalledTimes(2));
+    expect(tell.mock.calls).toEqual(expect.arrayContaining([
+      ["cli_session:test", expect.stringContaining('did the browser handoff you asked for last night ("Shop: tick the box")')],
+      ["cli_session:test", expect.stringContaining("Open https://bank.test/login again in the pane's browser and request the handoff again")]
+    ]));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(tell).toHaveBeenCalledTimes(2);
+    // The kept browser's card waits through the morning; its agent hears only once it runs out.
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    await vi.waitFor(() => expect(tell).toHaveBeenCalledTimes(3));
+    expect(tell).toHaveBeenLastCalledWith("cli_session:test", expect.stringContaining("Open https://jobs.test/apply again in the pane's browser if it no longer shows it"));
+    stop();
+  });
+
   it("titles the notification with the agent's reason (site and what to click) and keeps room and pane", async () => {
     expect(browserHandoffTitle("CAPTCHA: Upwork: Cloudflare check, tick the box\nmore")).toBe("Upwork: Cloudflare check, tick the box");
     expect(browserHandoffTitle(null)).toBe("The browser needs you");
@@ -141,7 +173,72 @@ describe("browser handoff notifications", () => {
     eventBus.publish(eventSchema.parse({ id: makeSpaceId("event"), roomId: room.id, paneId: pane.id, turnId: null, workflowId: null, traceId: "pane-closed", type: "PANE_CLOSED",
       message: "closed", payload: {}, createdAt: new Date().toISOString() }));
     await vi.waitFor(async () => { for (const { notification } of cards) expect((await repository.get(owner, notification.id))?.status).toBe("RESOLVED"); });
+    // 15/11 nous_msg:9f70dbbe: their asks, the handoff's too, stay in Needs you on one room item (no plan carries them), never resolved unseen.
+    const kept = (await notifications.list(owner, { status: "NEEDS_YOU", limit: 20 })).filter((item) => item.dedupeKey === `nous:closed-pane:${pane.id}`);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).toMatchObject({ roomId: room.id, paneId: null, source: "NOUS", kind: "NEEDS_HANDS", status: "OPEN" });
+    expect((kept[0]!.payload.carried as Array<{ dedupeKey: string }>).map((card) => card.dedupeKey).sort())
+      .toEqual([`agent:needs-you:${pane.id}`, `browser-handoff:${pane.id}`, `nous:pane:${pane.id}`].sort());
     stop();
+  });
+
+  it("correction 19/11 74a2b433 & goal 7365014c: any browser-bound Needs you card of another pane resolves when that browser closes; unrelated cards stay", async () => {
+    const { store, repository, notifications, room } = setup();
+    const eventBus = new SpaceEventBus();
+    const stop = startBrowserHandoffNotifications({ store, notifications, eventBus, roomOwner: async () => owner, log: { warn: () => {} } });
+    const browser = store.createPane({ roomId: room.id, title: "Work/Bob", mode: "BROWSER" });
+    const card = async (paneId: string, code: boolean, page: string | null = browser.id) => (await repository.raise({ ownerUserId: owner, roomId: room.id, paneId,
+      source: code ? "NOUS" : "AGENT", kind: code ? "NEEDS_HANDS" : "NEEDS_YOU", severity: "ATTENTION", title: code ? "Braintrust code" : "Solve WAF check", body: "",
+      link: { roomId: room.id, paneId }, dedupeKey: `${code ? "nous:pane" : "agent:needs-you"}:${paneId}`,
+      payload: { ...(page ? { browserPage: { roomId: room.id, paneId: page, target: "tab:page:1" } } : {}),
+        ask: code ? { question: "The code?", code: true } : goNow("Press Begin and solve the AWS puzzle") }, telegram: null })).notification;
+    const jack = store.createPane({ roomId: room.id, title: "Jack", mode: "TERMINAL" });
+    const andy = store.createPane({ roomId: room.id, title: "Andy", mode: "TERMINAL" });
+    const cleo = store.createPane({ roomId: room.id, title: "Cleo", mode: "TERMINAL" });
+    const leo = store.createPane({ roomId: room.id, title: "Leo", mode: "TERMINAL" });
+    const other = store.createPane({ roomId: room.id, title: "Other browser", mode: "BROWSER" });
+    const [code, hands, elsewhere, unrelated] = [await card(jack.id, true), await card(andy.id, false), await card(cleo.id, true, other.id), await card(leo.id, false, null)];
+    store.updatePane(browser.id, { isClosed: true, status: "CLOSED" });
+    eventBus.publish(eventSchema.parse({ id: makeSpaceId("event"), roomId: room.id, paneId: browser.id, turnId: null, workflowId: null, traceId: "pane-closed", type: "PANE_CLOSED",
+      message: "closed", payload: {}, createdAt: new Date().toISOString() }));
+    await vi.waitFor(async () => {
+      expect((await repository.get(owner, code.id))?.status).toBe("RESOLVED");
+      expect((await repository.get(owner, hands.id))?.status).toBe("RESOLVED");
+    });
+    expect((await repository.get(owner, hands.id))?.payload.resolvedReason).toBe("the browser holding its page was closed");
+    expect((await repository.get(owner, elsewhere.id))?.status).toBe("OPEN");
+    expect((await repository.get(owner, unrelated.id))?.status).toBe("OPEN");
+    stop();
+  });
+
+  it("15/11 nous_msg:9f70dbbe & goal 7365014c: no pane closes while an unanswered Needs you item, a held handoff, or another pane's browser-bound card waits on it", async () => {
+    const { store, repository, notifications, room, handoffPane, complete } = setup();
+    const guard = operatorWaitCloseGuard({ store, roomOwner: async () => owner, list: (o, q) => notifications.list(o, q) });
+    const held = await handoffPane("Arc");
+    await expect(guard(store.getPane(held.pane.id))).rejects.toMatchObject({ code: "PANE_WAITS_FOR_OPERATOR", details: { handoff: true, needsYou: [{ id: held.notification.id }] } });
+    // The handoff ended but its card still waits: the pane still stays.
+    complete(held);
+    await expect(guard(store.getPane(held.pane.id))).rejects.toMatchObject({ details: { handoff: false } });
+    await notifications.resolve(owner, browserHandoffNotificationKey(held.pane.id));
+    await expect(guard(store.getPane(held.pane.id))).resolves.toBeUndefined();
+    // A CLI pane's needs-you card holds it too; an INFO notice does not.
+    const cli = store.createPane({ roomId: room.id, title: "Andy", mode: "TERMINAL" });
+    await repository.raise({ ownerUserId: owner, roomId: room.id, paneId: cli.id, source: "ROOM", kind: "TASK_DONE", severity: "INFO", title: "Done", body: "", link: {}, dedupeKey: `done:${cli.id}`, payload: {}, telegram: null });
+    await expect(guard(cli)).resolves.toBeUndefined();
+    await repository.raise({ ownerUserId: owner, roomId: room.id, paneId: cli.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION", title: "Approve the invoice", body: "", link: {},
+      dedupeKey: `agent:needs-you:${cli.id}`, payload: {}, telegram: null });
+    await expect(guard(cli)).rejects.toThrow(/stays open: it waits for the operator \("Approve the invoice"/);
+    // Goal 7365014c 22/11: a browser pane holding the page for a CLI pane's open Needs you card cannot be closed out from under it.
+    const browser = store.createPane({ roomId: room.id, title: "CLI Browser", mode: "BROWSER" });
+    const otherBrowser = store.createPane({ roomId: room.id, title: "Idle Browser", mode: "BROWSER" });
+    const nik = store.createPane({ roomId: room.id, title: "Nik", mode: "TERMINAL" });
+    const { notification: wafCard } = await repository.raise({ ownerUserId: owner, roomId: room.id, paneId: nik.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION",
+      title: "Nik needs you", body: "Solve AWS WAF in Kate", link: { roomId: room.id, paneId: nik.id }, dedupeKey: `agent:needs-you:${nik.id}`,
+      payload: { browserPage: { roomId: room.id, paneId: browser.id, target: "tab:page:1" }, ask: goNow("Solve AWS WAF") }, telegram: null });
+    await expect(guard(browser)).rejects.toMatchObject({ code: "PANE_WAITS_FOR_OPERATOR", details: { handoff: false, needsYou: [{ id: wafCard.id, title: "Nik needs you" }] } });
+    await expect(guard(otherBrowser)).resolves.toBeUndefined();
+    await notifications.resolve(owner, `agent:needs-you:${nik.id}`);
+    await expect(guard(browser)).resolves.toBeUndefined();
   });
 
   it("points Go now at the handoff's own page and asks one short question, the agent's steps behind Details (operator nous_msg:4b36b80e)", async () => {

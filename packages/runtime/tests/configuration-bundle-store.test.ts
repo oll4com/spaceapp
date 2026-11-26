@@ -24,7 +24,7 @@ describe("Configuration Bundle Export & Import", () => {
     });
 
     // 2. Seed a room and panes
-    const room = await sourceStore.createRoom(
+    await sourceStore.createRoom(
       {
         name: "Test Room Alpha",
         description: "A room for testing",

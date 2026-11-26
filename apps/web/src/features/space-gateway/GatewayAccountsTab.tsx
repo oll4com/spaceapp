@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { gatewayFreeLedgerLine, type GatewayAccount, type GatewayAccountDetail, type GatewayAnthropicBillingReport, type GatewayFreeLedger, type GatewayPoolModels,
+import { gatewayFreeLedgerLine, gatewayResetButtonLabel, gatewayResetClearedText, gatewayResetGrantsText, gatewayWeekResetCredits, type GatewayAccount, type GatewayAccountDetail, type GatewayAnthropicBillingReport, type GatewayFreeLedger, type GatewayPoolModels,
   type GatewaySettings } from "@space/contracts";
 import { matchesAvailabilityFilter, type AccountAvailabilityFilter } from "../toolbar-metrics/account-availability.js";
 import { AvailabilityFilterBar, countAvailability } from "../toolbar-metrics/AccountQuotaCards.js";
@@ -243,9 +243,11 @@ function AccountDetail({ account, client, settings, hideEmails, now, openSignIn,
 
       <AccountSwitch account={account} disabled={pending} detail={account.status === "DEACTIVATED" ? "Sign the account in again to reactivate it." : "Space Gateway sends requests to this account only while it is on."}
         onChange={(enabled) => void run(async () => { await client.setAccountPaused(account.id, !enabled); return `${name} ${enabled ? "resumed" : "paused"}.`; }, "Could not update the account.")} />
-      <SpaceToggle checked={account.warmupEnabled} label="Limit warm-up"
-        detail={settings?.warmupEnabled ? "Send one tiny request right after this account's window resets." : "Limit warm-up is off in Settings; this account joins when it is turned on."}
-        onChange={(checked) => void run(async () => { await client.updateAccount(account.id, { warmupEnabled: checked }); return checked ? "Warm-up enabled." : "Warm-up disabled."; }, "Could not change warm-up.")} />
+      {account.provider === "CODEX" ? (
+        <SpaceToggle checked={account.warmupEnabled} label="Limit warm-up"
+          detail={settings?.warmupEnabled ? "Send one tiny request right after this account's window resets." : "Limit warm-up is off in Settings; this account joins when it is turned on."}
+          onChange={(checked) => void run(async () => { await client.updateAccount(account.id, { warmupEnabled: checked }); return checked ? "Warm-up enabled." : "Warm-up disabled."; }, "Could not change warm-up.")} />
+      ) : <p className="space-gateway-note">Warm-up applies to Codex accounts only</p>}
 
       {notice ? <p className={notice.tone === "ok" ? "space-gateway-success" : "space-gateway-alert"} role={notice.tone === "ok" ? "status" : "alert"}>{notice.text}</p> : null}
 
@@ -260,9 +262,12 @@ function AccountDetail({ account, client, settings, hideEmails, now, openSignIn,
           onClick={() => void run(async () => { await client.refreshUsage(account.id); loadPools(); return `Usage refreshed for ${name}.`; }, "Could not refresh usage.")}>Refresh usage</button>
         {account.resetCreditsAvailable ? (confirm === "reset"
           ? <button type="button" className="space-gateway-button danger" disabled={pending}
-            onClick={() => void run(async () => { const result = await client.useResetCredit(account.id, crypto.randomUUID()); return `${name}: ${resetOutcomes[result.outcome] ?? result.outcome}`; }, "Could not use the reset credit.")}>Confirm reset</button>
-          : <button type="button" className="space-gateway-button" disabled={pending} title="Spend one weekly limit reset credit on this account"
-            onClick={() => setConfirm("reset")}>Use reset credit ({account.resetCreditsAvailable})</button>) : null}
+            onClick={() => void run(async () => { const result = await client.useResetCredit(account.id, crypto.randomUUID());
+              // A Claude reset names what it cleared (dev@ 14/11: a Fable reset left the week used); a Codex reset is a weekly reset.
+              return `${name}: ${result.outcome === "RESET" && Array.isArray(result.windowsReset) ? `Reset credit spent. ${gatewayResetClearedText(result.windowsReset)}` : resetOutcomes[result.outcome] ?? result.outcome}`; }, "Could not use the reset credit.")}>Confirm reset</button>
+          : <button type="button" className="space-gateway-button" disabled={pending}
+            title={account.resetCreditGrants?.length ? `Spend one reset credit on this account: ${gatewayResetGrantsText(account.resetCreditGrants)}` : "Spend one weekly limit reset credit on this account"}
+            onClick={() => setConfirm("reset")}>{account.resetCreditGrants?.length ? gatewayResetButtonLabel(gatewayWeekResetCredits(account), account.resetCreditGrants) : `Use reset credit (${account.resetCreditsAvailable})`}</button>) : null}
         {account.provider === "CODEX" ? (confirm === "export"
           ? <button type="button" className="space-gateway-button danger" disabled={pending}
             onClick={() => void run(async () => { setExported((await client.exportAccount(account.id)).authJson); }, "Could not export the sign-in.")}>Confirm export</button>

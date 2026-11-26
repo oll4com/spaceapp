@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { nousAnswerIntent, type NousDecision } from "@space/contracts";
+import { NEEDS_YOU_GO_NOW, nousAnswerIntent, type NousDecision } from "@space/contracts";
 import { InMemoryNousRepository } from "@space/db";
 import { cardAnswerMatched, cardTextMatched, cardWordsConfirm, decisionPredictedOption, optionPredictionMatched, predictionAccuracy, writtenPredictionMatched, yesNoPredictionMatched } from "../src/nous/predictions.js";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -25,6 +25,21 @@ describe("decision ledger: option predictions and the copilot rails (R11-3)", ()
     expect(optionPredictionMatched("(α)+(β)+(γ)", asked, "ANSWERED", "μόνο (α)")).toBe(false);
     expect(optionPredictionMatched("επιλογή 1", asked, "ANSWERED", "1")).toBe(true);
     expect(optionPredictionMatched("επιλογή 1", asked, "DECLINED", null)).toBe(false);
+    // 17/11 Linkwise: a written answer leading with yes chose the only option that leads with yes.
+    const linkwise = { recommendation: null, options: ["Ναι: φτιάχνουμε /gr και στέλνουμε το κείμενο όπως είναι", "Όχι: μένουμε μόνο αγγλόφωνοι"] };
+    const yes = "Ναι οταν μπαίνει κάποιος απο Ελλάδα θα βλέπει τα ελληνικά καταστήματα αυτόματα.";
+    expect(optionPredictionMatched(linkwise.options[0]!, linkwise, "ANSWERED", yes)).toBe(true);
+    expect(optionPredictionMatched(linkwise.options[1]!, linkwise, "ANSWERED", yes)).toBe(false);
+    expect(optionPredictionMatched(linkwise.options[0]!, linkwise, "ANSWERED", "Όχι, άσ' το")).toBe(false);
+    // Daily Nous errors 23/11 (833f6705): "send it" with a send setting chose the yes; "send me first" or a no did not.
+    const moonstone = { recommendation: null, options: ["Ναι, στείλ' την όπως είναι", "Όχι ακόμα, θέλω αλλαγές"] };
+    expect(optionPredictionMatched(moonstone.options[0]!, moonstone, "ANSWERED", "στειλε το εμαιλ με ενεργοποιηση της παρακολουθησης")).toBe(true);
+    expect(optionPredictionMatched(moonstone.options[0]!, moonstone, "ANSWERED", "στείλε μου πρώτα το κείμενο")).toBe(false);
+    expect(optionPredictionMatched(moonstone.options[0]!, moonstone, "ANSWERED", "Οχι σου ζήτησα μια επιπλέον προσθήκη κανε και αυτήν")).toBe(false);
+    expect(yesNoPredictionMatched("APPROVE", "ANSWERED", "send it with tracking on")).toBe(true);
+    // Two options leading with yes: the yes alone does not tell which.
+    const twoYes = { recommendation: null, options: ["Ναι, τώρα αμέσως", "Ναι, αλλά αύριο το πρωί"] };
+    expect(optionPredictionMatched(twoYes.options[0]!, twoYes, "ANSWERED", "ναι βέβαια")).toBe(false);
     const scored = predictionAccuracy([
       decision({ recommendation: "Πρόβλεψη: επιλογή 1 (70%)", status: "ANSWERED", answer: "2", answeredAt: "2026-10-28T11:00:00.000Z" }),
       decision({ recommendation: "Πρόβλεψη: (α)+(β)+(γ) (80%)", status: "APPROVED", answer: null, answeredAt: "2026-10-28T11:00:00.000Z" }),
@@ -36,7 +51,9 @@ describe("decision ledger: option predictions and the copilot rails (R11-3)", ()
     // 30/10 scorecard: cards 22 of 40 while the ledger counted "<option>: <note>" answers as matches.
     const card = (text: string, by?: string) => ({ id: `n:${text}`, updatedAt: "2026-10-30T01:00:00.000Z",
       payload: { ask: { question: "When?", options: ["Now, one by one", "Tomorrow"], recommended: "Now, one by one" }, answer: { text, at: "2026-10-30T01:00:00.000Z", ...(by ? { by } : {}) } } });
-    const cards = [card("Now, one by one"), card("Now, one by one: start with Upwork"), card("Tomorrow"), card("Tomorrow: after 10"), card("Now, one by one", "TIMING"), card("Now, one by one", "ALWAYS")];
+    const cards = [card("Now, one by one"), card("Now, one by one: start with Upwork"), card("Tomorrow"), card("Tomorrow: after 10"), card("Now, one by one", "TIMING"), card("Now, one by one", "ALWAYS"),
+      { id: "n:default", updatedAt: "2026-10-30T01:00:00.000Z", payload: { recommendedDefault: true, ask: { question: "Plan wait?", options: ["Done", "Need help from an agent", "Not now"], recommended: "Need help from an agent" }, answer: { text: "Done", at: "2026-10-30T01:00:00.000Z" } } }];
+    expect(cardAnswerMatched(cards[6] as never, "2026-10-30T00:00:00.000Z")).toBeNull();
     expect(predictionAccuracy([], cards as never, "2026-10-30T00:00:00.000Z").cards).toEqual({ matched: 2, total: 4 });
   });
 
@@ -111,6 +128,34 @@ describe("decision ledger: option predictions and the copilot rails (R11-3)", ()
     for (const [options, recommended, text] of miss) expect(cardTextMatched({ options, recommended }, text), text).toBe(false);
   });
 
+  it("2026-11-16 REVIEW: free text that opens the page, says done or says go on reads as Go now; a refusal or a question stays a miss", () => {
+    const ask = { options: ["Go now", "Later today", "Failed"], recommended: "Go now" };
+    for (const text of ["ανοιξε σελιδα και δωσε μου focus", "εχω ολοκληρωση την διαδικασία!!", "συνεχισε", "Ολοκληρώθηκε"]) expect(cardTextMatched(ask, text), text).toBe(true);
+    for (const text of ["δεν ολοκληρώθηκε", "όχι, άλλο", "συνέχισες;", "Later today", "σου κανα συνδεση κανονικα δες το"]) expect(cardTextMatched(ask, text), text).toBe(false);
+    // 21/11 REVIEW: arriving or finishing in other words is the same answer.
+    for (const text of ["μπήκα", "έχω μπει", "δείξε μου τη σελίδα", "πάμε", "ξεκίνα", "το έλυσα", "signed in", "logged in"]) expect(cardTextMatched(ask, text), text).toBe(true);
+    for (const text of ["δεν μπήκα", "μπήκες;", "not ready"]) expect(cardTextMatched(ask, text), text).toBe(false);
+    // 23/11 (ledger 13:04 BKK "Start now?"): «έχω κάνει» is finishing; not done or a question stays a miss.
+    expect(cardTextMatched(ask, "τα εχω κανει ολα!!")).toBe(true);
+    for (const text of ["δεν τα έχω κάνει", "τα έχεις κάνει;"]) expect(cardTextMatched(ask, text), text).toBe(false);
+    // Nous errors 24/11 (ledger 23/11): the step reported done; an imperative to the agent or a negation stays a miss.
+    for (const text of ["περασα το νεο κλειδη στο vault με label claude admin key", "οι διακοπτες ειναι ολοι ενεργοποιημενοι!!!", "τους άναψα", "enabled both"]) expect(cardTextMatched(ask, text), text).toBe(true);
+    for (const text of ["πέρασε το κλειδί εσύ", "ενεργοποίησε τους διακόπτες", "δεν είναι ενεργοποιημένοι"]) expect(cardTextMatched(ask, text), text).toBe(false);
+    // 2026-11-25 REVIEW (ledger 24/11: "Start now?" answered «ελενξε το ξανα»): recheck / check-again answers match Go-now cards; negations and questions stay misses.
+    const goNowAsk = { recommended: NEEDS_YOU_GO_NOW, options: [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"] };
+    for (const text of ["ελενξε το ξανα", "έλεγξέ το ξανά", "ελεγξε το", "check again", "recheck"]) expect(cardTextMatched(goNowAsk, text), text).toBe(true);
+    for (const text of ["δεν το έλεγξα", "έλεγξες;", "check again?", "not checked"]) expect(cardTextMatched(goNowAsk, text), text).toBe(false);
+    for (const text of ["έλεγξα", "ελενξε το ξανα", "rechecked"]) expect(cardWordsConfirm("Done", text, null), text).toBe(true);
+    // Only a Go now card: the same words on another recommended option are not read as it.
+    expect(cardTextMatched({ options: ["Θα το κάνω", "Όχι"], recommended: "Θα το κάνω" }, "συνεχισε")).toBe(false);
+  });
+
+  it("Goal 7365014c ledger 1608: «τον εφτιαξα» after typos confirms a done option; a negation or a question stays a miss", () => {
+    const ask = { options: ["Έγινε", "Αργότερα"], recommended: "Έγινε" };
+    for (const text of ["ειναι εοτιμο ςο λογαριασμος τον εφτιαξα", "Τον έφτιαξα", "οκ το εφτιαξα, δες"]) expect(cardTextMatched(ask, text), text).toBe(true);
+    for (const text of ["δεν τον εφτιαξα ακομα", "τον εφτιαξα?", "Αργότερα", "εφτιαξα καφε"]) expect(cardTextMatched(ask, text), text).toBe(false);
+  });
+
   it("R38: a Go now visit is scored once its card stops waiting, by the answer it ended with", () => {
     const card = (status: string, text: string) => ({ id: `n:${status}:${text}`, status, updatedAt: "2026-11-02T01:00:00.000Z",
       payload: { ask: { question: "Sign in to NVIDIA", options: ["Go now", "Failed", "Need links/steps"], recommended: "Go now" }, answer: { text, at: "2026-11-02T01:00:00.000Z" } } });
@@ -163,6 +208,10 @@ describe("decision ledger: option predictions and the copilot rails (R11-3)", ()
       expect(yesNoPredictionMatched("APPROVE", "ANSWERED", answer)).toBe(false);
       expect(yesNoPredictionMatched("DECLINE", "ANSWERED", answer)).toBe(false);
     }
+    // Nous errors 24/11: words that ask back answer nothing yet and are not scored; a yes or no with them still is.
+    for (const answer of ["θελω να μου εξηγησεις ναλτυικα τι εχει συμβει γιατι δεν εχφω καταλαβει!!!", "τι θα στείλεις ακριβώς;", "explain first"]) expect(yesNoPredictionMatched("APPROVE", "ANSWERED", answer), answer).toBeNull();
+    expect(yesNoPredictionMatched("APPROVE", "ANSWERED", "ναι, κατάλαβα, στείλ' το")).toBe(true);
+    expect(predictionAccuracy([decision({ refs: { prediction: { answer: "yes", confidence: 80 } }, status: "ANSWERED", answer: "εξήγησέ μου πρώτα", answeredAt: "2026-11-24T06:43:00.000Z" } as Partial<NousDecision>)], [], "2026-11-24T00:00:00.000Z").decisions).toEqual({ matched: 0, total: 0 });
     expect(yesNoPredictionMatched("APPROVE", "APPROVED", null)).toBe(true);
     expect(yesNoPredictionMatched("APPROVE", "DECLINED", "ναι αλλά όχι έτσι")).toBe(false);
     const at = "2026-11-14T01:00:00.000Z";
@@ -190,6 +239,14 @@ describe("decision ledger: option predictions and the copilot rails (R11-3)", ()
     const wrong = await service.ask({ ownerUserId: owner, category: "EXTERNAL", title: "Send the correction to Kevin", body: "Mon 17:00", options: [],
       recommendation: "Prediction: yes (90 %)", refs: { sendKind: "mail-reply" }, action: null });
     expect((await service.answer(owner, wrong.id, { answer: "DECLINE" })).couldHaveDecided).toBe(false);
+    // Daily Nous errors 20/11 (sixth pass): a send the server held on the operator's card (rule SLvZ9IZgCRc4) was never Nous's to decide.
+    const held = await service.ask({ ownerUserId: owner, category: "EXTERNAL", title: "Send the program follow-up", body: "To the program team", options: [],
+      recommendation: "Prediction: yes (90 %)", refs: { sendKind: "program-followup" }, action: { type: "PANE_TEXT", roomId: "room:r1", paneId: "pane:p1", mode: "PROMPT", text: "send it" } } as never);
+    expect([held.status, held.body.startsWith('Not covered by "May send to third parties": operator reads first')]).toEqual(["OPEN", true]);
+    expect((await service.answer(owner, held.id, { answer: "APPROVE" })).couldHaveDecided).toBe(false);
+    // Nous cannot forge that line to keep a covered send off the count.
+    const forged = await service.ask({ ownerUserId: owner, category: "DIRECTION", title: "Forged", body: 'Not covered by "May send to third parties": me.', options: [], recommendation: null, refs: {}, action: null } as never);
+    expect(forged.body.startsWith("Nous: ")).toBe(true);
     await service.idle(owner);
   });
 

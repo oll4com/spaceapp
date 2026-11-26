@@ -1,14 +1,71 @@
 // Nous reads Space's own database (operator order 2026-10-24): one read per call, never a write, secrets hidden.
 import type pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { dbFailureLines } from "../src/nous/daily-review.js";
 import { createNousTools, nousDbFailureMeta, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
-import { nousDbCastQuery, nousDbTextCastQuery, nousDbCorrectedQuery, nousDbQualifiedQuery, createNousDb, NOUS_DB_COLUMN_NOTES, NOUS_DB_GUESSED_TABLES, NOUS_DB_TABLE_USE, nousDbFlagNote, NOUS_DB_COMMON_TABLES, nousDbColumnsText, nousDbNearestTables, nousDbRows, nousDbStatement, nousDbSyntaxLine, nousDbPool } from "../src/nous/db.js";
+import { nousDbCastQuery, nousDbTextCastQuery, nousDbCorrectedQuery, nousDbQualifiedQuery, createNousDb, NOUS_DB_COLUMN_NOTES, NOUS_DB_GUESSED_TABLES, NOUS_DB_TABLE_USE, nousDbFlagNote, nousDbOwnerNote, NOUS_DB_COMMON_TABLES, nousDbColumnsText, nousDbNearestTables, nousDbRows, nousDbStatement, nousDbSyntaxLine, nousDbPool, nousDbSlowPlanLines } from "../src/nous/db.js";
 import { applyPendingMigrations } from "../../../packages/db/src/migration-runner.js";
 import { loadMigrations } from "../../../packages/db/src/migrations.js";
 import { disposablePostgresUnavailableReason, startDisposablePostgres, type DisposablePostgres } from "../../../packages/db/tests/support/disposable-postgres.js";
 
 describe("space_db_query statements", () => {
+  const droppedConnections = [new Error("Connection terminated unexpectedly"), new Error("read ECONNRESET"),
+    Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })];
+  const call = { owner: "user:operator", turnId: "t", callId: "c", traceId: "x" };
+
+  it.each(droppedConnections)("retries a dropped connection once and returns the read: %s", async (error) => {
+    const query = vi.fn().mockRejectedValueOnce(error).mockResolvedValue("Space database: one row");
+    const tools = createNousTools({ db: { query } } as unknown as NousToolDeps);
+    expect(await tools.execute("space_db_query", { sql: "SELECT 1" }, call)).toMatchObject({ ok: true, result: "Space database: one row" });
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1]).toEqual(query.mock.calls[0]);
+  });
+
+  it.each(droppedConnections)("holds after the connection drops twice, without a counted failure: %s", async (error) => {
+    const query = vi.fn().mockRejectedValue(error);
+    const tools = createNousTools({ db: { query } } as unknown as NousToolDeps);
+    const outcome = await tools.execute("space_db_query", { sql: "SELECT 1" }, call);
+    expect(outcome).toMatchObject({ ok: false, refused: true, meta: { dbCode: "CONNECTION_DROPPED" } });
+    expect(outcome.result).toContain("after one retry");
+    expect(outcome.result).toContain("space_db_query");
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
+  // Slice 19 r2: a timeout answers "narrow it" (db.ts), a refusal not counted as a Nous error.
+  it("does not retry a statement timeout, and refuses a timeout after a connection retry", async () => {
+    for (const firstDrop of [false, true]) {
+      const query = vi.fn().mockRejectedValue(new Error("Postgres: canceling statement due to statement timeout (code 57014)"));
+      if (firstDrop) query.mockRejectedValueOnce(new Error("Connection terminated unexpectedly"));
+      const tools = createNousTools({ db: { query } } as unknown as NousToolDeps);
+      const outcome = await tools.execute("space_db_query", { sql: "SELECT 1" }, call);
+      expect(outcome).toMatchObject({ ok: false, meta: { dbCode: "57014", dbSql: "SELECT 1" } });
+      expect(outcome.refused).toBe(true);
+      expect(query).toHaveBeenCalledTimes(firstDrop ? 2 : 1);
+    }
+  });
+
+  it("names where a timed-out read spends its time from PostgreSQL's plan (14/11, 57014 ×3 in 7 d)", () => {
+    // The plan of the reproduced 8/11 06:08 read: per operator message, EXISTS over space_notifications and nous_messages by ILIKE.
+    const seq = (relation: string, subplan: string, filter: string) => ({ "Node Type": "Seq Scan", "Parent Relationship": "SubPlan", "Subplan Name": subplan, "Relation Name": relation, "Plan Rows": 80, Filter: filter });
+    const plan = { "Node Type": "Limit", "Plan Rows": 60, Plans: [{ "Node Type": "Result", "Parent Relationship": "Outer", "Plan Rows": 2115, Plans: [
+      { "Node Type": "Sort", "Parent Relationship": "Outer", "Plan Rows": 2115, Plans: [{ "Node Type": "Index Scan", "Parent Relationship": "Outer", "Relation Name": "nous_messages", "Plan Rows": 2115 }] },
+      seq("space_notifications", "SubPlan 1", "((payload)::text ~~* (('%'::text || m.id) || '%'::text))"),
+      seq("nous_messages", "SubPlan 2", "((kind = 'TOOL'::text) AND ((meta)::text ~~* (('%'::text || m.id) || '%'::text)))")] }] };
+    const lines = nousDbSlowPlanLines(plan, new Map([["nous_messages", 202_110], ["space_notifications", 14_361]]));
+    expect(lines[0]).toBe("Where the time goes (PostgreSQL's plan of this query): SubPlan 2 (a subquery in SELECT or WHERE) reads all of nous_messages (≈202,110 rows) once for each of ≈60 rows, "
+      + "testing ((kind = 'TOOL'::text) AND ((meta)::text ~~* (('%'::text || m.id) || '%'::text))). SubPlan 1 (a subquery in SELECT or WHERE) reads all of space_notifications (≈14,361 rows) once for each of ≈60 rows, "
+      + "testing ((payload)::text ~~* (('%'::text || m.id) || '%'::text)).");
+    expect(lines[1]).toContain("join it in FROM");
+    // A nested loop's inner whole-table scan repeats per outer row; under a Materialize it is read once.
+    const loop = (inner: object) => ({ "Node Type": "Nested Loop", "Plan Rows": 500, Plans: [{ "Node Type": "Seq Scan", "Relation Name": "rooms", "Plan Rows": 40 }, inner] });
+    const scan = { "Node Type": "Seq Scan", "Relation Name": "audit_events", "Plan Rows": 9, Filter: "(metadata ~~* '%pane%'::text)" };
+    expect(nousDbSlowPlanLines(loop(scan), new Map([["audit_events", 294_516]]))[0]).toContain("The inner side of a nested-loop join reads all of audit_events (≈294,516 rows) once for each of ≈40 rows");
+    expect(nousDbSlowPlanLines(loop({ "Node Type": "Materialize", Plans: [scan] }), new Map([["audit_events", 294_516]]))[0]).toBe(
+      "Where the time goes (PostgreSQL's plan of this query): it reads all of audit_events (≈294,516 rows), testing (metadata ~~* '%pane%'::text).");
+    // Small tables name nothing: the generic line stays the whole answer.
+    expect(nousDbSlowPlanLines(loop(scan), new Map([["audit_events", 300]]))).toEqual([]);
+  });
+
   it("wraps reads in a row limit, keeps EXPLAIN and SHOW, and refuses writes and side-effect calls", () => {
     expect(nousDbStatement({ sql: "select id from panes;", limit: 5 })).toEqual({ text: "SELECT * FROM (\nselect id from panes\n) AS nous_query LIMIT 6", limit: 5 });
     expect(nousDbStatement({ sql: "EXPLAIN SELECT 1" }).text).toBe("EXPLAIN SELECT 1");
@@ -31,6 +88,11 @@ describe("space_db_query statements", () => {
       .toContain(`SELECT ';' AS a, ";" FROM panes WHERE x = 'it''s; fine' -- a; b\n AND $q$c;d$q$ <> '' /* e; f */\n)`);
     expect(() => nousDbStatement({ sql: "SELECT pg_terminate_backend(42)" })).toThrow("only reads");
     expect(() => nousDbStatement({ sql: "select set_config('statement_timeout', '0', false)" })).toThrow("only reads");
+    // DEV3D-047: a quoted name, a comment before (, a U& escape or dynamic SQL reset the reader role.
+    for (const sql of [`SELECT pg_catalog."set_config"('role','none',true), query_to_xml('select password_hash from accounts', true, false, '')`,
+      "SELECT set_config/**/('role','none',true)", "SELECT '/*', set_config --x\n('role','none',true)", `SELECT U&"set\\0063onfig"('role','none',true)`,
+      "SELECT query_to_xml('select 1', true, false, '')", "SELECT * FROM ts_stat('select 1')"]) expect(() => nousDbStatement({ sql })).toThrow("only reads");
+    expect(nousDbStatement({ sql: `SELECT "set_config_note" FROM t WHERE c = '--'` }).text).toContain(`"set_config_note"`);
   });
 
   it("R78 (5/11, Nous's transcripts): reads a query in parentheses, corrects that day's column guesses and names a plan's JSON columns", () => {
@@ -51,6 +113,11 @@ describe("space_db_query statements", () => {
     expect(nousDbFlagNote("rooms", "is_active", ["id", "status", "archived_at"]))
       .toEqual(["rooms has no is_active flag: its state is status (SELECT DISTINCT status FROM rooms lists its values) or archived_at (NULL while it has not happened)."]);
     expect(nousDbFlagNote("notes", "is_active", ["id", "text"])).toEqual([]);
+    // Queue 21/11 (42703 artifacts.owner_user_id): an owner is the room's.
+    expect(nousDbOwnerNote("artifacts", "owner_user_id", ["id", "room_id", "kind", "metadata"]))
+      .toEqual(["artifacts has no owner_user_id: a row belongs to its room's owner, JOIN rooms r ON r.id = artifacts.room_id and read r.owner_user_id."]);
+    expect(nousDbOwnerNote("rooms", "user_id", ["id", "owner_user_id"])).toEqual([]);
+    expect(nousDbOwnerNote("notes", "owner_user_id", ["id", "text"])).toEqual([]);
     expect(NOUS_DB_COLUMN_NOTES.user_settings!.key).toContain("jsonb_object_keys(settings)");
   });
 
@@ -108,6 +175,13 @@ describe("space_db_query statements", () => {
     expect(NOUS_DB_GUESSED_TABLES).toContain("no pg_stat_statements (the extension is not installed");
   });
 
+  it("DEV3D-016: runs no read when the reader role cannot be granted", async () => {
+    const query = vi.fn().mockRejectedValue(Object.assign(new Error('role "space_nous_reader" does not exist'), { code: "42704" }));
+    const pool = { connect: vi.fn().mockResolvedValue({ query, release: vi.fn() }) } as unknown as pg.Pool;
+    await expect(createNousDb({ pool }).query({ sql: "SELECT 1" })).rejects.toThrow('space_db_query is unavailable: this API\'s database user cannot read as space_nous_reader (role "space_nous_reader" does not exist)');
+    expect(query.mock.calls.map((call) => String(call[0]))).not.toContain("BEGIN READ ONLY");
+  });
+
   it("shows rows as JSON lines, hides secret-named columns and says when more rows exist", () => {
     const text = nousDbRows(["id", "password_hash", "created_at"], [["u1", "argon2…", new Date("2026-10-24T00:00:00.000Z")], ["u2", null, null]], 1);
     expect(text).toBe('1 row (more exist: raise limit or narrow the query); columns: id, password_hash, created_at\n{"id":"u1","password_hash":"[hidden]","created_at":"2026-10-24T00:00:00.000Z"}');
@@ -130,6 +204,7 @@ describe("space_db_query statements", () => {
       .toBe("SELECT id, left((payload)::text, 80) FROM nous_messages WHERE LEFT((meta->'a')::text, 3) = 'x'");
     expect(nousDbCastQuery("SELECT left(name, 'x') FROM notes", "function left(text, unknown) does not exist")).toBeNull();
     expect(nousDbCastQuery("SELECT 1", "function left(jsonb, integer) does not exist")).toBeNull();
+    expect(nousDbCastQuery("SELECT jsonb_array_length(tags) FROM notes", "function jsonb_array_length(text[]) does not exist")).toBe("SELECT cardinality(tags) FROM notes");
   });
 
   it("reads a json number in a numeric function as a number, and casts a json operand of LIKE/ILIKE to text (R25)", () => {
@@ -338,8 +413,8 @@ describe("space_db_query statements", () => {
     const tools = createNousTools({ db: { query: async () => { throw new Error('Postgres: column "kind" does not exist (code 42703)'); } } } as unknown as NousToolDeps);
     expect(await tools.execute("space_db_query", { sql: "SELECT kind FROM security_copilot_events" }, { owner: "user:operator", turnId: "t", callId: "c", traceId: "x" }))
       .toMatchObject({ ok: false, display: "Reading the database failed", meta: { dbCode: "42703", dbGuess: "kind" } });
-    // Daily Nous errors 14/11 (18:06 42702, 20:16 21000): the answer says the forms to use, so these are refusals too; a timeout is not.
-    for (const [error, refused] of [['Postgres: column reference "status" is ambiguous (code 42702)', true], ["Postgres: more than one row returned by a subquery used as an expression (code 21000)", true], ["Postgres: canceling statement due to statement timeout (code 57014)", undefined]] as const) {
+    // Daily Nous errors 14/11 (18:06 42702, 20:16 21000): the answer says the forms to use, so these are refusals too; a timeout too (slice 19 r2).
+    for (const [error, refused] of [['Postgres: column reference "status" is ambiguous (code 42702)', true], ["Postgres: more than one row returned by a subquery used as an expression (code 21000)", true], ["Postgres: canceling statement due to statement timeout (code 57014)", true]] as const) {
       const failing = createNousTools({ db: { query: async () => { throw new Error(error); } } } as unknown as NousToolDeps);
       expect((await failing.execute("space_db_query", { sql: "SELECT 1" }, { owner: "user:operator", turnId: "t", callId: "c", traceId: "x" })).refused).toBe(refused);
     }
@@ -362,6 +437,10 @@ describe("space_db_query statements", () => {
     expect(nousDbSyntaxLine(text, text.length - 3, null)).toBe("Syntax error at the end of your query: …SELECT id FROM notes ORDER id");
     const two = "SELECT * FROM (\nSELECT 1; SELECT 2\n) AS nous_query LIMIT 101"; // R59 refuses it first; PostgreSQL's answer stays a fallback
     expect(nousDbSyntaxLine(two, two.indexOf(";"), ";")).toMatch(/at ";", character 9 of your query: SELECT 1⟪here⟫; SELECT 2 One statement per call: send each statement as its own space_db_query\.$/);
+    // queue.md 3/11: a keyword as a bare select-list alias ("created_at at") says to write AS "at"; ORDER id above stays without it.
+    const alias = nousDbStatement({ sql: "SELECT id, max(created_at) at FROM notes GROUP BY id" }).text;
+    expect(nousDbSyntaxLine(alias, alias.indexOf(" at ") + 1, "at")).toMatch(/⟪here⟫at FROM notes.* "at" is an SQL keyword: as a column alias write AS "at"\.$/);
+    expect(nousDbSyntaxLine(text, text.indexOf("id\n"), "id")).not.toContain("SQL keyword");
   });
 
   it("lists real columns for the tool description, whole tables only, within the budget", () => {
@@ -369,6 +448,15 @@ describe("space_db_query statements", () => {
     expect(nousDbColumnsText(tables)).toBe("Real columns (use these names; other tables: information_schema.columns): panes(id, is_closed); rooms(id, name);");
     expect(nousDbColumnsText(tables, 100)).not.toContain("rooms(");
     expect(nousDbColumnsText([])).toBe("");
+  });
+
+  it("answers the column list without it when the pool stalls (Response time 23/11: tools/list waited 8 min)", async () => {
+    let calls = 0;
+    const pool = { query: () => { calls += 1; return new Promise(() => {}); } } as unknown as pg.Pool;
+    const db = createNousDb({ pool, columnsWaitMs: 20 });
+    await expect(db.columns()).resolves.toBe("");
+    await expect(db.columns()).resolves.toBe("");
+    expect(calls).toBe(1);
   });
 });
 
@@ -381,9 +469,12 @@ describe.skipIf(unavailable !== null)(`space_db_query on PostgreSQL${unavailable
     server = await startDisposablePostgres("nous-db");
     await server.createDatabase("space_nous_db");
     pool = server.pool("space_nous_db", 2);
+    // DEV3D-016: the reader role, twice (a promote may run it again; the role is cluster-wide).
+    const reader = (await loadMigrations()).find((migration) => migration.id.startsWith("0356_"))!;
+    for (let run = 0; run < 2; run += 1) await pool.query(reader.sql);
     await pool.query("CREATE TABLE notes(id int, body text); CREATE TABLE note_tags(note_id int, tag text); INSERT INTO notes VALUES (1, 'one'), (2, 'two'), (3, 'three')");
   }, 120_000);
-  afterAll(async () => { await pool?.end(); await server?.stop(); });
+  afterAll(async () => { await pool?.end(); await server?.stop(); }, 120_000);
 
   it("reads, and never writes: a write inside a read, a second statement and a commit all fail", async () => {
     const db = createNousDb({ pool });
@@ -393,6 +484,70 @@ describe.skipIf(unavailable !== null)(`space_db_query on PostgreSQL${unavailable
     await expect(db.query({ sql: "SELECT 1) AS x; COMMIT; DELETE FROM notes; SELECT (1" })).rejects.toThrow("one statement per call");
     expect((await pool.query("SELECT count(*)::int AS n FROM notes")).rows[0].n).toBe(3);
   });
+
+  it("DEV3D-016: reads as space_nous_reader, so a whole row or an alias of a secret column fails closed and a normal read still works", async () => {
+    await pool.query("CREATE TABLE accounts(id int, email text, password_hash text); INSERT INTO accounts VALUES (1, 'a@example.test', 'hash-SECRET')");
+    const db = createNousDb({ pool });
+    for (const sql of ["SELECT to_jsonb(t) AS row FROM accounts t", "SELECT t::text AS row FROM accounts t", "SELECT password_hash AS plain FROM accounts", "SELECT * FROM accounts"]) {
+      const answer = await db.query({ sql }).catch((error: Error) => error.message);
+      expect(answer).toContain("(code 42501)");
+      expect(answer).toContain("Readable columns of accounts: id, email");
+      expect(answer).not.toContain("hash-SECRET");
+    }
+    expect(await db.query({ sql: "SELECT id, email FROM accounts" })).toContain('{"id":1,"email":"a@example.test"}');
+    expect(await db.query({ sql: "SELECT to_jsonb(n) AS row FROM notes n WHERE id = 1" })).toContain('\\"body\\":\\"one\\"');
+    expect(await db.query({ sql: "SELECT current_user AS who" })).toContain('"who":"space_nous_reader"');
+    // A table made after the first sync is granted on its first denied read.
+    await pool.query("CREATE TABLE late_notes(id int); INSERT INTO late_notes VALUES (7)");
+    expect(await db.query({ sql: "SELECT id FROM late_notes" })).toContain('{"id":7}');
+  });
+
+  it("joins mail opens to their mail by the public pixel token, which still prints as [hidden] (42501 23/11 00:03Z)", async () => {
+    await pool.query(`CREATE TABLE mail_open_messages(token text, subject text); CREATE TABLE mail_open_hits(token text, kind text);
+      INSERT INTO mail_open_messages VALUES ('tok-PIXEL', 'Hello'); INSERT INTO mail_open_hits VALUES ('tok-PIXEL', 'OPEN'), ('tok-PIXEL', 'CLICK')`);
+    const db = createNousDb({ pool });
+    expect(await db.query({ sql: "SELECT m.subject, count(*)::int AS hits FROM mail_open_messages m JOIN mail_open_hits h ON h.token = m.token GROUP BY m.subject" }))
+      .toContain('{"subject":"Hello","hits":2}');
+    const whole = await db.query({ sql: "SELECT * FROM mail_open_messages" });
+    expect(whole).toContain('"token":"[hidden]"');
+    expect(whole).not.toContain("tok-PIXEL");
+  });
+
+  it("K1 M4: reads a row-level-secured table as tenant:local, every row of a single-user install and no other tenant's", async () => {
+    const tenant = "tenant_id = current_setting('space.tenant_id', true)";
+    await pool.query(`CREATE TABLE tenant_notes(id int, tenant_id text); INSERT INTO tenant_notes VALUES (1, 'tenant:local'), (2, 'tenant:other');
+      ALTER TABLE tenant_notes ENABLE ROW LEVEL SECURITY; CREATE POLICY tenant_isolation ON tenant_notes USING (${tenant}) WITH CHECK (${tenant})`);
+    const answer = await createNousDb({ pool }).query({ sql: "SELECT id FROM tenant_notes ORDER BY id" });
+    expect(answer).toContain('{"id":1}');
+    expect(answer).not.toContain('{"id":2}');
+  });
+
+  it("answers a statement timeout with the plan's per-row whole-table read (reproduced 8/11 06:08 shape, 57014)", async () => {
+    await pool.query(`CREATE TABLE big_messages(id text, kind text, meta jsonb, created_at timestamptz DEFAULT now());
+      INSERT INTO big_messages SELECT 'm' || g, CASE WHEN g % 50 = 0 THEN 'OPERATOR' ELSE 'TOOL' END, jsonb_build_object('result', repeat('x', 200) || g) FROM generate_series(1, 40000) g;
+      ANALYZE big_messages`);
+    const db = createNousDb({ pool, timeoutMs: 150 });
+    const slow = await db.query({ sql: "SELECT m.id, EXISTS (SELECT 1 FROM big_messages r WHERE r.kind = 'TOOL' AND r.meta::text ILIKE '%' || m.id || '%') AS has_receipt FROM big_messages m WHERE m.kind = 'OPERATOR' ORDER BY m.created_at DESC" })
+      .catch((error: Error) => error.message);
+    expect(slow).toContain("statement timeout (code 57014)");
+    expect(slow).toContain("The read ran past 0.15 s");
+    // Slice 19 (57014 ×5 in the Score): the refusal names a LIMIT and a time bound.
+    expect(slow).toMatch(/add a LIMIT .*created_at > now\(\)|created_at > now\(\).*add a LIMIT/);
+    expect(slow).toMatch(/SubPlan \d \(a subquery in SELECT or WHERE\) reads all of big_messages \(≈40,000 rows\) once for each of ≈\d/);
+    expect(slow).toContain("join it in FROM");
+    // The plan ran on the same destroyed connection: the next read still answers.
+    expect(await db.query({ sql: "SELECT count(*) AS n FROM notes" })).toContain('"n":"3"');
+  }, 30_000);
+
+  it("runs a read once more when it timed out waiting with no slow plan (slice 12, 57014 on a lock)", async () => {
+    const holder = await pool.connect();
+    await holder.query("BEGIN; LOCK TABLE notes IN ACCESS EXCLUSIVE MODE");
+    const release = setTimeout(() => void holder.query("COMMIT").finally(() => holder.release()), 400);
+    const answer = await createNousDb({ pool, timeoutMs: 150 }).query({ sql: "SELECT count(*) AS n FROM notes" });
+    clearTimeout(release);
+    expect(answer).toContain("run once more it answered");
+    expect(answer).toContain('"n":"3"');
+  }, 30_000);
 
   it("says what was wrong: message, code and hint, the table's real columns or the nearest table names", async () => {
     const db = createNousDb({ pool });

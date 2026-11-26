@@ -45,9 +45,11 @@ export function DotToolsPanel({ dot, roomId, readTools, readReceipts }: { dot: D
     return () => { current = false; };
   }, [key, retry, readTools, readReceipts]);
   const state = result.key === key ? result.state : "loading";
-  const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  const visible = useMemo(() => result.tools.filter(tool => (source === "ALL" || tool.source === source)
-    && terms.every(term => `${tool.id} ${tool.title} ${tool.description}`.toLocaleLowerCase().includes(term))), [result.tools, source, query]);
+  const visible = useMemo(() => {
+    const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    return result.tools.filter(tool => (source === "ALL" || tool.source === source)
+      && terms.every(term => `${tool.id} ${tool.title} ${tool.description}`.toLocaleLowerCase().includes(term)));
+  }, [result.tools, source, query]);
   const sources = [...new Set(result.tools.map(tool => tool.source))];
   const available = result.tools.filter(tool => tool.availability === "AVAILABLE").length;
   return <section className="dots-panel" aria-label={t("Tools for {name}", { name: dot?.name ?? t("selected Dot") })}>

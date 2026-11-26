@@ -321,6 +321,57 @@ describe("Nous Requests", () => {
     expect(await requests.since(owner, "2999-01-01T00:00:00.000Z")).toEqual([]);
   });
 
+  // Speed audit 14/11: answers and turn outcomes stay between derives too; only the 10 minutes before the newest kept one are read again.
+  it("reads again only the newest answers and outcomes, and still reads as a fresh instance", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-11-14T08:00:00.000Z") });
+    try {
+      const repository = new InMemoryNousRepository();
+      const deps = { repository, notifications: { list: async () => [] }, plan: async () => null };
+      const requests = createNousRequests(deps);
+      const turn = async (turnId: string) => {
+        const asked = await repository.addMessage({ ownerUserId: owner, turnId: null, kind: "OPERATOR", status: "DONE", content: `Task ${turnId}` });
+        await repository.addMessage({ ownerUserId: owner, turnId, kind: "ANSWER", status: "DONE", content: "Ok", meta: { reason: "OPERATOR", startedAt: asked.createdAt, replyTo: [asked.id] } });
+        const at = new Date().toISOString();
+        await repository.addTurnFacts({ turnId, ownerUserId: owner, reason: "OPERATOR", status: "DONE", tools: {}, planPoints: 0, startedAt: at, endedAt: at,
+          outcomes: [{ summary: "Did it", outcome: "SELF", messageIds: [asked.id] }], model: null, effort: null, costUsd: null, tokens: null, goalId: null, error: null });
+        return asked;
+      };
+      const first = await turn("nous_turn:fx000001");
+      await requests.page(owner, { limit: 10 });
+      vi.setSystemTime(Date.parse("2026-11-14T09:00:00.000Z"));
+      await turn("nous_turn:fx000002");
+      await requests.page(owner, { limit: 10 });
+      vi.setSystemTime(Date.parse("2026-11-14T10:00:00.000Z"));
+      await turn("nous_turn:fx000003");
+      const answers = vi.spyOn(repository, "listAnswerLinks"), outcomes = vi.spyOn(repository, "listTurnOutcomes");
+      const page = await requests.page(owner, { limit: 10 });
+      expect([answers.mock.calls[0]![1], outcomes.mock.calls[0]![1]]).toEqual(["2026-11-14T08:50:00.000Z", "2026-11-14T08:50:00.000Z"]);
+      expect(page).toEqual(await createNousRequests(deps).page(owner, { limit: 10 }));
+      expect(answers.mock.calls[1]![1]).toBe(first.createdAt);
+      expect(page.requests.map((request) => request.answeredAt?.slice(11, 13))).toEqual(["10", "09", "08"]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  // Speed audit 21/11: REQUEST_DONE records stay between derives too; only the 10 minutes before the newest kept one are read again.
+  it("reads again only the newest REQUEST_DONE records via since, keeping earlier ones", async () => {
+    const repository = new InMemoryNousRepository();
+    const first = await repository.addMessage({ ownerUserId: owner, turnId: null, kind: "OPERATOR", status: "DONE", content: "First" });
+    const second = await repository.addMessage({ ownerUserId: owner, turnId: null, kind: "OPERATOR", status: "DONE", content: "Second" });
+    const t1 = new Date(Date.parse(first.createdAt) + 3_600_000).toISOString();
+    const t2 = new Date(Date.parse(t1) + 3_600_000).toISOString();
+    const allDone = [done(`nous:done:${first.id}`, { summary: "First done." }, t1)];
+    const list = vi.fn(async (_owner: string, query: { since?: string }) =>
+      allDone.filter((record) => !query.since || record.createdAt >= query.since).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+    const requests = createNousRequests({ repository, notifications: { list }, plan: async () => null });
+    expect((await requests.page(owner, { limit: 10 })).counts.DONE).toBe(1);
+    allDone.push(done(`nous:done:${second.id}`, { summary: "Second done." }, t2));
+    list.mockClear();
+    const page = await requests.page(owner, { limit: 10 });
+    expect(page.counts.DONE).toBe(2);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list.mock.calls[0]![1]).toMatchObject({ since: new Date(Date.parse(t1) - 600_000).toISOString() });
+  });
+
   it("strips the files block from a message's text", () => {
     const result = deriveNousRequests([message(1, "Δες αυτό\n\n[[Attachments: 1 file]]\n- a.png")], links(), new Map());
     expect(result[0]!.text).toBe("Δες αυτό");
@@ -336,5 +387,26 @@ describe("Nous Requests", () => {
     expect(result[a.id]).toMatchObject({ answeredAt: "2026-10-31T04:00:00.000Z", repliedAt: "2026-10-31T04:00:00.000Z" });
     expect(result[b.id]).toMatchObject({ answeredAt: "2026-10-31T04:00:00.000Z" });
     expect(deriveNousRequests([message(9, "Μετά")], value, new Map())[0]!.answeredAt).toBeUndefined();
+  });
+
+  it("speed audit 21/11: memoizes unchanged request derives and invalidates when a linked plan changes", async () => {
+    const repository = new InMemoryNousRepository();
+    const asked = await repository.addMessage({ ownerUserId: owner, turnId: null, kind: "OPERATOR", status: "DONE", content: "Ship Slice 4" });
+    const at = new Date(Date.parse(asked.createdAt) + 1_000).toISOString();
+    await repository.setNote(owner, "request-done:open:p1", JSON.stringify({ messageId: asked.id, summary: "Ship", plan: "clipboard:plan1", turnId: "nous_turn:t1", openedAt: at, reportedAt: at }));
+    let planPercent = 25;
+    const requests = createNousRequests({
+      repository,
+      notifications: { list: async () => [] },
+      plan: async (_owner, id) => id === "clipboard:plan1" ? { progressPercentage: planPercent, isCompleted: planPercent >= 100, executionStatus: planPercent >= 100 ? "COMPLETED" : "IN_PROGRESS" } as never : null
+    });
+    const first = await requests.page(owner, { limit: 10 });
+    const second = await requests.page(owner, { limit: 10 });
+    expect(first.requests[0]).toMatchObject({ status: "IN_PROGRESS", planPercent: 25 });
+    expect(second.requests[0]).toBe(first.requests[0]);
+    planPercent = 100;
+    const third = await requests.page(owner, { limit: 10 });
+    expect(third.requests[0]).toMatchObject({ status: "IN_PROGRESS", planPercent: 100 });
+    expect(third.requests[0]).not.toBe(first.requests[0]);
   });
 });

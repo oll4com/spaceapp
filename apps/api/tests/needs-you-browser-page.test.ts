@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import type { NotificationRaiseInput, SpaceNotification } from "@space/contracts";
-import { createNeedsYouBrowserPages, createNeedsYouPlaces, pickBrowserPage, type LiveBrowser } from "../src/needs-you-browser-page.js";
+import { createCodePageOpen, createNeedsYouBrowserPages, createNeedsYouPlaces, pickBrowserPage, type LiveBrowser } from "../src/needs-you-browser-page.js";
 
 // Operator 2/11 13:15 BKK: Go to pane on the Patreon card opened the CLI Crypto/Max; the filled-in page was in Crypto/Cody's browser.
 const CRYPTO = "room:Rlpskijugcs0";
@@ -76,6 +76,16 @@ describe("a needs-you card raised on a CLI opens the browser holding its page", 
     expect((await withPage(card({}))).link.paneId).toBe(max.id);
     expect((await withPage(card({ paneId: browser.id, link: { roomId: room.id, paneId: browser.id } }))).payload).toEqual({ items: [], paneMode: "BROWSER" });
     expect((await withPage(card({ source: "MAIL_COPILOT", kind: "NEEDS_USER" }))).payload.browserPage).toBeUndefined();
+    // 16/11 REVIEW (nous_msg:33444df3, a Shopify SMS code card with no Shopify tab open): a code card's page is open only at its tab or site, near its pane.
+    const open = createCodePageOpen({ store });
+    expect(await open("user:operator", max, undefined, "Patreon: the 6-digit code from your SMS")).toBe(true);
+    expect(await open("user:operator", max, undefined, "Shopify Partners: phone verification code")).toBe(false);
+    expect(await open("user:operator", max, "url:https://partners.shopify.com/signup", "the SMS code")).toBe(false);
+    expect(await open("user:operator", max, "url:https://www.patreon.com/login", "the SMS code")).toBe(true);
+    expect(await open("user:operator", max, "tab:c1", "x")).toBe(true);
+    expect(await open("user:operator", max, "tab:gone", "Patreon code")).toBe(false);
+    // Another owner's browser in another room never counts.
+    expect(await open("user:operator", { id: "pane:x", roomId: "room:none" }, undefined, "Patreon code")).toBe(false);
   });
 });
 

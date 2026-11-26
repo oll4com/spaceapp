@@ -22,6 +22,7 @@ import { ArrowUp, BrainCircuit, ChevronLeft, ChevronRight, Clipboard, Copy, File
 import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
 import { detectKeyboardLayoutMismatch, toggleKeyboardLayout, type LayoutMismatchDetection } from "../agent-pane/greek-layout-converter.js";
 import { createTerminalResizeTrace } from "./terminal-resize-trace.js";
+import { markColdAttach } from "./cold-attach-trace.js";
 import {
   isComposerLayoutIconVisible,
   isComposerSuggestionBarVisible,
@@ -76,6 +77,7 @@ import {
   invalidateTerminalWidthMeasurements,
   memoizeTerminalWidthMeasurements
 } from "./terminal-width-measure-cache.js";
+import { skipEmptySelectionRedraw } from "./terminal-selection-redraw.js";
 import {
   createTerminalGeometryCoordinator,
   fitTerminalForInitialAttach,
@@ -295,6 +297,7 @@ export function createTerminalBootstrapBarrier(paneIds: readonly string[]): Term
         return;
       }
       released = true;
+      markColdAttach("barrier-released");
       release();
     });
   }
@@ -303,6 +306,7 @@ export function createTerminalBootstrapBarrier(paneIds: readonly string[]): Term
     window.setTimeout(() => {
       if (!released) {
         released = true;
+        markColdAttach("barrier-timeout");
         release();
       }
     }, isDemo ? 0 : 6000);
@@ -1909,6 +1913,7 @@ export const TerminalPane = memo(function TerminalPane({
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [terminalStatus, setTerminalStatus] = useState<TerminalConnectionStatus>("idle");
+  const wakeAskedForRef = useRef<PaneCliSessionResponse | null | undefined>(undefined);
   const terminalStatusRef = useRef<TerminalConnectionStatus>("idle");
   terminalStatusRef.current = terminalStatus;
   const [terminalControlState, setTerminalControlState] = useState<PaneCliTerminalControlState>("AVAILABLE");
@@ -3616,6 +3621,34 @@ export const TerminalPane = memo(function TerminalPane({
     }
   }
 
+  // 15/11 (operator nous_msg:5295e5b7, Warm approved by Nous): the operator focusing a sleeping pane resumes it, without Start or a restart.
+  // Asked once per session state, so focusing a dead or never-started pane again costs nothing; the server starts nothing for those.
+  function wakeIfSleeping(): void {
+    if (observerOnly || loading || pending || isTerminalLoginSession) return;
+    const current = sessionResponseRef.current;
+    if ((current?.websocket && terminalStatus !== "closed") || wakeAskedForRef.current === current) return;
+    wakeAskedForRef.current = current;
+    void api.wakeCliPane?.(pane.id).then(({ woke }) => {
+      if (!woke) return;
+      api.clearActiveCliSessionFlight?.(pane.id);
+      setConnectionAlert(null);
+      void loadRuntimes(false);
+    }).catch(() => undefined);
+  }
+
+  // 26/11 (operator approved this Warm change): a sleeping pane also wakes when its room opens and when it falls asleep in view.
+  // Live panes return before any request, so a warm switch sends nothing new; a close seen in view waits 2 s for the sweep's Sleeping write.
+  const terminalClosedAtRef = useRef(0);
+  useEffect(() => {
+    if (terminalStatus === "closed") terminalClosedAtRef.current = Date.now();
+  }, [terminalStatus]);
+  useEffect(() => {
+    if (!isVisible || pane.isMinimized) return;
+    const timer = window.setTimeout(wakeIfSleeping, Math.max(0, terminalClosedAtRef.current + 2_000 - Date.now()));
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- wakeIfSleeping is a new closure each render; these are the states it reads.
+  }, [isVisible, pane.isMinimized, loading, pending, terminalStatus]);
+
   async function attachReplacedCliSession(expectedSessionId: string, expectedRuntimeId: string) {
     const generation = ++loadRuntimesGenerationRef.current;
     try {
@@ -4798,9 +4831,11 @@ export const TerminalPane = memo(function TerminalPane({
     };
 
     async function attachTerminal() {
+      markColdAttach("attach-start", pane.id);
       setTerminalStatus("connecting");
       const { Terminal, FitAddon } = await loadTerminalModules();
       if (disposed) return;
+      markColdAttach("modules-ready", pane.id);
       let bufferedSocket = bufferedSocketRef.current;
       if (bufferedSocket && !terminalWebSocketTicketsMatch(bufferedSocket.ticket, terminalTicket)) {
         closeBufferedTerminalSocket(bufferedSocket);
@@ -4816,7 +4851,9 @@ export const TerminalPane = memo(function TerminalPane({
         // waits only for its own handshake and starts xterm in a separate browser task, allowing
         // slow handshakes and network events to progress between synchronous xterm setups.
         await bufferedSocket!.preopen;
+        markColdAttach("socket-open", pane.id);
         await bootstrapBarrier?.waitForTerminalSetupTask(pane.id);
+        markColdAttach("setup-turn", pane.id);
       } else {
         // Fresh sessions measure their xterm before creating the socket, while the task yield keeps
         // sibling heavy CLI process starts staggered.
@@ -4951,6 +4988,7 @@ export const TerminalPane = memo(function TerminalPane({
         });
         syncTerminalViewportEvidence(terminalHost, activeTerminal);
         memoizeTerminalWidthMeasurements(activeTerminal, terminalHost.ownerDocument);
+        skipEmptySelectionRedraw(activeTerminal);
         const terminalDom = activeTerminal as XtermTerminal & {
           element?: HTMLElement;
           textarea?: HTMLTextAreaElement;
@@ -6091,6 +6129,11 @@ export const TerminalPane = memo(function TerminalPane({
       } finally {
         setPending(false);
       }
+    }).catch((err: unknown) => {
+      // 14/11: the 10 s flight timeout rejected past every `void requestCliSession(...)` as an unhandled rejection.
+      console.warn("CLI session request failed", err);
+      if (!options.automaticReconnect) setError(err instanceof Error ? err.message : "CLI session failed to start");
+      return null;
     });
   }
 
@@ -8767,6 +8810,8 @@ export const TerminalPane = memo(function TerminalPane({
         event.preventDefault();
         event.stopPropagation();
       }}
+      onFocusCapture={wakeIfSleeping}
+      onPointerDownCapture={wakeIfSleeping}
       onPasteCapture={handleTerminalPaste}
       onDrop={handleTerminalDrop}
       onDragOver={(event) => {
@@ -8913,6 +8958,8 @@ export const TerminalPane = memo(function TerminalPane({
         : null}
 
       <div className="terminal-stage">
+        {/* In-flow strip, not an overlay over the output: photos left, account menu right; hidden by :empty when neither shows. */}
+        <div className="terminal-control-strip">
         {uploadPreviews.length || photoHistoryError ? (
           <div ref={uploadPreviewsPickerRef} className="terminal-upload-preview-picker">
             <button
@@ -9070,6 +9117,7 @@ export const TerminalPane = memo(function TerminalPane({
           />
         ) : null}
         {isCodexRuntime ? <CodexAccountPicker paneTitle={pane.title} disabled={pending || observerOnly} /> : null}
+        </div>
 
         <div
           ref={transcriptRef}

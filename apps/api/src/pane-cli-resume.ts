@@ -1,6 +1,7 @@
 import { codexThreadIdSchema, resumePaneCliSessionResponseSchema, type AuthUser, type Pane } from "@space/contracts";
 import { makeSpaceId, nowIso, SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
 import type { FastifyRequest } from "fastify";
+import { claudeCopilotLaunch } from "./cli-native-model-picker.js";
 import { resolveNativeTaskResume } from "./cli-native-task-resume.js";
 import type { CliRuntimeVisibilityPolicy } from "./cli-runtime-visibility.js";
 import { discoverAgentRuntimes, findRuntime, isCliRuntimeTerminalLaunchable } from "./cli-runtimes.js";
@@ -16,6 +17,7 @@ import { submitCliPrompt } from "./cli-prompt-submit.js";
 import { getLatestRoomEvent } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
 import type { UnifiedCliTaskRegistry } from "./unified-cli-task-registry.js";
+import { WorktreeService } from "./worktrees/worktree-service.js";
 
 /**
  * Resumes a Space CLI task in a pane: the exact native task history when the runtime has it (a Codex thread still running in
@@ -131,9 +133,13 @@ export function createPaneCliResume(options: {
         await stopSession(active.sessionId, "CLI session replaced to resume a previous task.");
       }
 
+      const sameRuntime = sourceTask.runtimeId === runtime.id;
+      const cwd = sameRuntime ? sourceTask.revision.cwd ?? pane.cwd ?? "/etc" : pane.cwd ?? "/etc";
+      // A closed pane's worktree may be gone (disk retention): the task resumes in its checkout, not at a failed chdir.
+      await new WorktreeService().restoreWorktree(cwd);
       const allocatedAtNs = process.hrtime.bigint();
       const nextSessionId = makeSpaceId("cli_session");
-      const sameRuntime = sourceTask.runtimeId === runtime.id;
+      const copilot = claudeCopilotLaunch(runtime.id, pane);
       const accountProfileId = await resolveCliSessionAccountProfile({
         paneId: pane.id, runtimeId: runtime.id, accountProfileId: input.accountProfileId, previousSession: active,
         sourceSession: resumeAccountSource(pane, runtime.id, sourceTask)
@@ -146,12 +152,13 @@ export function createPaneCliResume(options: {
           runtimeId: runtime.id,
           providerId: runtime.providerId,
           agentId: runtime.agentId,
-          modelId: sameRuntime
+          // A Claude copilot resumes on its pane's pick or class, not the model its old task ran on.
+          modelId: copilot?.modelId ?? (sameRuntime
             ? sourceTask.revision.modelId ?? pane.modelId ?? runtime.defaultModelId
-            : pane.modelId ?? runtime.defaultModelId,
-          reasoningEffort: sameRuntime ? sourceTask.revision.reasoningEffort : pane.reasoningEffort,
+            : pane.modelId ?? runtime.defaultModelId),
+          reasoningEffort: copilot?.reasoningEffort ?? (sameRuntime ? sourceTask.revision.reasoningEffort : pane.reasoningEffort),
           launchMode: exactNativeResume ? "RESUME" : "FRESH",
-          cwd: sameRuntime ? sourceTask.revision.cwd ?? pane.cwd ?? "/etc" : pane.cwd ?? "/etc",
+          cwd,
           codexThreadId: null,
           cliTaskId: sourceTask.taskId,
           accountProfileId,
@@ -219,7 +226,7 @@ export function createPaneCliResume(options: {
         const inputKey = `shared-history:${sourceTask.taskId}:${session.sessionId}`;
         // Hermes 0.22 reads an Enter inside a multi-character read as a newline, so its context stayed an unsent draft
         // (ADAPTER-013, dev 4/11): it is typed and submitted like every Space Control prompt.
-        if (runtime.id === "cli:hermes") await submitCliPrompt(cliTerminalManager, session.sessionId, sharedContext.replace(/\r$/, ""), traceId, inputKey);
+        if (runtime.id === "cli:hermes") await submitCliPrompt(cliTerminalManager, session.sessionId, sharedContext.replace(/\r$/, ""), traceId, inputKey, { paneId: session.paneId });
         else await cliTerminalManager.sendInput(
           session.sessionId,
           // omp 18 holds a paste of 100+ lines on a menu unless its submit shares the paste's read (ADAPTER-013, dev 4/11);

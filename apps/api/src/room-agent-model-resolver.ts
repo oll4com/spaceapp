@@ -22,9 +22,6 @@ export interface ResolveAdvancedMissionModelOptions {
   openCodeStateFile?: string;
 }
 
-/** The Claude model asked on Space Gateway's subscription route when a Codex call does not answer (the autopilot, the card translator). */
-export const GATEWAY_CLAUDE_MODEL = "claude-sonnet-5-5";
-
 /** The service root of a Codex-compatible base URL, which is usually configured with its `/v1` suffix. */
 export function codexServiceRoot(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
@@ -57,7 +54,7 @@ export async function checkGeminiAvailability(
   try {
     const stats = await fs.stat(mainToken);
     if (stats.size > 0) return true;
-  } catch {}
+  } catch { /* no main token: check the profiles */ }
   try {
     const profilesDir = path.join(geminiRoot, "profiles");
     const entries = await fs.readdir(profilesDir);
@@ -66,9 +63,9 @@ export async function checkGeminiAvailability(
       try {
         const stats = await fs.stat(pToken);
         if (stats.size > 0) return true;
-      } catch {}
+      } catch { /* no token in this profile */ }
     }
-  } catch {}
+  } catch { /* no profiles directory */ }
   return false;
 }
 
@@ -148,7 +145,7 @@ export function runOpenCodeText(modelId: string, prompt: string, timeoutMs: numb
       signal?.removeEventListener("abort", onAbort);
       resolve(value);
     };
-    const onAbort = () => { try { child.kill("SIGKILL"); } catch {} finish(null); };
+    const onAbort = () => { try { child.kill("SIGKILL"); } catch { /* already exited */ } finish(null); };
     const timer = setTimeout(onAbort, timeoutMs);
     signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
@@ -167,7 +164,7 @@ export function openCodeRunAnswer(stdout: string): string | null {
     try {
       const parsed = JSON.parse(line.trim());
       if (parsed.type === "text" && typeof parsed.part?.text === "string") extracted += parsed.part.text;
-    } catch {}
+    } catch { /* not a JSON event line */ }
   }
   // Only text events are an answer: an error event ({"type":"error",...}) must never reach the operator raw.
   return extracted.trim() || null;

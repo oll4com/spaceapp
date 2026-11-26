@@ -8,7 +8,7 @@ import type { NousRequests } from "./requests.js";
 import type { NousGoalHistory } from "./goal-history.js";
 import { operatorMessagesToAnswer, type NousService } from "./service.js";
 import { requestNousClient } from "../request-helpers.js";
-import { SPACE_INSTALL_ROOT } from "@space/contracts";
+import { LINK_APP, NOUS_LINK_DECISION_CATEGORIES, nousLinkAnswerRequestSchema, nousLinkSettingsInputSchema, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export interface NousRouteDependencies {
   routeOptions: Record<string, unknown>;
@@ -149,6 +149,79 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
     return { message, attachments: prepared?.attachments ?? [] };
   }
 
+  // Space Link v2 step 9b (ADR-014 v2): the superior Nous's commands, an operator message here that keeps the phone rule (no Vault, no
+  // promote/approve, asks never auto-approved), and the reports on them. The gate lets only the link whose Nous is superior here in.
+  const linkCommand = z.object({ text: z.string().trim().min(1), clientId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/) }).strict();
+  const linkReportsQuery = z.object({ since: z.string().datetime({ offset: true }).optional() }).strict();
+  app.post("/api/nous/link/commands", routeOptions, async (request, reply) => {
+    const device = request.mobileDevice;
+    if (request.appSession !== LINK_APP || !device) return reply.code(403).send({ error: { code: "NOUS_SUPERIOR_LINK_ONLY", message: "Only a superior Nous over Space Link sends commands here." } });
+    const owner = await deps.owner(request);
+    const input = parseBody(linkCommand, request.body);
+    const clientId = `superior-${device.id}-${input.clientId}`;
+    const key = `${owner} ${clientId}`;
+    const earlier = sending.get(key);
+    const work = (async () => {
+      await earlier?.catch(() => undefined);
+      return { message: await service.operatorMessageByClientId(owner, clientId)
+        ?? await service.send(owner, input.text, { person: false, mobile: { device: device.id, scopes: device.scopes }, superior: { device: device.id }, clientId }) };
+    })();
+    sending.set(key, work);
+    try { return reply.code(202).send(await work); } finally { if (sending.get(key) === work) sending.delete(key); }
+  });
+  app.get("/api/nous/link/reports", routeOptions, async (request, reply) => {
+    const device = request.mobileDevice;
+    if (request.appSession !== LINK_APP || !device) return reply.code(403).send({ error: { code: "NOUS_SUPERIOR_LINK_ONLY", message: "Only a superior Nous over Space Link reads its reports here." } });
+    const owner = await deps.owner(request);
+    const { since } = parseQuery(linkReportsQuery, request.query);
+    const ids = (await service.operatorMessageRefs(owner)).filter((ref) => ref.superior === device.id && (!since || ref.createdAt >= since)).map((ref) => ref.id);
+    const requests = ids.length && deps.requests ? await deps.requests.ofMessages(owner, ids) : [];
+    return { reports: requests.map(({ messageId, createdAt, text, status, doneSummary, planId, planPercent, doneAt, answeredAt }) =>
+      ({ messageId, createdAt, text, status, doneSummary, planId, planPercent, doneAt, answeredAt })) };
+  });
+
+  // Step 9c (ADR-014 v2): the superior's person answers this SpaceApp's RELEASE, DESTRUCTIVE, EXTERNAL and DIRECTION decisions; the gate checked
+  // the superior's signature over the decision as it stands. This SpaceApp's person still answers here too: the first answer wins.
+  const linkDecisionCategories: readonly string[] = NOUS_LINK_DECISION_CATEGORIES;
+  app.get("/api/nous/link/decisions", routeOptions, async (request, reply) => {
+    if (request.appSession !== LINK_APP || !request.mobileDevice) return reply.code(403).send({ error: { code: "NOUS_SUPERIOR_LINK_ONLY", message: "Only a superior Nous over Space Link reads decisions here." } });
+    const decisions = (await service.decisions(await deps.owner(request))).filter((decision) => decision.status === "OPEN" && linkDecisionCategories.includes(decision.category));
+    // Only what the card shows and the content hash covers; room, pane and file refs stay here.
+    return { decisions: decisions.map(({ id, category, title, body, options, recommendation, action, refs, status, createdAt }) =>
+      ({ id, category, title, body, options, recommendation, action, refs: { fileHashes: refs.fileHashes }, status, createdAt })) };
+  });
+  app.post("/api/nous/link/decisions/:id/answer", routeOptions, async (request, reply) => {
+    const device = request.mobileDevice;
+    if (request.appSession !== LINK_APP || !device) return reply.code(403).send({ error: { code: "NOUS_SUPERIOR_LINK_ONLY", message: "Only a superior Nous over Space Link answers decisions here." } });
+    const owner = await deps.owner(request);
+    const { id } = parseQuery(decisionParams, request.params);
+    const { statement } = parseBody(nousLinkAnswerRequestSchema, request.body);
+    return { decision: await service.answer(owner, id, { answer: statement.answer, ...(statement.text ? { text: statement.text } : {}) }, { superior: `link ${device.id}` }) };
+  });
+
+  // Step 9d (ADR-014 v2): the superior Nous sets this Nous's goals, start and stop, turns an hour, goal loop and spend mode; the body takes those
+  // keys only, never a grant or allowance. The gate let only the superior link in; the channel audits each call.
+  const notLink = (request: FastifyRequest) => request.appSession !== LINK_APP || !request.mobileDevice;
+  const linkOnly = { error: { code: "NOUS_SUPERIOR_LINK_ONLY", message: "Only a superior Nous over Space Link sets this here." } };
+  app.patch("/api/nous/link/settings", routeOptions, async (request, reply) => {
+    if (notLink(request)) return reply.code(403).send(linkOnly);
+    const { enabled, maxTurnsPerHour, lowSpend, goals } = await service.saveSettings(await deps.owner(request), parseBody(nousLinkSettingsInputSchema, request.body));
+    return { settings: { enabled, maxTurnsPerHour, lowSpend: { mode: lowSpend.mode }, goals } };
+  });
+  app.post("/api/nous/link/goals", routeOptions, async (request, reply) => {
+    if (notLink(request)) return reply.code(403).send(linkOnly);
+    return reply.code(201).send({ goal: await service.createGoal(await deps.owner(request), parseBody(nousGoalCreateInputSchema, request.body).text) });
+  });
+  app.post("/api/nous/link/goals/reorder", routeOptions, async (request, reply) => {
+    if (notLink(request)) return reply.code(403).send(linkOnly);
+    return { goals: await service.reorderGoals(await deps.owner(request), parseBody(nousGoalsReorderInputSchema, request.body).ids) };
+  });
+  app.patch("/api/nous/link/goals/:id", routeOptions, async (request, reply) => {
+    if (notLink(request)) return reply.code(403).send(linkOnly);
+    const { id } = parseQuery(goalParams, request.params);
+    return { goal: await service.editGoal(await deps.owner(request), id, parseBody(nousGoalEditInputSchema, request.body)) };
+  });
+
   // Operator 31/10: clears what the dock shows, never the database: a mark the latest page starts after; rows and files stay.
   app.delete("/api/nous/messages", routeOptions, async (request) => ({ cleared: await service.clear(await deps.owner(request)) }));
 
@@ -191,7 +264,8 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
       body: `Space builds the broker from stable's committed code (refused if ${SPACE_INSTALL_ROOT} has local changes), installs it as root, keeps the old one `
         + "as broker.mjs.previous and restarts space-vault-broker.service; if it does not come back, the old one is restored. Agents keep filling under the current delegation; no unlock is needed."
         + (report ? `\n\n${report}` : ""),
-      options: [], recommendation: reason, refs: {}, action: { type: "VAULT_BROKER_REINSTALL" } }) };
+      // Audit §4 item 5 (plan USQ6ktIIN_1D): the ledger scores every reinstall; the operator approved each one asked so far.
+      options: ["Yes", "No"], recommendation: `${reason} Prediction: yes (95%).`, refs: { prediction: { answer: "yes", confidence: 95 } }, action: { type: "VAULT_BROKER_REINSTALL" } }) };
   });
 
   app.get("/api/nous/decisions/:id/files", routeOptions, async (request) => {

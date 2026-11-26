@@ -81,19 +81,16 @@ describe("durable task title queue contract", () => {
     expect(await repo.finish(fresh, { ...state(), dueAt: null })).toBe(true);
     expect(await repo.claim("2026-09-08T10:03:01.000Z")).toBe(null);
   });
-  it("atomically bounds competing attempts across tasks and rolls the window", async () => {
+  it("bounds each task's attempts without a cap across tasks and rolls the window", async () => {
     const repo = new InMemoryTaskTitleRepository();
-    const policy = taskTitleSettingsSchema.parse({
-      globalDayAttempts: 2,
-      perTaskHourAttempts: 1,
-    });
+    const policy = taskTitleSettingsSchema.parse({ perTaskHourAttempts: 1 });
     const results = await Promise.all([
       repo.reserveAttempt("a", "free", at, policy),
       repo.reserveAttempt("a", "other", at, policy),
       repo.reserveAttempt("b", "free", at, policy),
       repo.reserveAttempt("c", "free", at, policy),
     ]);
-    expect(results).toEqual([true, false, true, false]);
+    expect(results).toEqual([true, false, true, true]);
     expect(
       await repo.reserveAttempt(
         "a",

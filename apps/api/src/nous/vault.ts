@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { vaultAgentFillRequestSchema, vaultAgentKeyListRequestSchema, vaultAgentKeySaveRequestSchema, vaultAgentSaveRequestSchema, type Pane } from "@space/contracts";
+import { vaultAgentFillRequestSchema, vaultAgentKeyListRequestSchema, vaultAgentTotpRequestSchema, vaultAgentKeySaveRequestSchema, vaultAgentSaveRequestSchema, type Pane } from "@space/contracts";
 import type { VaultModule } from "../vault/wiring.js";
 
 /**
@@ -12,7 +12,8 @@ export const nousVaultFillArgsSchema = z.object({
   room: z.string().trim().min(1).max(200).describe("The room's name as shown in the world (or its id)."),
   pane: z.string().trim().min(1).max(160).describe("The browser pane whose open page gets the fill."),
   handle: vaultAgentFillRequestSchema.shape.handle.describe("The Vault item handle (vault_item:...), from space_vault_list."),
-  fields: vaultAgentFillRequestSchema.shape.fields,
+  fields: z.union([vaultAgentFillRequestSchema.shape.fields, z.tuple([z.literal("OTP")])])
+    .describe("USERNAME and/or PASSWORD for the login form; [\"OTP\"] alone for the one-time code field (2FA), from the item's authenticator key."),
   submit: z.boolean().optional().describe("Submit the form after filling.")
 }).strict();
 export const nousVaultListArgsSchema = z.object({}).strict();
@@ -23,6 +24,7 @@ export const nousVaultKeySaveArgsSchema = vaultAgentKeySaveRequestSchema;
 export const NOUS_VAULT_FILL_DESCRIPTION = "Fill a Vault item into a browser pane's open page by handle (open the site's login page first). "
   + "Space types the values itself; you never see or send a value, username, URL or selector. The answer is {status, auditId, reason}: FILLED or SUBMITTED, "
   + "BLOCKED (agent access is off, the item is not delegated, or no login form), ORIGIN_MISMATCH (the page is not the item's site). "
+  + "fields [\"OTP\"] types the current authenticator code into the page's one-time code field when space_vault_list shows OTP among the item's fields: never ask the operator for that code. "
   + "reason FIELD_NOT_FOUND_AFTER_RELOAD: the page was reloaded first (a session had run code in it) and the field was gone; redo the steps that showed it with navigate, click, type and press only, then fill again.";
 export const NOUS_VAULT_LIST_DESCRIPTION = "The Vault items the operator lets agents and you use: handles, labels, exact sites and fields, never a value, and loginPage when the login form is "
   + "on its own page (open that page in the pane before space_vault_fill, not the bare site). BLOCKED while agent access is off. "
@@ -39,8 +41,10 @@ export const NOUS_VAULT_KEY_SAVE_DESCRIPTION = "Keep a password or key that reac
 const vaultOff = { status: "BLOCKED", auditId: null } as const;
 
 export function nousVaultFill(vault: VaultModule | undefined, owner: string, pane: Pane, args: z.infer<typeof nousVaultFillArgsSchema>, traceId: string) {
-  return vault ? vault.agent.call({ owner, paneId: pane.id, roomId: pane.roomId, path: "fill", traceId,
-    body: vaultAgentFillRequestSchema.parse({ handle: args.handle, fields: args.fields, submit: args.submit ?? false, targetPaneId: pane.id }) }) : Promise.resolve(vaultOff);
+  const totp = args.fields[0] === "OTP";
+  return vault ? vault.agent.call({ owner, paneId: pane.id, roomId: pane.roomId, path: totp ? "totp-fill" : "fill", traceId,
+    body: totp ? vaultAgentTotpRequestSchema.parse({ handle: args.handle, submit: args.submit ?? false, targetPaneId: pane.id })
+      : vaultAgentFillRequestSchema.parse({ handle: args.handle, fields: args.fields, submit: args.submit ?? false, targetPaneId: pane.id }) }) : Promise.resolve(vaultOff);
 }
 
 // List and save name no pane: their audit rows carry "nous" as the caller.

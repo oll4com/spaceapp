@@ -388,7 +388,7 @@ async function withLock<T>(path: string, task: () => Promise<T>): Promise<T> {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const info = await stat(path).catch(() => null);
       if (info && Date.now() - info.mtimeMs > 30_000) await unlink(path).catch(() => undefined);
-      if (Date.now() > deadline) throw new Error("The Asteroids leaderboard is locked by another writer.");
+      if (Date.now() > deadline) throw new Error("The Asteroids leaderboard is locked by another writer.", { cause: error });
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
@@ -441,7 +441,7 @@ export function createArenaFileStore(dir: string = process.env.SPACE_ASTEROIDS_B
       return run && run.schemaVersion === 2 ? run : null;
     },
     async listRuns(mode, limit) {
-      let names: string[] = [];
+      let names: string[];
       try {
         names = (await readdir(runsDir)).filter((name) => name.endsWith(".json")).sort().reverse();
       } catch (error) {

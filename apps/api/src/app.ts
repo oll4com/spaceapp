@@ -23,8 +23,7 @@ import { registerCliRoutes } from "./cli-routes-wiring.js";
 import { describeCoverage, readAttachments } from "./attachment-readers.js";
 import { PostgresDotMemoryRepository, PostgresDotsRepository, PostgresDotHomeRepository } from "@space/db";
 import { createDotMemoryService } from "./dot-memory.js";
-import { InMemoryRoomAgentMonitorRepository, PostgresRoomAgentMonitorRepository } from "@space/db";
-import { InMemorySpaceNotificationsRepository, PostgresSpaceNotificationsRepository } from "@space/db";
+import { InMemoryRoomAgentMonitorRepository, PostgresRoomAgentMonitorRepository, InMemorySpaceNotificationsRepository, PostgresSpaceNotificationsRepository } from "@space/db";
 import { createCardTranslator, createNotificationService } from "./notifications/service.js";
 import { createFcmSender, loadFcmServiceAccount } from "./notifications/fcm.js";
 import { type NousWiring } from "./nous/wiring.js";
@@ -36,17 +35,18 @@ import { getPaneById, getLatestRoomEvent } from "./pane-guards.js";
 import { createPublicCredentialHost } from "./cli-auth-transfer.js";
 import { recordAudit } from "./request-audit.js";
 import { createInstallTelemetry } from "./install-telemetry.js";
-import { createSessionAccess } from "./session-access.js";
+import { createSessionAccess, requestTenantHook } from "./session-access.js";
 import { createGatewayCodexResetCreditsService, createGatewayCodexUsageProvider } from "./gateway/gateway-codex-services.js";
 import { internalTokenHeader, isAllowedAppDiagnosticsAutomationMutation, isCliBrowserBridgeRequest, isInternalApiRequest, publicPaths, requiresCsrf } from "./api-request-classes.js";
 import { marketingPaneCloseGuard } from "./marketing-copilot/wiring.js";
+import { operatorWaitCloseGuard } from "./notifications/browser-handoff.js";
 import { collectStorageReadiness } from "./storage-readiness.js";
 import { createCliSessionAccounts } from "./cli-session-account-profile.js";
 import { gatewayKeyJoiner, gatewayVaultKeyReconciler, type GatewayAdminService } from "./gateway/gateway-service.js";
 import { apiLoggerOptions } from "./request-logging.js";
 export { redactRequestUrlForLog } from "./request-logging.js";
 import { apiErrorText, sendApiError } from "./http-errors.js";
-import { registerApiErrorHandler } from "./api-error-handler.js";
+import { internalErrorText, registerApiErrorHandler } from "./api-error-handler.js";
 import { localArtifactFilePath } from "./artifact-storage.js";
 export { sweepExpiredBrowserArtifacts, type BrowserArtifactRetentionSweepResult } from "./artifact-storage.js";
 import { createRetentionSweeps } from "./retention-sweeps.js";
@@ -54,7 +54,8 @@ export { runDatabaseRetentionSweep, type DatabaseRetentionSweepResult } from "./
 import { createCliDashboardActivityReader, createDashboardAgentsReader, readDashboardActivity } from "./agents-dashboard.js";
 import { createRoomAgentSnapshotProvider } from "./room-agent-snapshot.js";
 import { startPaneCli } from "./nous/copilot-control.js";
-import { PostgresSessionRevocationRepository } from "@space/db";
+import { codexPoolQuotaReason } from "./nous/tokens.js";
+import { PostgresSessionRevocationRepository, tenancyEnabled } from "@space/db";
 import { installMobileGate, mobileUpdateBridge } from "./app-signin.js";
 import { brokerScopeAllows, DOT_TOOL_GATEWAY_VERSION, dotWorkspacePath } from "@space/contracts";
 import { controlExecuteSchema, controlOperationSchema } from "@space/contracts";
@@ -149,12 +150,10 @@ import { agentFileMaxBytes } from "./cli-agent-files.js";
 import {
   createBrowserEvidenceCapture
 } from "./browser-evidence.js";
-import { withHostBoundBrowserInput } from "./browser-input-client.js";
+import { messageKeepingBrowserHostClient, withHostBoundBrowserInput } from "./browser-input-client.js";
 import { withBrowserPageLifecycle } from "./browser-page-lifecycle.js";
-import {
-  createConfiguredBrowserSessionManager,
-  type BrowserSessionManagerWithHostHealth
-} from "./browser-host-proxy.js";
+import { paneBrowserRelaunch, relaunchIfUnresponsive, withUnresponsiveReport } from "./browser-unresponsive.js";
+import { createConfiguredBrowserSessionManager, type BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
 import {
   codexDirectParityCodexHome,
   isCodexDirectParityRuntime,
@@ -223,7 +222,6 @@ import {
   checkCliRuntimeCredential,
   createAgentRuntimeRegistryCache,
   createCliRuntimeRegistryCache,
-  discoverAgentRuntimes,
   findRuntime,
   isCliRuntimeTerminalLaunchable,
   observeCliRuntimeCredential
@@ -274,8 +272,7 @@ import { createCodexThreadSettings } from "./codex-thread-settings.js";
 import { agentTokenSecret } from "./cli-browser-bridge.js";
 import { CliTerminalControlRequiredError, parseCliHttpControlAuthority } from "./cli-http-control.js";
 import { registerRoomAgentRoutes } from "./room-agent-routes.js";
-import { isSemanticMemoryReady, searchDefaultSpaceMemory } from "./memory-search.js";
-export { type SpaceMemorySearcher } from "./memory-search.js";
+import { isSemanticMemoryReady } from "./memory-search.js";
 import {
   paneArtifactUploadMaxBytes
 } from "./upload-media.js";
@@ -285,7 +282,6 @@ import { type DashboardAgentsSample } from "./room-routes.js";
 import { createOwnedResourceGuard } from "./owned-resource-access.js";
 import { createRoomShareAccess } from "./room-shares.js";
 import { createCliUserHosting } from "./cli-user-hosts.js";
-import { buildSharedCliTaskContext } from "./codex-history-titles.js";
 export { buildSharedCliTaskContext } from "./codex-history-titles.js";
 import { isLoopbackRequest, requestIpForLog, requestRoutePath, requestSessionUser, secureTokenMatches } from "./request-helpers.js";
 import { createCliModelsExecutors } from "./cli-models-executors.js";
@@ -419,8 +415,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       artifactRoot: config.browserEvidenceArtifactRoot,
       timeoutMs: config.browserEvidenceTimeoutMs, targetOrigin: config.browserEvidenceTargetOrigin
     });
-  const browserSessionManager: BrowserSessionManagerWithHostHealth = withBrowserPageLifecycle(options.browserSessionManager ??
-    withHostBoundBrowserInput(createConfiguredBrowserSessionManager({ store, config }), config), store);
+  const browserSessionManager: BrowserSessionManagerWithHostHealth = withUnresponsiveReport(withBrowserPageLifecycle(options.browserSessionManager ??
+    withHostBoundBrowserInput(createConfiguredBrowserSessionManager({ store, config, client: messageKeepingBrowserHostClient(config) }), config), store),
+  { store, note: () => nousRef.current?.paneReports.note, warn: (error) => app.log.warn({ err: error }, "browser unresponsive report failed"), relaunch: (paneIds) => relaunchBrowsers(paneIds) });
   const memoryEmbeddingGenerator =
     options.memoryEmbeddingGenerator ?? ((input: string, purpose: "document" | "query" = "document") =>
       createMemoryEmbedding(config, input, { taskType: purpose === "query" ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT" }));
@@ -503,9 +500,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   }) : null;
   const autoRouteFactsLoader = config.codexAppServerHome
     ? createAutoRouteFactsLoader({ codexHome: config.codexAppServerHome, priceCatalogPath: config.modelPriceCatalogPath ?? null }) : null;
-  const spaceAgentAdapter =
-    options.spaceAgentAdapter ??
-    createSpaceAgentAdapter({
+  const spaceAgentAdapter = options.spaceAgentAdapter ?? createSpaceAgentAdapter({
       store,
       config,
       codexTurnStarter,
@@ -546,6 +541,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         return (await dotHomeRepository!.settings(owner)).defaultDotId ?? (await dotsRepository!.list(owner))[0]?.dotId ?? null;
       },
       autoRouteFacts: autoRouteFactsLoader ?? undefined,
+      codexQuotaReason: async () => codexPoolQuotaReason((await resolveGatewayAdminService().listAccounts()).data, Date.now()),
       readDotAttachments: async ({ dotId, artifacts }) => {
         const inputs = artifacts.flatMap((artifact) => {
           try {
@@ -621,7 +617,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   };
   const storageReadinessChecker = options.storageReadinessChecker ?? collectStorageReadiness;
   const spaceCapabilityInventoryCollector = options.spaceCapabilityInventoryCollector ?? collectDefaultSpaceCapabilityInventory;
-  const spaceMemorySearcher = options.spaceMemorySearcher ?? ((q) => searchDefaultSpaceMemory(q, decisionsService));
   const canonicalMemory =
     options.canonicalMemory ??
     createCanonicalSpaceMemoryBridge({
@@ -656,10 +651,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   // (cli-task-history-wiring.ts). The CLI terminal manager is created below, so the registry gets a reader that looks it up when it runs.
   const { codexParity, unifiedCliTaskRegistry, agentSessionHistoryService } = createCliTaskHistory({ options, config, store,
     cliTerminalManager: { activeSessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions) } });
+  // Closures below read these three before their single assignment further down, so they cannot be const at the declaration.
+  /* eslint-disable prefer-const */
   let cliRuntimeRegistryCache!: ReturnType<typeof createAgentRuntimeRegistryCache>;
   let setupConnections!: SetupConnectionsService;
 
   let taskTitleInputNotifier: ((paneId: string) => void) | undefined;
+  /* eslint-enable prefer-const */
   const roomShares = createRoomShareAccess({ store, enabled: config.multiUserEnabled === true });
   const cliUserHosting = createCliUserHosting({ store, config, paneById: (paneId) => getPaneById(store, paneId) });
   // Non-null only on public installs: their core image has no CLIs (OpenCode included), so CLI calls go to the CLI container.
@@ -885,10 +883,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     options.setupConnections ??
     createSetupConnectionsService({
       store,
-      discoverRuntimes: async () => {
-        cliRuntimeRegistryCache.invalidate();
-        return cliRuntimeRegistryCache.read();
-      },
+      discoverRuntimes: () => cliRuntimeRegistryCache.readFresh(),
+      readRuntimes: () => cliRuntimeRegistryCache.read(),
       observeCredential: (runtime) => observeCliRuntimeCredential(runtime, publicCredentialHost?.execute),
       checkCredential: (runtime) => checkCliRuntimeCredential(runtime, publicCredentialHost?.execute)
     });
@@ -1003,7 +999,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const taskTitleRepository = store instanceof PostgresSpaceStore && config.databaseUrl
     ? PostgresTaskTitleRepository.fromConnectionString(config.databaseUrl)
     : new InMemoryTaskTitleRepository();
-  const taskTitleProviders = new TaskTitleProviders({store,config,repository:taskTitleRepository,opencodeStateRoot:options.opencodeStateRoot,usage:toolbarUsageProvider});
+  const taskTitleProviders = new TaskTitleProviders({store,config,repository:taskTitleRepository,usage:toolbarUsageProvider});
   const taskTitles = new TaskTitleService({summaryAllowed:cliUserHosting.ownerModels.pane,nativeTitles:new NativeTaskTitles(async session=>(await cliTerminalManager.activeSessionPids([session])).get(session.sessionId)??null),store,repository:taskTitleRepository,providers:taskTitleProviders,codex:codexParity,eventBus,opencodeStateRoot:options.opencodeStateRoot,
     harness:{read:(paneId,sessionId)=>readHarnessTaskTitle(config,paneId,sessionId),rename:async(paneId,sessionId,title)=>renameHarnessTaskTitle(config,paneId,sessionId,title,(await store.getPane(paneId)).taskMetadata?.harnessSessionId)},
     resolveCodexThread:session=>resolvePaneCodexThreadId({store,session,traceId:makeSpaceId("trace"),findThreadId:options.findCodexThreadId}),
@@ -1092,11 +1088,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       roomTaskEvaluatorKey = null;
     }
   }
-  const roomTaskEvaluator = options.roomTaskEvaluator ?? createRoomTaskEvaluator({
-    baseUrl: config.codexLbBaseUrl,
-    apiKey: roomTaskEvaluatorKey,
-    model: "gpt-5.6-sol"
-  });
+  const roomTaskEvaluator = options.roomTaskEvaluator ?? createRoomTaskEvaluator({ baseUrl: config.codexLbBaseUrl, apiKey: roomTaskEvaluatorKey, model: "gpt-5.6-sol" });
   const { resumePaneCliTask } = createPaneCliResume({ store, eventBus, config, cliTerminalManager, cliRuntimeVisibility, unifiedCliTaskRegistry, visibleCliRuntimeIds,
     codexParity, codexHistoryAccessCoordinator, resolveCliSessionAccountProfile, findCodexThreadId: options.findCodexThreadId,
     // assertRoomAccess is declared further down; it is called only at request time.
@@ -1116,7 +1108,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     readPaneNativeModelSettings, applyNativePaneModel, readPaneOpenCodeModelSettings, applyOpenCodePaneSelection, resolveOpenCodeServerControl, resumePaneCliTask,
     waitForCodexThreadSettings });
 
-  const assertPaneMayClose = marketingPaneCloseGuard(() => marketingCopilotService, (roomId) => roomOwner(roomId)); // operator rule 9/11
+  const marketingCloseGuard = marketingPaneCloseGuard(() => marketingCopilotService, (roomId) => roomOwner(roomId)); // operator rule 9/11
+  const operatorWaitGuard = operatorWaitCloseGuard({ store, roomOwner: (roomId) => roomOwner(roomId), list: (owner, query) => notificationService.list(owner, query) }); // 15/11 nous_msg:9f70dbbe
+  const assertPaneMayClose = async (pane: Pane) => { await marketingCloseGuard(pane); await operatorWaitGuard(pane); };
   const roomActionExecutor = options.roomActionExecutor ??
     createRoomActionExecutor({
       store, assertPaneMayClose,
@@ -1204,7 +1198,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       [csrfHeaderName]:createCsrfToken(token,auth.sessionSecret)!,...(payload===undefined?{}:{"content-type":"application/json"})},
       ...(payload===undefined?{}:{payload:JSON.stringify(payload)})});
     const body = response.headers["content-type"]?.includes("application/json") ? response.json() : {content:response.body.slice(0,100_000),mimeType:response.headers["content-type"]};
-    if(response.statusCode>=400)throw new SpaceConflictError(apiErrorText(body,response.statusCode));
+    if(response.statusCode>=400)throw new SpaceConflictError(internalErrorText(method,url,response)??apiErrorText(body,response.statusCode));
     return body;
   }
   const controlCliRooms = new WeakMap<FastifyRequest,string>();
@@ -1238,7 +1232,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const control = await readOpenCodeServerControl(session.sessionId, options.opencodeStateRoot ?? opencodeDirectParityRoot + "/state");
       if (!control) return null;
       if (!control.directory && session.cwd) control.directory = session.cwd;
-      const busy = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId, session.cwd ?? undefined).catch(() => false);
+      const busy = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId).catch(() => false);
       return { busy, messages: () => fetchOpenCodeSessionMessages(control, control.nativeSessionId, 2).catch(() => []) };
     },
     geminiTurns: async session => {
@@ -1258,7 +1252,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const roomAgentSnapshots = createRoomAgentSnapshotProvider({ listPanes: async roomId => store.listPanes(roomId), readActivity: readDashboardAgents });
   // A rail-tab CLI pane's headless start and whether its session record has a live host process (Space Control and Nous).
   const railCli = { start: (pane: Pane) => roomPaneController.start(pane, makeSpaceId("trace")), hostRunning: async (session: PaneCliSession) => (await cliTerminalManager.activeSessionPids([session]).catch(() => new Map())).has(session.sessionId), gatewayAccount: async (pane: Pane) => pane.terminalRuntimeId && !(await claudeDirectPins.has(pane.id)) ? gatewayCliAccounts.newPaneProfileId(pane.terminalRuntimeId) : null };
-  const spaceControl = createSpaceControl({store,repository:controlRepository,controller:roomPaneController,decisionsService,phase:2,pluginsService,queueDisconnected:true,
+  const spaceControl = createSpaceControl({store,repository:controlRepository,controller:roomPaneController,decisionsService,phase:2,pluginsService,queueDisconnected:true, relaunchHungBrowser: (pane) => relaunchIfUnresponsive(browserSessionManager, pane, relaunchBrowsers),
     startRailCli: (actor, pane) => startPaneCli({ invoke: controlInvoke, store, ...railCli }, actor.id, pane), promptNotReady: async (pane) => cliPromptNotReady(cliTerminalManager, await store.getActivePaneCliSession(pane.id)),
     captureScreenshot: process.env.VITEST === "true" ? undefined : createControlScreenshotCapture({ instance: config.instance, cookieName, sessionSecret: auth.sessionSecret, artifactRoot: config.browserEvidenceArtifactRoot, resolveUser: controlUser, createArtifact: async (input) => store.createArtifact(input),
       fitTerminals: createCaptureTerminalFit({ getRoom: async (id) => store.getRoom(id), getPane: async (id) => store.getPane(id),
@@ -1275,7 +1269,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     // A future adapter must use the existing authenticated evidence boundary.
     closePane: async(actor,pane,traceId)=>{
       if(pane.mode==="CHAT"){
-        try{await roomPaneController.interrupt(pane,traceId);}catch(e){}
+        try{await roomPaneController.interrupt(pane,traceId);}catch{/* a failed interrupt does not stop the close */}
       }
       return controlInvoke(actor.id,"DELETE",`/api/panes/${encodeURIComponent(pane.id)}`);
     },
@@ -1374,7 +1368,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const nousRef: { current: NousWiring | null } = { current: null };
   const notificationService = createNotificationService({
     repository: notificationsRepository, eventBus, translate: createCardTranslator({ baseUrl: config.codexLbBaseUrl, keyFile: config.codexLbKeyFile }),
-    nous: { held: async (owner) => Boolean(await nousRef.current?.active(owner)), raised: (notification) => nousRef.current?.notification(notification), holdsCopilotQuestions: async (owner) => Boolean(await nousRef.current?.holdsCopilotQuestions(owner)), coversApproval: async (owner) => Boolean(await nousRef.current?.coversApproval(owner)), autoAnswer: async (record) => await nousRef.current?.autoAnswer(record) ?? null, recommend: async (card) => await nousRef.current?.recommend(card) ?? null, annotate: async (owner, text) => await nousRef.current?.fileMentions.annotate(owner, text) ?? text, agentFiles: async (owner) => await nousRef.current?.fileMentions.files(owner) ?? [] },
+    nous: { held: async (owner) => Boolean(await nousRef.current?.active(owner)), raised: (notification) => nousRef.current?.notification(notification), holdsCopilotQuestions: async (owner) => Boolean(await nousRef.current?.holdsCopilotQuestions(owner)), coversApproval: async (owner) => Boolean(await nousRef.current?.coversApproval(owner)), autoAnswer: async (record) => await nousRef.current?.autoAnswer(record) ?? null, recommend: async (card) => await nousRef.current?.recommend(card) ?? null, principlePick: async (card) => await nousRef.current?.principlePick(card) ?? null, annotate: async (owner, text) => await nousRef.current?.fileMentions.annotate(owner, text) ?? text, agentFiles: async (owner) => await nousRef.current?.fileMentions.files(owner) ?? [] },
     userSettings: (userId) => Promise.resolve(store.getUserSettings(userId)),
     recordRoomEvent: (input) => Promise.resolve(store.recordRoomEvent(input)),
     push: options.notificationPush !== undefined ? options.notificationPush : await loadFcmServiceAccount(config.fcmServiceAccountFile).then((account) => account && createFcmSender(account)),
@@ -1385,7 +1379,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const stopMorningBatches = notificationService.startMorningBatches(async () => [...new Set((await store.listRooms()).map((room) => room.ownerUserId).filter((id): id is string => Boolean(id)))]);
   const roomOwner = async (roomId: string): Promise<string | null> => (await Promise.resolve(store.getRoom(roomId)).catch(() => null))?.ownerUserId ?? null;
   const stopNotificationProducers = roomWatchdog.bridge(eventBus, (input) => notificationService.raise(input));
-  const roomAgentEventRouting = createRoomAgentEventRouting({ roomOwner, nousActive: async (owner) => Boolean(await nousRef.current?.active(owner)),
+  const roomAgentEventRouting = createRoomAgentEventRouting({ roomOwner, nousActive: async (owner, roomId) => !(await Promise.resolve(store.getRoom(roomId)).catch(() => null))?.nousExcluded && Boolean(await nousRef.current?.active(owner)), question: async (event) => { if (!nousRef.current) throw new Error("Nous is not wired yet."); return nousRef.current.paneReports.questionText(event); },
     notifications: notificationService, telegram: roomAgentMonitorRepository, events: roomAgentMonitorRepository, log: { warn: (details, message) => app.log.warn(details, message) } });
   const roomAgentMonitorOnEvent = async (event: RoomAgentEvent) => {
     nousRef.current?.monitorEvent(event);
@@ -1493,7 +1487,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       outcome: telemetry.outcome,
       reason: telemetry.reason
     });
-    app.log.info(
+    // A control renewal is a heartbeat (one line every few seconds per attached pane): counted above, logged only at debug.
+    app.log[telemetry.event === "CONTROL_RENEWED" ? "debug" : "info"](
       {
         event: "cli_terminal.lifecycle",
         source: "SERVER",
@@ -1811,7 +1806,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if(panePrincipal===false)return sendApiError(reply,403,"CONTROL_SESSION_INACTIVE","The agent's pane is no longer eligible for control.");
       if(panePrincipal===null){
         const session=await store.getPaneCliSession(claims.cliSessionId);
-        if(!session||!supportsControlRuntime({mode:"TERMINAL",terminalRuntimeId:session.runtimeId} as any)||!session.isActive||session.purpose!=="NORMAL"||session.roomId!==claims.roomId||session.paneId!==claims.paneId||["EXITED","ERROR"].includes(session.status))
+        if(!session||!supportsControlRuntime({mode:"TERMINAL",terminalRuntimeId:session.runtimeId} as Pane)||!session.isActive||session.purpose!=="NORMAL"||session.roomId!==claims.roomId||session.paneId!==claims.paneId||["EXITED","ERROR"].includes(session.status))
           return sendApiError(reply,403,"CONTROL_SESSION_INACTIVE","CLI session is no longer eligible for control.");
       }
       const actorId=((await controlRepository.get("grant","shared",claims.roomId))?.value as {actorId?:string}|undefined)?.actorId;
@@ -1852,6 +1847,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     }
   });
+  if (tenancyEnabled()) app.addHook("preHandler", requestTenantHook(store)); // K1 M6: the signed-in user's users.tenant_id (session-access.ts).
 
   registerApiErrorHandler(app);
 
@@ -1868,7 +1864,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   // Sign-in support, auth and admin user routes; then the user's own tool routes, the shared gateway repository's close between them (user-routes-wiring.ts).
   const { googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef } = registerSignInRoutes(app, { store, config, auth,
-    browserSessionManager, persistRevocation, userRoleCache, nousRef, connectorCrypto, eventBus, notificationService, sessionAccess, defaultRouteRateLimitOptions, mailCopilotGoogle: options.mailCopilotGoogle, mailCopilotGmailFetch: options.mailCopilotGmailFetch, passwordResetMail: options.passwordResetMail, mailCampaigns: () => mailCampaignsService, vaultKeptKey: vaultKeptKeyReader(() => vault, connectorCrypto, "instance-link") });
+    browserSessionManager, persistRevocation, userRoleCache, nousRef, connectorCrypto, eventBus, notificationService, sessionAccess, defaultRouteRateLimitOptions, mailCopilotGoogle: options.mailCopilotGoogle, mailCopilotGmailFetch: options.mailCopilotGmailFetch, passwordResetMail: options.passwordResetMail, mailCampaigns: () => mailCampaignsService, vaultKeptKey: vaultKeptKeyReader(() => vault, connectorCrypto, "instance-link"), linkVault: () => vault, linkGateway: { service: resolveGatewayAdminService, keyByHash: (keyHash) => gatewayRepositoryFor().findApiKeyByHash(keyHash) } });
 
   app.addHook("onClose", async () => { await sharedGatewayRepository?.dispose(); });
   const { gatewayAdminService, reopenClosedPane, taskBrief } = registerUserToolRoutes(app, { store, config, options, auth, nousRef, cliTerminalManager, cliRuntimeVisibility,
@@ -1878,7 +1874,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   // The room routes: room access, the room list, shares, proof rooms with their controllers, room management and its account stores (room-routes-wiring.ts).
   const { assertRoomAccess, youtubePlaybackStore, youtubeAccountStore, browserAccountStore } = registerRoomRoutes(app, { config, store, options, eventBus,
     activityLogService, browserSessionManager, cliRuntimeRegistryCache, cliRuntimeVisibility, cliTerminalManager, codexCliModeDefaultsService, controlQuota,
-    controlSend, defaultRouteRateLimitOptions, inspectRoomCli, readDashboardAgents, roomPaneController, roomShares, visibleCliRuntimeIds, assertPaneMayClose });
+    controlSend, defaultRouteRateLimitOptions, inspectRoomCli, readDashboardAgents, roomPaneController, roomShares, visibleCliRuntimeIds, assertPaneMayClose, notifications: notificationsRepository,
+    nousNotice: async (owner, key, line) => { await nousRef.current?.service.notice(owner, key, line, undefined, { soonMs: 5_000 }); } });
 
   // The CLI routes: egress and VPN, runtimes, agent tools, release trains, CLI accounts, pane CLI and managed plans (cli-routes-wiring.ts).
   const { readDeepSeekHarnessMaintenanceStatus, readCliVpnApplications, openCliLogin } = registerCliRoutes(app, { store, config, options, auth, eventBus, observability,
@@ -1908,6 +1905,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     railCli, controlInvoke, toolbarUsageProvider, reopenClosedPane, taskBrief,
     // The Vault is registered just below; Mail Campaigns reads its repository only per send.
     vault: { get repository() { return vault.repository; } } });
+  const relaunchBrowsers = paneBrowserRelaunch({ store, roomOwner, accounts: paneBrowserAccounts, log: (details, message) => app.log.warn(details, message) });
   // The browser routes: the Vault, the CLI browser bridge and CDP proxy, the census, pane browsers and their frames, agent actions, pane CLI sessions (browser-routes-wiring.ts).
   const { vault } = registerBrowserRoutes(app, { config, auth, store, eventBus, options, browserSessionManager, cliRuntimeVisibility, browserControlActivity, nousRef,
     defaultRouteRateLimitOptions, connectorCrypto, effectivePaneProfileId, paneBrowserAccounts, marketingCopilotService, freelanceCopilotService, designService, videoService,
@@ -1988,7 +1986,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   // The conversation routes: the agent pane, voice, Live, the Research Council, Nous (set on nousRef), voice attachments, turns, events (conversation-routes-wiring.ts).
   registerConversationRoutes(app, { config, store, eventBus, auth, options, nousRef, browserSessionManager, cliTerminalManager, cliRuntimeVisibility, roomPaneController,
     commandRoomCli, assertRoomAccess, readDashboardAgents, roomAgentService, roomAgentTools, roomCoordination, roomAgentMonitorRepository, controlRepository, controlInvoke,
-    railCli, vault, paneBrowserAccounts, browserControlActivity, cliUpdateAllRunner, codexResetCreditsService, telegramPersistence, telegramSecrets, youtubePlaybackStore, notificationService, claudeUsageProvider,
+    railCli, vault, paneBrowserAccounts, browserControlActivity, cliUpdateAllRunner, telegramPersistence, telegramSecrets, youtubePlaybackStore, notificationService, claudeUsageProvider,
     canonicalMemory, apiProviderAccountsProvider, healthMonitor, systemServicesProvider, systemAnalyticsService, gatewayAdminService, jobApplyRepository, jobApplyService,
     mailCopilotService, marketingCopilotService, freelanceCopilotService, designService, appStudioService, videoService, securityCopilotService, monitoringCopilotService,
     mailCampaignsService, spaceAgentAdapter, codexHistoryAccessCoordinator, setupOwnerVoiceRuntime, setupVoiceCredentials, decisionsService, turnStarter, codexTurnStarter,

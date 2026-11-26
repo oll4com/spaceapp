@@ -71,13 +71,15 @@ describe("Space notifications", () => {
     expect(list.notifications[0]).toMatchObject({ id: first.id, body: "Login wall" });
     // Read, then acknowledge; a watchdog alert is URGENT and counts again.
     expect((await app.inject({ method: "POST", url: `/api/notifications/${first.id}/read`, headers })).json().notification.status).toBe("READ");
-    expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total).toBe(0);
+    // A needs-you card the operator opened stays pending until handled (operator 16/11): only the ack drops it.
+    expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total).toBe(1);
     // One record by id (a native notification tap): the owner's own, never another id.
     const byId = await app.inject({ method: "GET", url: `/api/notifications/${encodeURIComponent(pending.latest[0].id)}`, headers });
     expect(byId.statusCode).toBe(200);
     expect(byId.json().notification.id).toBe(pending.latest[0].id);
     expect((await app.inject({ method: "GET", url: "/api/notifications/notification%3Anope00000000", headers })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: `/api/notifications/${first.id}/ack`, headers })).json().notification).toMatchObject({ status: "ACKED", ackedAt: expect.any(String) });
+    expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total).toBe(0);
     eventBus.publish(eventSchema.parse({ id: makeSpaceId("event"), roomId: room.id, paneId: null, turnId: null, workflowId: null, traceId: "trace:watchdog-3", type: "ROOM_WATCHDOG_ALERT",
       message: "Pane host unreachable", payload: {}, createdAt: new Date().toISOString() }));
     await vi.waitFor(async () => expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().latest[0]).toMatchObject({ source: "ROOM_WATCHDOG", severity: "URGENT" }));
@@ -85,6 +87,46 @@ describe("Space notifications", () => {
     expect((await app.inject({ method: "GET", url: "/api/notifications?status=OPEN", headers })).json().notifications).toEqual([]);
     expect((await app.inject({ method: "POST", url: "/api/notifications/notification:missing00/read", headers })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: "/api/notifications/pending" })).statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("Mark all read empties the unread count, opened needs-you cards included, until a card is raised again (operator 17/11 14:04 BKK)", async () => {
+    const { app, headers, room, notificationsRepository } = await fixture();
+    const card = { ownerUserId: room.ownerUserId, roomId: room.id, paneId: null, source: "NOUS" as const, kind: "NEEDS_YOU", severity: "ATTENTION" as const, title: "This plan waits on you",
+      body: "Sign the contract", link: { roomId: room.id }, dedupeKey: "nous:plan:clipboard:p1", payload: { planId: "clipboard:p1" } };
+    const { notification } = await notificationsRepository.raise(card);
+    await notificationsRepository.setStatus(room.ownerUserId, notification.id, "READ");
+    const total = async () => (await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total;
+    expect(await total()).toBe(1);
+    expect((await app.inject({ method: "POST", url: "/api/notifications/read-all", headers })).json().read).toBe(1);
+    expect(await total()).toBe(0);
+    // Not answered: it still waits in Needs you.
+    expect((await app.inject({ method: "GET", url: "/api/notifications?status=NEEDS_YOU", headers })).json().notifications).toHaveLength(1);
+    // The same card refreshed unchanged stays read; a new text, or a reopen, counts again.
+    await notificationsRepository.raise(card);
+    expect(await total()).toBe(0);
+    await notificationsRepository.raise({ ...card, body: "Sign the contract and the NDA" });
+    expect(await total()).toBe(1);
+    await app.inject({ method: "POST", url: "/api/notifications/read-all", headers });
+    expect(await total()).toBe(0);
+    await notificationsRepository.raise({ ...card, reopen: true });
+    expect(await total()).toBe(1);
+    await app.close();
+  });
+
+  it("a needs-you card's own Mark read takes it off the counts, never acknowledged; other cards stay unread (operator 17/11 14:04 BKK: 5 cards ACKED unanswered)", async () => {
+    const { app, headers, room, notificationsRepository } = await fixture();
+    const card = { ownerUserId: room.ownerUserId, roomId: room.id, paneId: null, source: "NOUS" as const, kind: "NEEDS_YOU", severity: "ATTENTION" as const, title: "This plan waits on you",
+      body: "Sign the contract", link: { roomId: room.id }, dedupeKey: "nous:plan:clipboard:p1", payload: { planId: "clipboard:p1" } };
+    const { notification } = await notificationsRepository.raise(card);
+    await notificationsRepository.raise({ ...card, dedupeKey: "nous:plan:clipboard:p2", payload: { planId: "clipboard:p2" } });
+    const total = async () => (await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total;
+    expect(await total()).toBe(2);
+    expect((await app.inject({ method: "POST", url: "/api/notifications/read-all", headers, payload: { id: notification.id } })).json().read).toBe(1);
+    expect(await total()).toBe(1);
+    expect(await notificationsRepository.get(room.ownerUserId, notification.id)).toMatchObject({ status: "READ", ackedAt: null, payload: { markedReadAt: expect.any(String) } });
+    expect((await app.inject({ method: "GET", url: "/api/notifications?status=NEEDS_YOU", headers })).json().notifications).toHaveLength(2);
+    expect((await app.inject({ method: "POST", url: "/api/notifications/read-all", headers, payload: { id: "not-an-id" } })).statusCode).toBe(422);
     await app.close();
   });
 
@@ -138,8 +180,11 @@ describe("Space notifications", () => {
       store.updatePane(pane.id, { isClosed: true, status: "CLOSED" });
       eventBus.publish(eventSchema.parse({ id: makeSpaceId("event"), roomId: room.id, paneId: pane.id, turnId: null, workflowId: null, traceId: "trace:close", type: "PANE_CLOSED",
         message: "Pane closed.", payload: {}, createdAt: new Date().toISOString() }));
-      await vi.waitFor(async () => expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total).toBe(0));
-      expect((await app.inject({ method: "GET", url: "/api/notifications?status=ALL", headers })).json().notifications[0]).toMatchObject({ source: "BROWSER_HANDOFF", status: "RESOLVED" });
+      // 15/11 nous_msg:9f70dbbe: the handoff card resolves, its ask moves to one closed-pane card that stays in Needs you.
+      await vi.waitFor(async () => expect((await app.inject({ method: "GET", url: "/api/notifications?status=ALL", headers })).json().notifications).toEqual(expect.arrayContaining([
+        expect.objectContaining({ source: "BROWSER_HANDOFF", status: "RESOLVED" }),
+        expect.objectContaining({ source: "NOUS", kind: "NEEDS_HANDS", status: "OPEN", dedupeKey: `nous:closed-pane:${pane.id}` })])));
+      expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total).toBe(1);
     } finally {
       await app.close();
     }
@@ -168,6 +213,46 @@ describe("Space notifications", () => {
     expect(await service.resolve("user:1", "mail:1")).toBe(0);
   });
 
+  it("17/11: a resolved card says what closed it, and a newer Nous card asking a closed pane's carried ask closes the carry (newest stays)", async () => {
+    const repository = new InMemorySpaceNotificationsRepository();
+    const service = createNotificationService({ repository, eventBus: new SpaceEventBus(), userSettings: async () => ({ notifications: null }) as never,
+      recordRoomEvent: async (input) => eventSchema.parse({ ...input, id: makeSpaceId("event"), workflowId: null, createdAt: new Date().toISOString() }) });
+    const card = { ownerUserId: "user:1", roomId: null, paneId: null, source: "NOUS" as const, kind: "NEEDS_HANDS", severity: "ATTENTION" as const, link: {}, payload: {}, telegram: null };
+    const asked = await service.raise({ ...card, title: "Ask", body: "Do the thing now", dedupeKey: "agent:needs-you:pane:j" });
+    await service.resolve("user:1", "agent:needs-you:pane:j", "the pane's done report named it");
+    expect((await service.get("user:1", asked.id))).toMatchObject({ status: "RESOLVED", payload: { resolvedReason: "the pane's done report named it" } });
+    const carry = await service.raise({ ...card, title: "New Admin key before 17/11", body: "From a computer: make a new Admin key SpaceApp in Claude Console and put it in the Vault. The current one expires 17/11.\n\nChecked first: none",
+      dedupeKey: "nous:closed-pane:pane:k" });
+    const other = await service.raise({ ...card, title: "Mail reply", body: "Reply to Anna about the invoice from last week", dedupeKey: "nous:closed-pane:pane:m" });
+    await new Promise((done) => setTimeout(done, 5));
+    const newer = await service.raise({ ...card, title: "Admin key expires today", body: "From your computer: make a new Admin key SpaceApp in Claude Console and put it in the Vault. The current one expires today 17/11.\n\nChecked first: the Vault",
+      dedupeKey: "nous:plan:clipboard:x" });
+    expect(await service.get("user:1", carry.id)).toMatchObject({ status: "RESOLVED", payload: { resolvedReason: `a newer card asks the same (${newer.id})` } });
+    expect(await service.get("user:1", other.id)).toMatchObject({ status: "OPEN" });
+    expect(await service.get("user:1", newer.id)).toMatchObject({ status: "OPEN" });
+  });
+
+  it("pushes an appointment reminder as a calendar alert: its own channel, the appointment as the title, the join link and «Μπες»", async () => {
+    atBangkokMidday();
+    const repository = new InMemorySpaceNotificationsRepository(undefined, true);
+    const sent: Array<Record<string, string>> = [];
+    const service = createNotificationService({ repository, eventBus: new SpaceEventBus(), userSettings: async () => ({ notifications: null }) as never,
+      push: { send: async (_token, data) => { sent.push(data); return "SENT"; } },
+      recordRoomEvent: async (input) => eventSchema.parse({ ...input, id: makeSpaceId("event"), workflowId: null, createdAt: new Date().toISOString() }) });
+    await repository.registerPushDevice("user:1", { token: `phone:${"a".repeat(40)}`, platform: "ANDROID", appVersion: "0.6.1" });
+    await service.raise({ ownerUserId: "user:1", roomId: null, paneId: null, source: "NOUS", kind: "APPOINTMENT_REMINDER", severity: "ATTENTION",
+      title: "Reminder: Lexroom at 20:15, in 30 min", body: "Interview", link: {}, dedupeKey: "appointment:1:30",
+      payload: { appointmentId: "appointment:1", startsAt: "2026-10-12T13:15:00.000Z", joinUrl: "https://meet.example/x" }, telegram: null });
+    await service.raise({ ownerUserId: "user:1", roomId: null, paneId: null, source: "NOUS", kind: "APPOINTMENT_REMINDER", severity: "ATTENTION",
+      title: "Reminder: Bank at 20:15, in 30 min", body: "", link: {}, dedupeKey: "appointment:2:30", payload: { joinUrl: "javascript:alert(1)" }, telegram: null });
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[0]).toMatchObject({ kind: "APPOINTMENT_REMINDER", channelId: "appointments", title: "Reminder: Lexroom at 20:15, in 30 min", startsAt: "2026-10-12T13:15:00.000Z",
+      joinUrl: "https://meet.example/x", categoryId: "appointment" });
+    expect(sent[1]).toMatchObject({ channelId: "appointments", title: "Reminder: Bank at 20:15, in 30 min" });
+    expect(sent[1]).not.toHaveProperty("joinUrl");
+    expect(sent[1]).not.toHaveProperty("categoryId");
+  });
+
   it("pushes what needs the user to the owner's registered devices, per the push switches, and disables a token FCM no longer knows", async () => {
     atBangkokMidday();
     const sent: Array<{ token: string; data: Record<string, string> }> = [];
@@ -185,7 +270,8 @@ describe("Space notifications", () => {
     const test = (await app.inject({ method: "POST", url: "/api/notifications/test", headers })).json().notification;
     await vi.waitFor(() => expect(sent).toHaveLength(2));
     expect(sent.find((entry) => entry.token === phone)?.data).toEqual({ notificationId: test.id, title: "Space: Test notification", body: expect.stringContaining("This is how Space notifies you"),
-      message: expect.stringContaining("This is how Space notifies you"), source: "SYSTEM" });
+      message: expect.stringContaining("This is how Space notifies you"), source: "SYSTEM", channelId: "spaceapp",
+      threadId: expect.stringMatching(/^thread:/), tag: expect.stringMatching(/^thread:/) });
     await vi.waitFor(async () => expect(await notificationsRepository.pushTokens(test.ownerUserId)).toEqual([phone]));
     // Push off for SYSTEM: the next test notification is not pushed.
     await app.inject({ method: "PATCH", url: "/api/user-settings", headers, payload: { notifications: { channels: {}, perSource: { SYSTEM: { push: false } } } } });
@@ -265,7 +351,9 @@ describe("Space notifications", () => {
     const card = await raise("MAIL_RECEIVED", "mail:3", { heldForNous: { until: new Date(Date.now() + 60_000).toISOString() } });
     expect(await to(card.id)).toEqual(["every"]);
     sent.length = 0;
-    expect((await service.releaseHeldForNous("user:1", card.id))?.payload.releasedFromNous).toBeTruthy();
+    const released = await service.releaseHeldForNous("user:1", card.id);
+    expect(released?.payload.releasedFromNous).toBeTruthy();
+    expect(released?.payload).not.toHaveProperty("heldForNous");
     expect(await to(card.id)).toEqual(["every", "usual"]);
   });
 

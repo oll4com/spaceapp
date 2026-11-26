@@ -19,6 +19,13 @@ if (process.env.SPACE_INSTANCE === "dev" && (port === 4911 || !process.env.SPACE
 const proxyPrefixes = ["/api", "/plugins", "/healthz", "/livez", "/readyz", "/version"];
 const proxyPaths = new Set(["/plugins/events", "/logout"]);
 const retryableProxyMethods = new Set(["GET", "HEAD", "OPTIONS"]);
+// Speed audit 21/11: dedicated keep-alive pool for loopback API proxying and bounded RAM cache for immutable hashed /assets/*.
+// No maxSockets cap: event streams hold their socket for hours, and a capped pool queued every later /api request forever (21–22/11 outages).
+const apiAgent = new http.Agent({ keepAlive: true, keepAliveMsecs: 30_000, maxFreeSockets: 32 });
+const IMMUTABLE_ASSET_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const IMMUTABLE_ASSET_INLINE_MAX_BYTES = 2 * 1024 * 1024;
+const immutableAssetCache = new Map();
+let immutableAssetCacheBytes = 0;
 const configuredRecoveryWindowMs = Number.parseInt(process.env.SPACE_API_RECOVERY_WINDOW_MS ?? "10000", 10);
 const apiRecoveryWindowMs = process.env.NODE_ENV === "test" && Number.isFinite(configuredRecoveryWindowMs) && configuredRecoveryWindowMs > 0
   ? configuredRecoveryWindowMs
@@ -145,6 +152,7 @@ function probeApiReadiness(timeoutMs) {
     };
     const probe = http.request(
       {
+        agent: apiAgent,
         protocol: apiOrigin.protocol,
         hostname: apiOrigin.hostname,
         port: apiOrigin.port,
@@ -220,6 +228,7 @@ function proxyRequest(request, response, requestUrl) {
     let upstreamResponded = false;
     const upstream = http.request(
       {
+        agent: apiAgent,
         protocol: apiOrigin.protocol,
         hostname: apiOrigin.hostname,
         port: apiOrigin.port,
@@ -482,6 +491,97 @@ function matchesIfNoneMatch(headerValue, etag) {
   });
 }
 
+function readImmutableVariant(variantPath, encoding) {
+  if (!existsSync(variantPath)) return null;
+  const stats = statSync(variantPath);
+  if (!stats.isFile()) return null;
+  const body = stats.size <= IMMUTABLE_ASSET_INLINE_MAX_BYTES ? readFileSync(variantPath) : null;
+  return { encoding, path: variantPath, size: stats.size, body };
+}
+
+function getImmutableAssetEntry(filePath) {
+  const cached = immutableAssetCache.get(filePath);
+  if (cached) {
+    // Refresh LRU order.
+    immutableAssetCache.delete(filePath);
+    immutableAssetCache.set(filePath, cached);
+    return cached;
+  }
+  if (!existsSync(filePath)) return null;
+  const rawStats = statSync(filePath);
+  if (!rawStats.isFile()) return null;
+  const raw = { encoding: null, path: filePath, size: rawStats.size, body: rawStats.size <= IMMUTABLE_ASSET_INLINE_MAX_BYTES ? readFileSync(filePath) : null };
+  const br = readImmutableVariant(`${filePath}.br`, "br");
+  const gz = readImmutableVariant(`${filePath}.gz`, "gzip");
+  const entryBytes = (raw.body?.byteLength ?? 0) + (br?.body?.byteLength ?? 0) + (gz?.body?.byteLength ?? 0);
+  const entry = {
+    contentType: contentTypes.get(path.extname(filePath)) ?? "application/octet-stream",
+    raw,
+    br,
+    gz,
+    bytes: entryBytes
+  };
+  // Technical memory bound: keep hot immutable asset buffers under IMMUTABLE_ASSET_CACHE_MAX_BYTES; evicted entries re-read from disk.
+  if (entryBytes <= IMMUTABLE_ASSET_CACHE_MAX_BYTES) {
+    while (immutableAssetCacheBytes + entryBytes > IMMUTABLE_ASSET_CACHE_MAX_BYTES && immutableAssetCache.size > 0) {
+      const [oldestKey, oldest] = immutableAssetCache.entries().next().value;
+      immutableAssetCache.delete(oldestKey);
+      immutableAssetCacheBytes -= oldest.bytes;
+    }
+    immutableAssetCache.set(filePath, entry);
+    immutableAssetCacheBytes += entryBytes;
+  }
+  return entry;
+}
+
+function selectCachedVariant(request, entry) {
+  const candidates = [];
+  if (entry.br) candidates.push({ variant: entry.br, priority: 2, quality: acceptedEncodingQuality(request.headers["accept-encoding"], "br") });
+  if (entry.gz) candidates.push({ variant: entry.gz, priority: 1, quality: acceptedEncodingQuality(request.headers["accept-encoding"], "gzip") });
+  const chosen = candidates
+    .filter((candidate) => candidate.quality > 0)
+    .sort((left, right) => right.quality - left.quality || right.priority - left.priority)[0];
+  return chosen ? chosen.variant : entry.raw;
+}
+
+function serveImmutableAsset(request, response, entry) {
+  const variant = selectCachedVariant(request, entry);
+  const headers = {
+    "cache-control": immutableAssetCacheControl,
+    "content-length": variant.size,
+    "content-type": entry.contentType,
+    "vary": "Accept-Encoding",
+    "x-content-type-options": "nosniff"
+  };
+  if (variant.encoding) headers["content-encoding"] = variant.encoding;
+  response.writeHead(200, headers);
+  if (request.method === "HEAD") {
+    response.end();
+    return;
+  }
+  if (variant.body) {
+    response.end(variant.body);
+    return;
+  }
+  pipeFile(variant.path, response, () => {
+    // A path-only entry outlives its file (deploy swapped assets): forget it so the next request answers 404.
+    if (immutableAssetCache.get(entry.raw.path) === entry) {
+      immutableAssetCache.delete(entry.raw.path);
+      immutableAssetCacheBytes -= entry.bytes;
+    }
+  });
+}
+
+// An unhandled stream error (file gone or unreadable after the headers) would crash the whole web server.
+function pipeFile(filePath, response, onError) {
+  createReadStream(filePath)
+    .on("error", () => {
+      onError?.();
+      response.destroy();
+    })
+    .pipe(response);
+}
+
 function serveFile(request, response, filePath) {
   const variant = selectStaticVariant(request, filePath);
   const stats = statSync(variant.path);
@@ -515,7 +615,7 @@ function serveFile(request, response, filePath) {
     response.end();
     return;
   }
-  createReadStream(variant.path).pipe(response);
+  pipeFile(variant.path, response);
 }
 
 const server = http.createServer((request, response) => {
@@ -563,25 +663,30 @@ const server = http.createServer((request, response) => {
     return;
   }
   const staticPath = resolveStaticPath(requestUrl.pathname);
-  const staticFileExists = staticPath && existsSync(staticPath) && statSync(staticPath).isFile();
-  if (isAssetPath(requestUrl.pathname) && (!staticFileExists || !isResolvedAssetPath(staticPath))) {
-    sendJson(
-      response,
-      404,
-      {
-        error: {
-          code: "ASSET_NOT_FOUND",
-          message: "The requested Space asset does not exist.",
-          requestId: "space-web"
+  if (isAssetPath(requestUrl.pathname)) {
+    const assetEntry = staticPath && isResolvedAssetPath(staticPath) ? getImmutableAssetEntry(staticPath) : null;
+    if (!assetEntry) {
+      sendJson(
+        response,
+        404,
+        {
+          error: {
+            code: "ASSET_NOT_FOUND",
+            message: "The requested Space asset does not exist.",
+            requestId: "space-web"
+          }
+        },
+        {
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff"
         }
-      },
-      {
-        "cache-control": "no-store",
-        "x-content-type-options": "nosniff"
-      }
-    );
+      );
+      return;
+    }
+    serveImmutableAsset(request, response, assetEntry);
     return;
   }
+  const staticFileExists = staticPath && existsSync(staticPath) && statSync(staticPath).isFile();
 
   const filePath = staticFileExists ? staticPath : path.join(distDir, "index.html");
 

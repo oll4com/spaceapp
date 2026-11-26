@@ -251,7 +251,8 @@ export class DatabasesService {
       throw new Error("Cannot modify internal SpaceApp database connection.");
     }
 
-    const existing = await this.getConnection(id, user, mode);
+    // Ownership/existence check: throws before any update for a connection this user cannot see.
+    await this.getConnection(id, user, mode);
     const updates: string[] = [];
     const values: unknown[] = [];
     let pIdx = 1;

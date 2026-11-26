@@ -19,7 +19,7 @@ type SpaceControlPaneActionDeps = {
   spaceAgentAdapter: Pick<SpaceAgentAdapter, "sendMessage">;
   antigravityUsageProvider: () => Promise<AntigravityUsageAccountList>;
   dashboardAgentsCache: { delete(roomId: string): unknown };
-  nousRef: { readonly current: Pick<NousWiring, "service"> | null };
+  nousRef: { readonly current: Pick<NousWiring, "service" | "holdPanePrompt"> | null };
   roomOwner: (roomId: string) => Promise<string | null>;
 } & Pick<ReturnType<typeof createRoomCliControl>, "inspectRoomCli" | "roomCliSession" | "roomCliObservationCache">
   & Pick<ReturnType<typeof createPaneCliModel>, "readPaneCliModelSettings">
@@ -128,6 +128,9 @@ export function createSpaceControlPaneActions(deps: SpaceControlPaneActionDeps) 
       return {sessionId:result.session.binding.sessionId,state:result.session.runStatus,submitted:true};
     }
     if(text.length>20_000)throw new SpaceConflictError("CLI prompts support at most 20,000 characters per turn.");
+    // 15/11 Cleo/Finn: a model change still held for this pane (a CLI starting, a refused switch) goes first; the prompt waits behind it.
+    const held=await nousRef.current?.holdPanePrompt(pane,text);
+    if(held)return {status:"PENDING",submitted:false,heldId:held.id,detail:`Held behind the pane's pending model change (${held.waiting} waiting); it goes once the model is set.`};
     const session=await roomCliSession(pane);
     const control=isOpenCodeDirectParityRuntime(session.runtimeId)?await resolveOpenCodeServerControl(session).catch(()=>null):null;
     if(control){// 2026-10-30 REVIEW (4 sends failed "Live OpenCode model control is unavailable"): a prompt needs no model control; without its server it is typed below.

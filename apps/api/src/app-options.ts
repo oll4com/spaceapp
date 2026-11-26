@@ -94,7 +94,6 @@ import type { ReleasePublishingManager } from "./release-publishing.js";
 import type { MemoryGraphApiService } from "./memory-graph-service.js";
 import type { MemoryConsolidationCoordinator } from "./memory-consolidation-coordinator.js";
 import type { MemoryMutationCoordinator } from "./memory-mutation-coordinator.js";
-import type { SpaceMemorySearcher } from "./memory-search.js";
 import type { SpaceCapabilityInventoryCollector } from "./space-capability-inventory.js";
 import type { SpaceAgentAdapter, SpaceAgentControl } from "./space-agent.js";
 import type { RoomAgentWorkflowCoordinator } from "./room-agent.js";
@@ -104,6 +103,7 @@ import type { RoomPlanInventoryProvider } from "./room-plan-inventory.js";
 import type { RoomTaskEvaluator } from "./room-task-evaluator.js";
 import type { TurnStarter } from "./turns.js";
 import type { WorkerReadinessChecker } from "./worker-readiness.js";
+import type { WorkflowTaskFault } from "./trace-workflow-faults.js";
 import type { DecisionsService } from "./decisions-service.js";
 import type { FirstSetupAppOptions } from "./setup-wiring.js";
 
@@ -156,9 +156,10 @@ export interface CreateAppOptions extends FirstSetupAppOptions, CliAccountProfil
   codexAgentControl?: SpaceAgentControl | null;
   codexCliModeDefaultsService?: CodexCliModeDefaultsService;
   workerReadinessChecker?: WorkerReadinessChecker;
+  /** The trace lookup's Temporal workflow-task fault reader (EXT-G-5); defaults to temporalWorkflowTaskFaults(config). */
+  workflowTaskFaults?: (workflowIds: string[]) => Promise<WorkflowTaskFault[]>;
   storageReadinessChecker?: () => Promise<StorageReadiness>;
   spaceCapabilityInventoryCollector?: SpaceCapabilityInventoryCollector;
-  spaceMemorySearcher?: SpaceMemorySearcher;
   canonicalMemory?: CanonicalMemoryBridge;
   memoryGraphService?: MemoryGraphApiService;
   memoryConsolidationCoordinator?: MemoryConsolidationCoordinator;
@@ -228,7 +229,7 @@ export interface CreateAppOptions extends FirstSetupAppOptions, CliAccountProfil
   mailCopilotRepository?: MailCopilotRepository;
   vault?: VaultOverrides; marketingCopilotRepository?: MarketingCopilotWiring["repository"]; marketingCopilotKickoff?: MarketingCopilotWiring["kickoff"]; marketingCopilotScheduler?: boolean; marketingCopilotMetrics?: boolean; freelanceCopilotRepository?: FreelanceCopilotWiring["repository"]; freelanceCopilotKickoff?: FreelanceCopilotWiring["kickoff"]; freelanceCopilotScheduler?: boolean; freelanceCopilotMailboxes?: FreelanceCopilotWiring["mailboxes"];
   /** Tests replace the Design pane's repository, gateway client, template renderer and CLI kickoff. */
-  designRepository?: DesignWiring["repository"]; designGenerate?: DesignWiring["generate"]; designRender?: DesignWiring["render"]; designKickoff?: DesignWiring["kickoff"]; appStudioRepository?: AppStudioWiring["repository"]; appStudioKickoff?: AppStudioWiring["kickoff"]; securityCopilotRepository?: SecurityCopilotWiring["repository"]; securityCopilotFeeds?: SecurityCopilotWiring["feeds"]; securityCopilotKickoff?: SecurityCopilotWiring["kickoff"]; securityCopilotWatch?: boolean; monitoringCopilotRepository?: MonitoringCopilotWiring["repository"]; monitoringCopilotCollector?: MonitoringCopilotWiring["collector"]; monitoringCopilotKickoff?: MonitoringCopilotWiring["kickoff"]; monitoringCopilotWatch?: boolean; mailCampaignsRepository?: import("@space/db").MailCampaignsRepository; mailCampaignsSmtp?: import("./mail-campaigns/transports.js").MailTransportDeps["smtp"]; mailCampaignsSender?: boolean; videoRepository?: VideoWiring["repository"]; videoEngine?: VideoWiring["engine"]; videoKickoff?: VideoWiring["kickoff"];
+  designRepository?: DesignWiring["repository"]; designGenerate?: DesignWiring["generate"]; designRender?: DesignWiring["render"]; designKickoff?: DesignWiring["kickoff"]; appStudioRepository?: AppStudioWiring["repository"]; appStudioKickoff?: AppStudioWiring["kickoff"]; securityCopilotRepository?: SecurityCopilotWiring["repository"]; securityCopilotFeeds?: SecurityCopilotWiring["feeds"]; securityCopilotKickoff?: SecurityCopilotWiring["kickoff"]; securityCopilotWatch?: boolean; monitoringCopilotRepository?: MonitoringCopilotWiring["repository"]; monitoringCopilotCollector?: MonitoringCopilotWiring["collector"]; monitoringCopilotKickoff?: MonitoringCopilotWiring["kickoff"]; monitoringCopilotWatch?: boolean; mailCampaignsRepository?: import("@space/db").MailCampaignsRepository; mailCampaignsSmtp?: import("./mail-campaigns/transports.js").MailTransportDeps["smtp"]; mailCampaignsSender?: boolean; mailOpenLookup?: typeof import("./mail-campaigns/open-tracking.js").lookupIp; videoRepository?: VideoWiring["repository"]; videoEngine?: VideoWiring["engine"]; videoKickoff?: VideoWiring["kickoff"];
   /** Tests replace the pane CLI kickoff of a Mail Copilot run. */
   mailCopilotKickoff?: (pane: Pane, run: MailCopilotRun) => Promise<void>;
   /** false: no Gmail history polling (tests call the sync themselves). */

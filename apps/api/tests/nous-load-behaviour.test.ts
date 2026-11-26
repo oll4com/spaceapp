@@ -25,7 +25,7 @@ describe("Nous under load", () => {
 
   it("holds new work while BUSY and delivers it once CALM, while an answer, a stop and a close go at once", async () => {
     const state = { level: "BUSY" as NousLoadLevel };
-    const roomTool = vi.fn(async (name: string, _args?: Record<string, unknown>) => ({ ok: true, display: `ran ${name}`, result: `ran ${name}` }));
+    const roomTool = vi.fn<(name: string, args?: Record<string, unknown>) => Promise<{ ok: boolean; display: string; result: string }>>(async (name) => ({ ok: true, display: `ran ${name}`, result: `ran ${name}` }));
     const notices: string[] = [];
     const held = createHeldDispatch({ repository: new InMemoryControlRepository(), level: async () => state.level,
       deliver: (item) => roomTool("send_to_pane", { panes: [item.paneId], text: item.text, when: "after_turn" }),

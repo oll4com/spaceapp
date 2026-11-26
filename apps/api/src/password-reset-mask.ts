@@ -1,10 +1,11 @@
 // Forgot password by mail (Nous 13/11, condition 3): agents read the owner's mailboxes (Mail Copilot, Nous mail tools, Job Copilot,
 // Dots), so every mail read path hides a SpaceApp reset link's token, as with one-time codes. `=3D` is the same link quoted-printable.
-const RESET_TOKEN = /(password-reset(?:=3D|=))[A-Za-z0-9_-]{16,}/g;
+// The step-up link (#space-step-up=, operator 17/11) is hidden the same way, though it works only in the session that asked.
+const RESET_TOKEN = /((?:password-reset|space-step-up)(?:=3D|=))[A-Za-z0-9_-]{16,}/g;
 const HIDDEN = "[hidden: a SpaceApp password reset link works only for the owner, in their own browser]";
 
 export function maskPasswordResetLinks(text: string): string {
-  return text.includes("password-reset") ? text.replace(RESET_TOKEN, `$1${HIDDEN}`) : text;
+  return text.includes("password-reset") || text.includes("space-step-up") ? text.replace(RESET_TOKEN, `$1${HIDDEN}`) : text;
 }
 
 /** A mail provider's JSON answer with every reset token hidden: plain strings, and Gmail's base64url `data`/`raw` bodies. */

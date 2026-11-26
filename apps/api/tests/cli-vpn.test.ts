@@ -417,7 +417,7 @@ describe("CLI VPN API", () => {
   it("reports removed VPN profiles so the UI drops them from the menus", async () => {
     const store = new InMemorySpaceStore();
     const vpnBroker = broker({
-      inspectRuntimes: vi.fn(async (runtimes) => ({
+      inspectRuntimes: vi.fn(async () => ({
         connection: connection({ egressIpv4: "216.128.13.68" }),
         selectedRoute: "direct" as const,
         directEgressIpv4: "78.46.128.16",

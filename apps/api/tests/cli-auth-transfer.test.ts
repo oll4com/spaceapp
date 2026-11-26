@@ -224,7 +224,7 @@ describe("Nous on a public install (operator decision 2026-10-27, B+C3)", () => 
     await new Promise<void>((resolve) => agent.listen(join(root, "credentials.sock"), resolve));
     const host = createPublicCredentialHost({ publicDistribution: true, cliEnabled: true, cliHostSocketPath: join(root, "host.sock") })!;
     const free = { system: "You are Nous.", prompt: "What waits?", mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp",
-      mcpToken: "tok_0123456789abcdefghij", maxTurns: 40, shell: false, stream: true };
+      mcpToken: "tok_0123456789abcdefghij", maxTurns: 40, shell: false, stream: true }; // synthetic MCP test token; gitleaks:allow
     const request = { model: "claude-sonnet-5-5", effort: "medium", ...free, fallbackModel: null };
     try {
       const events: unknown[] = [];
@@ -233,7 +233,7 @@ describe("Nous on a public install (operator decision 2026-10-27, B+C3)", () => 
       expect(events).toEqual([{ start: true }, { text: "All " }, { text: "moving." }]);
       // The request names the wrapper and its action; a null fallback model is left out (the CLI container refuses an empty one).
       expect(requests[0]).toEqual({ command: "claude-vscode-parity", action: "agent-tools", input: JSON.stringify({ model: "claude-sonnet-5-5", effort: "medium", system: "You are Nous.",
-        prompt: "What waits?", mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp", mcpToken: "tok_0123456789abcdefghij", maxTurns: 40, shell: false, stream: true }) });
+        prompt: "What waits?", mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp", mcpToken: "tok_0123456789abcdefghij", maxTurns: 40, shell: false, stream: true }) }); // synthetic MCP test token; gitleaks:allow
       // The operator's Stop: the connection ends, so the CLI container stops the turn.
       mode = "hold";
       const stop = new AbortController();

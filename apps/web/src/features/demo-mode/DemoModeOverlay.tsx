@@ -89,8 +89,8 @@ export function DemoModeOverlay({ isOpen, onClose, onActionPreview }: DemoModeOv
       });
 
       // Position the floating card intelligently relative to target
-      let cardLeft = (vw - CARD_WIDTH) / 2;
-      let cardTop = (vh - CARD_HEIGHT_ESTIMATE) / 2;
+      let cardLeft: number;
+      let cardTop: number;
 
       const placement = currentStep.placement || (rect.left < vw / 2 ? "right" : "left");
 

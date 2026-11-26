@@ -15,7 +15,42 @@
 .nous-done-ticket { padding-block: 0.5rem; }
 .nous-done-ticket h4 { margin: 0; font-size: 0.85rem; }
 
-/* Nous › Updates (R73): an unread entry is marked at its side; the title reads first. */
-.nous-update[data-unread] { box-shadow: inset 3px 0 0 var(--dock-accent); padding-inline-start: 0.75rem; }
-.nous-update-title { margin: 0.6rem 0 0; color: var(--dock-text); font-size: 0.9rem; line-height: 1.45; }
-.nous-update > .dock-kit-button + .dock-kit-button { margin-inline-start: 0.5rem; }
+/* Nous › «Εισερχόμενα» v2 (plan clipboard:aE7U1J_gU9OV): one Thread per card, its state on the left edge; a closed one dims. */
+/* The Inbox scrolls in the shared .nous-decisions column (nous.css); a grid here would stretch its rows to the stage height. */
+.nous-decisions.nous-inbox { gap: 0.6rem; min-width: 0; }
+.nous-inbox-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.nous-inbox-done-all { margin-inline-start: auto; }
+.nous-inbox-group-title { margin: 0.6rem 0 0; color: var(--dock-muted); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+/* Plan JD8EbQgQdRls: copilot and system alerts, one fold at the end of Updates; its cards keep the list's gap. */
+.nous-inbox-alerts[open] { display: grid; gap: 0.6rem; }
+.nous-inbox-alerts > summary { min-height: 32px; padding-block: 0.4rem; color: var(--dock-muted); font-size: 0.8rem; cursor: pointer; }
+.inbox-thread-report { margin: 0; font-size: 0.85rem; line-height: 1.45; white-space: pre-line; }
+.inbox-thread { display: grid; gap: 0.45rem; min-width: 0; padding: 0.55rem 0.7rem; border: 1px solid var(--dock-border); border-left: 3px solid var(--dock-muted); border-radius: 6px; overflow-wrap: anywhere; }
+.inbox-thread.is-operator { border-left-color: var(--dock-warning); }
+.inbox-thread.is-new { border-left-color: var(--dock-accent); }
+.inbox-thread.is-working { border-left-color: var(--dock-success); }
+.inbox-thread.is-closed { opacity: 0.6; }
+.inbox-thread.is-urgent { border-color: var(--dock-danger); }
+.inbox-thread-head { display: grid; gap: 0.2rem; width: 100%; min-height: 44px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; }
+.inbox-thread-head:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 2px; }
+.inbox-thread-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.3rem 0.8rem; color: var(--dock-muted); font-size: 0.75rem; }
+.inbox-thread-title { color: var(--dock-text); font-weight: 600; line-height: 1.4; }
+.inbox-thread-now { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--dock-muted); font-size: 0.8rem; line-height: 1.45; }
+/* Plan LkwKdOOh2mXK step 1: what Nous decides, one line each, folded under In progress. */
+.nous-inbox-held { color: var(--dock-muted); font-size: 0.8rem; }
+.nous-inbox-held > summary { min-height: 32px; padding-block: 0.4rem; cursor: pointer; }
+.nous-inbox-held ul { display: grid; gap: 0.2rem; margin: 0; padding: 0; list-style: none; }
+.nous-inbox-held li { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.nous-inbox-held li > span { color: var(--dock-text); font-weight: 600; }
+.inbox-thread-progress { width: 100%; height: 4px; accent-color: var(--dock-success); }
+.inbox-thread-error { color: var(--dock-danger); font-size: 0.8rem; }
+.inbox-ask { display: grid; gap: 0.4rem; padding-block: 0.3rem; }
+.inbox-ask-title { margin: 0; font-weight: 600; }
+.inbox-ask-body { margin: 0; white-space: pre-wrap; line-height: 1.5; }
+.inbox-ask-actions, .inbox-thread-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.inbox-ask-answer { display: flex; gap: 0.4rem; }
+.inbox-ask-answer input { flex: 1; min-width: 0; min-height: 44px; }
+.inbox-thread-timeline { display: grid; gap: 0.35rem; padding-top: 0.45rem; border-top: 1px solid var(--dock-border); }
+.inbox-thread-timeline ol { display: grid; gap: 0.35rem; margin: 0; padding: 0; list-style: none; }
+.inbox-event { display: grid; gap: 0.1rem; font-size: 0.8rem; line-height: 1.45; }
+.inbox-event-meta { color: var(--dock-muted); font-size: 0.7rem; }

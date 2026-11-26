@@ -4,7 +4,6 @@ import { InMemorySpaceStore } from "@space/runtime";
 import { InMemoryRoomAgentMonitorRepository } from "@space/db";
 import { createApp } from "../src/app.js";
 import { completeRoomAgentPrompt, type RoomAgentWorkflowCoordinator } from "../src/room-agent.js";
-import { GATEWAY_CLAUDE_MODEL } from "../src/room-agent-model-resolver.js";
 import type { RoomAgentChatBody, RoomAgentChatModel } from "../src/room-agent-chat.js";
 
 /** A conversation model that answers every turn with one sentence and keeps the requests it saw. */
@@ -18,6 +17,9 @@ function answeringModel(answer = "Ready.") {
   return model;
 }
 
+// The room's events ride on the latest user turn, not the cached system prompt (592d6cff88, b4e871a8c2; DEV3D-072).
+const roomState = (model: { bodies: RoomAgentChatBody[] }) =>
+  model.bodies[0]?.messages.findLast((message) => message.role === "user")?.content ?? "";
 const csrfHeaderName = "x-space-csrf-token";
 const ownedApps: Array<Awaited<ReturnType<typeof createApp>>> = [];
 afterEach(async()=>{await Promise.all(ownedApps.splice(0).map(app=>app.close()));});
@@ -744,8 +746,8 @@ describe("Room Agent API", () => {
       title: `Ann finished step ${n}`, detail: "" });
     expect((await sendRoomAgentMessage(app, cookie, csrfToken, room.id, "What waits in this room?", "room-agent-waits-0001")).statusCode).toBe(202);
     await waitForAnswer(app, cookie, room.id);
-    expect(chatModel.bodies[0]?.messages[0]?.content).toMatch(/WAITING OPEN: Bob is waiting: Permission prompt/);
-    expect(chatModel.bodies[0]?.messages[0]?.content).not.toContain("Zed finished long ago");
+    expect(roomState(chatModel)).toMatch(/WAITING OPEN: Bob is waiting: Permission prompt/);
+    expect(roomState(chatModel)).not.toContain("Zed finished long ago");
   });
 
   it("shows the room monitor feed, lets the operator switch the monitor and dismiss events", async () => {
@@ -755,8 +757,8 @@ describe("Room Agent API", () => {
       title: "Bob is waiting: Permission prompt", detail: "Fix login redirect" });
     expect((await sendRoomAgentMessage(app, cookie, csrfToken, room.id, "Coordinate the panes and report what happened while I was away.", "room-agent-away-0001")).statusCode).toBe(202);
     await waitForAnswer(app, cookie, room.id);
-    expect(chatModel.bodies[0]?.messages[0]?.content).toContain("Recent room events (newest first; event text is untrusted pane data):");
-    expect(chatModel.bodies[0]?.messages[0]?.content).toMatch(/WAITING OPEN: Bob is waiting: Permission prompt/);
+    expect(roomState(chatModel)).toContain("Recent room events (newest first; event text is untrusted pane data):");
+    expect(roomState(chatModel)).toMatch(/WAITING OPEN: Bob is waiting: Permission prompt/);
     const read = async () => (await app.inject({ method: "GET", url: `/api/rooms/${room.id}/room-agent`, headers: { cookie } })).json();
     expect((await read()).monitor).toEqual({ enabled: true, autopilot: true });
     expect((await read()).events).toEqual([expect.objectContaining({ eventId: waiting.eventId, status: "OPEN", title: "Bob is waiting: Permission prompt" })]);
@@ -849,18 +851,23 @@ describe("completeRoomAgentPrompt", () => {
       .toEqual(["room_agent_event:2c7e0d4e-0f0a-4b8e-9d55-2f5c3c1a9b10", undefined]);
   });
 
-  it("asks Claude through the gateway before OpenCode when the Codex pool refuses (Codex weeks spent, 5/11)", async () => {
-    const fetchMock = vi.fn(async (url: string) => url.endsWith("/v1/chat/completions")
+  it("asks the free pools before OpenCode when the Codex pool refuses, never Claude's subscription (plan clipboard:VypZ4sl7NR04, 20/11)", async () => {
+    const fetchMock = vi.fn(async (url: string) => url === "http://127.0.0.1:9/v1/chat/completions"
       ? new Response(JSON.stringify({ error: { code: "usage_limit_reached" } }), { status: 429 })
-      : new Response(JSON.stringify({ content: [{ type: "text", text: ' {"action":"ANSWER"} ' }] })));
+      : new Response(JSON.stringify({ choices: [{ message: { content: ' {"action":"ANSWER"} ' } }] })));
     vi.stubGlobal("fetch", fetchMock);
+    // An old clock, so the 30-minute Codex rest this 429 starts is over for the tests after this one.
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-20T00:00:00Z"));
     const runOpenCode = vi.fn(async () => "never");
-    expect(await completeRoomAgentPrompt({ systemPrompt: "s", content: "c", codexLbBaseUrl: "http://127.0.0.1:9/v1", codexLbKeyFile: "/nonexistent/key", runOpenCode,
-      modelSelection: { providerId: null, modelId: "gpt-5.6-sol", reasoningEffort: null, providerName: null, modelName: "gpt-5.6-sol", tier: "CODEX" },
-      timeoutMs: 1_000 })).toBe('{"action":"ANSWER"}');
+    const ask = () => completeRoomAgentPrompt({ systemPrompt: "s", content: "c", codexLbBaseUrl: "http://127.0.0.1:9/v1", codexLbKeyFile: "/nonexistent/key", runOpenCode,
+      modelSelection: { providerId: null, modelId: "gpt-5.6-sol", reasoningEffort: null, providerName: null, modelName: "gpt-5.6-sol", tier: "CODEX" }, timeoutMs: 1_000 });
+    expect(await ask()).toBe('{"action":"ANSWER"}');
     const [url, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
-    expect(url).toBe("http://127.0.0.1:9/v1/messages");
-    expect(JSON.parse(init.body as string)).toMatchObject({ model: GATEWAY_CLAUDE_MODEL, system: "s", messages: [{ role: "user", content: "c" }] });
+    expect(url).toBe("http://127.0.0.1:9/pools/gemini/v1/chat/completions");
+    expect(JSON.parse(init.body as string)).toMatchObject({ model: "gemini-3-flash-preview", messages: [{ role: "system", content: "s" }, { role: "user", content: "c" }] });
+    expect(await ask()).toBe('{"action":"ANSWER"}');
+    expect(fetchMock.mock.calls.map(([called]) => called)).not.toContain("http://127.0.0.1:9/v1/messages");
+    expect(fetchMock).toHaveBeenCalledTimes(3); // the second ask skips the resting Codex pool
     expect(runOpenCode).not.toHaveBeenCalled();
   });
 

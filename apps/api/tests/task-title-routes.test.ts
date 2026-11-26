@@ -171,10 +171,10 @@ describe("queued task title API", () => {
         title: "Native menu repair",
         firstUserMessage: "Repair workspace navigation",
       })),
-    } as any;
+    };
     const f = await fixture(
       {
-        codexParity: native,
+        codexParity: native as never,
         findCodexThreadId: async () => "019f40f1-4a7e-7c41-b137-41705dad3b98",
       },
       "cli:codex",
@@ -202,10 +202,10 @@ describe("queued task title API", () => {
         title: "Repair workspace navigation",
         firstUserMessage: "Repair workspace navigation",
       })),
-    } as any;
+    };
     const f = await fixture(
       {
-        codexParity: native,
+        codexParity: native as never,
         findCodexThreadId: async () => "019f40f1-4a7e-7c41-b137-41705dad3b98",
       },
       "cli:codex",

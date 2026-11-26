@@ -3,7 +3,6 @@ import { join } from "node:path";
 import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fastify";
 import {
   generateNativeOpenCodeTitle,
-  nativeOpenCodeModelCatalog,
   resolveNativeOpenCodeRuntime,
 } from "./task-title-opencode.js";
 import { createDecisionsService } from "./decisions-service.js";
@@ -28,6 +27,7 @@ import { BASELINE_MODEL_ID, CLAUDE_BENCHMARK_MODELS, CODEX_LB_BASE_URL, PROVIDER
 import { ArenaBenchmarkRunner, ArenaRunError, isArenaModelId, type ArenaContestantInput } from "./asteroids-arena/runner.js";
 import { createArenaFileStore, isArenaRunId, leaderboardView, type ArenaStore } from "./asteroids-arena/store.js";
 import { loadOpenRouterBenchmarkModels, requestOpenRouterDoctrine } from "./openrouter-benchmark-models.js";
+import { loadOpenCodeBenchmarkModels } from "./opencode-benchmark-models.js";
 import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
@@ -89,6 +89,8 @@ async function loadAntigravityModels(): Promise<Array<{ id: string; displayName:
 
 export { CODEX_LB_BASE_URL, codexAuthHeaders, getCodexApiKey };
 
+type CodexModelRow = { id?: unknown; slug?: unknown; visibility?: unknown; display_name?: unknown; name?: unknown; metadata?: { display_name?: unknown } };
+
 async function loadCodexModels(traceId?: string): Promise<Array<{ id: string; displayName: string; providerId: string; status: string }>> {
   // 1. Try the live Codex catalog in Space Gateway
   try {
@@ -97,8 +99,8 @@ async function loadCodexModels(traceId?: string): Promise<Array<{ id: string; di
     const res = await fetch(`${CODEX_LB_BASE_URL}/v1/models`, { signal: controller.signal, headers: { ...await codexAuthHeaders(), ...gatewayRequestIdHeader(traceId) } });
     clearTimeout(timer);
     if (res.ok) {
-      const data = (await res.json()) as any;
-      const list = (data.data || data.models || (Array.isArray(data) ? data : [])) as any[];
+      const data = (await res.json()) as { data?: CodexModelRow[]; models?: CodexModelRow[] } | CodexModelRow[];
+      const list = Array.isArray(data) ? data : (data.data || data.models || []);
       const models = list
         .filter((m) => m && m.visibility !== "hide" && (m.id || m.slug))
         .map((m) => {
@@ -113,13 +115,13 @@ async function loadCodexModels(traceId?: string): Promise<Array<{ id: string; di
         });
       if (models.length > 0) return models;
     }
-  } catch {}
+  } catch { /* gateway catalog unreachable: try the local cache */ }
 
   // 2. Fallback to ~/.codex/models_cache.json
   try {
     const raw = await readFile(CODEX_MODELS_CACHE_FILE, "utf8");
-    const parsed = JSON.parse(raw) as any;
-    const list = (Array.isArray(parsed) ? parsed : parsed.models ?? []) as any[];
+    const parsed = JSON.parse(raw) as { models?: CodexModelRow[] } | CodexModelRow[];
+    const list = Array.isArray(parsed) ? parsed : parsed.models ?? [];
     const models = list
       .filter((m) => m && m.visibility !== "hide" && (m.slug || m.id))
       .map((m) => {
@@ -133,7 +135,7 @@ async function loadCodexModels(traceId?: string): Promise<Array<{ id: string; di
         };
       });
     if (models.length > 0) return models;
-  } catch {}
+  } catch { /* no readable cache: use the verified fleet */ }
 
   // 3. Fallback to verified Codex model fleet
   return [
@@ -224,7 +226,7 @@ function doctrineFromModelJson(
   const lead = Number(parsed.leadAiming);
   const pref = String(parsed.targetPreference ?? "");
   const validPrefs = ["nearest", "threat", "rocks", "enemies"] as const;
-  const targetPref = validPrefs.includes(pref as any) ? (pref as TacticalDoctrine["targetPreference"]) : fallback.targetPreference;
+  const targetPref = (validPrefs as readonly string[]).includes(pref) ? (pref as TacticalDoctrine["targetPreference"]) : fallback.targetPreference;
   const rawTactic = typeof parsed.tactic === "string" ? parsed.tactic.trim() : "";
   const tactic =
     rawTactic && /^[\x20-\x7E]{1,60}$/.test(rawTactic) ? `${options.prefix}${rawTactic}` : options.fallbackTacticLine;
@@ -317,7 +319,7 @@ export async function fetchModelTactics(modelId: string, situation?: unknown, tr
           clearTimeout(timer);
 
           if (response.ok) {
-            const data = (await response.json()) as any;
+            const data = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
             const content = data.choices?.[0]?.message?.content;
             const latencyMs = Date.now() - start;
             if (typeof content === "string") {
@@ -364,8 +366,7 @@ export async function fetchModelTactics(modelId: string, situation?: unknown, tr
     }
 
     const bareModelId = modelId.startsWith("opencode/") ? modelId.slice("opencode/".length) : modelId;
-    // Check if the bare ID contains valid pattern
-    if (!/^[A-Za-z0-9._-]{1,200}$/.test(bareModelId)) {
+    if (!isArenaModelId(bareModelId)) {
       fallbackTactic.latencyMs = Date.now() - start;
       return fallbackTactic;
     }
@@ -398,7 +399,7 @@ export async function fetchModelTactics(modelId: string, situation?: unknown, tr
       const lead = Number(parsed.leadAiming);
       const pref = String(parsed.targetPreference ?? "");
       const validPrefs = ["nearest", "threat", "rocks", "enemies"] as const;
-      const targetPref = validPrefs.includes(pref as any) ? (pref as TacticalDoctrine["targetPreference"]) : fallbackTactic.targetPreference;
+      const targetPref = (validPrefs as readonly string[]).includes(pref) ? (pref as TacticalDoctrine["targetPreference"]) : fallbackTactic.targetPreference;
       const rawTactic = typeof parsed.tactic === "string" ? parsed.tactic.trim() : "";
       const tactic = rawTactic && /^[\x20-\x7E]{1,60}$/.test(rawTactic) ? rawTactic : "Tactical doctrine active";
 
@@ -495,7 +496,7 @@ export async function fetchModelLiveDirective(
           "breakaway",
           "full_assault",
         ];
-        const action = validActions.includes(choice as any) ? (choice as LivePilotDirective["action"]) : "lock_and_fire";
+        const action = (validActions as string[]).includes(choice) ? (choice as LivePilotDirective["action"]) : "lock_and_fire";
         const callouts: Record<string, string> = {
           emergency_dash: "⚡ JEV: EVASIVE DASH VECTOR",
           tactical_bomb: "💥 JEV: ANTIMATTER BOMB RELEASE",
@@ -514,7 +515,7 @@ export async function fetchModelLiveDirective(
           latencyMs,
         };
       }
-    } catch {}
+    } catch { /* decision engine unavailable: use the telemetry rule below */ }
   }
 
   const latencyMs = Date.now() - start;
@@ -696,25 +697,23 @@ export function arenaProtocolDescription() {
 
 /** Every model the arena can fly, grouped by provider (also used by the headless runner). */
 export async function loadArenaModelCatalog(traceId?: string): Promise<{ available: boolean; models: BenchmarkModel[]; providers: Array<{ id: string; path: string }> }> {
-  let opencodeModels: BenchmarkModel[] = [];
+  const opencodeModels: BenchmarkModel[] = [];
   try {
-    const command = await resolveNativeOpenCodeRuntime();
-    if (command) {
-      const catalog = await nativeOpenCodeModelCatalog(command);
-      opencodeModels = Object.entries(catalog.providers.find((provider) => provider.id === "opencode")?.models ?? {})
-        .filter(([, raw]) => {
-          const model = raw as { cost?: { input?: number; output?: number }; status?: string };
-          return model.cost?.input === 0 && model.cost?.output === 0 && !model.status?.toLowerCase().includes("deprecated");
-        })
-        .map(([id]) => ({
-          id: `opencode/${id}`,
-          displayName: id,
-          providerId: "opencode",
+    const catalog = await loadOpenCodeBenchmarkModels();
+    for (const [providerId, models] of catalog.entries()) {
+      for (const m of models) {
+        opencodeModels.push({
+          id: m.id,
+          // The Asteroids space-gateway-claude player runs as Claude Code on Claude Max (providers.ts), not on the API-credit key.
+          displayName: providerId === "space-gateway-claude" ? m.name.replace("(API credits)", "(Claude Max)") : m.name,
+          providerId,
           status: "VERIFIED",
-        }))
-        .sort((left, right) => left.id.localeCompare(right.id));
+        });
+      }
     }
-  } catch {}
+  } catch {
+    // OpenCode benchmark catalog is optional if runtime unavailable.
+  }
   const [codexModels, antigravityModels, openRouterModels] = await Promise.all([
     loadCodexModels(traceId),
     loadAntigravityModels(),
@@ -899,7 +898,7 @@ export function registerBenchmarkRoutes(
   app.get("/api/benchmark/leaderboard", rateLimitOptions, async () => {
     const dir = resultsDir();
     let runs: Array<{ runId: string; record: BenchmarkRunRecord }> = [];
-    let available = false;
+    let available: boolean;
     try {
       runs = await loadRunFiles(dir);
       available = true;

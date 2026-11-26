@@ -32,10 +32,10 @@ export function DotEvaluationSection({ dot, roomId, readRuns = api.dotEvalRuns, 
     readRuns(dot.dotId).then((response) => { if (!cancelled) setRuns(response.runs); }).catch((error: unknown) => {
       if (cancelled) return;
       if (error instanceof SpaceApiError && (error.status === 403 || error.status === 503)) setHidden(true);
-      else setMessage(t("Evaluation runs could not be loaded."));
+      else setMessage(uiText(language, "Evaluation runs could not be loaded."));
     });
     return () => { cancelled = true; };
-  }, [dot.dotId, readRuns, revision]);
+  }, [dot.dotId, readRuns, revision, language]);
   useEffect(() => {
     if (!active) return;
     const timer = setInterval(() => setRevision((value) => value + 1), pollMs);

@@ -24,11 +24,10 @@ import { useDotSession } from "./useDotSession.js";
 import { DotHeader, dotStatus } from "./DotHeader.js";
 import { useDotMood } from "./DotAvatar.js";
 import { DotApprovals } from "./DotApprovals.js";
-import { DotGoalDialog, DotGoalStrip } from "./DotGoals.js";
+import { DotGoalDialog } from "./DotGoals.js";
 import { DotFeed } from "./DotFeed.js";
-import { DotInfoCard } from "./DotInfoCard.js";
 import { useDotFeed } from "./useDotFeed.js";
-import { DOTS_UPDATED_EVENT, openDotSettings, requestDotCall } from "./dot-home-events.js";
+import { DOTS_UPDATED_EVENT, openDotSettings } from "./dot-home-events.js";
 import "./dots-chat.css";
 import { readChatSubmission, writeChatSubmission, submissionWasRejected, type ChatSubmission } from "./chat-submission.js";
 import { DEMO_LOCAL_REPLY } from "../../runtime/SpaceRuntime.js";
@@ -52,13 +51,8 @@ import { takePendingThreadOpen } from "../terminal-pane/cli-resume-intent.js";
 import { CLEAN_WORKTREE_PROMPT, PROMOTE_PROMPT } from "../osk-keyboard/cli-shortcuts.js";
 import type { AgentPaneActionAvailability } from "./agent-action-availability.js";
 
-const DOT_PANEL_KEY = "space.dotPane.panel.";
-const WIDE_DOT_PANE = 880;
 // Turns Space starts for the user (approvals, reminders, Goal steps, voice) arrive in the feed as events or tagged messages.
 const serverStartedTurn = /^(?:Approved: |Declined: |Scheduled task “|Goal step \d+ of |\(Voice\) |[^\n]{1,80} reports on the task you delegated )/;
-function readPanelPreference(paneId: string): boolean | null {
-  try { const value = localStorage.getItem(`${DOT_PANEL_KEY}${paneId}`); return value === null ? null : value === "open"; } catch { return null; }
-}
 
 export { AGENT_PANE_ACTION_EVENT, AGENT_PANE_ATTACHMENTS_EVENT } from "./events.js";
 
@@ -310,10 +304,7 @@ export function AgentPane({
   const [dotsError, setDotsError] = useState<string | null>(null);
   const [sessionUnavailable, setSessionUnavailable] = useState(false);
   const [dotGoal, setDotGoal] = useState<DotGoal | null>(null);
-  const [goalRevision, setGoalRevision] = useState(0);
-  const [panelPreference, setPanelPreference] = useState<boolean | null>(() => readPanelPreference(pane.id));
-  const [wide, setWide] = useState(false);
-  const shellRef = useRef<HTMLDivElement | null>(null);
+  const [, setGoalRevision] = useState(0);
   const selectedDot = dots.find(dot => dot.dotId === session?.dotId) ?? null;
   const composerSnapshotRef = useRef<(() => string) | null>(null);
   const loadedDraftDotRef = useRef<string | null>(null);
@@ -341,6 +332,7 @@ export function AgentPane({
   const [unconfirmedSubmission, setUnconfirmedSubmission] = useState(() => readChatSubmission(pane.id));
   const unconfirmedSubmissionRef = useRef(unconfirmedSubmission);
   const voiceInput = useVoiceInput();
+  const cancelVoice = voiceInput.cancel;
   const voiceOwnerId = `chat:${pane.id}`;
   const [homePinned, setHomePinned] = useState(false);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
@@ -476,24 +468,6 @@ export function AgentPane({
       publish: next => publishSession(next, newTaskConfirmed && (!desiredDotId || next.dotId === desiredDotId) && next.binding.sessionId !== session?.binding.sessionId)
     });
   }
-  async function selectDot(dot: DotProfile) {
-    if (dot.dotId === sessionRef.current?.dotId) return;
-    await transitionSession(dot);
-  }
-  // The info card docks beside a wide pane and opens over a narrow one; the user's choice is remembered per pane.
-  useEffect(() => {
-    const node = shellRef.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver((entries) => setWide((entries[0]?.contentRect.width ?? 0) >= WIDE_DOT_PANE));
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-  const panelOpen = panelPreference ?? wide;
-  function togglePanel() {
-    const next = !panelOpen;
-    setPanelPreference(next);
-    try { localStorage.setItem(`${DOT_PANEL_KEY}${pane.id}`, next ? "open" : "closed"); } catch { /* the choice lasts for this view only */ }
-  }
   useEffect(() => {
     onWorkingStateChange?.({ isWorking: isRunning });
   }, [isRunning, onWorkingStateChange]);
@@ -515,8 +489,11 @@ export function AgentPane({
         sessionId: session.binding.sessionId ?? null, roomId: pane.roomId, runId: null, clientRequestId: null, conversationStart: false });
       return item ? [item] : [];
     }) : [];
-    return [...feed.items, ...live].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+    // The chat stays a plain conversation: mail and calendar notices are not shown in it, and New conversation starts an empty one.
+    return [...feed.items.filter((item) => item.kind !== "NOTICE" && (!selectedDot || item.sessionId === (session?.binding.sessionId ?? null))), ...live].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   }, [feed.items, feed.status, session?.messages, session?.threadId, session?.binding.sessionId, session?.dotId, selectedDot?.dotId, pane.roomId, thread]);
+  // Older feed pages only matter while they still hold this conversation's messages.
+  const olderInConversation = Boolean(feed.nextBefore) && (!selectedDot || feed.items[0]?.sessionId === session?.binding.sessionId);
   const dotHeaderStatus = dotStatus(session, sessionUnavailable || dotFlow.transitioning, dotGoal?.sessionId === session?.binding.sessionId ? dotGoal?.status : undefined);
   const dotMood = useDotMood(selectedDot?.appearance.character ?? null, selectedDot?.dotId ?? null, dotHeaderStatus, feedItems);
   const runProgress = useMemo(() => {
@@ -557,7 +534,7 @@ export function AgentPane({
   function handleFeedScroll() {
     handleTranscriptScroll();
     const element = transcriptRef.current;
-    if (element && element.scrollTop < 80 && feed.nextBefore && !feed.loadingOlder) void feed.loadOlder();
+    if (element && element.scrollTop < 80 && olderInConversation && !feed.loadingOlder) void feed.loadOlder();
   }
   useEffect(() => {
     if (!isVisible || pane.isMinimized) { setPermissionsOpen(false); visualCaptureRef.current?.abort(); }
@@ -576,6 +553,7 @@ export function AgentPane({
     ? session.statusReason || t("The Chat run failed.")
     : null;
   const runError = runErrorMessage && runErrorMessage !== dismissedRunError ? runErrorMessage : null;
+  const dotChat = Boolean(session?.dotId);
 
   useEffect(() => {
     if (session?.runStatus !== "ERROR") setDismissedRunError(null);
@@ -835,18 +813,18 @@ export function AgentPane({
     if (isChatEnabled) return;
     setGoalDialogOpen(false);
     setDragActive(false);
-    voiceInput.cancel(voiceOwnerId);
-  }, [isChatEnabled, voiceInput.cancel, voiceOwnerId]);
+    cancelVoice(voiceOwnerId);
+  }, [isChatEnabled, cancelVoice, voiceOwnerId]);
 
   useEffect(() => {
-    if (session?.capabilities.canSend === false) voiceInput.cancel(voiceOwnerId);
-  }, [session?.capabilities.canSend, voiceInput.cancel, voiceOwnerId]);
+    if (session?.capabilities.canSend === false) cancelVoice(voiceOwnerId);
+  }, [session?.capabilities.canSend, cancelVoice, voiceOwnerId]);
 
   useEffect(() => {
-    if (!isVisible || pane.isMinimized) voiceInput.cancel(voiceOwnerId);
-  }, [isVisible, pane.isMinimized, voiceInput.cancel, voiceOwnerId]);
+    if (!isVisible || pane.isMinimized) cancelVoice(voiceOwnerId);
+  }, [isVisible, pane.isMinimized, cancelVoice, voiceOwnerId]);
 
-  useEffect(() => () => voiceInput.cancel(voiceOwnerId), [voiceInput.cancel, voiceOwnerId]);
+  useEffect(() => () => cancelVoice(voiceOwnerId), [cancelVoice, voiceOwnerId]);
 
   useEffect(() => {
     const handleSettingsUpdate = (event: Event) => {
@@ -1515,16 +1493,14 @@ export function AgentPane({
           if (files.length) void uploadFiles(files, "USER_UPLOAD");
         }}
       />
-      <div ref={shellRef} className="codex-chat-shell dots-chat-shell" data-panel={panelOpen ? (wide ? "docked" : "overlay") : "closed"}>
+      <div className="codex-chat-shell dots-chat-shell">
         <div className="dots-home-main">
-        <DotHeader dots={dots} selected={selectedDot} status={dotHeaderStatus} mood={dotMood} blocked={switchBlocked}
-          motionActive={isVisible && !pane.isMinimized} onSelect={dot => void selectDot(dot)} onManage={() => openDotSettings({ dotId: selectedDot?.dotId })}
+        <DotHeader selected={selectedDot} status={dotHeaderStatus} mood={dotMood}
+          motionActive={isVisible && !pane.isMinimized}
           onNewConversation={() => void startNewTask()} newConversationDisabled={switchBlocked || !isChatEnabled}
-          onCall={() => { if (selectedDot) requestDotCall({ roomId: pane.roomId, dotId: selectedDot.dotId, dotName: selectedDot.name, slot: selectedDot.slot }); }}
-          callDisabledReason={selectedDot ? null : "Choose a Dot first."} panelOpen={panelOpen} onTogglePanel={togglePanel} unread={feed.unread}
+          unread={feed.unread}
           actions={[
             { label: "Dot settings", onSelect: () => openDotSettings({ dotId: selectedDot?.dotId }) },
-            { label: "Set a goal", onSelect: () => setGoalDialogOpen(true), disabled: !isChatEnabled || !session },
             { label: "Copy conversation", onSelect: () => void copyChat() },
             ...(dotFlow.transitionError || sessionUnavailable ? [{ label: "Reconnect", onSelect: () => void reconnectChat() }] : [])
           ]} />
@@ -1551,27 +1527,25 @@ export function AgentPane({
             <DotFeed dot={{ name: selectedDot?.name ?? "Dots", character: selectedDot?.appearance.character ?? "astronaut" }} mood={dotMood}
               motion={isVisible && !pane.isMinimized}
               items={feedItems} status={selectedDot ? feed.status : loading ? "loading" : "ready"}
-              hasOlder={Boolean(feed.nextBefore)} loadingOlder={feed.loadingOlder} onLoadOlder={() => void feed.loadOlder()} onRetry={() => void feed.refresh()}
+              hasOlder={olderInConversation} loadingOlder={feed.loadingOlder} onLoadOlder={() => void feed.loadOlder()} onRetry={() => void feed.refresh()}
               running={isRunning ? { status: session?.runStatus ?? "RUNNING", elapsedSeconds, progress: runProgress } : null}
               latestRun={session?.latestRun ?? null} steps={codexSteps} />
           </div>
         {showJumpToLatest ? <button type="button" className="chat-jump-latest" onClick={jumpToLatest}><ArrowUp aria-hidden="true" />{t("Jump to latest")}</button> : null}
         </div>
-        <DotGoalStrip dot={selectedDot} sessionId={session?.dotId && session.dotId === selectedDot?.dotId ? session.binding.sessionId ?? null : null}
-          refreshKey={`${session?.latestRun?.runId ?? ""}:${session?.latestRun?.status ?? ""}:${session?.runStatus ?? ""}:${goalRevision}`}
-          visible={isVisible && !pane.isMinimized} onChanged={setDotGoal} />
         <DotApprovals dot={selectedDot} sessionId={session?.dotId && session.dotId === selectedDot?.dotId ? session.binding.sessionId ?? null : null}
           pending={session?.pendingRequest?.kind === "APPROVAL"} onDecided={() => void loadSession(false)} />
         <div className="codex-notification-stack">
           {session?.binding.status === "BLOCKED" ? (
             <CodexNotification tone="warning" message={session.statusReason} />
           ) : null}
-          {unconfirmedSubmission ? <CodexNotification tone={pending ? "info" : "warning"}
+          {/* The Dot chat shows no "Confirming request" card on every send, nor a card repeating the run error already in the feed (operator 22/11). */}
+          {unconfirmedSubmission && !(dotChat && pending) ? <CodexNotification tone={pending ? "info" : "warning"}
             title={pending ? t("Confirming request") : t("Check submission")}
             message={pending ? t("Confirming your request…") : t("Request confirmation is missing. Check the saved request before sending anything else. This uses the same submission and does not start a second task.")}
             onRetry={checkSubmission} retryLabel={t("Check submission")} retryDisabled={pending} /> : null}
           {notice ? <CodexNotification tone="info" message={notice} onDismiss={() => setNotice(null)} /> : null}
-          {!unconfirmedSubmission && (error || codexError || runError) ? (
+          {!unconfirmedSubmission && (error || codexError || (!dotChat && runError)) ? (
             <CodexNotification
               tone="error"
               message={error ?? codexError ?? runError ?? t("Codex error")}
@@ -1596,7 +1570,8 @@ export function AgentPane({
           ) : null}
         </div>
         <CodexComposer
-          variant={session?.dotId ? "dot" : "full"}
+          // Chat panes open as a Dot, so the loading frame shows the Dot composer, not the legacy full one.
+          variant={!session || session.dotId ? "dot" : "full"}
           snapshotRef={composerSnapshotRef}
           paneTitle={pane.title}
           isVisible={isVisible}
@@ -1610,7 +1585,6 @@ export function AgentPane({
           onClearAttachments={clearAttachments}
           onVoice={toggleVoiceCapture}
           onAddFiles={() => fileInputRef.current?.click()}
-          onSetGoal={() => setGoalDialogOpen(true)}
           onVisualContext={(source) => void attachVisualContext(source)}
           onVoicePrewarm={voiceInput.prewarm}
           voiceActive={voiceOwned && voiceInput.status === "recording"}
@@ -1631,10 +1605,6 @@ export function AgentPane({
         />
         </div>
         </div>
-        {panelOpen && selectedDot ? <DotInfoCard dot={selectedDot} roomId={pane.roomId} visible={isVisible && !pane.isMinimized} working={isRunning}
-          lastActiveAt={feed.lastActiveAt} roomScoped={feed.scope === "ROOM"} sessionId={session?.dotId === selectedDot.dotId ? session.binding.sessionId ?? null : null}
-          onCall={() => requestDotCall({ roomId: pane.roomId, dotId: selectedDot.dotId, dotName: selectedDot.name, slot: selectedDot.slot })} callDisabledReason={null}
-          overlay={!wide} onClose={togglePanel} /> : null}
       </div>
       {permissionsOpen && isVisible && !pane.isMinimized ? (
         <div className="attachment-modal codex-resume-modal" onClick={() => setPermissionsOpen(false)} onKeyDown={event => {

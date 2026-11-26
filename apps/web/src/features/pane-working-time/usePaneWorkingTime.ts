@@ -7,6 +7,8 @@ export interface UsePaneWorkingTimeOptions {
   paneCreatedAt?: string;
   isWorking: boolean;
   screenWorkingMs?: number | null;
+  /** False while the pane sits in a hidden warm room or is minimized: no server reads then (PERF-002). */
+  isVisible?: boolean;
 }
 
 export interface UsePaneWorkingTimeResult {
@@ -63,7 +65,7 @@ function readStoredWorkingTime(paneId: string, paneCreatedAt?: string): StoredWo
         lastSavedAt: parsed.lastSavedAt ?? Date.now()
       };
     }
-  } catch {}
+  } catch { /* unreadable or blocked storage: start from zero */ }
   return null;
 }
 
@@ -76,14 +78,15 @@ function saveStoredWorkingTime(paneId: string, completedWorkingMs: number): void
       lastSavedAt: Date.now()
     };
     localStorage.setItem(storageKey(paneId), JSON.stringify(data));
-  } catch {}
+  } catch { /* Storage is optional. */ }
 }
 
 export function usePaneWorkingTime({
   paneId,
   paneCreatedAt,
   isWorking,
-  screenWorkingMs
+  screenWorkingMs,
+  isVisible = true
 }: UsePaneWorkingTimeOptions): UsePaneWorkingTimeResult {
   const [completedWorkingMs, setCompletedWorkingMs] = useState<number>(() => {
     const stored = readStoredWorkingTime(paneId, paneCreatedAt);
@@ -106,10 +109,10 @@ export function usePaneWorkingTime({
     setCompletedWorkingMs(stored?.completedWorkingMs ?? 0);
   }, [paneId, paneCreatedAt]);
 
-  // Hydrate from server API on mount or paneId change, and periodically sync
+  // Hydrate from server API while the pane is shown (on mount or reveal, after the delay), and periodically sync
   useEffect(() => {
     // An optimistic pane has no server record yet; its real id arrives with the created pane.
-    if (paneId.startsWith("pane:optimistic-")) return;
+    if (!isVisible || paneId.startsWith("pane:optimistic-")) return;
     let cancelled = false;
     const syncWithServer = async () => {
       try {
@@ -124,7 +127,7 @@ export function usePaneWorkingTime({
             return targetMs;
           });
         }
-      } catch {}
+      } catch { /* the local count stands until the next sync */ }
     };
 
     let started = false;
@@ -149,7 +152,7 @@ export function usePaneWorkingTime({
       window.removeEventListener("focus", handleVisibilityOrFocus);
       document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
     };
-  }, [paneId]);
+  }, [paneId, isVisible]);
 
   // Sync with terminal screen text working time if present (e.g. "Working (35m 55s)" or "Thought for 10m 16s")
   useEffect(() => {

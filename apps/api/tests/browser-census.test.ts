@@ -84,6 +84,23 @@ describe("browser census", () => {
     expect(bare.sessions[0]!.accountEmail).toBeNull();
   });
 
+  it("lists as restart holders only browsers in use: an idle blank-only or closed-pane browser does not hold the Browser Host restart", async () => {
+    const s = store();
+    s.listActivePaneBrowserSessions.mockResolvedValue([
+      session("pane:browser1", "/p/room_abcdef/pane_browser1", [{ pageId: "T1", url: "https://upwork.com/jobs", title: "Jobs", isActive: true }]),
+      session("pane:copilot1", "/p/cli-accounts/abc", [{ pageId: "T3", url: "about:blank", title: null, isActive: true }]),
+      session("pane:blank0001", "/p/cli-accounts/def", [{ pageId: "T4", url: "about:blank", title: null, isActive: true }]),
+      session("pane:closed001", "/p/cli-accounts/ghi", [{ pageId: "T5", url: "https://upwork.com/jobs", title: "Jobs", isActive: true }]),
+      session("pane:driven01", "/p/cli-accounts/jkl", [])
+    ] as never);
+    s.getPane.mockImplementation(async (paneId: string) => ({ id: paneId, paneName: paneId.slice(5), title: "t", mode: "FREELANCE_COPILOT", isClosed: paneId === "pane:closed001" }));
+    const census = await browserCensus({ store: s as never, fencedTargets: async () => [],
+      agentOf: async (paneId) => ({ active: paneId === "pane:driven01" }) as never });
+    // browser1: operator lease; copilot1: handoff waiting; driven01: an agent drives it. blank0001 and closed001 are idle.
+    expect(census.restartHolders.map((holder) => holder.paneId)).toEqual(["pane:browser1", "pane:copilot1", "pane:driven01"]);
+    expect(census.restartHolders[0]).toEqual({ paneId: "pane:browser1", roomId: "room:abcdef", paneName: "browser1", mode: "FREELANCE_COPILOT", tabs: ["https://upwork.com/jobs"] });
+  });
+
   it("labels each Chrome profile the way the host's --user-data-dir names it", () => {
     expect(browserProfileLabel("/x/browser-profiles/google-accounts/35cc85dbfc14/ce399d95d02d")).toBe("google-accounts/35cc85db/ce399d95");
     expect(browserProfileLabel("/x/browser-profiles/room_a1/pane_b2")).toBe("pane");

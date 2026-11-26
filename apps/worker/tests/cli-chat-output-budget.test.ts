@@ -16,7 +16,7 @@ vi.mock("node:child_process", async importOriginal => ({
 function processFixture(chunks: Buffer[], stderr = "", exitCode: number | null = 0, signal: NodeJS.Signals | null = null) {
   const child = Object.assign(new EventEmitter(), {
     stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
-    kill: vi.fn((_signal: string) => true)
+    kill: vi.fn<(signal: string) => boolean>(() => true)
   });
   child.stdin.on("finish", () => {
     for (const chunk of chunks) child.stdout.write(chunk);

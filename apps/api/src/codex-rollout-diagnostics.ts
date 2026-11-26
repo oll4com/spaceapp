@@ -48,6 +48,10 @@ export interface CodexCliTurnActivity {
   lastActivityAtMs?: number;
   /** The COMPLETED turn ended on a transient server error (CODEX_TRANSIENT_ERRORS), not an answer. */
   apiError?: true;
+  /** The COMPLETED turn ended on its provider's quota (codexQuotaError): WAITING_QUOTA, never a finished turn. */
+  usageLimit?: true;
+  /** The model Codex's last turn_context ran (what answered, not what the session row asked for). */
+  modelId?: string;
 }
 
 /**
@@ -56,6 +60,15 @@ export interface CodexCliTurnActivity {
  * Alex/Finn, codex_error_info server_overloaded). Policy, usage-limit, sign-in and context errors are not.
  */
 const CODEX_TRANSIENT_ERRORS = new Set(["server_overloaded", "internal_server_error", "response_stream_disconnected", "response_stream_connection_failed", "http_connection_failed"]);
+
+/**
+ * Codex's own usage limit, or a 429 its retries did not pass (operator 14/11 nous_msg:5d3c312e: four panes ended on Space Gateway's empty pool
+ * with {"response_too_many_failed_attempts":{"http_status_code":429}}, read as done, and Nous closed them).
+ */
+function codexQuotaError(error: Record<string, unknown> | null): boolean {
+  const info = error?.codex_error_info;
+  return info === "usage_limit_exceeded" || Object.values(asRecord(info) ?? {}).some((variant) => asRecord(variant)?.http_status_code === 429);
+}
 
 export interface CodexCliPlanState {
   status: "READY" | "PAUSED_BY_ROOM_AGENT" | "RUNNING" | "COMPLETED";
@@ -433,6 +446,8 @@ export function inspectCurrentCodexCliTurnActivity(content: string): CodexCliTur
   let status: CodexCliTurnActivity["status"] = "PENDING";
   let goalStatus: string | null = null;
   let apiError = false;
+  let usageLimit = false;
+  let modelId: string | null = null;
 
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -448,10 +463,12 @@ export function inspectCurrentCodexCliTurnActivity(content: string): CodexCliTur
     const type = stringField(record, "type");
     if (type === "turn_context") {
       const candidate = stringField(payload, "turn_id");
+      modelId = stringField(payload, "model") ?? modelId;
       if (candidate) {
         turnId = candidate;
         status = "RUNNING";
         apiError = false;
+        usageLimit = false;
       }
       continue;
     }
@@ -467,10 +484,12 @@ export function inspectCurrentCodexCliTurnActivity(content: string): CodexCliTur
       if (eventTurnId) turnId = eventTurnId;
       if (turnId) status = "RUNNING";
       apiError = false;
+      usageLimit = false;
       continue;
     }
     if (eventType === "task_complete" || eventType === "turn_aborted") {
       apiError = eventType === "task_complete" && CODEX_TRANSIENT_ERRORS.has(stringField(asRecord(payload?.error), "codex_error_info") ?? "");
+      usageLimit = eventType === "task_complete" && codexQuotaError(asRecord(payload?.error));
     }
     if ((eventType === "task_complete" || eventType === "turn_aborted") && turnId && (!eventTurnId || eventTurnId === turnId)) {
       status = eventType === "turn_aborted" ? "ABORTED" : "COMPLETED";
@@ -481,7 +500,8 @@ export function inspectCurrentCodexCliTurnActivity(content: string): CodexCliTur
   }
 
   if (goalStatus === "active" && turnId) status = "RUNNING";
-  return { status, turnId, ...(status === "COMPLETED" && apiError ? { apiError: true as const } : {}) };
+  return { status, turnId, ...(status === "COMPLETED" && apiError ? { apiError: true as const } : {}), ...(status === "COMPLETED" && usageLimit ? { usageLimit: true as const } : {}),
+    ...(modelId ? { modelId } : {}) };
 }
 
 async function collectRecentRolloutFiles(root: string, sinceMs: number, depth = 0): Promise<Array<{ path: string; mtimeMs: number }>> {

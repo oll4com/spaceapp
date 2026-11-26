@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -107,6 +107,84 @@ describe("room work git reads", () => {
       expect(await files()).toEqual(["u1.txt", "u2.txt", "u3.txt"]);
     } finally {
       rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("DEV3D-028: a failed base diff is read again on the next refresh, not kept until HEAD or the base moves", async () => {
+    const root = mkdtempSync(join(tmpdir(), "room-work-diff-fail-"));
+    const repo = join(root, "repo");
+    const wt = join(root, "wt-feature");
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, "-c", "user.name=t", "-c", "user.email=t@t", ...args], { stdio: "ignore" });
+    const baseRef = join(repo, ".git/refs/heads/main");
+    try {
+      execFileSync("git", ["init", "-q", "-b", "main", repo], { stdio: "ignore" });
+      writeFileSync(join(repo, "base.txt"), "base\n");
+      git(repo, "add", "base.txt");
+      git(repo, "commit", "-q", "-m", "base");
+      git(repo, "worktree", "add", "-q", "-b", "feat/sample", wt, "main");
+      writeFileSync(join(wt, "feat.txt"), "feat\n");
+      git(wt, "add", "feat.txt");
+      git(wt, "commit", "-q", "-m", "feat");
+      writeFileSync(join(wt, "wip.txt"), "wip\n");
+      let time = 1_000_000;
+      const pane = (id: string) => ({ id, isClosed: false, mode: "TERMINAL", cwd: wt, title: id, paneName: id }) as unknown as Pane;
+      const work = createRoomWork({ listPanes: async () => [pane("pane:one"), pane("pane:two")], queueRoots: [], trains: async () => [], registry: async () => [], now: () => time });
+      // An unreadable base ref fails the diff; chmod leaves its size and mtime, so the cache key stays.
+      chmodSync(baseRef, 0o000);
+      time += 61_000;
+      expect((await work.read("room:r")).panes[0]!.files).toEqual(["wip.txt"]);
+      chmodSync(baseRef, 0o644);
+      time += 61_000;
+      expect((await work.read("room:r")).panes[0]!.files).toEqual(["feat.txt", "wip.txt"]);
+    } finally {
+      chmodSync(baseRef, 0o644);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads linked worktree branches from HEAD without spawning git branch, and keeps status cached when the base branch advances", async () => {
+    const root = mkdtempSync(join(tmpdir(), "room-work-linked-"));
+    const repo = join(root, "repo");
+    const wt = join(root, "wt-feature");
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, "-c", "user.name=t", "-c", "user.email=t@t", ...args], { stdio: "ignore" });
+    try {
+      execFileSync("git", ["init", "-q", "-b", "main", repo], { stdio: "ignore" });
+      writeFileSync(join(repo, "base.txt"), "base\n");
+      git(repo, "add", "base.txt");
+      git(repo, "commit", "-q", "-m", "base");
+      git(repo, "worktree", "add", "-q", "-b", "feat/sample", wt, "main");
+      writeFileSync(join(wt, "feat.txt"), "feat\n");
+      git(wt, "add", "feat.txt");
+      git(wt, "commit", "-q", "-m", "feat");
+      writeFileSync(join(wt, "wip.txt"), "wip\n");
+
+      let time = 1_000_000;
+      const pane = (id: string) => ({ id, isClosed: false, mode: "TERMINAL", cwd: wt, title: id, paneName: id }) as unknown as Pane;
+      const work = createRoomWork({ listPanes: async () => [pane("pane:one"), pane("pane:two")], queueRoots: [], trains: async () => [],
+        registry: async () => [], now: () => time });
+      time += 61_000;
+      const first = await work.read("room:r");
+      expect(first.panes[0]!.branch).toBe("feat/sample");
+      expect(first.panes[0]!.files).toEqual(["feat.txt", "wip.txt"]);
+
+      // Advancing the base branch updates diffKey only: local status stays cached (untracked wip2.txt is not re-scanned yet).
+      writeFileSync(join(repo, "main-only.txt"), "m\n");
+      git(repo, "add", "main-only.txt");
+      git(repo, "commit", "-q", "-m", "advance main");
+      writeFileSync(join(wt, "wip2.txt"), "wip2\n");
+      time += 61_000;
+      const afterBaseMove = await work.read("room:r");
+      expect(afterBaseMove.panes[0]!.branch).toBe("feat/sample");
+      expect(afterBaseMove.panes[0]!.files).toEqual(["feat.txt", "wip.txt"]);
+
+      // Detached HEAD reports branch: null (matching `git branch --show-current`).
+      git(wt, "checkout", "-q", "--detach", "HEAD");
+      time += 61_000;
+      const detached = await work.read("room:r");
+      expect(detached.panes[0]!.branch).toBeNull();
+      expect(detached.panes[0]!.files).toEqual(["feat.txt", "wip.txt", "wip2.txt"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

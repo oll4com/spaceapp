@@ -1,6 +1,11 @@
 import { NOUS_TURN_FAILED_NO_ERROR, nousDecisionRunsWhen, nousFailureCause, type NousDecision, type NousTurnFacts, type RoomAgentEvent } from "@space/contracts";
 import { redactMemoryText } from "@space/runtime";
 import { predictionText } from "./predictions.js";
+import { heldToolFailures, historicalToolHold, toolErrorSamples } from "./tool-holds.js";
+export { toolErrorSamples };
+
+/** An operator message sent from a Needs you card or pane board: their answer to Nous's own question. */
+export const NOUS_CARD_ANSWER = /^\[[^\]]*\]\s*My answer to\b/;
 
 /**
  * Nous's scorecard v1 (plan clipboard:L7RgHsveHbcR, frozen 2026-10-17): six dimensions over the last 7 days against the
@@ -50,11 +55,17 @@ export interface NousDimensionScore { score: number; baseline: number; change: n
  * Round 9 item 3 (unblocking 52.6, "1 of 8 answered by Nous"): who ended a wait, read from the monitor event's status and the decision
  * its closer wrote. `byAgent` is true only for Nous, the Room Agent or a text Space sent for them; the operator and the pane itself never.
  */
+/**
+ * Goal 401b115b: the monitor turns an ESCALATED wait RESOLVED when the pane moves on and keeps its "Needs you:" decision, so the closer
+ * names the operator. Only a wait still ESCALATED leaves the unblocking sample: one closed later stays a wait no agent unblocked (plan step 2).
+ */
+export const escalatedWait = (event: Pick<RoomAgentEvent, "status" | "decision">) => event.status === "ESCALATED" || (event.decision ?? "").startsWith("Needs you:");
+
 export function waitCloser(event: Pick<RoomAgentEvent, "status" | "decision">): { who: string; byAgent: boolean } {
   const decision = event.decision ?? "";
   if (event.status === "OPEN") return { who: "nobody yet (open: minutes counted to now)", byAgent: false };
   if (event.status === "ACKED") return { who: "the operator (acknowledged)", byAgent: false };
-  if (event.status === "ESCALATED") return { who: "the operator (escalated to them)", byAgent: false };
+  if (escalatedWait(event)) return { who: "the operator (escalated to them)", byAgent: false };
   if (event.status === "RESOLVED" && decision === "The room was deleted.") return { who: "nobody (the room was deleted)", byAgent: false };
   if (event.status === "RESOLVED") return { who: /Space Gateway/.test(decision) ? "Space (moved to Space Gateway)" : "the pane itself (it moved on)", byAgent: false };
   if (/^Nous (sent|answered|declined)/.test(decision)) return { who: "Nous (a send or an answer)", byAgent: true };
@@ -68,9 +79,9 @@ export function waitCloser(event: Pick<RoomAgentEvent, "status" | "decision">): 
   return { who: `unknown (${decision || "no decision recorded"})`, byAgent: false };
 }
 
-/** A wait's question: the first line of what the pane asked (its detail), else its title without "<pane> is waiting: ". */
+/** A wait's question: the first line with a letter of what the pane asked (its detail; a CLI's ASCII-art banner is no question), else its title without "<pane> is waiting: ". */
 export const waitQuestion = (event: Pick<RoomAgentEvent, "title" | "detail">) =>
-  ((event.detail ?? "").split("\n").map((line) => line.trim()).find(Boolean) ?? event.title.replace(/^.*? is waiting: /, ""));
+  ((event.detail ?? "").split("\n").map((line) => line.trim()).find((line) => /\p{L}/u.test(line)) ?? event.title.replace(/^.*? is waiting: /, ""));
 
 /**
  * R10-4 (unblocking 55.4: 8 of the sample's 9 waits ended by the pane itself in 0.7-2.6 min): a wait the pane ended by itself within
@@ -164,24 +175,51 @@ export interface NousScorecard {
   /** R10-6: OVERLAP notices of the sample, coordination rather than waits (their own line, out of the waits list and the adjusted score). */
   coordination?: NousCoordination;
   /** What the weekly review reads (nous-failures). */
-  failures: { tools: Array<{ name: string; failed: number; /** The 5 most failing tools' 3 most frequent errors (8/11), the first text of each kind. */ errors?: Array<{ text: string; count: number }> }>; missing: string[]; corrections: string[]; staleDecisions: string[]; couldHaveDecided: string[];
+  failures: { tools: Array<{ name: string; failed: number; /** The 5 most failing tools' 3 most frequent errors (8/11), the first text of each kind. */ errors?: Array<{ text: string; count: number; /** The newest turn start of the kind (14/11). */ last: string }> }>; missing: string[]; corrections: string[]; staleDecisions: string[]; couldHaveDecided: string[];
     /** R11-1: failed and timed-out turns by cause (the v1 reliability figure counts every one). */
     byCause?: NousFailureCauses;
     /** R30-2: calls a gate held back (REFUSED: a lesson hold, a duplicate ask); never a reliability mistake. */
     gates?: Array<{ name: string; held: number }> };
 }
-/** Brief tool-error-samples (8/11): a turn keeps up to 3 failed calls' texts per tool, 200 characters each (the brief's bound: a turn's facts row
- * stays small); the counts still count every failure, and the turn's own TOOL messages keep every whole text. */
-export const NOUS_TOOL_ERROR_SAMPLES = 3;
+/** Brief tool-error-samples (8/11): a turn keeps every failed call's text per tool, 200 characters each (the bound keeps the facts row small; the turn's
+ * own TOOL messages keep every whole text). Slice 15 (14/11): the old 3-per-turn cap left repeats with no text, so tool-holds.ts could not hold them. */
 const NOUS_TOOL_ERROR_CHARS = 200;
 type NousToolCounts = NousTurnFacts["tools"][string];
 export function addToolErrorSample(tool: NousToolCounts, text: string): void {
   const errors = tool.errors ??= [];
   const sample = redactMemoryText(text.trim());
-  if (errors.length < NOUS_TOOL_ERROR_SAMPLES) errors.push(sample.length > NOUS_TOOL_ERROR_CHARS ? `${sample.slice(0, NOUS_TOOL_ERROR_CHARS - 1)}…` : sample);
+  errors.push(sample.length > NOUS_TOOL_ERROR_CHARS ? `${sample.slice(0, NOUS_TOOL_ERROR_CHARS - 1)}…` : sample);
 }
-/** A tool's error texts in one turn; rows before 8/11 kept only the first, as `error`. */
-export const toolErrorSamples = (tool: NousToolCounts): string[] => tool.errors ?? (tool.error ? [tool.error] : []);
+/**
+ * A failed call's cause: its first line. Daily Nous errors 14/11 (queue 1053, 5 samples of 3 turns read only "FAILED panes.open: ["): a line that
+ * opens a JSON list or object goes on with the lines after it, spaces collapsed, so the sample keeps the error inside.
+ */
+export function toolFailureCause(result: string, chars = NOUS_TOOL_ERROR_CHARS): string {
+  const lines = result.split("\n");
+  const first = lines.findIndex((line) => line.trim());
+  if (first < 0) return "";
+  const line = lines[first]!.trim();
+  const text = receiptCause(line) ?? (/[[{]$/.test(line) ? `${line} ${lines.slice(first + 1).join(" ")}`.replace(/\s+/g, " ").trim() : line);
+  return text.length > chars ? `${text.slice(0, chars - 1)}…` : text;
+}
+type ControlReceipt = { results?: Array<{ index?: number; paneId?: string; status?: string; detail?: string; error?: string }>; command?: { actions?: Array<{ operation?: string; kind?: string }> } };
+/**
+ * Plan clipboard:1NF6u6gcCwtj step 4 (space_restart_pane 11/11 16:52 and space_close_pane 9/11 recorded as `{"status":"FAILED","operationId":…` cut at
+ * 200): a first line that is a Space Control receipt (text may follow it) records its first unfinished result: status, action, pane and reason.
+ */
+function receiptCause(line: string): string | null {
+  if (!line.startsWith("{")) return null;
+  let receipt: ControlReceipt | null = null;
+  for (let end = line.lastIndexOf("}"); end > 0 && !receipt; end = line.lastIndexOf("}", end - 1)) {
+    try { receipt = JSON.parse(line.slice(0, end + 1)) as ControlReceipt; } catch { receipt = null; }
+  }
+  const results = receipt?.results;
+  const failed = Array.isArray(results) ? results.find((entry) => ["FAILED", "CANCELLED", "UNKNOWN"].includes(entry?.status ?? "")) : undefined;
+  if (!failed) return null;
+  const action = receipt?.command?.actions?.[failed.index ?? 0];
+  const op = action?.operation ?? action?.kind;
+  return `${failed.status}${op ? ` ${op}` : ""}${failed.paneId ? ` ${failed.paneId}` : ""}: ${(failed.error || failed.detail || "no reason given").replace(/\s+/g, " ").trim()}`;
+}
 /** The same error with other ids, numbers or paths' numbered parts: any word holding a digit becomes #. */
 export const toolErrorKey = (text: string) => text.replace(/[\w:.-]*\d[\w:.-]*/g, "#");
 
@@ -288,7 +326,8 @@ export function nousScorecard(input: NousScorecardInput): NousScorecard {
   const corrections = outcomes.filter((item) => item.correction && item.outcome !== "OPERATOR");
   let reliabilityAdjusted: NousScorecard["reliabilityAdjusted"];
   if (facts.length) {
-    const toolMistakes = facts.reduce((sum, turn) => sum + Object.values(turn.tools).reduce((inner, tool) => inner + tool.failed - tool.refused, 0), 0);
+    // Slice 9 (14/11: 453 tool mistakes here, 29 in the score): a recorded cause today's rules hold is a refusal here too (tool-holds.ts).
+    const toolMistakes = facts.reduce((sum, turn) => sum + Object.entries(turn.tools).reduce((inner, [name, tool]) => inner + tool.failed - tool.refused - heldToolFailures(name, tool), 0), 0);
     const failedTurns = facts.filter((turn) => turn.status === "FAILED" || turn.status === "TIMEOUT").length;
     const mistakes = toolMistakes + failedTurns + corrections.length;
     measured.reliability = { score: 100 * Math.max(0, 1 - mistakes / facts.length), sample: facts.length,
@@ -310,15 +349,17 @@ export function nousScorecard(input: NousScorecardInput): NousScorecard {
   const baselineOverall = weighted(NOUS_BASELINE.dimensions);
 
   const toolFailures = new Map<string, number>();
-  const toolErrors = new Map<string, Map<string, { text: string; count: number }>>();
+  const toolErrors = new Map<string, Map<string, { text: string; count: number; last: string }>>();
   const gates = new Map<string, number>();
   for (const turn of facts) for (const [name, tool] of Object.entries(turn.tools)) {
-    if (tool.failed > tool.refused) toolFailures.set(name, (toolFailures.get(name) ?? 0) + tool.failed - tool.refused);
-    if (tool.refused) gates.set(name, (gates.get(name) ?? 0) + tool.refused);
-    for (const text of toolErrorSamples(tool)) {
-      const kinds = toolErrors.get(name) ?? new Map<string, { text: string; count: number }>();
-      const kind = kinds.get(toolErrorKey(text)) ?? { text, count: 0 };
+    const held = heldToolFailures(name, tool);
+    if (tool.failed > tool.refused + held) toolFailures.set(name, (toolFailures.get(name) ?? 0) + tool.failed - tool.refused - held);
+    if (tool.refused + held) gates.set(name, (gates.get(name) ?? 0) + tool.refused + held);
+    for (const text of toolErrorSamples(tool).filter((error) => !historicalToolHold(name, error))) {
+      const kinds = toolErrors.get(name) ?? new Map<string, { text: string; count: number; last: string }>();
+      const kind = kinds.get(toolErrorKey(text)) ?? { text, count: 0, last: turn.startedAt };
       kind.count += 1;
+      if (turn.startedAt > kind.last) kind.last = turn.startedAt;
       kinds.set(toolErrorKey(text), kind);
       toolErrors.set(name, kinds);
     }
@@ -335,9 +376,9 @@ export function nousScorecard(input: NousScorecardInput): NousScorecard {
     ...(reliabilityAdjusted ? { reliabilityAdjusted } : {}),
     ...(coordination ? { coordination } : {}),
     failures: {
-      // Brief tool-error-samples: the top 5 tools' top 3 kinds, so the review sees why they fail (every kind stays in the turns' facts).
-      tools: failedTools.map((tool, index) => {
-        const kinds = index < 5 ? [...(toolErrors.get(tool.name)?.values() ?? [])].sort((left, right) => right.count - left.count).slice(0, 3) : [];
+      // Brief tool-error-samples, every counted tool's every kind (slice 9, 14/11: a top-5/top-3 cut hid why 6 of the 9 worst tools failed).
+      tools: failedTools.map((tool) => {
+        const kinds = [...(toolErrors.get(tool.name)?.values() ?? [])].sort((left, right) => right.count - left.count);
         return kinds.length ? { ...tool, errors: kinds } : tool;
       }),
       missing: [...new Set(outcomes.filter((item) => item.outcome === "HELPER" && item.missing).map((item) => item.missing!))],
@@ -377,8 +418,9 @@ export function nousProgressText(card: NousScorecard): string {
   if (card.failures.missing.length) lines.push(`Missing tools you reported: ${card.failures.missing.join("; ")}`);
   if (card.failures.byCause && Object.values(card.failures.byCause).some(Boolean)) lines.push(`Turn failures by cause (the v1 reliability figure counts every one): ${failureCausesText(card.failures.byCause)}`);
   if (card.failures.tools.length) lines.push(`Failed tools: ${card.failures.tools.map((tool) => `${tool.name} ${tool.failed}`).join(", ")}`,
-    ...card.failures.tools.filter((tool) => tool.errors?.length).map((tool) => `- ${tool.name} errors (sampled up to ${NOUS_TOOL_ERROR_SAMPLES} per turn; same text with other ids or numbers counted together): `
-      + tool.errors!.map((error) => `"${error.text}" ×${error.count}`).join("; ")));
+    ...card.failures.tools.filter((tool) => tool.errors?.length).map((tool) => `- ${tool.name} errors (same text with other ids or numbers counted together): `
+      // 14/11 (Nous briefed 4 panes in one day on 57014 ×5 "today": 2 samples, the newest 13/11 02:08): the counts span the window, so each kind says when it last failed.
+      + tool.errors!.map((error) => `"${error.text}" ×${error.count} (last ${error.last.slice(0, 16).replace("T", " ")} UTC)`).join("; ")));
   if (card.failures.gates?.length) lines.push(`GATE (held by a gate, not mistakes): ${card.failures.gates.map((tool) => `${tool.name} ${tool.held}`).join(", ")}`);
   return lines.join("\n");
 }

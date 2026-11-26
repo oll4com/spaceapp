@@ -3,7 +3,6 @@ import type {
   SystemTopologyEdge,
   SystemTopologyNode,
   SystemTopologySnapshot,
-  SystemTopologySubcomponent,
 } from "@space/contracts";
 import { SPACE_INSTALL_ROOT } from "@space/contracts";
 

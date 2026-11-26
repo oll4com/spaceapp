@@ -46,8 +46,8 @@ export function normalizeModelDisplay(str: string): string {
 
 export function isSameModel(a?: string | null, b?: string | null): boolean {
   if (!a || !b) return false;
-  const cleanA = a.toLowerCase().replace(/[\s\/\·\-_]/g, "");
-  const cleanB = b.toLowerCase().replace(/[\s\/\·\-_]/g, "");
+  const cleanA = a.toLowerCase().replace(/[\s/·\-_]/g, "");
+  const cleanB = b.toLowerCase().replace(/[\s/·\-_]/g, "");
   return cleanA === cleanB || cleanA.includes(cleanB) || cleanB.includes(cleanA);
 }
 
@@ -67,7 +67,7 @@ export function resolveStepModel(
   // 2. Check notes for Recommended model or Model declaration
   if (step.notes) {
     const notesMatch = step.notes.match(
-      /(?:Recommended model|Model):\s*([a-zA-Z0-9_\-\.\/]+)(?:;\s*reasoning:\s*([a-zA-Z0-9_\-]+))?/i
+      /(?:Recommended model|Model):\s*([a-zA-Z0-9_\-./]+)(?:;\s*reasoning:\s*([a-zA-Z0-9_-]+))?/i
     );
     if (notesMatch) {
       const model = notesMatch[1]?.trim();

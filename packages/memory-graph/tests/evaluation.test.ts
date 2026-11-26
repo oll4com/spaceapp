@@ -1,11 +1,10 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { evaluateMemoryQueries } from "../src/index.js";
 
 describe("memory query evaluation", () => {
   it("meets the v1 recall, reciprocal-rank and false-positive gates deterministically", async () => {
-    const fixture = JSON.parse(await readFile(resolve(process.cwd(), "eval/memory-query-fixtures.json"), "utf8"));
+    const fixture = JSON.parse(await readFile(new URL("../eval/memory-query-fixtures.json", import.meta.url), "utf8"));
     const first = evaluateMemoryQueries(fixture.documents, fixture.queries);
     const second = evaluateMemoryQueries(fixture.documents, fixture.queries);
 

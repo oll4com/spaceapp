@@ -57,7 +57,7 @@ export function registerAppStudio(app: FastifyInstance, deps: AppStudioWiring): 
     const traceId = `app-studio:${makeSpaceId("kickoff")}`;
     await terminal.runSerializedTerminalMutation(session.sessionId, async () => {
       if (fresh) await clearIdleClaudeSession(terminal, session, traceId, traceId);
-      await submitCliPrompt(terminal, session.sessionId, APP_STUDIO_KICKOFF, traceId, `${traceId}:kickoff`);
+      await submitCliPrompt(terminal, session.sessionId, APP_STUDIO_KICKOFF, traceId, `${traceId}:kickoff`, { paneId: session.paneId });
     });
   });
   const service = createAppStudioService({

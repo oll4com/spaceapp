@@ -13,8 +13,7 @@ import {
   voiceTranscriptionModelSchema,
   getAllLiveAudioProviders,
   getLiveAudioProvider,
-  inferProviderFromModel,
-  LIVE_AUDIO_PROVIDERS
+  inferProviderFromModel
 } from "@space/contracts";
 import type { SpaceApiConfig } from "./config.js";
 import { FISH_ASR_URL, FISH_AUDIO_KEY_FILE } from "./fish-voice-bridge.js";
@@ -277,9 +276,10 @@ export async function createVoiceDelegateResponse(
   const vercelCred = await resolveLiveAudioCredentials(config, "vercel");
   const openaiCred = await resolveLiveAudioCredentials(config, "openai");
 
-  const formattedTools = (input.tools || [])
-    .filter((t: any) => t && (t.name || t.function?.name))
-    .map((t: any) => ({
+  type LiveTool = { name?: string; description?: string; parameters?: unknown; function?: { name?: string; description?: string; parameters?: unknown } };
+  const formattedTools = ((input.tools || []) as LiveTool[])
+    .filter((t) => t && (t.name || t.function?.name))
+    .map((t) => ({
       type: "function",
       function: {
         name: t.name || t.function?.name,
@@ -352,7 +352,10 @@ export async function createVoiceDelegateResponse(
         signal: controller.signal
       });
       if (res.ok) {
-        const data = (await res.json()) as any;
+        const data = (await res.json()) as {
+          usage?: { prompt_tokens?: unknown; input_tokens?: unknown; completion_tokens?: unknown; output_tokens?: unknown };
+          choices?: { message?: { content?: string; tool_calls?: { function?: { name?: string; arguments?: string | Record<string, unknown> } }[] } }[];
+        };
         const usage = data.usage ?? {};
         const policyEntry = config.liveModelPolicy.models.find(entry =>
           entry.id === c.model && entry.provider === c.provider && entry.protocol === "responses");
@@ -369,11 +372,11 @@ export async function createVoiceDelegateResponse(
           model: c.model, latencyMs: Date.now() - startedAt, attempt: index + 1, estimatedCostUsd };
         const choice = data.choices?.[0]?.message;
         if (choice?.tool_calls && choice.tool_calls.length > 0) {
-          const tc = choice.tool_calls[0];
+          const tc = choice.tool_calls[0]!;
           let args: Record<string, unknown> = {};
           try {
             args = typeof tc.function?.arguments === "string" ? JSON.parse(tc.function.arguments) : (tc.function?.arguments || {});
-          } catch {}
+          } catch { /* Unparseable arguments: the tool is called with none. */ }
           return {
             toolCall: {
               name: tc.function?.name || "",
@@ -402,10 +405,6 @@ export async function createVoiceDelegateResponse(
   return { toolCall: null, message: null, telemetry: { provider: null, model: null, latencyMs: Date.now() - startedAt, attempt: candidates.length, estimatedCostUsd: null } };
 }
 
-export function isLiveConversationSessionModel(_model: VoiceTranscriptionModel | string): boolean {
-  return true;
-}
-
 export function normalizeVoiceTranscriptionModel(model: VoiceTranscriptionModel | string | undefined): VoiceTranscriptionModel {
   if (model && voiceTranscriptionModelSchema.safeParse(model).success) {
     return model as VoiceTranscriptionModel;
@@ -429,32 +428,6 @@ function parseOpenAiError(payload: unknown, fallback: string): string {
   const error = (payload as { error?: { message?: unknown; code?: unknown } }).error;
   if (!error || typeof error.message !== "string") return fallback;
   return typeof error.code === "string" ? `${error.code}: ${error.message}` : error.message;
-}
-
-function buildRealtimeSessionConfig(
-  config: SpaceApiConfig,
-  input: Pick<VoiceRealtimeCallInput, "model" | "language" | "delay">
-) {
-  const transcription: {
-    model: VoiceTranscriptionModel;
-    languages?: Array<Exclude<VoiceTranscriptionLanguage, "auto">>;
-    delay?: VoiceTranscriptionDelay;
-  } = {
-    model: normalizeVoiceTranscriptionModel(input.model)
-  };
-  if (input.language !== "auto") {
-    transcription.languages = [input.language];
-  }
-  transcription.delay = input.delay ?? config.voiceTranscriptionDelay;
-  return {
-    type: "transcription",
-    audio: {
-      input: {
-        transcription,
-        turn_detection: null
-      }
-    }
-  };
 }
 
 export async function resolveLiveAudioCredentials(
@@ -490,7 +463,7 @@ export async function resolveLiveAudioCredentials(
       try {
         const key = (await readFile(config.googleVoiceKeyFile, "utf8")).trim();
         if (key) return { configured: true, apiKey: key };
-      } catch {}
+      } catch { /* Unreadable key file: fall back to the configured key. */ }
     }
     if (config.googleVoiceApiKey?.trim()) {
       return { configured: true, apiKey: config.googleVoiceApiKey.trim() };
@@ -506,7 +479,7 @@ export async function resolveLiveAudioCredentials(
       try {
         const key = (await readFile(config.awsVoiceKeyFile, "utf8")).trim();
         if (key) return { configured: true, apiKey: key };
-      } catch {}
+      } catch { /* Unreadable key file: fall back to the configured AWS keys. */ }
     }
     if (config.awsAccessKeyId?.trim() && config.awsSecretAccessKey?.trim()) {
       return { configured: true, apiKey: config.awsAccessKeyId.trim() };
@@ -532,12 +505,12 @@ export async function resolveLiveAudioCredentials(
       try {
         const key = (await readFile(config.vercelVoiceKeyFile, "utf8")).trim();
         if (key) return { configured: true, apiKey: key };
-      } catch {}
+      } catch { /* Unreadable key file: try the default key file next. */ }
     }
     try {
       const defaultKey = (await readFile(`${SPACE_INSTALL_ROOT}/secrets/space-vercel-voice.key`, "utf8")).trim();
       if (defaultKey) return { configured: true, apiKey: defaultKey };
-    } catch {}
+    } catch { /* No default key file: fall back to the configured key. */ }
     if (config.vercelVoiceApiKey?.trim()) {
       return { configured: true, apiKey: config.vercelVoiceApiKey.trim() };
     }
@@ -551,7 +524,7 @@ export async function resolveLiveAudioCredentials(
     try {
       const key = (await readFile(FISH_AUDIO_KEY_FILE, "utf8")).trim();
       if (key) return { configured: true, apiKey: key };
-    } catch {}
+    } catch { /* No key file: reported as not configured below. */ }
     return {
       configured: false,
       missingReason: `Fish Audio key not configured on Space. Save it in ${FISH_AUDIO_KEY_FILE}.`

@@ -1,6 +1,6 @@
 ---
 name: space-marketingskills
-description: Six marketing skills from Corey Haines' marketingskills for SpaceApp. Use copywriting to write or rewrite page and post copy; launch to plan a launch or announcement (Product Hunt, Show HN, release posts); community-marketing for community work on Reddit, Discord, Hacker News and forums; directory-submissions to pick and prepare directory listings; ai-seo to get cited in AI answers (ChatGPT, Perplexity, AI Overviews); competitors for comparison and alternative pages (X vs Y). Every draft also goes through space-no-ai-slop.
+description: "Marketing skills: copywriting, launches (Product Hunt, Show HN), community marketing, directory submissions, AI SEO, competitor and alternative pages."
 metadata:
   category: WORKFLOW
 ---

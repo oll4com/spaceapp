@@ -9,7 +9,7 @@ import { resetNousReviewing } from "../src/features/copilot-kit/nous-reviewing.j
 const apiMock = vi.hoisted(() => ({
   mailCampaigns: vi.fn(), mailCampaign: vi.fn(), mailCampaignChecks: vi.fn(), mailCampaignPreview: vi.fn(), mailCampaignPreviewMail: vi.fn(), decideMailCampaign: vi.fn(),
   mailCampaignControl: vi.fn(), mailCampaignLists: vi.fn(), mailCampaignListContacts: vi.fn(), mailCampaignSuppressions: vi.fn(), mailCampaignTemplates: vi.fn(),
-  mailCampaignTemplate: vi.fn(), mailCampaignSenders: vi.fn(), setMailSenderWarmup: vi.fn(), setMailSenderBulk: vi.fn(),
+  mailCampaignTemplate: vi.fn(), mailCampaignSenders: vi.fn(), setMailSenderWarmup: vi.fn(), setMailSenderBulk: vi.fn(), mailOpens: vi.fn(),
   nousApprovals: vi.fn(async () => ({ nousReviewing: false }))
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
@@ -82,5 +82,33 @@ describe("Campaigns tab", () => {
     expect((screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Decline" }));
     await waitFor(() => expect(apiMock.decideMailCampaign).toHaveBeenCalledWith(campaign.id, { decision: "decline" }));
+  });
+  it("shows a proxied open's IP only as the proxy it came through, and a direct hit's IP as the reader's (operator 22/11)", async () => {
+    const hit = { userAgent: null, url: null, rdns: null, device: null };
+    apiMock.mailOpens.mockResolvedValue({ campaigns: [], messages: [{ token: "t".repeat(32), recipient: "x@gmail.com", recipientName: "", subject: "Hi", createdAt: "2026-11-22T15:00:00.000Z",
+      links: [], campaignId: null, count: 1, firstOpenedAt: "2026-11-22T15:48:30.000Z", lastOpenedAt: "2026-11-22T15:48:30.000Z", clicks: [{ ...hit, kind: "CLICK", at: "2026-11-22T15:49:00.000Z",
+        ip: "115.87.152.160", isp: "AS17552 True Online", geo: "Bangkok, TH", client: "Chrome", device: "Android", proxy: null, url: "https://oll4.com/" }],
+      opens: [{ ...hit, kind: "OPEN", at: "2026-11-22T15:48:30.000Z", ip: "66.249.84.169", isp: "AS15169 Google LLC", geo: "The Dalles, Oregon, US", client: "Gmail", proxy: "Google Image Proxy" }] }] });
+    render(<CampaignsTab isVisible />);
+    fireEvent.click(screen.getByRole("tab", { name: "Opens" }));
+    const open = (await screen.findByText(/^Open #1/)).closest("li")!;
+    expect(open.textContent).toContain("Reader IP: hidden by Google Image Proxy · Gmail");
+    expect(open.textContent).toContain("via 66.249.84.169 · AS15169 Google LLC · The Dalles, Oregon, US");
+    expect(open.textContent!.indexOf("66.249.84.169")).toBeGreaterThan(open.textContent!.indexOf("hidden"));
+    const click = screen.getByText(/^Click #1/).closest("li")!;
+    expect(click.textContent).toContain("115.87.152.160 · AS17552 True Online · Bangkok, TH · Chrome on Android");
+    expect(click.textContent).not.toMatch(/hidden|via /);
+  });
+  it("groups opens by campaign with each campaign's totals, single mails apart (plan ES4AQEtVuDon step 2)", async () => {
+    const message = { recipientName: "", subject: "Hi", createdAt: "2026-11-22T15:00:00.000Z", links: [], firstOpenedAt: null, lastOpenedAt: null, opens: [], clicks: [] };
+    const stats = { byStatus: { SENT: 2 }, bounced: { hard: 1, soft: 0 }, complained: 0, replied: 0, unsubscribed: 1 };
+    apiMock.mailOpens.mockResolvedValue({ campaigns: [{ id: "mcamp:abcdefgh", name: "Kits offer", status: "SENDING", stats }], messages: [
+      { ...message, token: "a".repeat(32), recipient: "a@shop.gr", campaignId: "mcamp:abcdefgh", count: 1 },
+      { ...message, token: "b".repeat(32), recipient: "b@shop.gr", campaignId: "mcamp:abcdefgh", count: 0 },
+      { ...message, token: "c".repeat(32), recipient: "c@shop.gr", campaignId: null, count: 0 }] });
+    render(<CampaignsTab isVisible />);
+    fireEvent.click(screen.getByRole("tab", { name: "Opens" }));
+    expect((await screen.findByText(/Kits offer/)).textContent).toContain("2 sent · 1 opened · 0 clicked · 1 bounced · 1 unsubscribed");
+    expect(screen.getByText("Single mails")).toBeTruthy();
   });
 });

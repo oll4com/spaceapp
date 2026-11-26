@@ -8,6 +8,9 @@ import { spaceTypedDraft } from "./cli-prompt-submit.js";
 import { roomComposerHolds } from "./room-terminal-screen.js";
 import type { RoomPaneObservation } from "./room-pane-control.js";
 import { SPACE_INSTALL_ROOT } from "@space/contracts";
+import { handoverTarget, noRoomPools, quotaPool } from "./nous/quota-handover.js";
+import type { NousProviderRoom } from "./nous/tokens.js";
+import { screenLimitResetsAt } from "./agents-dashboard.js";
 
 /**
  * Scheduled tasks (operator request 2026-10-15): when a task in the Tasks dock falls due, Space types it into its
@@ -24,9 +27,13 @@ export interface TaskScheduleRunnerDeps {
   /** Reopens the task's closed CLI pane, or starts the CLI of an open one that has none, as its owner (Space Control: a terminal resumes its conversation, a copilot-style pane starts its CLI). */
   reopen?(pane: Pane, ownerUserId: string): Promise<unknown>;
   /** R44-3: opens a new CLI pane in the owner's room for a recurring agent task that has no pane there (Space Control panes.open). */
-  openPane?(roomId: string, ownerUserId: string): Promise<Pane>;
+  openPane?(roomId: string, ownerUserId: string, type?: string): Promise<Pane>;
   /** Marketing and Freelance Copilots take their work as briefs (as Nous's sends to them): a due task reaches them as one. */
   brief?(pane: Pane, ownerUserId: string, text: string): Promise<unknown>;
+  /** A Mail Copilot has no brief: its task goes as a Space Control prompt after its current turn (never into a running one). */
+  prompt?(pane: Pane, ownerUserId: string, text: string): Promise<unknown>;
+  /** The owner's provider pools and their room now (Nous's provider advice): a pane whose pool has none hands its run over. */
+  providerRooms?(ownerUserId: string): Promise<NousProviderRoom[]>;
   /** One line to Nous's inbox when an occurrence stays untyped on an idle pane (TASK_RETRY_MS), with the cause. */
   notice?(ownerUserId: string, key: string, line: string): Promise<void>;
   now?: () => number;
@@ -79,8 +86,12 @@ export function createTaskScheduleRunner(deps: TaskScheduleRunnerDeps) {
   /** R44-3: occurrences that opened a pane (never a second one) and tasks Nous heard have no pane (one line each). */
   const opened = new Set<string>();
   const toldNoPane = new Set<string>();
+  /** 15/11 Temu (XCTF): occurrences whose new pane could not be opened (a full room), when and why; tried again each TASK_RETRY_MS. */
+  const openFailed = new Map<string, { at: number; reason: string }>();
   /** When this process first tried each occurrence (task|due time). */
   const firstTried = new Map<string, number>();
+  /** Occurrences handed to a pane of a provider with room (its pane's had none), and that pane; null: Nous heard none had room. */
+  const rerouted = new Map<string, Pane | null>();
 
   async function runOccurrence(task: TaskItem & { ownerUserId: string }): Promise<"RAN" | "REMINDED" | "WAITING" | "SKIPPED" | "LOST"> {
     const schedule = task.schedule!;
@@ -93,7 +104,9 @@ export function createTaskScheduleRunner(deps: TaskScheduleRunnerDeps) {
     };
     const at = new Date(now()).toISOString();
     // Each handled occurrence is one task run (plan clipboard:GA__W4qBxSPR); RUNNING: typed, its pane's report decides it.
-    const advance = (outcome: string, status: TaskScheduleClaim["status"], nextRunAt = following()) => deps.store.claimTaskSchedule(task.id, dueAt, { nextRunAt, outcome, status, at });
+    // DEV3D-032: a RUNNING run is the pane it was typed into (a rerouted run is not its task's pane), so that pane's report settles it.
+    const advance = (outcome: string, status: TaskScheduleClaim["status"], nextRunAt = following()) => deps.store.claimTaskSchedule(task.id, dueAt,
+      { nextRunAt, outcome, status, at, ...(status === "RUNNING" && pane && { paneId: pane.id, roomId: pane.roomId }) });
 
     const graceMs = Math.min(DOT_SCHEDULE_GRACE_MS, recurrence.kind === "INTERVAL" ? recurrence.minutes * 60_000 : DOT_SCHEDULE_GRACE_MS);
     // 13/11 (Score lever Daily tasks): a daily or weekly run that missed its 12 h window was dropped; it now still runs late, until its next occurrence is due.
@@ -125,18 +138,54 @@ export function createTaskScheduleRunner(deps: TaskScheduleRunnerDeps) {
     // R44-3 (3/11: TOP IMPORTS watch, 5 weekly Monday tasks, the Reddit task and the Nous daily upgrade round had no pane, and each run was a silent
     // reminder): a recurring agent task whose pane is gone, or that has none, gets a new CLI pane in its room (or the room it last ran in), bound to it.
     if (!pane && task.source === "AGENT" && recurrence.kind !== "ONCE" && deps.openPane && deps.store.bindTaskItem) {
-      const lastRun = task.roomId ? null : await Promise.resolve().then(() => deps.store.listTaskRuns?.(task.ownerUserId, { taskId: task.id, limit: 1 })).catch(() => null);
-      const roomId = task.roomId ?? lastRun?.runs[0]?.roomId ?? null;
+      // 15/11 Temu (XCTF): a lookup that failed read as "no room", and the day's run was spent as a silent reminder; it waits like any failed read.
+      let lastRun: Awaited<ReturnType<NonNullable<typeof deps.store.listTaskRuns>>>["runs"][number] | null = null;
+      // 17-18/11 (Mail rounds 1/3 and 3/3): the newest run was itself a reminder with no room, so every later run stayed one; the newest run that had a room counts.
+      try {
+        for (let before: string | undefined; !task.roomId && !lastRun;) {
+          const page = (await read(() => deps.store.listTaskRuns?.(task.ownerUserId, { taskId: task.id, limit: 100, ...(before ? { before } : {}) })))?.runs ?? [];
+          lastRun = page.find((run) => run.roomId) ?? null;
+          if (page.length < 100) break;
+          before = page.at(-1)!.id;
+        }
+      }
+      catch (error) { return unread("last run", error); }
+      const roomId = task.roomId ?? lastRun?.roomId ?? null;
       let room: Awaited<ReturnType<typeof deps.store.getRoom>> | null;
       try { room = roomId ? await read(() => deps.store.getRoom(roomId)) : null; } catch (error) { return unread("room", error); }
-      if (room?.ownerUserId === task.ownerUserId && !opened.has(occurrence)) {
+      // 15-18/11 (Mail rounds 1/3, 3/3): a deleted room clears its tasks' room and pane (ON DELETE SET NULL) and the room their runs name is gone
+      // too, so each run was a reminder until Nous rebound it. The task moves to the owner's first room with space, as a full room's closed pane does.
+      const goneRoom = roomId && !room ? roomId : null;
+      if (goneRoom && deps.store.listRooms && deps.store.listPanes) {
+        try {
+          for (const other of await deps.store.listRooms(task.ownerUserId)) {
+            if (other.kind !== "WORKSPACE" || other.archivedAt || other.ownerUserId !== task.ownerUserId) continue;
+            if ((await deps.store.listPanes(other.id, false)).length < other.paneCap) { room = other; break; }
+          }
+        } catch (error) { return unread("rooms", error); }
+        if (!room) return waitOrSkip(`its room ${goneRoom} was deleted and none of your rooms has space for a new CLI pane; close a pane or bind the task to an open pane`, "FAILED");
+      }
+      if (room?.ownerUserId === task.ownerUserId) {
+        // 15/11: after one open failed (its room full) every later tick fell through to a reminder; it now waits, tries again each TASK_RETRY_MS, and Nous hears a miss.
+        if (opened.has(occurrence)) return waitOrSkip("its pane was gone; Space opened a new CLI pane in its room and could not bind the task to it", "FAILED");
+        const failed = openFailed.get(occurrence);
+        if (failed && now() - failed.at < TASK_RETRY_MS) return waitOrSkip(failed.reason, "FAILED");
+        let fresh: Pane;
+        try { fresh = await deps.openPane(room.id, task.ownerUserId); }
+        catch (error) {
+          if (openFailed.size > 1_000) openFailed.clear();
+          const reason = `its pane is gone and a new CLI pane could not be opened in its room ${room.name ?? room.id} (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"}); `
+            + "Space tries again each 10 minutes until its next run; close a pane there or bind the task to an open pane";
+          openFailed.set(occurrence, { at: now(), reason });
+          return waitOrSkip(reason, "FAILED");
+        }
         if (opened.size > 1_000) opened.clear();
         opened.add(occurrence);
-        try {
-          const fresh = await deps.openPane(room.id, task.ownerUserId);
-          // The task itself moves (by id, as space_task_update bind): saving its objective again hit a stale hash and bound an unscheduled copy (Grants 13/11).
-          await deps.store.bindTaskItem(task.ownerUserId, task.id, { roomId: room.id, paneId: fresh.id, paneTitle: fresh.paneName ?? fresh.title });
-        } catch (error) { return waitOrSkip(`its pane is gone and a new CLI pane could not be opened in its room (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"})`, "FAILED"); }
+        // The task itself moves (by id, as space_task_update bind): saving its objective again hit a stale hash and bound an unscheduled copy (Grants 13/11).
+        try { await deps.store.bindTaskItem(task.ownerUserId, task.id, { roomId: room.id, paneId: fresh.id, paneTitle: fresh.paneName ?? fresh.title }); }
+        catch (error) { return waitOrSkip(`its pane was gone; Space opened CLI pane ${fresh.id} in its room and could not bind the task to it (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"})`, "FAILED"); }
+        if (goneRoom) await deps.notice?.(task.ownerUserId, `task-moved:${task.id}`, `Scheduled task "${task.title}" (${task.id}) due ${dueAt}: its room ${goneRoom} was deleted; `
+          + `the task moved to new CLI pane ${fresh.paneName ?? fresh.title} (${fresh.id}) in room ${room.name ?? room.id}. Bind it to another pane if it belongs there (space_task_update bind).`).catch(() => undefined);
         return waitOrSkip("its pane was gone; a new CLI pane was opened in its room and its CLI did not reach its prompt");
       }
       if (!room && !toldNoPane.has(task.id) && deps.notice) {
@@ -156,8 +205,62 @@ export function createTaskScheduleRunner(deps: TaskScheduleRunnerDeps) {
     if (!isCliPane(pane)) return await advance(`Skipped ${dueAt}: the task's pane is not a CLI.`, "SKIPPED") ? "SKIPPED" : "LOST";
     // Only the task owner's own panes are typed into (or reopened), whichever path wrote the task.
     let room: Awaited<ReturnType<typeof deps.store.getRoom>> | null;
-    try { room = await read(() => deps.store.getRoom(pane.roomId)); } catch (error) { return unread("room", error); }
+    const paneRoomId = pane.roomId; // a closure loses the narrowing of `let pane`
+    try { room = await read(() => deps.store.getRoom(paneRoomId)); } catch (error) { return unread("room", error); }
     if (room?.ownerUserId !== task.ownerUserId) return await advance(`Skipped ${dueAt}: the pane is not in one of your rooms.`, "SKIPPED") ? "SKIPPED" : "LOST";
+    // 19/11 (Score lever Daily tasks: every Antigravity account at 100% of its week until 25/11, and Mail rounds bound to Gemini copilot Bob never ran):
+    // a pane whose provider has no room hands this occurrence to an idle CLI pane of a provider with room in its room, else to a new one, and Nous hears
+    // it. The task stays bound to its own pane, which takes its runs again once its provider has room.
+    // shortcut: a copilot's task then runs in a plain CLI pane, without the copilot's own rail and settings; a copilot of another provider when that matters.
+    const seen = deps.providerRooms && !pane.isClosed ? await deps.inspect(pane).catch(() => null) : null;
+    const pool = deps.providerRooms ? quotaPool(pane.terminalRuntimeId, (pane.terminalRuntimeId === "cli:gemini" ? seen?.modelId : null) ?? pane.modelId) : null;
+    // 22/11 Work/Emma (task:XvOzES-THI4Q): its own account hit "Individual quota reached ... Resets in 153h22m" while its pool had room, and the run
+    // waited for an empty prompt that never came. A pane limited past the task's next run hands the run over too, to another provider.
+    const nextRun = following();
+    const resetsAt = seen?.usageLimited ? screenLimitResetsAt(seen.text ?? "", now()) : null;
+    const limited = resetsAt !== null && Date.parse(resetsAt) > (nextRun ? Date.parse(nextRun) : windowEnd);
+    const pools = pool || limited ? await deps.providerRooms!(task.ownerUserId).catch(() => [] as NousProviderRoom[]) : [];
+    if (limited || noRoomPools(pools).some((entry) => entry.key === pool)) {
+      const own = limited ? `its pane ${pane.paneName ?? pane.title} is at its usage limit until ${resetsAt}, after the task's next run`
+        : `the provider of its pane ${pane.paneName ?? pane.title} (${pool}) has no room now`;
+      const target = handoverTarget(pools.filter((entry) => entry.key !== pool), false);
+      let to = rerouted.get(occurrence) ?? null;
+      if (!target) {
+        if (!rerouted.has(occurrence)) {
+          rerouted.set(occurrence, null);
+          await deps.notice?.(task.ownerUserId, `task-no-room:${task.id}`, `Scheduled task "${task.title}" (${task.id}) due ${dueAt} waits: ${own}, and no provider Space routes work to has room either.`).catch(() => undefined);
+        }
+        return waitOrSkip(`${own}, and no provider Space routes work to has room either`, "FAILED");
+      }
+      if (!to || to.terminalRuntimeId !== target.runtimeId) {
+        to = null;
+        for (const other of deps.store.listPanes ? await Promise.resolve(deps.store.listPanes(room.id, false)).catch(() => [] as Pane[]) : []) {
+          if (other.mode !== "TERMINAL" || other.terminalRuntimeId !== target.runtimeId) continue;
+          const seen = await deps.inspect(other).catch(() => null);
+          if (seen && atEmptyPrompt(seen)) { to = other; break; }
+        }
+        let opening = false;
+        if (!to && deps.openPane) {
+          const failed = openFailed.get(occurrence);
+          if (failed && now() - failed.at < TASK_RETRY_MS) return waitOrSkip(failed.reason, "FAILED");
+          try { to = await deps.openPane(room.id, task.ownerUserId, target.type); opening = true; }
+          catch (error) {
+            if (openFailed.size > 1_000) openFailed.clear();
+            const reason = `${own}, and a ${target.name} pane could not be opened in its room ${room.name ?? room.id} (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"}); Space tries again each 10 minutes`;
+            openFailed.set(occurrence, { at: now(), reason });
+            await deps.notice?.(task.ownerUserId, `task-no-room:${task.id}`, `Scheduled task "${task.title}" (${task.id}) due ${dueAt} waits: ${reason}.`).catch(() => undefined);
+            return waitOrSkip(reason, "FAILED");
+          }
+        }
+        if (!to) return waitOrSkip(`${own}, and no idle ${target.name} pane in its room could take it`, "FAILED");
+        if (rerouted.size > 1_000) rerouted.clear();
+        rerouted.set(occurrence, to);
+        await deps.notice?.(task.ownerUserId, `task-rerouted:${task.id}`, `Scheduled task "${task.title}" (${task.id}) due ${dueAt}: ${own}; `
+          + `this run goes to ${opening ? "new " : ""}${target.name} pane ${to.paneName ?? to.title} (${to.id}). The task stays bound to its own pane.`).catch(() => undefined);
+        if (opening) return waitOrSkip(`${own}; Space opened ${target.name} pane ${to.id} for this run and its CLI did not reach its prompt`);
+      }
+      pane = to;
+    }
     const prompt = scheduledTaskPrompt(task);
     // 13/11 Felix (task:A-mtm2jQGUyE): a closed pane in a full room never reopens (Space Control answers "capped" in its receipt, nothing throws), and the
     // task retried each tick until its next day with nothing on its record. It moves to an idle CLI pane of the same runtime in that room, else to a new
@@ -206,14 +309,17 @@ export function createTaskScheduleRunner(deps: TaskScheduleRunnerDeps) {
       catch (error) { return waitOrSkip(`${what} had no running CLI and Space could not start it (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"})`, "FAILED"); }
       return waitOrSkip(`${what} had no running CLI; Space started it and it did not ${until}`);
     };
-    if (BRIEF_MODES.has(pane.mode) && deps.brief) {
+    // 19/11 (Mail rounds 1/3 and 3/3): a Mail Copilot sits in its run loop, never at an empty prompt; its task goes as a prompt after its current turn.
+    const send = BRIEF_MODES.has(pane.mode) ? deps.brief : pane.mode === "MAIL_COPILOT" ? deps.prompt : undefined;
+    if (send) {
       // A brief counts as run only once a running CLI can take it (13/11: a brief recorded beside a stopped CLI counted as ran): a closed or
       // stopped copilot is started first (as Nous's sends do, R36-a), and briefed on a later tick once its CLI runs.
       const live = pane.isClosed ? null : await deps.inspect(pane).catch(() => null);
       if (pane.isClosed || (live && (!live.sessionId || live.state === "EXITED" || live.state === "ERROR"))) return startCli("its copilot", "run yet to take the brief");
-      try { await deps.brief(pane, task.ownerUserId, prompt); }
-      catch (error) { return waitOrSkip(`the brief could not be given to its copilot (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"})`, "FAILED"); }
-      return await advance(`Briefed its copilot at ${at}.`, "RUNNING") ? "RAN" : "LOST";
+      const how = send === deps.brief ? "brief" : "prompt";
+      try { await send(pane, task.ownerUserId, prompt); }
+      catch (error) { return waitOrSkip(`the ${how} could not be given to its copilot (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"})`, "FAILED"); }
+      return await advance(how === "brief" ? `Briefed its copilot at ${at}.` : `Prompted its copilot at ${at}, after its current turn.`, "RUNNING") ? "RAN" : "LOST";
     }
 
     // Nous closes finished task panes (operator order 2026-10-24): the task reopens its pane and types once the CLI is at its prompt.

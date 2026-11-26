@@ -2430,6 +2430,7 @@ export const PaneCard = memo(function PaneCard({
                     categoryColor={pane.categoryColor}
                     isWorking={effectiveIsWorking}
                     screenWorkingMs={paneWorkingState.screenWorkingMs}
+                    isVisible={isVisibleInShell && !pane.isMinimized}
                   />
                 ) : null}
               </>

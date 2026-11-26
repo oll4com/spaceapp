@@ -6,7 +6,7 @@ import { expect, it } from "vitest";
 import { createSpacePgPool } from "../src/space-store.js";
 import { loadMigrations } from "../src/migrations.js";
 import { PostgresGatewayRepository } from "../src/gateway-repository.js";
-import { disposablePostgresUnavailableReason } from "./support/disposable-postgres.js";
+import { disposablePostgresUnavailableReason, trackDisposableContainer } from "./support/disposable-postgres.js";
 
 const postgresUnavailable = disposablePostgresUnavailableReason();
 
@@ -18,11 +18,12 @@ it.skipIf(postgresUnavailable)("stores Space Gateway settings, keys, logs and da
   const socket = `${root}/socket`;
   await mkdir(socket); await chmod(socket, 0o777);
   const name = `space-gateway-${randomUUID()}`;
+  const untrack = trackDisposableContainer(name, root);
   const docker = (args: string[]) => execFileSync("docker", args, { encoding: "utf8", timeout: 90_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
   const pool = createSpacePgPool(`postgresql://postgres@localhost/postgres?host=${encodeURIComponent(socket)}`, { max: 4 });
   let created = false;
   try {
-    docker(["run", "--tmpfs", "/var/lib/postgresql/data", "--detach", "--rm", "--pull=never", "--name", name, "--network", "none", "--mount", `type=bind,source=${socket},target=/var/run/postgresql`,
+    docker(["run", "--tmpfs", "/var/lib/postgresql/data", "--detach", "--rm", "--pull=never", "--name", name, "--label", "space.disposable-test=1", "--network", "none", "--mount", `type=bind,source=${socket},target=/var/run/postgresql`,
       "--env", "POSTGRES_HOST_AUTH_METHOD=trust", "pgvector/pgvector:0.8.7-pg17-trixie", "-c", "listen_addresses="]);
     created = true;
     let ready = false;
@@ -36,6 +37,8 @@ it.skipIf(postgresUnavailable)("stores Space Gateway settings, keys, logs and da
     for (const item of migrations.filter(item => item.id >= "0184" && item.id <= target!.id)) await pool.query(item.sql);
     // The request log's Anthropic request id (token usage page), twice: it is a no-op the second time.
     for (let run = 0; run < 2; run += 1) await pool.query(migrations.find(item => item.id === "0204_token_usage_routes")!.sql);
+    // The reset grants' column, which saveResetCredits writes since 14/11.
+    await pool.query(migrations.find(item => item.id === "0336_space_gateway_reset_credit_grants")!.sql);
 
     const repository = new PostgresGatewayRepository(pool);
     const settings = await repository.getSettings();
@@ -125,6 +128,12 @@ it.skipIf(postgresUnavailable)("stores Space Gateway settings, keys, logs and da
     ]);
     expect(await repository.providerFallbacks("2030-03-01", "2030-03-01")).toEqual([{ fromProvider: "CLAUDE", toProvider: "CODEX", requests: 1, served: 1 }]);
     expect(await repository.providerFallbacks("2030-01-01", "2030-01-31")).toEqual([]);
+    // The kept sums of the earlier window move by the rows that came (the two March ones) and the one that left (r1), as a whole sum reads them.
+    const moved = await repository.usageSince("2030-01-01T10:30:00.000Z");
+    expect(moved).toEqual({ requests: 3, errors: 2, inputTokens: 10, outputTokens: 2, costUsd: expect.closeTo(0.001, 9), compressionTokensSaved: 15 });
+    expect(await new PostgresGatewayRepository(pool).usageSince("2030-01-01T10:30:00.000Z")).toEqual({ ...moved, costUsd: 0.001 });
+    // A window that starts before the kept one is summed whole.
+    expect((await repository.usageSince("2030-01-01T00:00:00.000Z")).requests).toBe(4);
 
     await repository.recordCompression([
       { hour: "2030-01-01T10:15:00.000Z", mode: "ON", provider: "CODEX", strategy: "smart_crusher", requests: 0, modifiedRequests: 0, blocks: 2,
@@ -180,6 +189,36 @@ it.skipIf(postgresUnavailable)("stores Space Gateway settings, keys, logs and da
     }
     expect(await repository.weeklyPeaks("2020-01-01", "2999-12-31")).toEqual([{ accountId: teamB.id, quotaKey: "", resetAt: "2999-01-08T00:30:00.000Z",
       usedPercent: 55, lastSampleAt: expect.any(String) }]);
+    // The reset hours that ended are kept (speed slice 20): a later read takes only the hours that can still change and answers as a new read does.
+    const sample = (usedPercent: number, reset: string, recorded: string) => pool.query(`INSERT INTO space_gateway_usage_history(account_id,usage_window,used_percent,reset_at,recorded_at)
+      VALUES ($1,'SECONDARY',$2,now() + $3::interval,now() + $4::interval)`, [teamB.id, usedPercent, reset, recorded]);
+    await sample(20, "-45 days", "-46 days"); await sample(10, "-20 days", "-21 days"); await sample(30, "-3 hours", "-4 hours"); await sample(50, "30 minutes", "-1 minute");
+    const since: unknown[] = [];
+    const keeping = new PostgresGatewayRepository({ query: (sql: string, values: unknown[]) => {
+      if (sql.includes("max(used_percent)")) since.push(values[2]);
+      return pool.query(sql, values);
+    } } as never);
+    const day = (ago: number) => new Date(Date.now() - ago * 86_400_000).toISOString().slice(0, 10);
+    const byReset = (rows: Array<{ resetAt: string }>) => rows.sort((a, b) => a.resetAt.localeCompare(b.resetAt));
+    const same = async (from: string, to: string) => {
+      const rows = byReset(await keeping.weeklyPeaks(from, to));
+      expect(rows).toEqual(byReset(await new PostgresGatewayRepository(pool).weeklyPeaks(from, to)));
+      return rows.map((row) => (row as { usedPercent?: number }).usedPercent);
+    };
+    expect(await same(day(30), day(0))).toEqual(expect.arrayContaining([10, 30]));
+    await sample(70, "30 minutes", "0 minutes");
+    expect(await same(day(30), day(0))).toEqual(expect.arrayContaining([10, 30]));
+    expect(await same(day(7), day(0))).toContain(30);
+    // An earlier first day is a whole read; the days before today alone come from the kept hours.
+    expect(await same(day(60), day(0))).toEqual(expect.arrayContaining([20, 10, 30]));
+    expect(await same(day(60), day(10))).toEqual([20, 10]);
+    // Neither a read of older days only, nor one of days that have not begun, nor one that names a time replaces the kept hours.
+    expect(await same(day(90), day(10))).toEqual([20, 10]);
+    await same(day(-1), day(-1));
+    await same(`${day(30)} 00:00`, day(0));
+    await same(day(30), day(0));
+    expect(since.map((value) => (value === "-infinity" ? "all" : Date.now() - Date.parse(String(value)) < 2.1 * 3_600_000 ? "ended" : "older")))
+      .toEqual(["all", "ended", "ended", "all", "ended", "all", "all", "all", "ended"]);
     // Pace day start (plan clipboard:DotwYXVD2N3n): the last sample of that week at or before the time, else its first one after.
     expect(await repository.weekUsedAt(teamB.id, "2020-01-01T00:00:00.000Z", "2999-01-08T00:15:00.000Z")).toBe(40);
     expect(await repository.weekUsedAt(teamB.id, "2020-01-01T00:00:00.000Z", "2999-01-09T00:00:00.000Z")).toBeNull();
@@ -215,7 +254,7 @@ it.skipIf(postgresUnavailable)("stores Space Gateway settings, keys, logs and da
     expect((await repository.listRequestLogs({ limit: 10 }))[0]!.apiKeyId).toBeNull();
   } finally {
     await pool.end();
-    if (created) docker(["stop", "--time", "5", name]);
+    untrack(); if (created) { try { docker(["stop", "--time", "2", name]); } catch { try { docker(["rm", "--force", "--volumes", name]); } catch { /* ignore */ } } }
     await rm(root, { recursive: true, force: true });
   }
 }, 90_000);

@@ -55,6 +55,8 @@ export interface AccountState {
   selectionWeightMultiplier?: number;
   /** The weekly used % when this account's pace day began (ms), for `paceDay`; none starts the day at the use seen now. */
   weekDayStart?: { at: number; usedPercent: number } | null;
+  /** Reset credits that give a fresh week (`gatewayWeekResetCredits`): today's share counts them. */
+  weekResetCredits?: number;
 }
 
 export interface SelectionResult {
@@ -103,7 +105,8 @@ export const DEFAULT_RELATIVE_AVAILABILITY_POWER = 2;
 export const DEFAULT_RELATIVE_AVAILABILITY_TOP_K = 5;
 const UNKNOWN_PLAN_FALLBACK = "free";
 const capacityPlanAliases: Record<string, string> = {
-  education: "edu", k12: "edu", guest: "free", go: "free", free_workspace: "free", quorum: "free", unknown: "free", max: "max5x"
+  education: "edu", k12: "edu", guest: "free", go: "free", free_workspace: "free", quorum: "free", unknown: "free", max: "max5x",
+  "google-ai-pro": "pro", "g1-pro-tier": "pro", "google-ai-ultra": "max5x", "g1-ultra-tier": "max5x"
 };
 
 // Claude plans (max5x, max20x) live in their own pool, so only their ratio to Claude Pro (taken as "pro") matters.
@@ -134,7 +137,8 @@ export const PACE_CAP = "PACE_CAP";
 
 /** Today's share of the account's week (`gatewayPaceDay`, plan clipboard:DotwYXVD2N3n); `current` in seconds. */
 export function paceDay(state: AccountState, current: number) {
-  return gatewayPaceDay({ usedPercent: state.secondaryUsedPercent, resetAt: state.secondaryResetAt == null ? null : state.secondaryResetAt * 1000 },
+  return gatewayPaceDay({ usedPercent: state.secondaryUsedPercent, resetAt: state.secondaryResetAt == null ? null : state.secondaryResetAt * 1000,
+    credits: state.weekResetCredits },
     state.weekDayStart, current * 1000);
 }
 
@@ -557,7 +561,8 @@ export function fillFirstAccount(
   current: number,
   reserve: "NORMAL" | "PRIORITY" | null,
   reservePercent = FILL_FIRST_DEFAULT_RESERVE_PERCENT,
-  weekCap = FILL_FIRST_WEEKLY_CAP_PERCENT
+  weekCap = FILL_FIRST_WEEKLY_CAP_PERCENT,
+  sticky: string | null = null
 ): AccountState | "RESERVED" | null {
   const used = (value: number | null | undefined, resetAt: number | null | undefined) =>
     value === null || value === undefined || (resetAt && resetAt <= current) ? 0 : value;
@@ -573,21 +578,29 @@ export function fillFirstAccount(
     const started = fiveHour(state) > 0;
     return [rank(state), reset(state), started ? 0 : 1, -fiveHour(state), state.accountId];
   };
-  if (reserve !== "NORMAL" || reservePercent <= 0) return minBy(open, order);
+  // Soft sticky (token slice 6): a running session keeps its open account, and its prompt cache, unless the pick resets strictly earlier
+  // (operator 4/11: a later-reset account never keeps draining once an earlier one recovers). The held reserve is never kept this way.
+  const stay = sticky ? open.find((state) => state.accountId === sticky) : undefined;
+  const pick = (pool: readonly AccountState[]) => {
+    const best = minBy(pool, order);
+    return stay && pool.includes(stay) && reset(stay) <= reset(best) ? stay : best;
+  };
+  if (reserve !== "NORMAL" || reservePercent <= 0) return pick(open);
   // Hold the capacity spent last (the most ahead of its pace, then the latest reset), not an earlier reset we need to spend first.
   const held = minBy(open, (state) => [-rank(state), -reset(state), fiveHour(state), state.accountId]);
   const others = open.filter((state) => state !== held);
-  if (others.length) return minBy(others, order);
+  if (others.length) return pick(others);
   const beyondCap = weekOk.filter((state) => state !== held);
   if (beyondCap.length) return minBy(beyondCap, (state) => [fiveHour(state), state.accountId]);
   return fiveHour(held) < 100 - reservePercent ? held : "RESERVED";
 }
 
-/** Normalizes plan names for plan-priority tiers ("Pro Lite" -> "prolite"). */
+/** Normalizes plan names for plan-priority tiers ("Pro Lite" -> "prolite", "Google AI Pro" -> "pro"). */
 export function normalizePlanPriorityType(value: string | null | undefined): string {
   const cleaned = (value ?? "").trim().toLowerCase();
   if (!cleaned) return "unknown";
   if (cleaned.replace(/[-_ ]/g, "") === "prolite") return "prolite";
+  if (cleaned === "google-ai-pro" || cleaned === "g1-pro-tier") return "pro";
   return cleaned;
 }
 
@@ -671,7 +684,7 @@ export interface SelectAccountOptions {
    * room for priority traffic: NORMAL work takes it only when no other account has room, and only under `100 - reservePercent` (default 20% kept,
    * only while the pool runs short before its next reset, `poolReserves`).
    */
-  fillFirst?: { reserve: "NORMAL" | "PRIORITY" | null; reservePercent?: number } | null;
+  fillFirst?: { reserve: "NORMAL" | "PRIORITY" | null; reservePercent?: number; sticky?: string | null } | null;
   /**
    * Background work (not the operator's turns, plan clipboard:DotwYXVD2N3n): an account that used today's share of its week (`paceDay`) is
    * skipped; when every one has, the answer is PACE_CAP. An account's last 24 hours before its weekly reset are never capped.
@@ -859,7 +872,7 @@ export function selectAccount(states: Iterable<AccountState>, options: SelectAcc
       ? effectivePool.filter((state) => left(state.secondaryUsedPercent, state.secondaryResetAt) > kept.weekFloor && left(state.usedPercent, state.primaryResetAt) > kept.fiveFloor)
       : effectivePool;
     const fill = (pool: readonly AccountState[]) => options.fillFirst ? fillFirstAccount(pool, current, options.fillFirst.reserve,
-      reserves.fiveHour(options.fillFirst.reservePercent ?? FILL_FIRST_DEFAULT_RESERVE_PERCENT), kept.weekCap) : null;
+      reserves.fiveHour(options.fillFirst.reservePercent ?? FILL_FIRST_DEFAULT_RESERVE_PERCENT), kept.weekCap, options.fillFirst.sticky ?? null) : null;
     // weekRunway: an account short of its week is set aside while another serves; it takes what they refuse.
     const short = (state: AccountState) => Boolean(options.weekRunway) && weekShort(state, current);
     const roomy = withRoom.filter((state) => !short(state));

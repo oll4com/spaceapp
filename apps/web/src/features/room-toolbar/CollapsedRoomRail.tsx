@@ -1,11 +1,12 @@
-import type { ReactNode, RefObject } from "react";
+import type { ReactNode } from "react";
 import type { Room } from "@space/contracts";
 import type { IconToolbarAction } from "../../icon-toolbar.js";
 import { toggleBrowserFullscreen } from "../desktop-titlebar/fullscreen.js";
+import type { SideSurface } from "../docks/dock-types.js";
 import type { SideSurfaces } from "../docks/useSideSurfaces.js";
 import { LiveRailButton, LiveRailMenu, type LiveRail } from "../live-pane/useLiveRail.js";
 import { MinimizedPaneBarToggle } from "../pane-float/MinimizedPaneBarToggle.js";
-import { useNotificationStore } from "../notifications/notification-store.js";
+import { notificationsBadge, useNotificationStore } from "../notifications/notification-store.js";
 import type { SnipTool } from "../snip-tool/useSnipTool.js";
 import { DesktopNavigation } from "../ui-theme/DesktopNavigation.js";
 import { RailVisibilityMenu } from "../ui-theme/RailVisibilityMenu.js";
@@ -50,7 +51,7 @@ export interface CollapsedRoomRailProps {
   touchContext: ReturnType<typeof useTouchContextMenu>;
   navigation: WorkspaceNavigationBinding;
   roomNavigation: { previousRoom: Room | null; nextRoom: Room | null; selectRoom: (roomId: string) => Promise<void> };
-  docks: Pick<SideSurfaces, "isSideSurfaceOpen" | "activeSideSurface" | "sideSurfaceToggleLabel" | "toggleSideSurface">;
+  docks: Pick<SideSurfaces, "isSideSurfaceOpen" | "activeSideSurface" | "sideSurfaceToggleLabel" | "toggleSideSurface"> & { availableDocks?: readonly SideSurface[] };
   liveRail: LiveRail;
   onActivateLive: () => void;
   liveDisabled: boolean;
@@ -89,9 +90,10 @@ export function CollapsedRoomRail({
     runDesktopAction, renderDesktopCreateTools, renderWorkspaceAction, setWorkspaceNavigationDetail, availablePanes, emptySlots
   } = navigation;
   const { previousRoom, nextRoom, selectRoom } = roomNavigation;
-  const { isSideSurfaceOpen, activeSideSurface, sideSurfaceToggleLabel, toggleSideSurface } = docks;
+  const { isSideSurfaceOpen, activeSideSurface, sideSurfaceToggleLabel, toggleSideSurface, availableDocks } = docks;
+  const dockAvailable = (id: SideSurface) => !availableDocks || availableDocks.includes(id);
   const { isSnipToolOpen, setIsSnipToolOpen } = snip;
-  const unread = useNotificationStore().pending.total;
+  const unread = notificationsBadge(useNotificationStore());
   return (
     <div
       ref={collapsedToolbarRef}
@@ -133,7 +135,7 @@ export function CollapsedRoomRail({
           <ChevronRight aria-hidden="true" />
         </button>
       ) : null}
-      {railVisibility.isVisible("rooms") ? (
+      {railVisibility.isVisible("rooms") && dockAvailable("rooms") ? (
         <button
           type="button"
           className={`room-toolbar-visibility-button${isSideSurfaceOpen && activeSideSurface === "rooms" ? " is-active" : ""}`}
@@ -155,7 +157,7 @@ export function CollapsedRoomRail({
           <PanelLeft aria-hidden="true" />
         </button>
       ) : null}
-      {railVisibility.isVisible("nous") ? (
+      {railVisibility.isVisible("nous") && dockAvailable("nous") ? (
         <button
           type="button"
           className={`room-toolbar-visibility-button${isSideSurfaceOpen && activeSideSurface === "nous" ? " is-active" : ""}`}
@@ -178,11 +180,11 @@ export function CollapsedRoomRail({
         </button>
       ) : null}
       {/* Operator 4/11 «εχει χαθει το Pane notifications!»: the Notification Center had no rail icon, only the end of the Docks menu. */}
-      {railVisibility.isVisible("notifications") ? (
+      {railVisibility.isVisible("notifications") && dockAvailable("notifications") ? (
         <button
           type="button"
           className={`room-toolbar-visibility-button room-rail-notifications${isSideSurfaceOpen && activeSideSurface === "notifications" ? " is-active" : ""}`}
-          title={unread ? `${sideSurfaceToggleLabel("notifications")} · ${unread} unread` : sideSurfaceToggleLabel("notifications")}
+          title={unread ? `${sideSurfaceToggleLabel("notifications")} · ${unread}` : sideSurfaceToggleLabel("notifications")}
           data-rail-id="notifications"
           aria-label={sideSurfaceToggleLabel("notifications")}
           aria-pressed={isSideSurfaceOpen && activeSideSurface === "notifications"}

@@ -16,23 +16,29 @@ export const FREELANCE_COPILOT_AUTONOMY_LEVELS = ["ASSIST", "RULES", "FULL"] as 
 export const freelanceCopilotAutonomySchema = z.enum(FREELANCE_COPILOT_AUTONOMY_LEVELS);
 export type FreelanceCopilotAutonomy = z.infer<typeof freelanceCopilotAutonomySchema>;
 
-export const FREELANCE_CHANNELS = ["UPWORK", "CONTRA", "FIVERR", "TOPTAL", "ARC", "BRAINTRUST", "GURU", "PEOPLEPERHOUR"] as const;
+export const FREELANCE_CHANNELS = ["UPWORK", "CONTRA", "FIVERR", "TOPTAL", "ARC", "BRAINTRUST", "GURU", "PEOPLEPERHOUR",
+  "WELLFOUND", "WEWORKREMOTELY", "REMOTEOK", "WORKINGNOMADS", "SUPERTEAM", "CRYPTOJOBSLIST"] as const;
 export const freelanceChannelSchema = z.enum(FREELANCE_CHANNELS);
 export type FreelanceChannel = z.infer<typeof freelanceChannelSchema>;
 
 export const FREELANCE_CHANNEL_LABELS: Record<FreelanceChannel, string> = {
-  UPWORK: "Upwork", CONTRA: "Contra", FIVERR: "Fiverr", TOPTAL: "Toptal", ARC: "Arc", BRAINTRUST: "Braintrust", GURU: "Guru", PEOPLEPERHOUR: "PeoplePerHour"
+  UPWORK: "Upwork", CONTRA: "Contra", FIVERR: "Fiverr", TOPTAL: "Toptal", ARC: "Arc", BRAINTRUST: "Braintrust", GURU: "Guru", PEOPLEPERHOUR: "PeoplePerHour",
+  WELLFOUND: "Wellfound", WEWORKREMOTELY: "We Work Remotely", REMOTEOK: "Remote OK", WORKINGNOMADS: "Working Nomads", SUPERTEAM: "Superteam Earn", CRYPTOJOBSLIST: "CryptoJobsList"
 };
 /** Where the operator (or the copilot, through the pane browser) signs in on each platform. */
 export const FREELANCE_CHANNEL_LOGIN_URLS: Record<FreelanceChannel, string> = {
   UPWORK: "https://www.upwork.com/ab/account-security/login", CONTRA: "https://contra.com/log-in", FIVERR: "https://www.fiverr.com/login",
   TOPTAL: "https://www.toptal.com/users/login", ARC: "https://arc.dev/login", BRAINTRUST: "https://app.usebraintrust.com/auth/login/",
-  GURU: "https://www.guru.com/login.aspx", PEOPLEPERHOUR: "https://www.peopleperhour.com/site/login"
+  GURU: "https://www.guru.com/login.aspx", PEOPLEPERHOUR: "https://www.peopleperhour.com/site/login",
+  WELLFOUND: "https://wellfound.com/login", WEWORKREMOTELY: "https://weworkremotely.com/account/sign_in", REMOTEOK: "https://remoteok.com/login",
+  WORKINGNOMADS: "https://www.workingnomads.com/accounts/login/", SUPERTEAM: "https://superteam.fun/earn/", CRYPTOJOBSLIST: "https://cryptojobslist.com/login"
 };
 /** Hosts a sent proposal's or message's URL may be on, per channel (subdomains included). */
 export const FREELANCE_CHANNEL_HOSTS: Record<FreelanceChannel, readonly string[]> = {
   UPWORK: ["upwork.com"], CONTRA: ["contra.com"], FIVERR: ["fiverr.com"], TOPTAL: ["toptal.com"], ARC: ["arc.dev"], BRAINTRUST: ["usebraintrust.com", "braintrust.com"],
-  GURU: ["guru.com"], PEOPLEPERHOUR: ["peopleperhour.com"]
+  GURU: ["guru.com"], PEOPLEPERHOUR: ["peopleperhour.com"],
+  WELLFOUND: ["wellfound.com", "angel.co"], WEWORKREMOTELY: ["weworkremotely.com"], REMOTEOK: ["remoteok.com", "remoteok.io"], WORKINGNOMADS: ["workingnomads.com"],
+  SUPERTEAM: ["superteam.fun"], CRYPTOJOBSLIST: ["cryptojobslist.com"]
 };
 /**
  * Platforms whose account signs in only with "Continue with Google" on the pane's Google account (operator rule 2026-10-17):
@@ -58,10 +64,11 @@ export type FreelanceEgressRoute = z.infer<typeof freelanceEgressRouteSchema>;
 export const FREELANCE_EGRESS_LABELS: Record<FreelanceEgressRoute, string> = {
   direct: "This server", greece: "Greece WireGuard", thailand: "Thailand", mullvad: "Mullvad", nord: "NordVPN"
 };
-/** The SOCKS5 proxy of each VPN route: the namespace's eth0 address (scripts/cli-vpn-broker.mjs) and port 1080. */
-export const FREELANCE_EGRESS_PROXIES: Record<Exclude<FreelanceEgressRoute, "direct">, string> = {
-  greece: "10.254.241.2:1080", thailand: "10.254.242.2:1080", mullvad: "10.254.243.2:1080", nord: "10.254.244.2:1080"
-};
+/**
+ * The SOCKS5 proxy (host:port) of each VPN route: the namespace's eth0 address (scripts/cli-vpn-broker.mjs) and port 1080,
+ * set in the local env only (SPACE_VPN_SOCKS_PROXIES, the API's config.vpnSocksProxies).
+ */
+export type FreelanceEgressProxies = Partial<Record<Exclude<FreelanceEgressRoute, "direct">, string>>;
 /** More hosts a platform loads its sign-in and pages from, routed with it. */
 export const FREELANCE_CHANNEL_EXTRA_HOSTS: Partial<Record<FreelanceChannel, readonly string[]>> = {
   UPWORK: ["upwork.co", "upworkstatic.com"], FIVERR: ["fiverr-res.cloudinary.com", "fiverrcdn.com"]
@@ -73,7 +80,7 @@ export const freelanceChannelSettingsSchema = z.object({
   egress: z.union([freelanceEgressRouteSchema, z.literal("pane")]).default("pane"),
   /** The highest autonomy this channel allows; the effective level is the lower of this and the pane's. */
   autonomyCap: freelanceCopilotAutonomySchema,
-  /** At most this many proposals and messages a day on this channel, whatever the autonomy level. */
+  /** At most this many proposals and applications a day on this channel (follow-ups and client messages are not counted, operator 14/11), whatever the autonomy level. */
   dailyCap: z.number().int().min(0).max(100)
 }).strict();
 export type FreelanceChannelSettings = z.infer<typeof freelanceChannelSettingsSchema>;
@@ -87,10 +94,16 @@ export const FREELANCE_CHANNEL_DEFAULTS: Record<FreelanceChannel, FreelanceChann
   ARC: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
   BRAINTRUST: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
   GURU: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
-  PEOPLEPERHOUR: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 }
+  PEOPLEPERHOUR: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
+  WELLFOUND: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
+  WEWORKREMOTELY: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
+  REMOTEOK: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
+  WORKINGNOMADS: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
+  SUPERTEAM: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 },
+  CRYPTOJOBSLIST: { enabled: true, egress: "pane", autonomyCap: "FULL", dailyCap: 10 }
 };
 
-// shortcut: GURU and PEOPLEPERHOUR are not keys of the pane settings yet: the running Browser Host parses pane rows strictly with the
+// shortcut: GURU, PEOPLEPERHOUR and the six job boards added 23/11 (WELLFOUND … CRYPTOJOBSLIST) are not keys of the pane settings yet: the running Browser Host parses pane rows strictly with the
 // contracts it started with, so a new key there would stop the pane's browser. They use FREELANCE_CHANNEL_DEFAULTS (freelanceChannelSettings);
 // add them here with the next guarded Browser Host restart.
 export const FREELANCE_SETTINGS_CHANNELS = ["UPWORK", "CONTRA", "FIVERR", "TOPTAL", "ARC", "BRAINTRUST"] as const satisfies readonly FreelanceChannel[];
@@ -120,7 +133,7 @@ export const freelanceCopilotPaneSettingsSchema = z.object({
     perMonth: z.number().int().min(0).max(20000).default(2000)
   }).strict().default({ perDay: 120, perMonth: 2000 }),
   /** No hourly bid below this (USD); a lower one needs the operator. */
-  rateFloorHourly: z.number().min(0).max(1000).default(35),
+  rateFloorHourly: z.number().min(0).max(1000).default(20),
   /** Follow up on a proposal nobody answered, 3 and 7 days after it went out. */
   followUps: z.boolean().default(true),
   /**
@@ -513,11 +526,13 @@ export function freelanceUrlMatchesChannel(raw: string, channelId: FreelanceChan
 // webmail) never go to a client.
 const FREELANCE_ALLOWED_LINK_HOSTS = ["spaceapp.dev", "www.spaceapp.dev"];
 const FREELANCE_ALLOWED_LINK_DOMAINS = ["github.com", "loom.com", "npmjs.com"];
+/** A messenger named as the thing to build (a bot, its API, an integration), not as a way to talk. */
+const MESSENGER_PRODUCT = String.raw`(?![\s-]+(?:business\s+|cloud\s+)?(?:bots?|chat\s?bots?|apis?|integrations?|mini[\s-]?apps?|webhooks?|automation)\b)`;
 const OFF_PLATFORM_RULES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
   { id: "email-address", pattern: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/ },
   { id: "phone-number", pattern: /(?:\+|\b00)\d[\d\s().-]{7,}\d|\b\d{3}[\s.-]\d{3}[\s.-]\d{4}\b/ },
-  // "Telegram bot" is product wording (offer: an agent with a Telegram bot); "on Telegram", a handle or a t.me link is contact.
-  { id: "messenger", pattern: /\b(?:telegram\b(?!\s+bots?\b)|(?:whats\s?app|skype|discord|wechat|viber)\b)/i },
+  // "Telegram bot" or "WhatsApp API" is product wording (operator 14/11: such jobs get proposals); "on Telegram", a handle or a t.me link is contact.
+  { id: "messenger", pattern: new RegExp(`\\b(?:telegram|whats\\s?app|skype|discord|wechat|viber)\\b${MESSENGER_PRODUCT}`, "i") },
   { id: "messenger-handle", pattern: /(?:^|[\s(,:;])@[A-Za-z][A-Za-z0-9_]{4,31}\b(?![/.@-])/ },
   { id: "messenger-link", pattern: /\b(?:t\.me|telegram\.me|telegram\.dog)\/\S/i },
   { id: "off-platform-payment", pattern: /\b(?:pay(?:ment)?\s+(?:me\s+)?(?:directly|outside|off[- ]platform)|paypal|western union|wire (?:me|it) directly)\b/i }
@@ -538,13 +553,13 @@ export function freelanceWordingIssues(text: string, input: { channel: Freelance
       if (!FREELANCE_ALLOWED_LINK_HOSTS.includes(host) && !input.ownHosts?.includes(host) && !domains.some((entry) => host === entry || host.endsWith(`.${entry}`))) issues.add("outside-link");
     }
   }
-  if (input.bid?.type === "HOURLY" && input.bid.amount < (input.rateFloorHourly ?? 35)) issues.add("below-rate-floor");
+  if (input.bid?.type === "HOURLY" && input.bid.amount < (input.rateFloorHourly ?? 20)) issues.add("below-rate-floor");
   return [...issues];
 }
 
 /** Signs of a scam in a job post or a client's message (Research Council 2026-10-14): such leads need the operator. */
 export const FREELANCE_SCAM_RULES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
-  { id: "move-to-messenger", pattern: /\b(?:telegram|whats\s?app|wechat|skype)\b/i },
+  { id: "move-to-messenger", pattern: new RegExp(`\\b(?:telegram|whats\\s?app|wechat|skype)\\b${MESSENGER_PRODUCT}`, "i") },
   { id: "unpaid-test", pattern: /\b(?:unpaid|free)\s+(?:test|trial|sample)\b|\btest task\b[^.]{0,60}\b(?:unpaid|free|no pay)/i },
   { id: "cheque-or-equipment", pattern: /\b(?:cheque|check deposit|buy (?:the )?equipment|purchase (?:the )?equipment|gift cards?)\b/i },
   { id: "crypto-only", pattern: /\b(?:paid|pay(?:ment)?) (?:only )?in (?:crypto|usdt|bitcoin|btc|eth)\b|\bcrypto only\b/i },
@@ -572,7 +587,13 @@ export function freelanceChannelOfSender(from: string): FreelanceChannel | null 
 }
 
 // ---- browser egress ---------------------------------------------------------------------------------
-const pacTarget = (route: FreelanceEgressRoute) => route === "direct" ? "DIRECT" : `SOCKS5 ${FREELANCE_EGRESS_PROXIES[route]}`;
+function pacTarget(route: FreelanceEgressRoute, proxies: FreelanceEgressProxies): string {
+  if (route === "direct") return "DIRECT";
+  const proxy = proxies[route];
+  // Fails closed: without its proxy the pane does not open rather than leaving from this server.
+  if (!proxy) throw new Error(`BROWSER_ROUTE: the ${route} route has no SOCKS5 proxy on this server (SPACE_VPN_SOCKS_PROXIES).`);
+  return `SOCKS5 ${proxy}`;
+}
 /** The route a platform leaves from, its own or the pane's. */
 export function freelanceChannelEgress(settings: Pick<FreelanceCopilotPaneSettings, "browserEgress" | "channels">, channelId: FreelanceChannel): FreelanceEgressRoute {
   const own = freelanceChannelSettings(settings, channelId).egress;
@@ -583,9 +604,9 @@ export function freelanceChannelEgress(settings: Pick<FreelanceCopilotPaneSettin
  * localhost direct. Never a DIRECT fallback after a proxy: a route that is down fails closed. Null when every
  * route is direct (no proxy at all).
  */
-export function freelanceEgressPac(settings: Pick<FreelanceCopilotPaneSettings, "browserEgress" | "channels">): string | null {
-  const rules = FREELANCE_CHANNELS.flatMap((id) => [...FREELANCE_CHANNEL_HOSTS[id], ...(FREELANCE_CHANNEL_EXTRA_HOSTS[id] ?? [])].map((host) => [host, pacTarget(freelanceChannelEgress(settings, id))] as const));
-  const fallback = pacTarget(settings.browserEgress);
+export function freelanceEgressPac(settings: Pick<FreelanceCopilotPaneSettings, "browserEgress" | "channels">, proxies: FreelanceEgressProxies): string | null {
+  const rules = FREELANCE_CHANNELS.flatMap((id) => [...FREELANCE_CHANNEL_HOSTS[id], ...(FREELANCE_CHANNEL_EXTRA_HOSTS[id] ?? [])].map((host) => [host, pacTarget(freelanceChannelEgress(settings, id), proxies)] as const));
+  const fallback = pacTarget(settings.browserEgress, proxies);
   if (fallback === "DIRECT" && rules.every(([, target]) => target === "DIRECT")) return null;
   return pacScript(rules, fallback);
 }
@@ -593,8 +614,8 @@ export function freelanceEgressPac(settings: Pick<FreelanceCopilotPaneSettings, 
  * Every other pane browser's route (plan clipboard:iLvBs5eOMZjF, operator 31/10): all sites to one route, localhost direct, never a
  * DIRECT fallback (a route that is down fails closed). Null for the server's own address.
  */
-export function browserRoutePac(route: FreelanceEgressRoute): string | null {
-  return route === "direct" ? null : pacScript([], pacTarget(route));
+export function browserRoutePac(route: FreelanceEgressRoute, proxies: FreelanceEgressProxies): string | null {
+  return route === "direct" ? null : pacScript([], pacTarget(route, proxies));
 }
 function pacScript(rules: ReadonlyArray<readonly [string, string]>, fallback: string): string {
   return [

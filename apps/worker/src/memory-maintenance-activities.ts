@@ -37,6 +37,7 @@ import {
   createMemoryGraphSnapshotStore,
   type MemoryGraphCacheRecord,
   type MemoryGraphSnapshot,
+  type MemoryGraphSnapshotStore,
   type MemoryGraphSource
 } from "@space/memory-graph";
 import {
@@ -678,11 +679,22 @@ export async function finalizeMemoryRepair(
   });
 }
 
-function snapshotContentsMatch(left: MemoryGraphSnapshot, right: MemoryGraphSnapshot): boolean {
-  const normalizedRight = memoryGraphSnapshotSchema.parse(right) as MemoryGraphSnapshot;
-  const { generatedAt: _leftGeneratedAt, ...leftContents } = left;
-  const { generatedAt: _rightGeneratedAt, ...rightContents } = normalizedRight;
-  return JSON.stringify(leftContents) === JSON.stringify(rightContents);
+/** Hash of a snapshot's JSON without generatedAt; a built snapshot is schema-normalised first, as a stored one already is. */
+function snapshotContentsHash(snapshot: MemoryGraphSnapshot, normalize: boolean): string {
+  // Copy-and-delete keeps key order (same JSON as a rest destructure) and eslint's unused-binding rule quiet.
+  const contents: Partial<MemoryGraphSnapshot> = { ...(normalize ? memoryGraphSnapshotSchema.parse(snapshot) as MemoryGraphSnapshot : snapshot) };
+  delete contents.generatedAt;
+  return createHash("sha256").update(JSON.stringify(contents)).digest("hex");
+}
+
+/** The stored snapshot cut to what a refresh needs (layout, hashes), so its records are not held through the build. */
+async function readPreviousSnapshot(store: MemoryGraphSnapshotStore) {
+  const previous = await store.read();
+  return previous && {
+    sourceHash: previous.sourceHash,
+    contentsHash: snapshotContentsHash(previous, false),
+    layout: { nodes: previous.nodes, edges: previous.edges }
+  };
 }
 
 function athensYearMonth(date: Date): string {
@@ -709,7 +721,7 @@ export async function refreshAllMonthsMemoryGraphSnapshot(
   rawInput: MemoryMaintenanceInput,
   options: RefreshAllMonthsMemoryGraphSnapshotOptions = {}
 ): Promise<MemoryMaintenanceResult> {
-  const input = memoryMaintenanceInputSchema.parse(rawInput);
+  memoryMaintenanceInputSchema.parse(rawInput); // validate only; this refresh covers every month
   const startedAt = Date.now();
   const now = options.now ?? (() => new Date());
   const generatedAt = now().toISOString();
@@ -724,9 +736,9 @@ export async function refreshAllMonthsMemoryGraphSnapshot(
     ...monthlyPaths.map((path, index) => ({ path, kind: "MONTHLY" as const, content: monthlyContents[index]! }))
   ];
   const store = createMemoryGraphSnapshotStore({ rootDir, filename: ALL_MONTHS_SNAPSHOT_FILENAME });
-  const previous = await store.read();
-  const snapshot = buildMemoryGraphSnapshot({ sources, generatedAt, previousSnapshot: previous });
-  const status = previous && snapshotContentsMatch(previous, snapshot) ? "UNCHANGED" : "REFRESHED";
+  const previous = await readPreviousSnapshot(store);
+  const snapshot = buildMemoryGraphSnapshot({ sources, generatedAt, previousSnapshot: previous?.layout });
+  const status = previous && previous.contentsHash === snapshotContentsHash(snapshot, true) ? "UNCHANGED" : "REFRESHED";
   if (status === "REFRESHED") await store.write(snapshot);
 
   return memoryMaintenanceResultSchema.parse({
@@ -793,8 +805,8 @@ export async function refreshMemoryGraphSnapshot(
     canonicalMemoryId: linksByRecordId.get(row.id)?.canonicalMemoryId ?? null
   }));
   const store = createMemoryGraphSnapshotStore({ rootDir });
-  const previous = await store.read();
-  const snapshot = buildMemoryGraphSnapshot({ sources, generatedAt, cacheRecords, previousSnapshot: previous });
+  const previous = await readPreviousSnapshot(store);
+  const snapshot = buildMemoryGraphSnapshot({ sources, generatedAt, cacheRecords, previousSnapshot: previous?.layout });
 
   if (cacheStore) {
     for (const node of snapshot.nodes) {
@@ -806,7 +818,7 @@ export async function refreshMemoryGraphSnapshot(
       });
     }
   }
-  const status = previous && snapshotContentsMatch(previous, snapshot) ? "UNCHANGED" : "REFRESHED";
+  const status = previous && previous.contentsHash === snapshotContentsHash(snapshot, true) ? "UNCHANGED" : "REFRESHED";
 
   if (status === "REFRESHED") await store.write(snapshot);
 

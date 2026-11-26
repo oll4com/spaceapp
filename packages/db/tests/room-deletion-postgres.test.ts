@@ -18,11 +18,11 @@ it.skipIf(postgresUnavailable)("deletes interior rooms without immediate unique-
   const pool = createSpacePgPool(`postgresql://postgres@localhost/postgres?host=${encodeURIComponent(socket)}`,{max:4});
   try {
     docker(["image","inspect",disposablePostgresImage]);
-    docker(["run","--tmpfs","/var/lib/postgresql/data","--detach","--rm","--pull=never","--name",name,"--network","none","--mount",`type=bind,source=${socket},target=/var/run/postgresql`,"--env","POSTGRES_HOST_AUTH_METHOD=trust",disposablePostgresImage,"-c","listen_addresses="]); created=true;
+    docker(["run","--tmpfs","/var/lib/postgresql/data","--detach","--rm","--pull=never","--name",name, "--label", "space.disposable-test=1","--network","none","--mount",`type=bind,source=${socket},target=/var/run/postgresql`,"--env","POSTGRES_HOST_AUTH_METHOD=trust",disposablePostgresImage,"-c","listen_addresses="]); created=true;
     let ready=false;
     for(let i=0;i<60;i++) {try {if(docker(["exec",name,"cat","/proc/1/comm"])!=="postgres")throw Error("Initializing");await pool.query("SELECT 1");ready=true;break;}catch {await new Promise(r=>setTimeout(r,250));}}
     if(!ready)throw Error("Owned PostgreSQL unavailable");
-    await pool.query(`CREATE TABLE rooms (id text PRIMARY KEY, name text NOT NULL, description text, project_path text, kind text DEFAULT 'AGENT_PROOF', room_order integer UNIQUE, pane_layout_columns integer DEFAULT 1, pane_layout_height integer DEFAULT 1, pane_cap integer DEFAULT 16, trace_id text DEFAULT 'trace:test', archived_at timestamptz, created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now(), owner_user_id text)`);
+    await pool.query(`CREATE TABLE rooms (id text PRIMARY KEY, name text NOT NULL, description text, project_path text, kind text DEFAULT 'AGENT_PROOF', room_order integer UNIQUE, pane_layout_columns integer DEFAULT 1, pane_layout_height integer DEFAULT 1, pane_cap integer DEFAULT 16, trace_id text DEFAULT 'trace:test', archived_at timestamptz, created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now(), owner_user_id text, nous_excluded boolean NOT NULL DEFAULT false)`);
     // Reverse ID/order correlation exercises unique-index collisions during compaction.
     await pool.query(`INSERT INTO rooms(id,name,room_order) SELECT 'room:order-'||(7-n),'Synthetic '||n,n FROM generate_series(7,0,-1) n`);
     const store = new PostgresSpaceStore(pool);

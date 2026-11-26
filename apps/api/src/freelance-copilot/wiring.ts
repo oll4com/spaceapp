@@ -6,6 +6,7 @@ import { submitCliPrompt } from "../cli-prompt-submit.js";
 import { createCopilotRunKick } from "../copilot-run-kick.js";
 import type { RoomPaneObservation } from "../room-pane-control.js";
 import type { CliTerminalManager } from "../cli-terminal.js";
+import { isClaudeDirectParityRuntime } from "../cli-parity.js";
 import type { ConnectorCrypto } from "../dot-connectors.js";
 import type { MailboxFactory } from "../job-apply/mailbox.js";
 import type { NotificationService } from "../notifications/service.js";
@@ -24,7 +25,7 @@ export interface FreelanceCopilotWiring extends Omit<FreelanceCopilotRouteDepend
   repository?: FreelanceCopilotRepository;
   /** Tests replace the CLI kickoff of a run. */
   kickoff?: (pane: Pane, run: FreelanceRun) => Promise<void>;
-  terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput" | "observeRoomScreenUndimmed" | "ensurePaneControlReady">;
+  terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput" | "observeRoomScreenUndimmed" | "ensurePaneControlReady"> & Partial<Pick<CliTerminalManager, "claudeTurnStartedSince">>;
   notifications: Pick<NotificationService, "raise" | "resolve">;
   roomOwner(roomId: string): Promise<string | null>;
   /** The instance job `freelance-copilot-scheduler` (stable; dev opts in). */
@@ -102,7 +103,7 @@ export function registerFreelanceCopilot(app: FastifyInstance, deps: FreelanceCo
 
   const paneRooms = new Map<string, string>();
   const service = createFreelanceCopilotService({
-    repository, crypto: deps.crypto, mailboxes: deps.mailboxes, operatorMemory: deps.operatorMemory, operatorMessages: deps.operatorMessages,
+    repository, crypto: deps.crypto, mailboxes: deps.mailboxes, operatorMemory: deps.operatorMemory, operatorMessages: deps.operatorMessages, notice: deps.notice,
     onEvent: (event) => {
       void (async () => {
         if (!event.paneId) return;
@@ -132,9 +133,15 @@ export function registerFreelanceCopilot(app: FastifyInstance, deps: FreelanceCo
     const session = await activeSession(pane) ?? await terminal.ensurePaneControlReady(pane, traceId);
     if (!session) throw new SpaceConflictError("The copilot's CLI could not start.");
     await terminal.runSerializedTerminalMutation(session.sessionId, async () => {
-      await submitCliPrompt(terminal, session.sessionId, KICKOFF(run.id), traceId, `${traceId}:kickoff`, { waitForComposer: true });
+      // The host keeps an input key until the CLI exits: createCopilotRunKick's re-kick under the first kick's key typed nothing.
+      await submitCliPrompt(terminal, session.sessionId, KICKOFF(run.id), traceId, `${traceId}:${makeSpaceId("kickoff")}`, { waitForComposer: true, paneId: session.paneId });
     });
   });
+  // A Claude kickoff that started no turn in Claude's own transcript is typed again (createCopilotRunKick, 14/11 Dino/Emma).
+  const started = async (pane: Pane, sinceMs: number) => {
+    const session = await activeSession(pane);
+    return !session || !isClaudeDirectParityRuntime(session.runtimeId) || !terminal.claudeTurnStartedSince || terminal.claudeTurnStartedSince(session.sessionId, sinceMs);
+  };
   registerFreelanceCopilotRoutes(app, service, { ...deps, kickoff });
 
   if (deps.scheduler) {
@@ -161,7 +168,7 @@ export function registerFreelanceCopilot(app: FastifyInstance, deps: FreelanceCo
     app.addHook("onClose", async () => scheduler.stop());
     if (deps.inspect) {
       const kick = createCopilotRunKick({ mode: "FREELANCE_COPILOT", store, log: deps.log, inspect: deps.inspect, paused: (pane) => service.settingsOf(pane).paused,
-        runView: (owner, pane) => service.runView(owner, pane), kickoff });
+        runView: (owner, pane) => service.runView(owner, pane), kickoff, ...(deps.kickoff ? {} : { started }) });
       kick.start();
       app.addHook("onClose", async () => kick.stop());
     }

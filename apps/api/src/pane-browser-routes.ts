@@ -1,6 +1,7 @@
 import type {} from "./request-context.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
 import type { BrowserHostActorContext, BrowserHostPageList } from "@space/browser-host";
@@ -28,12 +29,14 @@ import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.j
 import { assertBrowserHostPressKey, assertSafeBrowserTargetUrl, browserSessionRestoreUrls } from "./browser-sessions.js";
 import { executeBrowserSelectAction } from "./browser-select-action.js";
 import { revealBrowserNeed } from "./browser-reveal.js";
+import { closedNightHandoff } from "./notifications/browser-handoff.js";
 import type { SpaceApiConfig } from "./config.js";
 import { sendApiError } from "./http-errors.js";
 import { readStagedUpload, withStagedUploads } from "./multipart-upload.js";
 import type { PaneBrowserAccount } from "./pane-browser-account.js";
 import { assertBrowserPaneCompatible, getActiveBrowserSessionForPane, getPaneById } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
+import { BrowserControlHeldError } from "./browser-errors.js";
 import { BROWSER_CONTROL_IDLE_RELEASE_MS, BROWSER_CONTROL_PRESENCE_HOLD_MAX_MS, SIGN_IN_HANDOFF_REASON, browserAgentOf, countsAsOperatorInput, createBrowserControlActivity, releaseBrowserControlLease, startBrowserControlIdleRelease, type BrowserControlActivity } from "./browser-control-activity.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
 import {
@@ -45,6 +48,8 @@ import { youtubeCaptions, youtubeVideoText } from "./youtube-summary.js";
 import type { VideoEngineRun } from "./video/engine.js";
 import { seedYouTubeSignIn } from "./youtube-shared-signin.js";
 
+// Technical bound: the host's stop of a hung Chrome waits its CDP bound (CDP_SEND_TIMEOUT_MS, 60 s) and Chrome's exit; past this the start runs anyway.
+const RELAUNCH_STOP_WAIT_MS = 3 * 60_000;
 const browserPageParamSchema = z.object({ id: idSchema, pageId: z.string().min(1).max(200) });
 
 const browserCaptureParamSchema = z.object({ id: idSchema, jobId: idSchema });
@@ -130,6 +135,24 @@ function correlateBrowserTimelineEvents(
 /** Choosing and opening a Browser pane's saved Google sign-in; the pane routes and the CLI browser bridge share it. */
 /** One saved Google sign-in a pane can open: its email and browser sign-in state when known (proof rooms show neither). */
 export interface BrowserAccountChoice { profileId: string; displayName: string; label?: string; email?: string | null; browserStatus?: string }
+/**
+ * DEV3D-019: stops every entry, then starts each one it stopped. A refused stop (an operator holds one pane's control) or one failed start never
+ * leaves the panes already stopped closed; the first error is thrown after every stopped pane had its start. Answers how many started.
+ */
+export async function stopAllThenStart<T>(entries: T[], stop: (entry: T) => Promise<unknown>, start: (entry: T) => Promise<unknown>): Promise<number> {
+  const stopped: T[] = [];
+  let failure: { error: unknown } | undefined;
+  for (const entry of entries) {
+    try { await stop(entry); stopped.push(entry); } catch (error) { failure = { error }; break; }
+  }
+  let started = 0;
+  for (const entry of stopped) {
+    try { await start(entry); started += 1; } catch (error) { failure ??= { error }; }
+  }
+  if (failure) throw failure.error;
+  return started;
+}
+
 export interface PaneBrowserAccountControl {
   list(userId: string, pane: Pane): Promise<{ selectedProfileId: string | null; effectiveProfileId: string | null; profiles: BrowserAccountChoice[] }>;
   /** `email` is the chosen account's address when known (null for the private pane profile). */
@@ -143,6 +166,11 @@ export interface PaneBrowserAccountControl {
   route(pane: Pane): Promise<FreelanceEgressRoute>;
   /** Saves the route; a running browser restarts on it (same account and page; panes sharing that Chrome come back on it). */
   setRoute(userId: string, pane: Pane, route: FreelanceEgressRoute, traceId: string, actor: BrowserHostActorContext): Promise<{ route: FreelanceEgressRoute; restarted: boolean }>;
+  /**
+   * Closes the panes' running browsers, then starts each again on its page, viewport and tabs; an open handoff is asked again on the new session.
+   * `actor` null is Space's own relaunch of a Chrome that stopped answering, which no control lease holds back. Answers how many restarted.
+   */
+  relaunch(userId: string, panes: Pane[], traceId: string, actor: BrowserHostActorContext | null): Promise<number>;
 }
 
 const browserRouteInputSchema = z.object({ route: freelanceEgressRouteSchema }).strict();
@@ -190,9 +218,17 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     effectivePaneProfileId, browserAccountChoices } = options;
   // An agent may ask for a handoff while the operator already holds the browser. Taking control again or the
   // lease heartbeat (every 15 s) then accepts it; before, the copilot's card stayed until the lease ran out.
-  async function acceptHandoffForOperatorLease(user: FastifyRequest["user"], lease: BrowserControlLease): Promise<void> {
+  // `pane` (taking control): a night handoff left on its closed browser moves to the browser it reopened as (Take control restarts it).
+  async function acceptHandoffForOperatorLease(user: FastifyRequest["user"], lease: BrowserControlLease, pane?: Pane): Promise<void> {
     if (!user || lease.holderType !== "OPERATOR" || lease.status !== "ACTIVE") return;
-    const handoff = await store.getActiveBrowserHandoffRequest(lease.sessionId);
+    let handoff = await store.getActiveBrowserHandoffRequest(lease.sessionId);
+    const night = !handoff && pane ? await closedNightHandoff(store, pane, lease.sessionId) : null;
+    if (night) {
+      // Created before the old one ends, so its card never settles in between.
+      handoff = await store.createBrowserHandoffRequest({ sessionId: lease.sessionId, paneId: night.paneId, roomId: night.roomId,
+        requestedByType: night.requestedByType, requestedById: night.requestedById, reason: night.reason, ttlSeconds: 1800 });
+      await store.updateBrowserHandoffRequest(night.handoffRequestId, { status: "CANCELLED" });
+    }
     if (handoff?.status !== "REQUESTED") return;
     await store.updateBrowserHandoffRequest(handoff.handoffRequestId, {
       status: "ACCEPTED",
@@ -342,16 +378,42 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
         const metadata = resolveFreelanceCopilotPaneMetadata(pane.freelanceCopilotMetadata);
         await store.updateFreelanceCopilotMetadata(pane.id, { ...metadata, settings: { ...metadata.settings, browserEgress: route } });
       } else await store.setPaneBrowserRoute(pane.id, route);
-      const current = await store.getActivePaneBrowserSession(pane.id);
-      if (!current) return { route, restarted: false };
-      await withYouTubeAccountLock(pane.id, async () => {
+      return { route, restarted: await accountControl.relaunch(userId, [pane], traceId, actor) > 0 };
+    },
+    async relaunch(userId, panes, traceId, actor) {
+      const running = [];
+      for (const pane of panes) {
+        const current = await store.getActivePaneBrowserSession(pane.id);
+        if (current) running.push({ pane, current, handoff: await store.getActiveBrowserHandoffRequest(current.sessionId) });
+      }
+      // Every pane stops before any starts: a Chrome that panes share closes only once none is left on it.
+      return stopAllThenStart(running, ({ pane, current }) => withYouTubeAccountLock(pane.id, async () => {
         await youtubeSessionStarts.get(pane.id)?.catch(() => undefined);
-        await browserSessionManager.stopPane(pane.id, traceId, actor);
+        await browserSessionManager.stopPane(pane.id, traceId, actor ?? undefined).catch(async (error: unknown) => {
+          // A refusal (an operator holds control) is an answer, not the hung stop below: waiting would restart nothing and report it restarted.
+          if (error instanceof BrowserControlHeldError || error instanceof SpaceConflictError) throw error;
+          // 21/11 (Job Copilot Andy): the host answers a stop at 30 s while a hung Chrome's stop runs on to its CDP bound and kill (60 s and up),
+          // so the relaunch threw and left Chrome closed. It waits for that stop to close the session instead, then starts.
+          for (const until = Date.now() + RELAUNCH_STOP_WAIT_MS; Date.now() < until; await delay(2_000)) {
+            if ((await store.getActivePaneBrowserSession(pane.id))?.sessionId !== current.sessionId) return;
+          }
+          throw error;
+        });
+      }), async ({ pane, current, handoff }) => {
+        const { activeUrl, backgroundUrls } = browserSessionRestoreUrls(current);
+        const shown = activeUrl ?? current.currentUrl ?? current.targetUrl;
+        const { session } = await accountControl.start(userId, pane, { viewport: current.viewport, ...(shown && /^https?:/.test(shown) ? { targetUrl: shown } : {}),
+          streamMode: current.streamMode, includeInitialFrame: false, ownerAgentId: actor ? (actor.holderType === "AGENT" ? actor.holderId : null) : current.ownerAgentId },
+        traceId, actor ?? { holderType: "AGENT", holderId: current.ownerAgentId ?? "space" });
+        // The other tabs reopen one by one after the start answers, as a copilot's inherited tabs do; a tab that fails to open is skipped.
+        void backgroundUrls.reduce<Promise<void>>((chain, url) => chain.then(() =>
+          browserSessionManager.createPage?.(pane, url, false, traceId, actor ?? undefined).then(() => undefined, () => undefined)), Promise.resolve());
+        if (!handoff) return;
+        // Asked again on the new tab by the same asker for the same reason until the same expiry; created before the old one ends, so its card never settles.
+        await store.createBrowserHandoffRequest({ sessionId: session.sessionId, paneId: pane.id, roomId: pane.roomId, requestedByType: handoff.requestedByType,
+          requestedById: handoff.requestedById, reason: handoff.reason, ttlSeconds: Math.min(57_600, Math.max(30, Math.round((Date.parse(handoff.expiresAt) - Date.now()) / 1000))) });
+        await store.updateBrowserHandoffRequest(handoff.handoffRequestId, { status: "CANCELLED" });
       });
-      const shown = current.currentUrl ?? current.targetUrl;
-      await accountControl.start(userId, pane, { viewport: current.viewport, ...(shown && /^https?:/.test(shown) ? { targetUrl: shown } : {}), streamMode: current.streamMode,
-        includeInitialFrame: false, ownerAgentId: actor.holderType === "AGENT" ? actor.holderId : null }, traceId, actor);
-      return { route, restarted: true };
     }
   };
   // Network route (operator 31/10 01:00 BKK, plan clipboard:iLvBs5eOMZjF): where a pane browser's traffic leaves from, through the CLI VPN
@@ -423,7 +485,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     });
   });
   app.get("/api/youtube/search", defaultRouteRateLimitOptions, async (request, reply) => {
-    const q = (request.query as any)?.q;
+    const q = (request.query as { q?: unknown } | undefined)?.q;
     if (!q || typeof q !== "string" || !q.trim()) {
       return sendApiError(reply, 400, "BAD_REQUEST", "Search query 'q' is required.");
     }
@@ -452,8 +514,8 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
             for (const it of vSection) {
               const vr = it?.videoRenderer;
               if (vr?.videoId) {
-                const title = vr.title?.runs?.map((r: any) => r.text).join("") || vr.title?.simpleText || "";
-                const channel = vr.ownerText?.runs?.map((r: any) => r.text).join("") || "";
+                const title = vr.title?.runs?.map((r: { text?: string }) => r.text).join("") || vr.title?.simpleText || "";
+                const channel = vr.ownerText?.runs?.map((r: { text?: string }) => r.text).join("") || "";
                 items.push({ videoId: vr.videoId, title, channel, url: `https://www.youtube.com/watch?v=${vr.videoId}` });
                 if (items.length >= 5) break;
               }
@@ -670,7 +732,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     if (lease.holderType === "OPERATOR") options.cliBrowserCdpProxy?.closeForPane(pane.id, "BROWSER_CONTROL_HELD", "An operator took browser control.");
     controlActivity.noteInput(lease.leaseId);
     controlActivity.watch(lease);
-    await acceptHandoffForOperatorLease(request.user, lease);
+    await acceptHandoffForOperatorLease(request.user, lease, pane);
     await recordAudit(store, request, {
       action: "pane.browser.control.acquire",
       targetType: "pane",
@@ -871,7 +933,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     if (!requestedUrl) {
       throw new SpaceConflictError("Browser session has no current URL to bookmark.");
     }
-    const url = await assertSafeBrowserTargetUrl(requestedUrl, config.browserEvidenceTargetOrigin);
+    const url = await assertSafeBrowserTargetUrl(requestedUrl, config);
     const bookmark = await addManagedBrowserBookmark(session, {
       title: input.title ?? session.title ?? undefined,
       url
@@ -914,7 +976,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
         try {
           safeBookmarks.push({
             title: candidate.title,
-            url: await assertSafeBrowserTargetUrl(candidate.url, config.browserEvidenceTargetOrigin)
+            url: await assertSafeBrowserTargetUrl(candidate.url, config)
           });
         } catch {
           skippedCount += 1;

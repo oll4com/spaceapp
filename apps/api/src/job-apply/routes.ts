@@ -80,7 +80,22 @@ export function createJobApplyRunKick(service: Pick<JobApplyService, "runView" |
     }
     return true;
   }
-  return createCopilotRunKick<JobApplyRun>({ mode: "JOB_APPLY", store: deps.store, log: deps.log, inspect: deps.inspect, now,
+  // 22/11 (goal 91e45be1): the operator closed the last Job Copilot pane on 21/11 and the day ended at 0 of 200 with no reason recorded;
+  // the keeper only sees open panes, so an owner behind pace with none open records NO_PANE (once a day, addTargetMiss dedupes).
+  async function noPane(): Promise<void> {
+    const open = new Map<string, boolean>();
+    for (const room of await deps.store.listRooms()) {
+      if (!room.ownerUserId) continue;
+      const has = (await deps.store.listPanes(room.id)).some((pane) => pane.mode === "JOB_APPLY" && !pane.isClosed);
+      open.set(room.ownerUserId, has || (open.get(room.ownerUserId) ?? false));
+    }
+    for (const [owner, has] of open) {
+      if (has) continue;
+      const pace = await service.targetPace(owner);
+      if (pace.target && pace.applied < pace.due) await service.noteTargetMiss(owner, "NO_PANE");
+    }
+  }
+  return createCopilotRunKick<JobApplyRun>({ mode: "JOB_APPLY", store: deps.store, log: deps.log, inspect: deps.inspect, now, afterTick: noPane,
     paused: (pane) => resolveJobApplyPaneMetadata(pane.jobApplyMetadata).settings.paused,
     ...(deps.holds ? { holds: deps.holds } : {}),
     waited: async (owner, pane, reason) => {
@@ -169,7 +184,9 @@ export function registerJobApplyRoutes(app: FastifyInstance, service: JobApplySe
   // Operator rule 2026-10-17: photo upload fields get the CV's photo (copied into the copilot's own files).
   app.post("/api/job-apply/profile/photo-from-cv", routeOptions, async (request) => {
     const owner = await deps.authenticatedOwner(request);
-    const { path: _path, ...photo } = await service.savePhotoFromCv(owner);
+    // The saved file's server path stays out of the answer.
+    const { width, height, bytes, sha256 } = await service.savePhotoFromCv(owner);
+    const photo = { width, height, bytes, sha256 };
     await deps.audit(request, "job_apply.profile.photo_from_cv", owner, { width: photo.width, height: photo.height, bytes: photo.bytes });
     return { photo };
   });
@@ -205,8 +222,8 @@ export function registerJobApplyRoutes(app: FastifyInstance, service: JobApplySe
 
   app.get("/api/job-apply/applications", routeOptions, async (request) => {
     const owner = await deps.authenticatedOwner(request);
-    const query = parseQuery(jobApplicationListQuerySchema, request.query ?? {});
-    return { applications: await service.listApplications(owner, query) };
+    const { unless, ...query } = parseQuery(jobApplicationListQuerySchema, request.query ?? {});
+    return service.applicationsUnless(owner, query, unless);
   });
 
   app.get("/api/job-apply/stats", routeOptions, async (request) => {

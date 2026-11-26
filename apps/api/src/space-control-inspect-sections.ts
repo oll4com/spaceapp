@@ -14,13 +14,13 @@ import { getLiveAudioProvidersStatus, getLocalVoiceProviderStatus, isLocalSenseV
 type SpaceControlInspectSectionDeps = {
   store: SpaceStore;
   config: SpaceApiConfig;
-  controlUser: (id: string) => Promise<unknown>;
+  controlUser: (id: string) => Promise<{ id: string }>;
   antigravityUsageProvider: () => Promise<AntigravityUsageAccountList>;
   toolbarUsageProvider: () => Promise<CodexUsageAccountList>;
   readCliVpnApplications: ReturnType<typeof createCliVpnApplicationsReader>;
   healthMonitor: Pick<SystemHealthMonitor, "snapshot">;
   taskTitleRepository: { getSettings(): Promise<unknown> };
-  spaceControl: { layout(roomId: string): Promise<unknown> };
+  spaceControl: { layout(roomId: string): Promise<{ mode?: unknown } | null> };
 } & Pick<ReturnType<typeof createSpaceControlPaneActions>, "controlQuota">;
 
 /**
@@ -32,7 +32,7 @@ export function createSpaceControlInspectSections(deps: SpaceControlInspectSecti
   const { store, config, controlUser, controlQuota, antigravityUsageProvider, toolbarUsageProvider, readCliVpnApplications, healthMonitor,
     taskTitleRepository, spaceControl } = deps;
   async function inspectControlSection(actor: ControlActor, input: ControlInspect) {
-    await controlUser(actor.id);
+    const owner = await controlUser(actor.id);
     if(input.section==="ROOMS")return store.listRooms();
     if(input.section==="SKILLS")return controlSkillsPage(await store.listSkills(),input);
     if(input.section==="QUOTA"){
@@ -107,7 +107,6 @@ export function createSpaceControlInspectSections(deps: SpaceControlInspectSecti
     }
     if(input.section==="LINKS"){
       const query = { page: Math.floor(input.offset / input.limit) + 1, pageSize: input.limit, isQuick: undefined };
-      const owner = await store.upsertUser(actor as any);
       const result = await store.listUserLinks(owner.id, query);
       return {
         items: result.items,
@@ -118,7 +117,6 @@ export function createSpaceControlInspectSections(deps: SpaceControlInspectSecti
     }
     if(input.section==="TASKS"){
       const query = { page: Math.floor(input.offset / input.limit) + 1, pageSize: input.limit, ...(input.query ? { q: input.query } : {}) };
-      const owner = await store.upsertUser(actor as any);
       const result = await store.listTaskItems(owner.id, query);
       return {
         items: result.items,
@@ -128,40 +126,27 @@ export function createSpaceControlInspectSections(deps: SpaceControlInspectSecti
       };
     }
     if(input.section==="SETTINGS"){
-      let cli: any[] = [];
-      try { cli = await store.listCliRuntimeSettings(); } catch {}
-      let providers: any = null;
-      try { providers = await store.getProviderSettings(); } catch {}
-      let tools: any[] = [];
-      try { tools = await store.listAgentToolAssignments(); } catch {}
-      let taskTitles: any = null;
-      try { taskTitles = await taskTitleRepository.getSettings(); } catch {}
-      let plugins: any[] = [];
-      try { plugins = await pluginsService.getPlugins(); } catch {}
-      let voice: any = null;
-      try { voice = buildVoiceTranscriptionSettings(config); } catch {}
-      let room: any = null;
-      if (input.roomId) { try { room = await store.getRoom(input.roomId); } catch {} }
-      let layout: any = null;
-      if (input.roomId) { try { layout = await spaceControl.layout(input.roomId); } catch {} }
-
-      const sanitizedProviders = providers ? {
-        defaultProviderId: providers.defaultProviderId,
-        providers: (providers.providers || []).map((p: any) => ({
-          id: p.id,
-          name: p.name,
-          enabled: p.enabled,
-          configured: Boolean(p.hasKey || p.configured || p.apiKeyConfigured),
-          models: p.models ?? []
-        }))
-      } : null;
+      // One unreadable part leaves its default instead of failing the whole summary.
+      const read = <T, F>(load: () => T | Promise<T>, fallback: F) => Promise.resolve().then(load).catch(() => fallback);
+      const { roomId } = input;
+      const [cli, providers, tools, taskTitles, plugins, voice, room, layout] = await Promise.all([
+        read(() => store.listCliRuntimeSettings(), []),
+        read(() => store.getProviderSettings(), null),
+        read(() => store.listAgentToolAssignments(), []),
+        read(() => taskTitleRepository.getSettings(), null),
+        read(() => pluginsService.getPlugins(), []),
+        read(() => buildVoiceTranscriptionSettings(config), null),
+        roomId ? read(() => store.getRoom(roomId), null) : null,
+        roomId ? read(() => spaceControl.layout(roomId), null) : null
+      ]);
 
       return {
         cli,
-        providers: sanitizedProviders,
+        // Provider settings hold only the default id (no per-provider list or keys).
+        providers: providers ? { defaultProviderId: providers.defaultProviderId } : null,
         tools,
         taskTitles,
-        plugins: plugins.map((p: any) => ({
+        plugins: plugins.map((p) => ({
           id: p.id,
           name: p.displayName,
           connected: p.connection?.status === "CONNECTED",
@@ -173,7 +158,7 @@ export function createSpaceControlInspectSections(deps: SpaceControlInspectSecti
           theme: null,
           themeStatus: "BROWSER_LOCAL_NOT_OBSERVED",
           layoutColumns: room?.paneLayoutColumns ?? null,
-          layoutMode: (layout as any)?.mode ?? null
+          layoutMode: layout?.mode ?? null
         },
         diagnostics: {
           appDebugEnabled: process.env.APP_DEBUG === "1",

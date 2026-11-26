@@ -52,7 +52,7 @@ export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps)
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [canGoUp, setCanGoUp] = useState<boolean>(false);
   const [workspaceRoot, setWorkspaceRoot] = useState<string>(DEFAULT_WORKSPACE);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [, setIsLoading] = useState<boolean>(true);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
   // Modals & Panels
@@ -369,7 +369,6 @@ export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps)
         <FileListView
           entries={filteredEntries}
           currentPath={currentPath}
-          parentPath={parentPath}
           canGoUp={canGoUp}
           viewMode={viewMode}
           mode={mode}

@@ -10,8 +10,7 @@ import {
   Copy,
   Check,
   Code2,
-  Eye,
-  FileText
+  Eye
 } from "../ui-theme/app-icons.js";
 import type { FileItem } from "@space/contracts";
 import { api } from "../../api.js";
@@ -152,7 +151,6 @@ function SimpleMarkdownRenderer({ content }: { content: string }) {
   const elements: React.ReactNode[] = [];
   let inCodeBlock = false;
   let codeBlockLines: string[] = [];
-  let codeBlockLang = "";
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? "";
@@ -178,11 +176,9 @@ function SimpleMarkdownRenderer({ content }: { content: string }) {
           </pre>
         );
         codeBlockLines = [];
-        codeBlockLang = "";
         inCodeBlock = false;
       } else {
         inCodeBlock = true;
-        codeBlockLang = line.slice(3).trim();
       }
       continue;
     }

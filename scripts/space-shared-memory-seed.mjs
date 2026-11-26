@@ -7,14 +7,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { screenSharedMemory, sharedMemorySeedSchema, sharedMemoryReleaseVersionSchema } from "../packages/contracts/src/nous-shared-memory.ts";
 
 const seedUrl = new URL("../packages/contracts/src/nous-shared-memory-seed.json", import.meta.url);
-const semver = (version) => { if (!sharedMemoryReleaseVersionSchema.safeParse(version).success) throw new Error("An exact release version is required."); return version.split(".").slice(0, 2).map(Number); };
-const beforeFirstRelease = (version) => { const [major, minor] = semver(version); return major < 1 || (major === 1 && minor < 2); };
+const semver = (version) => { if (!sharedMemoryReleaseVersionSchema.safeParse(version).success) throw new Error("An exact release version is required."); return version.split("-")[0].split(".").map(Number); };
+// A seed is stamped and committed before version.json moves to that release; a staged seed for a newer release must not block main's remote push.
+const newer = (staged, version) => { const [a, b] = [semver(staged), semver(version)]; const i = a.findIndex((n, k) => n !== b[k]); return i >= 0 && a[i] > b[i]; };
 export function validateSeed(value, version, { allowStaged = false } = {}) {
   semver(version);
   const parsed = sharedMemorySeedSchema.safeParse(value);
   if (!parsed.success) throw new Error("Invalid shared-memory seed format.");
   const seed = parsed.data;
-  if (seed.releaseVersion !== version && !(allowStaged && beforeFirstRelease(version) && seed.releaseVersion === "1.2.0")) throw new Error("The shared-memory seed version does not match the release. Refresh and review the seed before release.");
+  if (seed.releaseVersion !== version && !(allowStaged && newer(seed.releaseVersion, version))) throw new Error("The shared-memory seed version does not match the release. Refresh and review the seed before release.");
   const keys = new Set();
   for (const entry of seed.entries) {
     if (keys.has(entry.key)) throw new Error("Duplicate shared-memory seed key.");

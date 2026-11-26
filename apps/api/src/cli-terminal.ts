@@ -2,9 +2,9 @@ import { autohandNativeSessionIdPattern } from "./autohand-native-session.js";
 import { droidNativeSessionIdPattern } from "./droid-native-session.js";
 import { codexChoosesDefaults } from "./codex-cli-mode-defaults.js";
 import { mayCreateCliSessionDirectory } from "./project-paths.js";
-import { WORKTREES_ROOT } from "./worktrees/worktree-service.js";
+import { WORKTREES_ROOT, WorktreeService } from "./worktrees/worktree-service.js";
 import { findCodexWriterThreads } from "./codex-thread-writer.js";
-import { copilotNativeSessionId, cursorNativeSessionId, grokNativeSessionId, qoderNativeSessionId, qoderNativeSessionIdPattern } from "./qoder-native-session.js";
+import { claudeNativeSessionId, copilotNativeSessionId, cursorNativeSessionId, grokNativeSessionId, qoderNativeSessionId, qoderNativeSessionIdPattern } from "./qoder-native-session.js";
 import { loadGeminiNativeTurns, geminiTurnActivity } from "./gemini-native-turns.js";
 import {
   findLatestGeminiConversationIdForWorkspace,
@@ -14,7 +14,7 @@ import {
 } from "./gemini-native-session.js";
 import { issueControlToken } from "./space-control-token.js";
 import { projectRoomTerminalRuns, projectRoomTerminalScreen, restoreRoomTerminalGeometry, type TerminalRun } from "./room-terminal-screen.js";
-import { CLAUDE_EFFORT_LEVELS, CLAUDE_PANE_MODEL_PREFIX } from "./cli-native-model-picker.js";
+import { CLAUDE_EFFORT_LEVELS, claudeCopilotLaunch, claudePaneModelFamily } from "./cli-native-model-picker.js";
 import { readRoomHostScreenSnapshot } from "./room-host-screen.js";
 import { randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
@@ -142,7 +142,9 @@ const codexModelSelectionTimeoutMs = 8_000;
 const codexModelCommandSubmitDelayMs = 150;
 const codexModelNavigationRepaintSettleMs = 25;
 const qwenAuthBootstrapSettleMs = 250;
-const cliHostOutputBatchDelayMs = 20;
+// Browsers get output before it is stored and readers flush first, so the window only sets the write rate: at 20 ms every TUI
+// redraw was its own transaction (public-host lag 14/11, ~4 a second per pane). The host replays anything unstored from the cursor.
+const cliHostOutputBatchDelayMs = 1_000;
 const cliHostOutputBatchMaxBytes = 32 * 1024;
 // A CLI task's preview and recency follow its output at most this often (CPU report 12/11, plan 2.2); a session's last one always lands.
 const cliTaskPreviewIntervalMs = 2_000;
@@ -156,6 +158,7 @@ const cliTerminalControlHeartbeatIntervalMs = 10_000;
 const cliTerminalControlReconnectGraceSeconds = 5;
 const codexHomeKey = "\u001b[H";
 const codexArrowDownKey = "\u001b[B";
+// eslint-disable-next-line no-control-regex -- terminal escape sequences are what this strips
 const codexControlAnsiPattern = /\u001b(?:\][^\u0007]*(?:\u0007|\u001b\\)|[PX^_][\s\S]*?\u001b\\|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/g;
 
 function cliControlDeniedTelemetryReason(code: string): CliTerminalTelemetryReason {
@@ -180,7 +183,7 @@ function delay(ms: number): Promise<void> {
 
 function codexStartupProgressIndex(output: string): number {
   const normalized = output.replace(codexControlAnsiPattern, "").toLowerCase();
-  let progressIndex = Math.max(
+  const progressIndex = Math.max(
     normalized.lastIndexOf("starting mcp servers"),
     normalized.lastIndexOf("reconnecting"),
     normalized.lastIndexOf("connecting")
@@ -413,6 +416,8 @@ interface ManagedCliSession {
   legacyControllerSocket: WebSocket | null;
   socketReplayBuffers: Map<WebSocket, string[]>;
   closed: boolean;
+  // The reason the API stopped this session for; the host's later exit event must not overwrite it (a slept pane read as dead).
+  stopReason?: string;
   detached: boolean;
   transportReady: boolean;
   inputReady: boolean;
@@ -613,6 +618,7 @@ function codexControlRows(output: string): string[] {
     .replace(codexControlAnsiPattern, "")
     .replace(/\r(?!\n)/g, "\n")
     .split(/\r?\n/)
+    // eslint-disable-next-line no-control-regex -- control characters are what this strips
     .map((row) => row.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").replace(/\s+/g, " ").trimEnd())
     .filter((row) => row.trim().length > 0);
 }
@@ -679,7 +685,14 @@ export interface CliEnvironmentContext {
   reasoningEffort?: string | null;
   geminiConversationId?: string | null;
   nativeTaskRef?: string | null;
+  paneMode?: Pane["mode"] | null;
 }
+
+// Plan clipboard:VypZ4sl7NR04 M5 (20/11): the light copilot panes compact at 120k, others at the launcher's 160k; Design and Video
+// joined them (plan clipboard:nsWKwUFhUFWA slice 2: creative panes write no code). TERMINAL stays at 160k:
+// operator 21/11 reverted its 120k (plan clipboard:ipO4c7J656Ed step 4), which over a ~27k base compacted a coding pane 2 minutes in.
+// A change here reaches running panes only when CLAUDE_LAUNCH_ENV_SINCE (claude-limit-move.ts) is bumped.
+const CLAUDE_COMPACT_120K_MODES: ReadonlySet<string> = new Set(["MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "JOB_APPLY", "MONITORING_COPILOT", "DESIGN", "VIDEO"]);
 
 interface CliTerminalConnection {
   handleMessage(raw: WebSocket.RawData): Promise<void>;
@@ -850,6 +863,7 @@ export type CodexThreadResumeSettingsFinder = (
   input: FindSafeCodexThreadResumeSettingsInput
 ) => Promise<CodexThreadResumeSettings | null>;
 
+// eslint-disable-next-line no-control-regex -- terminal escape sequences are what this strips
 const codexCliAnsiEscapePattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 
 function escapeRegularExpression(value: string): string {
@@ -954,7 +968,9 @@ function chunkTerminalOutput(data: string): string[] {
   return chunks.length ? chunks : [data];
 }
 
+// eslint-disable-next-line no-control-regex -- terminal OSC color queries are what this matches
 const cliColorQuery = /\u001b\](?:4;\d{1,3}|1[0-2]);\?/;
+// eslint-disable-next-line no-control-regex -- terminal OSC color replies are what this matches
 const cliColorReply = /\u001b\](?:4;\d{1,3}|1[0-2]);rgb:[0-9a-f]{1,4}(?:\/[0-9a-f]{1,4}){2}(?:\u0007|\u001b\\)/gi;
 const cliColorReplyWindowMs = 1000;
 
@@ -1094,14 +1110,15 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
         publicMemoryFiles: config.publicDistribution ? { indexPath: config.spaceMemoryIndexPath, monthlyPath: config.spaceMemoryMonthlyPath } : null
       });
     }
-    // Only a pane's own pick pins its model; the runtime's generic default id never does.
-    const family = context.modelId?.startsWith(CLAUDE_PANE_MODEL_PREFIX) ? context.modelId.slice(CLAUDE_PANE_MODEL_PREFIX.length) : null;
-    if (family && /^(?:opus|fable|sonnet|haiku)$/.test(family)) {
+    // Only a pane's own pick (or a full Claude id) pins its model; the runtime's generic default id never does.
+    const family = claudePaneModelFamily(context.modelId);
+    if (family) {
       env.SPACE_CLAUDE_MODEL = family;
       if (context.reasoningEffort && (CLAUDE_EFFORT_LEVELS as readonly string[]).includes(context.reasoningEffort)) {
         env.SPACE_CLAUDE_EFFORT = context.reasoningEffort;
       }
     }
+    if (context.paneMode && CLAUDE_COMPACT_120K_MODES.has(context.paneMode)) env.SPACE_CLAUDE_COMPACT_WINDOW = "120000";
   }
   if (
     runtimeDescriptor?.paneModelLaunchEnv &&
@@ -1129,6 +1146,12 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
     env.SPACE_GROK_SESSION_ID = context.nativeTaskRef && qoderNativeSessionIdPattern.test(context.nativeTaskRef)
       ? context.nativeTaskRef
       : grokNativeSessionId(context.cliSessionId);
+  }
+  if (context.runtimeId === "cli:claude" && context.cliSessionId && context.purpose !== "LOGIN") {
+    // The pane's own Claude session: the wrapper starts it with --session-id or reopens it with --resume <id>.
+    env.SPACE_CLAUDE_SESSION_ID = context.nativeTaskRef && claudeNativeSessionIdPattern.test(context.nativeTaskRef)
+      ? context.nativeTaskRef
+      : claudeNativeSessionId(context.cliSessionId);
   }
   if (context.runtimeId === "cli:cursor" && context.cliSessionId && context.purpose !== "LOGIN") {
     // The pane's own Cursor chat: the wrapper starts or reopens it with --resume <id> (ADAPTER-006).
@@ -2055,13 +2078,15 @@ export class CliTerminalManager {
     sessionId: string,
     transcript?: { content: string; traceId: string },
     // OBS-006: the request that stopped the CLI, for the pane host's terminate line when no transcript line names it.
-    traceId = transcript?.traceId
+    traceId = transcript?.traceId,
+    stopReason?: string
   ): Promise<boolean> {
     const managed = this.sessions.get(sessionId);
     if (managed && !managed.closed) {
       if (managed.purpose === "LOGIN") {
         return this.failLoginSession(sessionId, "CANCELLED", managed, true);
       }
+      if (stopReason) managed.stopReason = stopReason;
       await this.flushHostOutput(managed);
       await Promise.all((managed.pendingInputPersistence ?? []).map((pending) => pending.completion));
       if (transcript) {
@@ -2282,7 +2307,7 @@ export class CliTerminalManager {
         try {
           const room = await this.options.store.getRoom(pane.roomId);
           if (room?.projectPath) targetPaneCwd = room.projectPath;
-        } catch {}
+        } catch { /* a failed room read keeps the pane cwd */ }
       }
       if (this.options.config.publicDistribution) targetPaneCwd = publicPaneCwd(targetPaneCwd, this.options.config.cliWorkspaceRoot, pane.roomId);
       let cwd = isDirectOperatorParityRuntime(runtime.id)
@@ -2291,22 +2316,25 @@ export class CliTerminalManager {
       // SEC-009: a missing folder is created only where a CLI session may create one; otherwise the session
       // starts in the managed workspace root instead of creating an arbitrary path.
       const { config } = this.options;
+      // A reclaimed worktree comes back as a checkout, not as the empty folder made below.
+      await new WorktreeService().restoreWorktree(cwd);
       if (!existsSync(cwd) && !await mayCreateCliSessionDirectory({
         cwd, role: null, projectsRoot: config.projectsRoot, installRoot: config.installRoot,
         worktreesRoot: WORKTREES_ROOT, workspaceRoot: config.cliWorkspaceRoot
       })) cwd = config.cliWorkspaceRoot;
       try {
         await mkdir(cwd, { recursive: true, mode: 0o750 });
-      } catch {}
+      } catch { /* best effort: an existing or uncreatable cwd is handled by the spawn */ }
       const allocatedAtNs = process.hrtime.bigint();
+      const copilot = claudeCopilotLaunch(runtime.id, pane);
       session = await this.options.store.createPaneCliSession({
         paneId: pane.id,
         roomId: pane.roomId,
         runtimeId: runtime.id,
         providerId: runtime.providerId,
         agentId: runtime.agentId,
-        modelId,
-        reasoningEffort,
+        modelId: copilot?.modelId ?? modelId,
+        reasoningEffort: copilot?.reasoningEffort ?? reasoningEffort,
         launchMode: selection.launchMode ?? "FRESH",
         cwd,
         codexThreadId: null,
@@ -2347,27 +2375,38 @@ export class CliTerminalManager {
       }
     }
     if (managed?.runtimeId === "cli:opencode" && !managed.roomScreenGeometryKnown) return { text: "", revision: managed.controlOutputRevision };
-    if (managed) await this.flushHostOutput(managed);
-    const chunks = await this.options.store.listPaneCliTranscriptChunks(sessionId, 256);
-    const output = chunks.filter((chunk) => chunk.stream !== "stdin" && chunk.stream !== "system").slice(-256);
     const cols = managed?.roomScreenCols ?? stored?.cols ?? 100, rows = managed?.roomScreenRows ?? stored?.rows ?? 30;
-    const revision = managed?.controlOutputRevision ?? chunks.at(-1)?.sequence ?? 0;
-    const cached = managed?.roomScreenSnapshot;
-    if (cached && cached.generationId === managed?.generationId && cached.revision === revision && cached.cols === cols && cached.rows === rows && cached.unwrap === unwrap && (!styled || cached.runs)) return { text: cached.text, revision, ...(styled ? { runs: cached.runs } : {}) };
+    // Speed audit 21/11: check the in-memory screen snapshot before flushing host output or reading DB transcript chunks.
+    if (managed) {
+      const revision = managed.controlOutputRevision;
+      const cached = managed.roomScreenSnapshot;
+      if (cached && cached.generationId === managed.generationId && cached.revision === revision && cached.cols === cols && cached.rows === rows && cached.unwrap === unwrap && (!styled || cached.runs)) {
+        return { text: cached.text, revision, ...(styled ? { runs: cached.runs } : {}) };
+      }
+    }
     // OpenCode emits small animation deltas which can evict an unchanged
     // composer from the DB tail. Its existing host has a larger bounded replay.
     // This observer is separate from browser attachment/replay ownership.
     let screen: { text: string; runs?: TerminalRun[][] } | null = null;
+    // DEV3D-011: taken before the host read, so output arriving during it leaves the cached screen one revision behind (re-read next time).
+    let revision = managed?.controlOutputRevision;
     if (managed && (hostReplayRoomScreenRuntimes.has(managed.runtimeId) || codexHostReplayRoomScreen(managed.runtimeId, this.options.config)) && managed.purpose === "NORMAL" && managed.roomScreenGeometryKnown) {
       screen = await readRoomHostScreenSnapshot(this.hostForRuntime(managed.runtimeId, sessionId), managed.identity, cols, rows, unwrap, managed.generationId, false, styled, signal).catch(() => null);
     }
     const hostReadFailed = managed?.runtimeId === "cli:opencode" && screen === null;
-    if (hostReadFailed) return { text: "", revision };
-    const chunkText = output.map(chunk => chunk.content);
-    screen ??= styled ? await projectRoomTerminalRuns(chunkText, cols, rows, unwrap, false, signal) : { text: await projectRoomTerminalScreen(chunkText, cols, rows, unwrap, false, signal) };
+    if (hostReadFailed) return { text: "", revision: managed!.controlOutputRevision };
+    if (!screen) {
+      if (managed) await this.flushHostOutput(managed);
+      const chunks = await this.options.store.listPaneCliTranscriptChunks(sessionId, 256);
+      const output = chunks.filter((chunk) => chunk.stream !== "stdin" && chunk.stream !== "system").slice(-256);
+      revision ??= chunks.at(-1)?.sequence ?? 0;
+      const chunkText = output.map(chunk => chunk.content);
+      screen = styled ? await projectRoomTerminalRuns(chunkText, cols, rows, unwrap, false, signal) : { text: await projectRoomTerminalScreen(chunkText, cols, rows, unwrap, false, signal) };
+    }
+    const finalRevision = revision ?? 0;
     const { text, runs } = screen;
-    if (managed && !hostReadFailed) managed.roomScreenSnapshot = { generationId: managed.generationId, revision, cols, rows, unwrap, text, ...(runs ? { runs } : {}) };
-    return { text, revision, ...(runs ? { runs } : {}) };
+    if (managed && !hostReadFailed) managed.roomScreenSnapshot = { generationId: managed.generationId, revision: finalRevision, cols, rows, unwrap, text, ...(runs ? { runs } : {}) };
+    return { text, revision: finalRevision, ...(runs ? { runs } : {}) };
   }
 
   private readDetachedRoomHostScreen(session: PaneCliSession, unwrap: boolean, omitFaint: boolean, styled = false): Promise<{ text: string; revision: number; runs?: TerminalRun[][] } | null> {
@@ -2401,10 +2440,16 @@ export class CliTerminalManager {
         if (snapshot) return snapshot.text;
       }
     }
+    const cols = managed?.roomScreenCols ?? stored?.cols ?? 100, rows = managed?.roomScreenRows ?? stored?.rows ?? 30;
+    // Active host-replay TUIs (OpenCode, Hermes, public Codex) keep their live screen on the host; read it directly without hitting DB transcript chunks.
+    if (managed && (hostReplayRoomScreenRuntimes.has(managed.runtimeId) || codexHostReplayRoomScreen(managed.runtimeId, this.options.config)) && managed.purpose === "NORMAL" && managed.roomScreenGeometryKnown) {
+      const snapshot = await readRoomHostScreenSnapshot(this.hostForRuntime(managed.runtimeId, sessionId), managed.identity, cols, rows, true, managed.generationId, true, false).catch(() => null);
+      if (snapshot) return snapshot.text;
+    }
     if (managed) await this.flushHostOutput(managed);
     const chunks = await this.options.store.listPaneCliTranscriptChunks(sessionId, 256);
     const output = chunks.filter((chunk) => chunk.stream !== "stdin" && chunk.stream !== "system").slice(-256);
-    return projectRoomTerminalScreen(output.map(chunk => chunk.content), managed?.roomScreenCols ?? stored?.cols ?? 100, managed?.roomScreenRows ?? stored?.rows ?? 30, true, true);
+    return projectRoomTerminalScreen(output.map(chunk => chunk.content), cols, rows, true, true);
   }
 
   /**
@@ -3205,6 +3250,14 @@ export class CliTerminalManager {
         session, firstUserMessage: taskRevision?.firstUserMessage || null, cwd: taskRevision?.cwd ?? session.cwd
       }).catch(() => null);
     }
+    if (!inspected && !restoringAfterHostLoss && session.launchMode !== "RESUME" && session.runtimeId === "cli:claude" &&
+      taskRevision && !nativeTaskRef) {
+      // Kept from the start (the wrapper names the session after it): a reopen resumes it by id even if no poll recorded it.
+      try {
+        await this.options.store.updateCliTaskRevision(taskRevision.revisionId,
+          { nativeTaskRef: claudeNativeSessionId(session.sessionId) }, traceId);
+      } catch { /* the poll recorder still keeps the ref after the first turn */ }
+    }
     const baseSpawnSession: CliSpawnSession = codexForkThreadId
       ? await this.withCodexHistoryForkSettings(session, codexForkThreadId)
       : restoringAfterHostLoss
@@ -3222,6 +3275,8 @@ export class CliTerminalManager {
       launchMode: effectiveLaunchMode,
       nativeTaskRef: nativeTaskRef ?? (boundSession.runtimeId === "cli:gemini" ? boundSession.codexThreadId : null)
     };
+    let paneMode: Pane["mode"] | null = null;
+    if (session.runtimeId === "cli:claude") try { paneMode = (await this.options.store.getPane(session.paneId)).mode; } catch { /* the launcher's 160k */ }
     const env = buildCliEnvironment(this.options.config, {
       roomId: session.roomId,
       paneId: session.paneId,
@@ -3234,7 +3289,8 @@ export class CliTerminalManager {
       modelId: boundSession.modelId,
       reasoningEffort: boundSession.reasoningEffort,
       geminiConversationId: boundSession.codexThreadId ?? spawnSession.nativeTaskRef ?? undefined,
-      nativeTaskRef: spawnSession.nativeTaskRef
+      nativeTaskRef: spawnSession.nativeTaskRef,
+      paneMode
     });
     if (env.TMPDIR && !isDirectOperatorParityRuntime(session.runtimeId)) {
       await mkdir(env.TMPDIR, { recursive: true });
@@ -4106,6 +4162,7 @@ export class CliTerminalManager {
       const receivedAtMs = Date.now();
       const diagnosticSinceMs = receivedAtMs - 1000;
       const hiddenInput = message.display === "hidden";
+      // eslint-disable-next-line no-control-regex -- Ctrl-C and Escape are the keys that supersede a schedule
       const supersedesSchedule = managed.purpose === "NORMAL" && /[\r\n\x03\x1b]/.test(terminalData);
       const byteLength = Buffer.byteLength(terminalData, "utf8");
       const deferPersistence = managed.purpose === "NORMAL" && !supersedesSchedule && !message.turnMarker &&
@@ -4620,7 +4677,12 @@ export class CliTerminalManager {
     if (!data) return;
     managed.controlOutput = `${managed.controlOutput}${data}`.slice(-16_000);
     managed.controlOutputRevision += 1;
-    if (!managed.inputReady && !managed.composerSeen) managed.composerSeen = cliComposerReady(managed.runtimeId, managed.controlOutput) === true;
+    // 14/11 10:24 UTC: an attach replayed ~40k chunks of a Gemini pane, each re-scanning all 16 kB, and held the API loop 2.55 s.
+    // A marker arrives in the newest output, so its tail (1 kB for one split across chunks) gates the full check.
+    if (!managed.inputReady && !managed.composerSeen) {
+      managed.composerSeen = cliComposerReady(managed.runtimeId, managed.controlOutput.slice(-(data.length + 1024))) === true
+        && cliComposerReady(managed.runtimeId, managed.controlOutput) === true;
+    }
     if (cliColorQuery.test(data)) managed.colorQueryAtMs = Date.now();
     this.scheduleQwenAuthBootstrap(managed);
     if (!managed.codexModelControlReady && isCodexDirectParityRuntime(managed.runtimeId)) {
@@ -4684,7 +4746,7 @@ export class CliTerminalManager {
         managed.sessionId,
         {
           status: event.status,
-          statusReason: event.statusReason,
+          statusReason: managed.stopReason ?? event.statusReason,
           exitCode: event.exitCode,
           isActive: false,
           endedAt: nowIso()

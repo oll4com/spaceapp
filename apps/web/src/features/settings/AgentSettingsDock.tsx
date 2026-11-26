@@ -4,7 +4,6 @@ import { api } from "../../api.js";
 import { RecoverableSurface } from "../SurfaceErrorBoundary.js";
 import { DockFullscreenButton, DockNotice, useDockFullscreen } from "../dock-kit/DockKit.js";
 import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
-import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import {
   Activity,
   ArrowUpDown,
@@ -54,6 +53,7 @@ import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import type { ModernAppearance, ModernIconPack, UiBackground, UiTheme } from "../../ui-theme.js";
 import { SettingsDisclosure, SettingsGroup, SettingsSearchable, SettingsSections } from "./SettingsDisclosure.js";
 import { SettingsLabel } from "./SettingsLabel.js";
+import { settingsCardLoadingFallback } from "./settings-card-loading.js";
 import type { EnvironmentPresetCard } from "./EnvironmentPresetCard.js";
 import type { GoogleAccountSettingsCard } from "../auth/GoogleAccountSettingsCard.js";
 import type { UiThemeSettingsCard } from "../ui-theme/UiThemeSettingsCard.js";
@@ -117,12 +117,6 @@ export interface AgentSettingsCards {
   MonitoringCopilot: typeof MonitoringCopilotSettingsCard;
 }
 
-function SettingsCardLoading() {
-  const language = useUiLanguage();
-  return <div className="empty-mini" role="status">{uiText(language, "Loading settings…")}</div>;
-}
-
-export const settingsCardLoadingFallback = <SettingsCardLoading />;
 
 const AGENT_PANE_SETTINGS_EVENT = "space:agent-pane-settings-updated";
 
@@ -147,7 +141,6 @@ export function AgentSettingsDock({
   cards,
   adminMode,
   onOpenSetup,
-  activePane: _activePane,
   canManageCliRuntimes,
   canManageDiagnostics,
   canManageSourceControl,
@@ -545,9 +538,9 @@ export function AgentSettingsDock({
         </SettingsDisclosure>
 
         <SettingsDisclosure sectionKey="password" title="Login password" description="Change the password you sign in with." scope="Your account" icon={KeyRound}
-          help="Type your current password, or confirm it is you with Google if you forgot it, then the new one twice. Your other sessions are signed out; this one stays."
+          help="Confirm it is you with Google or a link mailed to you, then type the new password twice. No current password needed. Your other sessions are signed out; this one stays."
           keywords="password reset change login sign in forgot credentials κωδικός">
-          <LoginPasswordSettingsCard />
+          <LoginPasswordSettingsCard googleAuthEnabled={auth ? Boolean(auth.googleAuthEnabled) : true} />
         </SettingsDisclosure>
 
         {wireGuardBridge ? <SettingsDisclosure sectionKey="wireguard" title="WireGuard file" description="How this SpaceApp desktop app reaches your Space." scope="This browser" icon={Network}

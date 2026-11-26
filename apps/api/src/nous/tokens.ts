@@ -1,4 +1,4 @@
-import { GATEWAY_PACE_BAND, gatewayPaceDay, gatewayWeekPace, isGatewayFreePlan, neededReservePercent, NOUS_EFFORTS, NOUS_SPACE_ROUTES, quotaLeftAtReset, quotaResetCredits, quotaResetCreditsText, type QuotaResetCredits, NOUS_PROVIDER_GATEWAY, nousKeyPoolProvider, nousModelLabel, nousSettingsWithProvider, nousLowSpendSettingsSchema, nousModelFor, nousTurnKindOf,
+import { GATEWAY_PACE_BAND, gatewayPaceDay, gatewayWeekPace, gatewayWeekResetCredits, isGatewayFreePlan, neededReservePercent, NOUS_EFFORTS, NOUS_SPACE_ROUTES, quotaLeftAtReset, quotaResetCredits, quotaResetCreditsText, type QuotaResetCredits, NOUS_PROVIDER_GATEWAY, nousKeyPoolProvider, nousModelLabel, nousSettingsWithProvider, nousLowSpendSettingsSchema, nousModelFor, nousTurnKindOf,
   type ApiProviderAccount, type ApiProviderAccountList, type GatewayWeekPace, type NousProvider, type ClaudeUsageAccountList, type GatewayAccount, type NousLowSpendSettings, type NousModelChoice, type NousSettings, type NousSpendMode, type NousTurnReason } from "@space/contracts";
 import { pickClaudeProfile } from "../chess/chess-players.js";
 import { anthropicMonthSpendUsd } from "../claude-usage-services.js";
@@ -40,6 +40,12 @@ const windows = (account: Pick<GatewayAccount, "primaryWindow" | "secondaryWindo
  * When the first usable account of a Gateway provider's pool has room again: its spent windows' latest reset. Null when an account has
  * room now, a spent window has no reset, or the pool has no usable account (2026-11-06 REVIEW: web search, Codex weeks used up to 11/11).
  */
+/** Chat's Codex runs through Space Gateway's Codex pool: with every account used up it has no tokens to serve a turn. */
+export function codexPoolQuotaReason(accounts: GatewayAccount[], now: number): string | null {
+  const back = poolBackAt(accounts, "CODEX", now);
+  return back ? `Codex has no tokens until ${new Date(back).toISOString().slice(0, 16).replace("T", " ")} UTC.` : null;
+}
+
 export function poolBackAt(accounts: GatewayAccount[], gatewayProvider: string, now: number): number | null {
   const backs = accounts.filter((account) => account.provider === gatewayProvider && !["PAUSED", "DEACTIVATED"].includes(account.status))
     .map((account) => Math.max(now, ...windows(account).filter((window) => (nousWindowUsed(window, now) ?? 0) >= 100).map((window) => Date.parse(window.resetAt ?? "") || now)));
@@ -65,11 +71,12 @@ const windowOf = (account: GatewayAccount, minutes: number): Window | null => wi
 const points = (value: number | null) => value === null ? "?" : value > 0 ? `+${value}` : String(value);
 /** Max accounts Nous can use, and every Codex account in the pool. */
 const paced = (account: GatewayAccount) => (eligible(account) && isMax(account)) || (account.provider === "CODEX" && !["PAUSED", "DEACTIVATED"].includes(account.status));
-/** Today's share of the week the Gateway holds background work to (plan clipboard:DotwYXVD2N3n): " today 9%/12%", HELD once it is used. */
+/** Today's share of the week (plan clipboard:DotwYXVD2N3n): " today 9%/12%", "over" once it is used. A guide: the pace cap is off since 7/11 and
+ * 21/11 12:48Z Nous told the operator Claude was "held" by this tag while idle panes waited. */
 const paceToday = (account: GatewayAccount, now: number) => {
   const resetAt = Date.parse(account.secondaryWindow.resetAt ?? "");
-  const day = account.paceDayStart ? gatewayPaceDay({ usedPercent: account.secondaryWindow.usedPercent, resetAt: Number.isFinite(resetAt) ? resetAt : null }, account.paceDayStart, now) : null;
-  return day ? ` today ${Math.round(day.usedTodayPercent)}%/${Math.round(day.allowancePercent)}%${day.daysLeft === 1 ? " last day" : day.capped ? " HELD" : ""}` : "";
+  const day = account.paceDayStart ? gatewayPaceDay({ usedPercent: account.secondaryWindow.usedPercent, resetAt: Number.isFinite(resetAt) ? resetAt : null, credits: gatewayWeekResetCredits(account) }, account.paceDayStart, now) : null;
+  return day ? ` today ${Math.round(day.usedTodayPercent)}%/${Math.round(day.allowancePercent)}%${day.daysLeft === 1 ? " last day" : day.capped ? " over" : ""}` : "";
 };
 
 
@@ -125,17 +132,22 @@ export function computeNousTokens(input: NousTokenInput): NousTokens {
     // Operator rule 2026-10-27: the API key never serves Claude Code, so its budget no longer counts for Nous's mode.
     if (room === 0) return "CRITICAL";
     if (config.mode === "ON") return "LOW";
+    // Goal d844e0cc (4/11): a Claude pool whose week runs out before its reset at this pace is LOW, by the Provider advice's own figure.
+    // Checked before the week-room returns (operator 19/11 14:46 BKK: NORMAL while the advice said 0% at the reset). A weekly reset credit or a week
+    // whose reset has passed (unsampled, which the advice leaves out) is a fresh week.
+    const outOfWeek = provider === "claude"
+      && !pool.some((account) => gatewayWeekResetCredits(account) > 0 || Date.parse(windowOf(account, 10_080)?.resetAt ?? "") <= at)
+      && (nousProviderRooms(input.accounts, null, at).find((entry) => entry.key === "claude")?.atReset?.percent ?? 1) < 1;
+    if (outOfWeek) return "LOW";
     // Operator 13/11 23:03 BKK: full 5-hour windows are a wait (or another pool), never a hold; 21:30-22:59 BKK LOW came from lab, ntheo and dev's
     // 5-hour windows while dev had 52% and lab 60% of their weeks. The pool is held only when no account has week room (service.ts prompt rule).
     if (pool.some((account) => weekRoom(account, at))) return "NORMAL";
     // Operator 5/11 («μην χάνετε ούτε ένα token»): while an account with room now still has room left at its own reset at its pace, that room
     // would reset unused: the pool is not LOW (5/11 05:19-10:05 BKK: LOW with ntheo's whole week free, 27 panes idle all night).
     if (pool.some((account) => roomAt(account, at) && losesRoomAtReset(account, at))) return "NORMAL";
-    // Goal d844e0cc (4/11): a Claude pool whose week runs out before its reset at this pace is LOW, by the Provider advice's own figure.
-    const outOfWeek = provider === "claude" && (nousProviderRooms(input.accounts, null, at).find((entry) => entry.key === "claude")?.atReset?.percent ?? 1) < 1;
     // The same rule for the count (6/11 01:30-04:30 BKK: LOW on 1 of 5 with room while ntheo had 52% of its week and lab's fresh week came
     // at 04:00): fewer accounts with room than minMaxAccountsWithRoom is LOW only while a window's room runs short before its next reset.
-    return (room !== null && room < config.minMaxAccountsWithRoom && runsShort(at)) || outOfWeek ? "LOW" : "NORMAL";
+    return room !== null && room < config.minMaxAccountsWithRoom && runsShort(at) ? "LOW" : "NORMAL";
   };
   const mode = modeAt(input.now);
   const resets = [...new Set(pool.flatMap((account) => windows(account).map((window) => Date.parse(window.resetAt ?? ""))))]
@@ -162,24 +174,28 @@ export interface NousProviderRoom {
   provider: NousProvider | null;
   accounts: number;
   nowLeft: number | null;
+  /** The account nowLeft is read from (alias, else label); queue 982/989: a refused reset wait names it. */
+  bestAccount?: string | null;
+  /** That account's gateway status (RATE_LIMITED: a pace-cap emergency does not pass it, nous_msg:a0e6a7a4). */
+  bestStatus?: string | null;
   atReset: { percent: number; resetAt: string } | null;
   pace: GatewayWeekPace["pace"];
   points: number | null;
   /** API keys only. */
   api?: { balance: string | null; percent: number | null; exhausted: boolean; pool?: string } | null;
-  /** Codex weekly reset credits: each one more fresh week (operator 2/11 15:38 BKK), so a pool holding them is never out of room. */
+  /** Codex and Claude reset credits: each one more fresh week (operator 2/11 15:38 BKK), so a pool holding them is never out of room. */
   resetCredits?: QuotaResetCredits | null;
 }
 
 const WEEK_MS = 10_080 * 60_000;
-/** Week room (operator 13/11 23:03 BKK): 20% of the week left, a week that resets within 24 h, or a Codex weekly reset credit. Unknown weeks give none. */
+/** Week room (operator 13/11 23:03 BKK): 20% of the week left, a week not used up that resets within 24 h (19/11: a spent one has none now), or a reset credit that gives a fresh week (Codex, Claude). Unknown weeks give none. */
 function weekRoom(account: GatewayAccount, at: number): boolean {
-  if ((account.resetCreditsAvailable ?? 0) > 0) return true;
+  if (gatewayWeekResetCredits(account) > 0) return true;
   const week = windowOf(account, 10_080);
   const used = week ? nousWindowUsed(week, at) : null;
   if (used === null) return false;
   const resetAt = Date.parse(week!.resetAt ?? "");
-  return 100 - used >= 20 || (Number.isFinite(resetAt) && resetAt - at <= 24 * 3_600_000);
+  return 100 - used >= 20 || (used < 100 && Number.isFinite(resetAt) && resetAt - at <= 24 * 3_600_000);
 }
 /** The account's week still has at least 1% free at its own reset at its pace since the week began (quotaLeftAtReset over one account). */
 function losesRoomAtReset(account: GatewayAccount, at: number): boolean {
@@ -191,7 +207,10 @@ const POOLS: Array<{ key: string; name: string; provider: NousProvider | null; g
   { key: "claude", name: "Claude Max", provider: "claude", gateway: "CLAUDE", serves: (account) => eligible(account) && isMax(account) },
   { key: "codex", name: "Codex", provider: "codex", gateway: "CODEX", serves: () => true },
   { key: "gemini", name: "Gemini (Antigravity)", provider: "gemini", gateway: "ANTIGRAVITY", group: "gemini", serves: () => true },
-  { key: "antigravity-claude", name: "Claude · GPT on Antigravity", provider: null, gateway: "ANTIGRAVITY", group: "claude", serves: () => true }
+  { key: "antigravity-argon", name: "Argon on Antigravity", provider: null, gateway: "ANTIGRAVITY", group: "argon", serves: (account) => !isGatewayFreePlan(account.planType) },
+  // 22/11: the Gateway serves Claude 5 models on paid Antigravity accounts only (antigravityModelRequiresPaidPlan), so a free account's room is none for them.
+  // shortcut: GPT models a free account could serve are counted out too; split the pool if panes ever run GPT on Antigravity.
+  { key: "antigravity-claude", name: "Claude · GPT on Antigravity", provider: null, gateway: "ANTIGRAVITY", group: "claude", serves: (account) => !isGatewayFreePlan(account.planType) }
 ];
 const API_POOLS: Array<{ key: string; name: string; provider: NousProvider | null }> = [
   { key: "openai", name: "OpenAI API", provider: null }, { key: "openrouter", name: "OpenRouter", provider: null },
@@ -203,18 +222,21 @@ export function nousProviderRooms(accounts: GatewayAccount[] | null, api: ApiPro
     const members = (accounts ?? []).filter((account) => account.provider === pool.gateway && (pool.provider === "claude" || !["PAUSED", "DEACTIVATED"].includes(account.status)) && pool.serves(account))
       .map((account) => {
         const group = pool.group ? account.quotaGroups?.find((entry) => entry.key === pool.group) : account;
-        return group ? { status: account.status, primaryWindow: group.primaryWindow, secondaryWindow: group.secondaryWindow, resetCredits: account.resetCreditsAvailable } : null;
+        return group ? { name: account.alias ?? account.label, status: account.status, primaryWindow: group.primaryWindow, secondaryWindow: group.secondaryWindow, resetCredits: gatewayWeekResetCredits(account) } : null;
       }).filter((member) => member !== null);
-    const left = members.flatMap((member) => {
-      const used = windows(member).filter(sampled).map((window) => nousWindowUsed(window, now)).filter((value) => value !== null);
-      return member.status === "QUOTA_EXCEEDED" ? [0] : used.length ? [100 - Math.max(...used)] : [];
+    // 22/11: Google omits an unused Antigravity bucket's reset, read as 0% used; without a reset it is no sample and no room.
+    const real = (window: Window) => sampled(window) && (!pool.group || window.resetAt !== null);
+    const left = members.flatMap((member): Array<{ name: string; status: string; left: number }> => {
+      const used = windows(member).filter(real).map((window) => nousWindowUsed(window, now)).filter((value) => value !== null);
+      return member.status === "QUOTA_EXCEEDED" ? [{ name: member.name, status: member.status, left: 0 }] : used.length ? [{ name: member.name, status: member.status, left: 100 - Math.max(...used) }] : [];
     });
-    const weeks = members.map((member) => windows(member).find((window) => window.windowMinutes === 10_080 && sampled(window)));
+    const best = left.reduce<(typeof left)[number] | null>((top, entry) => !top || entry.left > top.left ? entry : top, null);
+    const weeks = members.map((member) => windows(member).find((window) => window.windowMinutes === 10_080 && real(window)));
     const atReset = quotaLeftAtReset(weeks.map((week) => ({ remaining: week?.usedPercent == null ? null : 100 - week.usedPercent, resetAt: week?.resetAt, periodMs: WEEK_MS })), now);
     const paces = members.map((member) => gatewayWeekPace(member, now)?.points).filter((value) => value != null);
     const points = paces.length ? Math.round(paces.reduce((sum, value) => sum + value, 0) / paces.length) : null;
-    return { key: pool.key, name: pool.name, provider: pool.provider, accounts: members.length, nowLeft: left.length ? Math.round(Math.max(...left)) : null,
-      atReset: atReset && { percent: Math.round(atReset.percent), resetAt: atReset.resetAt }, points, resetCredits: quotaResetCredits(members),
+    return { key: pool.key, name: pool.name, provider: pool.provider, accounts: members.length, nowLeft: best ? Math.round(best.left) : null, bestAccount: best?.name ?? null,
+      bestStatus: best?.status ?? null, atReset: atReset && { percent: Math.round(atReset.percent), resetAt: atReset.resetAt }, points, resetCredits: quotaResetCredits(members),
       pace: points === null ? null : points > GATEWAY_PACE_BAND ? "AHEAD" as const : points < -GATEWAY_PACE_BAND ? "UNDER" as const : "ON" as const };
   });
   return [...pools, ...API_POOLS.map((pool) => {
@@ -231,17 +253,18 @@ export function nousProviderRooms(accounts: GatewayAccount[] | null, api: ApiPro
 /**
  * Space's provider advice: use now the pools with room whose weekly quota would otherwise reset unused (the most first, then the earliest
  * reset); avoid the ones with no room now, that run out before their reset or run AHEAD of pace with no known room at the reset, and API keys with no balance. A pool
- * holding Codex reset credits is never avoided: each credit is a fresh week its account gets at once (operator 2/11 15:38 BKK).
+ * holding Codex or Claude reset credits is never avoided: each credit is a fresh week its account gets at once (operator 2/11 15:38 BKK).
  */
 export function nousProviderAdvice(rooms: NousProviderRoom[], minimum = 10): { use: NousProviderRoom[]; avoid: Array<{ room: NousProviderRoom; why: string }> } {
   const avoid = rooms.flatMap((room) => {
     const why = room.api ? (room.api.exhausted || room.api.percent === 0 ? "no balance left" : null)
+      : room.accounts && (room.key === "gemini" || room.key.startsWith("antigravity-")) && room.nowLeft === null ? "quota unknown"
       : !room.accounts || room.resetCredits ? null : room.nowLeft !== null && room.nowLeft < minimum ? "no room now"
         // Operator 5/11 12:32 BKK: never "avoid" a pool whose week would reset with room left (AHEAD of pace with room at the reset is still room to use).
         : room.atReset && room.atReset.percent < 1 ? "runs out before its reset" : room.pace === "AHEAD" && !room.atReset ? "ahead of pace" : null;
     return why ? [{ room, why }] : [];
   });
-  const use = rooms.filter((room) => !room.api && room.atReset && room.atReset.percent >= 20 && !avoid.some((entry) => entry.room === room))
+  const use = rooms.filter((room) => !room.api && room.nowLeft !== null && room.atReset && room.atReset.percent >= 20 && !avoid.some((entry) => entry.room === room))
     .sort((a, b) => b.atReset!.percent - a.atReset!.percent || Date.parse(a.atReset!.resetAt) - Date.parse(b.atReset!.resetAt));
   return { use, avoid };
 }
@@ -264,14 +287,18 @@ export function nousProviderRoomText(room: NousProviderRoom | undefined, time?: 
 
 /** The world's provider lines: each pool's room, Space's advice and the operator's code-model rule. */
 export function renderNousProviderAdvice(rooms: NousProviderRoom[] | null, time: (value: string) => string, zone: string): string {
-  const rule = "Code changes in any app: Claude Opus or GPT-6 Astra only, never a Sol model.";
+  // Operator 22/11 (nous_msg:719620b3a7bb46fd8d85f717): use Antigravity Gemini 4 Neon in place of Claude models when Claude is unavailable.
+  const rule = "Code changes in any app: Claude Opus, Antigravity Gemini 4 Neon (gemini-4-neon) when Claude models are unavailable, or GPT-6 Astra only; never a Sol model.";
   if (!rooms) return `Providers: unknown (no Space Gateway account sample). ${rule}`;
   const { use, avoid } = nousProviderAdvice(rooms);
+  const [hard, pace] = [avoid.filter(({ why }) => why === "no room now" || why === "quota unknown" || why === "no balance left"), avoid.filter(({ why }) => why !== "no room now" && why !== "quota unknown" && why !== "no balance left")];
   const unused = (room: NousProviderRoom) => `${room.name} (${room.atReset!.percent}% would reset unused ${time(room.atReset!.resetAt)})`;
   // Plan clipboard:ctqx7SPqkWR2 step 5 (1/11: the Antigravity Claude · GPT pool 100% unused while four Max accounts hit their 5 hours).
   const antigravity = use.find((room) => room.key === "antigravity-claude" || room.key === "gemini");
   return `Providers (left now, at this pace at the weekly reset in ${zone}, pace): ${rooms.map((room) => `${room.name} ${nousProviderRoomText(room, time)}`).join("; ")}.\n`
-    + `Provider advice: use now ${use.map(unused).join(", ") || "nothing in particular"}; avoid ${avoid.map(({ room, why }) => `${room.name} (${why})`).join(", ") || "none"}. `
+    // Operator 21/11 20:00 BKK (nous_msg:eedece6d): a week ahead of its pace is a guide, never "avoid": only a spent pool or key stops work.
+    + `Provider advice: use now ${use.map(unused).join(", ") || "nothing in particular"}; avoid ${hard.map(({ room, why }) => `${room.name} (${why})`).join(", ") || "none"}. `
+    + (pace.length ? `Ahead of its week pace (a guide only: its accounts still run and take panes, helpers and background work): ${pace.map(({ room, why }) => `${room.name} (${why})`).join(", ")}. ` : "")
     + (antigravity ? `Non-code work (research, reading, mail drafts, checks, summaries) goes by default to a Gemini (Antigravity) pane (pane type gemini${antigravity.key === "antigravity-claude"
       ? ", a Claude or GPT model there for the Claude · GPT pool" : ""}), not to Claude Max. ` : "")
     // The free and granted pools (nous_msg:d9b67550): their lines above say granted, used and left; they serve the Space provider after the subscriptions.
@@ -281,8 +308,9 @@ export function renderNousProviderAdvice(rooms: NousProviderRoom[] | null, time:
 
 /**
  * The Load tab (plan clipboard:f4SH36t3fJ6c): how much of each subscription pool is in use now, from the cached Gateway samples only. Per
- * account the tighter of its 5-hour window used and its week used against the share of the week passed (100 = spending at pace; ahead of
- * pace counts as full), an account at its quota 100; the pool is the mean of its accounts, null without a sample.
+ * account the tighter of its 5-hour window used and its week used (room in use, not pace), an account at its quota 100; the pool is the
+ * mean of its accounts, null without a sample. 2026-11-23 REVIEW: the pace figure (week used / week passed, capped) read Claude Max 100% all
+ * night 22/11 while crew was 2% into a fresh week and dev's 5 hours at 5%, and was taken for full 5-hour windows; pace stays on the Tokens line.
  */
 export function nousPoolUtilization(accounts: GatewayAccount[] | null, now: number): { claude: number | null; codex: number | null; gemini: number | null } {
   // Gemini (4/11, plan clipboard:ro5ukMcJnIk4 step 5): the Space provider's third route; its windows are the Antigravity account's "gemini" quota group.
@@ -295,9 +323,8 @@ export function nousPoolUtilization(accounts: GatewayAccount[] | null, now: numb
       if (account.status === "QUOTA_EXCEEDED") return [100];
       const fiveHour = windowOf(account, 300);
       const used = fiveHour ? nousWindowUsed(fiveHour, now) : null;
-      const week = gatewayWeekPace(account, now);
-      const pace = week?.usedPercent == null ? null : Math.min(100, (100 * week.usedPercent) / Math.max(week.passedPercent, 1));
-      const known = [used, pace].filter((value) => value !== null);
+      const week = windowOf(account, 10_080);
+      const known = [used, week ? nousWindowUsed(week, now) : null].filter((value) => value !== null);
       return known.length ? [Math.min(100, Math.max(...known))] : [];
     });
     return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
@@ -367,15 +394,21 @@ export function createNousTokenMonitor(deps: { read(owner: string): Promise<Nous
   };
 }
 
-export function nousTokenModel(settings: NousSettings, reason: NousTurnReason | "HELPER", mode: NousSpendMode): NousModelChoice {
+export function nousTokenModel(settings: NousSettings, reason: NousTurnReason | "HELPER", mode: NousSpendMode, escalate: boolean | "push" = false): NousModelChoice {
   const kind = nousTurnKindOf(reason);
   const picked = nousModelFor(settings.models, reason);
   // Operator 8/11 (ops 100%→24%: Nous took 43% of it on Opus xhigh): a goal turn's "auto" runs the balanced class; an explicit model stays.
   const choice = kind === "goal" && picked.model === "auto" ? { ...picked, model: "auto-balanced" } : picked;
-  if (mode === "NORMAL") return choice;
   // Goal turns are not downgraded further in low-spend mode (operator 2026-10-27); CRITICAL runs none at all (service.ts).
   if (kind === "goal") return choice;
-  if (kind === "operator" || kind === "decision") return { ...choice, effort: NOUS_EFFORTS.indexOf(choice.effort) > NOUS_EFFORTS.indexOf("high") ? "high" : choice.effort };
+  // Plan clipboard:VypZ4sl7NR04 (20/11, Auto ran every kind on Opus xhigh): operator and decision turns keep their model, Auto reasoning at most high.
+  if (kind === "operator" || kind === "decision") return mode === "NORMAL" ? choice.effort === "auto" ? { ...choice, effort: "high" } : choice
+    : { ...choice, effort: NOUS_EFFORTS.indexOf(choice.effort) > NOUS_EFFORTS.indexOf("high") ? "high" : choice.effort };
+  // A background turn's Auto runs the balanced class at medium (operator rule 10/11: lower model and reasoning wherever the task allows);
+  // the turn after a failed one of its kind (escalate, service.ts) runs the best class at high. An explicit model or effort stays.
+  // Goal 5acd171d (22/11, 17:00Z-10:00Z): after an unmet 90 % push Opus high left the push unmet 59 % (72/123) vs Sonnet medium 24 % (51/213), at 3x $/turn: balanced class at high.
+  if (mode === "NORMAL") return picked.model !== "auto" ? choice : escalate ? { model: escalate === "push" ? "auto-balanced" : "auto", effort: picked.effort === "auto" ? "high" : picked.effort }
+    : { model: "auto-balanced", effort: picked.effort === "auto" ? "medium" : picked.effort };
   const low = nousSettingsWithProvider({ ...settings, lowSpend: settings.lowSpend ?? nousLowSpendSettingsSchema.parse({}) }).lowSpend;
   if (!low.cheaperModel) return choice;
   // A per-turn choice only: each mode's settings apply without replacing the stored normal models.
@@ -408,7 +441,7 @@ export function renderNousTokenSummary(tokens: NousTokens, zone: string, now = D
   const asked = tokens.pending ? `; the samples ask ${tokens.pending.mode} since ${time(tokens.pending.since)}, in force once asked ${NOUS_MODE_HOLD_MS / 60_000} minutes` : "";
   const lost = tokens.lost ? `; lost at weekly resets, last 7 days (${zone}): ${lostAtResetText(tokens.lost, short)}` : "";
   return `Low-spend mode: ${tokens.mode} since ${time(tokens.since)}${tokens.mode !== "NORMAL" ? `; normal again ${tokens.control === "ON" ? "when Auto or Off is selected" : `at about ${time(tokens.resetAt)}`}` : ""}${asked} (${tokens.control})${model}.\n`
-    + `Tokens: ${{ space: "Space routes", claude: "Claude Max", codex: "Codex", gemini: "Gemini", openai: "OpenAI API", openrouter: "OpenRouter", deepseek: "DeepSeek" }[tokens.provider ?? "claude"]} ${tokens.max ? `${tokens.max.withRoom}/${tokens.max.total} with room` : "unknown"}; next reset ${time(tokens.nextResetAt)}; API month ${api}; Codex 5-hour ${codex}; weekly pace (7-day used/week passed, points, reset in ${zone}; today used/allowance, background work HELD at it): Claude ${pace("CLAUDE")}; Codex ${pace("CODEX")}${lost}; Nous last hour ${hour}; serves Nous: ${tokens.serving}. Detail: space_token_state.\n${providers}`;
+    + `Tokens: ${{ space: "Space routes", claude: "Claude Max", codex: "Codex", gemini: "Gemini", openai: "OpenAI API", openrouter: "OpenRouter", deepseek: "DeepSeek" }[tokens.provider ?? "claude"]} ${tokens.max ? `${tokens.max.withRoom}/${tokens.max.total} with room` : "unknown"}; next reset ${time(tokens.nextResetAt)}; API month ${api}; Codex 5-hour ${codex}; weekly pace (7-day used/week passed, points, reset in ${zone}; today used/allowance, a guide only: the pace cap is off, nothing is held by it): Claude ${pace("CLAUDE")}; Codex ${pace("CODEX")}${lost}; Nous last hour ${hour}; serves Nous: ${tokens.serving}. Detail: space_token_state.\n${providers}`;
 }
 
 export function renderNousTokens(tokens: NousTokens, zone: string, now = Date.now(), context?: TokenModelContext): string {
@@ -422,12 +455,12 @@ export function renderNousTokens(tokens: NousTokens, zone: string, now = Date.no
   };
   return [renderNousTokenSummary(tokens, zone, now, context), `Sample read ${time(tokens.sampledAt)}; percentages are cached Gateway samples.`,
     `Weekly pace: points = 7-day used % minus the share of the week passed; AHEAD (above +${GATEWAY_PACE_BAND}) runs out before the reset, UNDER (below -${GATEWAY_PACE_BAND}) leaves tokens unused, ON is within ${GATEWAY_PACE_BAND}.`,
-    `Today's allowance: (100 - the 7-day used % when the day began) / days left to the reset; a guide only: the pace cap is off (operator 7/11), so Space Gateway holds nothing by it; only a spent week (100%) stops an account.`,
+    `Today's allowance: (100 × (1 + the account's week reset credits) - the 7-day used % when the day began) / days left to the reset; a guide only: the pace cap is off (operator 7/11), so Space Gateway holds nothing by it; only a spent week (100%) stops an account.`,
     ...(context ? [`Cheaper model in low-spend mode: ${context.settings.lowSpend.cheaperModel ? "on" : "off"}. Automatic selections: ${automaticModelLabel(context.settings, tokens.mode)}.`] : []),
     ...(tokens.accounts === null ? ["Gateway account windows unavailable."] : tokens.accounts.filter((entry) => ["CLAUDE", "CODEX"].includes(entry.provider)
       || (entry.provider === "ANTIGRAVITY" && !["PAUSED", "DEACTIVATED"].includes(entry.status))).map((account) =>
       `- ${account.provider} ${account.alias ?? account.label} · ${account.status}${account.id === tokens.servingAccountId ? " · serves Nous" : ""}`
-      + `${account.resetCreditsAvailable ? ` · ${account.resetCreditsAvailable} weekly reset credit${account.resetCreditsAvailable === 1 ? "" : "s"} (space_codex_reset_redeem)` : ""}: `
+      + `${account.resetCreditsAvailable ? ` · ${account.resetCreditsAvailable} reset credit${account.resetCreditsAvailable === 1 ? "" : "s"}${account.resetCreditGrants?.length ? ` (${account.resetCreditGrants.map((grant) => `${grant.left} ${grant.kind}`).join(", ")})` : ""} (the operator's, Resources button)` : ""}: `
       + (account.planType === "api" ? "API account (no subscription windows)" : account.quotaGroups?.length
         ? account.quotaGroups.map((group) => `${group.key === "claude" ? "Claude · GPT" : group.key} models: ${accountWindows(group, true)}`).join(" | ") : accountWindows(account, paced(account)) + (paced(account) ? paceToday(account, now).replace(/^ today/, "; today used/allowance") : "")))),
     ...(tokens.api ?? []).map((account) => `- API ${account.label} · ${account.status}: ${[account.balance && `balance ${account.balance}`, account.remainingPercent != null && `${account.remainingPercent}% left`, account.detail].filter(Boolean).join("; ") || "no balance reported"}`)].join("\n");

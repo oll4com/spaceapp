@@ -20,7 +20,7 @@ async function wired(options: { autonomous?: boolean } = {}) {
   const room = await store.createRoom({ name: "Main", initialPaneCount: 0 }, "trace:t", owner);
   const andy = await store.createPane({ roomId: room.id, title: "Andy", paneName: "Andy", mode: "TERMINAL", terminalRuntimeId: "cli:claude" } as never);
   const execute = vi.fn(async () => ({ ok: true, display: "Sent", result: "{}" }));
-  const raise = vi.fn(async (input: Record<string, unknown>, _options?: Record<string, unknown>) => ({ id: "notification:abcdef1", ...input }) as never);
+  const raise = vi.fn<(input: Record<string, unknown>, options?: Record<string, unknown>) => Promise<never>>(async (input) => ({ id: "notification:abcdef1", ...input }) as never);
   let queue: Array<[string, Record<string, unknown>]> = [];
   const outcomes: NousToolOutcome[] = [];
   const prompts: string[] = [];

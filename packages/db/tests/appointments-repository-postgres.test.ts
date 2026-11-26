@@ -31,6 +31,11 @@ async function behaves(repository: AppointmentsRepository) {
   const moved = await repository.update(owner, call.id, { startsAt: "2026-11-10T21:30:00+07:00", endsAt: null });
   expect(moved).toMatchObject({ title: "IP Fabric call", kind: "CALL", remindersSent: [], endsAt: null, startsAt: "2026-11-10T14:30:00.000Z" });
   expect(await repository.get("user:other", call.id)).toBeNull();
+  // A recurring one (migration 0413) keeps its rule and stays on the reminder tick after its first start, so the tick can move it on.
+  const daily = await repository.create(owner, { title: "EF-Start", startsAt: "2026-11-01T09:00:00+07:00", kind: "CALL", recurrence: { every: "WEEKDAY", until: "2026-11-20" }, ...zone });
+  expect((await repository.get(owner, daily.id))!.recurrence).toEqual({ every: "WEEKDAY", until: "2026-11-20" });
+  expect((await repository.upcoming("2026-11-03T00:00:00.000Z")).map((item) => item.id)).toContain(daily.id);
+  expect((await repository.update(owner, daily.id, { recurrence: null }))!.recurrence).toBeNull();
 }
 
 it("keeps appointments in memory", async () => behaves(new InMemoryAppointmentsRepository()));

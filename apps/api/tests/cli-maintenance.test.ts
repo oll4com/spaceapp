@@ -202,6 +202,11 @@ describe("CLI maintenance API", () => {
 
     await expect(runner.detect()).resolves.toMatchObject({ schemaVersion: "space.cli-update-all.detection.v1" });
     await expect(runner.updateAll({ keys: ["qwen"], reinstall: true })).resolves.toMatchObject({ overallStatus: "PASS" });
+    // Daily Nous errors 23/11 01:51Z: an all-CLI result carrying DeepSeek Harness failed with zod invalid_value.
+    controlExecutor.mockResolvedValueOnce({ code: 0, stderr: "", stdout: `${JSON.stringify({ mode: "UPDATE_ALL", overallStatus: "PASS", scope: ["harness"], reinstall: false,
+      runtimes: [{ runtimeId: "cli:harness", displayName: "DeepSeek Harness", installedVersion: "1.0.0", availableVersion: "1.0.0", status: "PASS", code: "UP_TO_DATE",
+        summary: "Up to date.", checks: [], customPreserved: false }], startedAt: null, finishedAt: timestamp })}\n` });
+    await expect(runner.updateAll({ keys: ["harness"] })).resolves.toMatchObject({ runtimes: [{ runtimeId: "cli:harness" }] });
     expect(detectExecutor).toHaveBeenCalledWith(["/opt/spaceapp/scripts/cli-maintenance-update-all.mjs", "detect"]);
     expect(controlExecutor).toHaveBeenCalledWith({ keys: ["qwen"], reinstall: true });
   });

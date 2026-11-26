@@ -1,18 +1,22 @@
+import type { Pane } from "@space/contracts";
 import type { SpaceEventBus, SpaceStore } from "@space/runtime";
 import type { FastifyInstance } from "fastify";
 import { browserCensus, registerBrowserCensusRoutes } from "./browser-census-routes.js";
-import { browserAgentOf } from "./browser-control-activity.js";
+import { browserAgentOf, type BrowserControlActivity } from "./browser-control-activity.js";
+import { submitCliPrompt } from "./cli-prompt-submit.js";
 import { pageHasTypedText } from "./browser-page-readout.js";
-import { operatorFirstBrowsers, startBrowserReaper } from "./browser-reaper.js";
+import { idleRoomBrowser, operatorFirstBrowsers, scheduledPanes, startBrowserReaper, type ReleaseDeps } from "./browser-reaper.js";
 import { registerCliBrowserBridgeRoutes } from "./cli-browser-bridge-routes.js";
 import { browserHandoffPendingReason, createCliBrowserCdpProxy } from "./cli-browser-cdp.js";
 import type { SpaceApiConfig } from "./config.js";
 import { registerInternalAgentActionRoutes } from "./internal-agent-action-routes.js";
+import { createNeedsYouPageWatch } from "./needs-you-page-watch.js";
 import { settleBrowserHandoffNotifications } from "./notifications/browser-handoff.js";
+import type { NotificationService } from "./notifications/service.js";
 import { registerPaneBrowserRoutes } from "./pane-browser-routes.js";
 import { registerPaneBrowserTeleportRoutes } from "./pane-browser-teleport.js";
 import { registerPaneCliSessionRoutes } from "./pane-cli-session-routes.js";
-import { isBrowserPane } from "./pane-guards.js";
+import { getLatestRoomEvent, isBrowserPane } from "./pane-guards.js";
 import { registerPaneBrowserFrameRoutes } from "./pane-stream-routes.js";
 import { recordAudit } from "./request-audit.js";
 import { registerVault } from "./vault/wiring.js";
@@ -33,10 +37,10 @@ type BrowserRoutesDeps = Pick<Bridge, "paneBrowserAccounts" | "marketingCopilotS
     options: Bridge["options"] & { vault?: Vault["overrides"]; videoEngine?: PaneBrowser["videoEngine"] };
     browserSessionManager: Bridge["browserSessionManager"] & PaneBrowser["browserSessionManager"] & Vault["browser"] & Census["browserSessionManager"];
     cliRuntimeVisibility: Bridge["cliRuntimeVisibility"] & CliSessions["cliRuntimeVisibility"] & AgentActions["cliRuntimeVisibility"];
-    browserControlActivity: NonNullable<Bridge["controlActivity"]> & PaneBrowser["controlActivity"] & Census["controlActivity"];
+    browserControlActivity: NonNullable<Bridge["controlActivity"]> & PaneBrowser["controlActivity"] & Census["controlActivity"] & Pick<BrowserControlActivity, "onUse" | "agentFor">;
     nousRef: NonNullable<Bridge["nous"]> & D<typeof registerPaneBrowserTeleportRoutes>["nous"]; connectorCrypto: Vault["crypto"]; geminiAccountEmails: Census["geminiEmails"];
     jobApplyService: NonNullable<Bridge["jobApplyService"]>; mailCopilotService: NonNullable<Bridge["mailCopilotService"]>;
-    notificationService: Parameters<typeof settleBrowserHandoffNotifications>[0]["notifications"]; roomActionExecutor: AgentActions["roomActionExecutor"];
+    notificationService: Parameters<typeof settleBrowserHandoffNotifications>[0]["notifications"] & Pick<NotificationService, "list" | "setStatus">; roomActionExecutor: AgentActions["roomActionExecutor"];
     cliUserHosting: { onUserCliHost: CliSessions["onUserCliHost"] };
     vaultKeySaved?: Vault["keySaved"];
     vaultKeysReconcile?: Vault["reconcileKeys"];
@@ -59,7 +63,27 @@ export function registerBrowserRoutes(app: FastifyInstance, deps: BrowserRoutesD
   const vault = registerVault(app, { config, auth, store, browser: browserSessionManager, routeOptions: defaultRouteRateLimitOptions, overrides: options.vault, paneAccount: effectivePaneProfileId, crypto: connectorCrypto, controlActivity: browserControlActivity, keySaved: deps.vaultKeySaved, reconcileKeys: deps.vaultKeysReconcile,
     // The CDP proxy is made below; it is asked only per fill, long after start.
     documentDirty: (paneId, targetId, document) => cliBrowserCdpProxy.documentDirty(paneId, targetId, document), documentDirtiedBy: (paneId, targetId, document) => cliBrowserCdpProxy.documentDirtiedBy(paneId, targetId, document) });
+  // Operator 5/11 14:47 BKK: unused browsers close by themselves, and an agent browser never refuses the operator's (browser-reaper.ts).
+  // The CDP proxy is made below; these read it only per sweep or request, long after start.
+  const census = () => browserCensus({ store, agentOf: (paneId) => browserAgentOf(store, browserControlActivity, paneId, cliBrowserCdpProxy.connectionCount(paneId) > 0) });
+  const usedAt = (paneId: string) => browserControlActivity.usedAt(paneId);
+  const release: ReleaseDeps = {
+    agentFor: (paneId) => browserControlActivity.agentFor(paneId, cliBrowserCdpProxy.connectionCount(paneId) > 0),
+    reports: async (driver) => {
+      const reports = nousRef.current?.paneReports;
+      return reports ? reports.list((await store.getRoom(driver.roomId)).ownerUserId ?? "user:operator", driver.id) : null;
+    },
+    typedForm: async (paneId) => {
+      const [pane, session] = await Promise.all([store.getPane(paneId), store.getLatestPaneBrowserSession(paneId)]);
+      // Like an agent's first command (onActivity below): the read brings an idle window back and thaws its frozen pages first.
+      await browserSessionManager.diagnostics?.(pane, false, 1).catch(() => undefined);
+      return !session || pageHasTypedText({ config, pane, session });
+    }
+  };
   registerCliBrowserBridgeRoutes(app, {
+    idleBrowser: async (roomId) => idleRoomBrowser((await census()).sessions, roomId, { store, usedAt, scheduled: await scheduledPanes(store), release }),
+    // The reaper is made below; a report reads it long after start.
+    releaseOwnBrowsers: (paneId) => reaper.releaseFor(paneId),
     options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility, controlActivity: browserControlActivity, vault, nous: nousRef,
     dropOtherAgents: (paneId, keep) => { cliBrowserCdpProxy.closeForPane(paneId, "BROWSER_HANDOFF_PENDING", browserHandoffPendingReason, keep); },
     routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts, marketingCopilotService, freelanceCopilotService, designService, videoService, appStudioService, securityCopilotService, monitoringCopilotService, mailCampaignsService, jobApplyService: config.optionalModules.has("job-copilot") ? jobApplyService : undefined, mailCopilotService: config.optionalModules.has("mail-copilot") ? mailCopilotService : undefined
@@ -73,6 +97,7 @@ export function registerBrowserRoutes(app: FastifyInstance, deps: BrowserRoutesD
     controlActivity: browserControlActivity,
     assertRuntimeEnabled: (runtimeId) => cliRuntimeVisibility.assertEnabled(runtimeId),
     vaultProtection: vault.protection,
+    vaultFlowBrowser: browserSessionManager,
     log: app.log,
     onConnected: (request, resolution) => {
       browserControlActivity.noteAgent(resolution.pane.id, resolution.claims.paneId);
@@ -90,26 +115,20 @@ export function registerBrowserRoutes(app: FastifyInstance, deps: BrowserRoutesD
   cliBrowserCdpProxy.register(app, defaultRouteRateLimitOptions); vault.protection.onProtected((paneId) => cliBrowserCdpProxy.closeForPane(paneId, "VAULT_PROTECTED", "This browser is protected for the Vault."));
 
   registerBrowserCensusRoutes(app, { store, browserSessionManager, controlActivity: browserControlActivity, cdpConnectionCount: (paneId) => cliBrowserCdpProxy.connectionCount(paneId), geminiEmails: geminiAccountEmails, routeOptions: defaultRouteRateLimitOptions });
-  // Operator 5/11 14:47 BKK: unused browsers close by themselves, and an agent browser never refuses the operator's (browser-reaper.ts).
-  const census = () => browserCensus({ store, agentOf: (paneId) => browserAgentOf(store, browserControlActivity, paneId, cliBrowserCdpProxy.connectionCount(paneId) > 0) });
-  const usedAt = (paneId: string) => browserControlActivity.usedAt(paneId);
   const operatorBrowsers = operatorFirstBrowsers(browserSessionManager, { store, census, usedAt, noteUse: (paneId) => browserControlActivity.noteUse(paneId),
     warn: (error) => app.log.warn({ err: error }, "A browser could not yield to the operator.") });
   const reaper = startBrowserReaper({ store, census, usedAt, stopPane: (paneId, traceId) => browserSessionManager.stopPane(paneId, traceId),
     warn: (error, paneId) => app.log.warn({ err: error, paneId }, "Browser reaper failed."),
-    release: {
-      agentFor: (paneId) => browserControlActivity.agentFor(paneId, cliBrowserCdpProxy.connectionCount(paneId) > 0),
-      reports: async (driver) => {
-        const reports = nousRef.current?.paneReports;
-        return reports ? reports.list((await store.getRoom(driver.roomId)).ownerUserId ?? "user:operator", driver.id) : null;
-      },
-      typedForm: async (paneId) => {
-        const [pane, session] = await Promise.all([store.getPane(paneId), store.getLatestPaneBrowserSession(paneId)]);
-        // Like an agent's first command (onActivity below): the read brings an idle window back and thaws its frozen pages first.
-        await browserSessionManager.diagnostics?.(pane, false, 1).catch(() => undefined);
-        return !session || pageHasTypedText({ config, pane, session });
-      }
-    } });
+    // Dev runs no browser host: its panes' browsers all read as stopped, so it closes none.
+    ...(config.browserSessionsEnabled ? { closePane: async (paneId: string, traceId: string) => {
+      const pane = await store.updatePane(paneId, { isClosed: true, status: "CLOSED" }, traceId);
+      const closed = await getLatestRoomEvent(store, pane.roomId);
+      if (closed) eventBus.publish(closed);
+    } } : {}),
+    ...(config.browserSessionsEnabled && browserSessionManager.closePage ? { closeTab: async (pane: Pane, pageId: string, traceId: string) => {
+      await browserSessionManager.closePage!(pane, pageId, traceId);
+    } } : {}),
+    release });
   app.addHook("onClose", async () => reaper.stop());
   paneBrowserAccounts.current = registerPaneBrowserRoutes(app, {
     config, readGeminiAccountProfileDetails, store, browserSessionManager: operatorBrowsers, routeOptions: defaultRouteRateLimitOptions, cliBrowserCdpProxy,
@@ -120,6 +139,20 @@ export function registerBrowserRoutes(app: FastifyInstance, deps: BrowserRoutesD
     onControlReleased: (paneId) => void settleBrowserHandoffNotifications({ store, notifications: notificationService }, paneId)
       .catch((error: unknown) => app.log.warn({ err: error, paneId }, "Browser handoff notifications could not be settled after a release."))
   });
+  // A card answered in the page itself (Teleport, the dock) wakes the agent that asked (operator 20/11 18:25 BKK, needs-you-page-watch.ts).
+  if (browserSessionManager.listPages) {
+    const listPages = browserSessionManager.listPages.bind(browserSessionManager);
+    const pageWatch = createNeedsYouPageWatch({ store, pages: listPages, notifications: notificationService, agents: browserControlActivity,
+      tell: async (cliPaneId, text) => {
+        const session = await store.getActivePaneCliSession(cliPaneId);
+        if (!session) throw new Error(`No CLI runs in pane ${cliPaneId}.`);
+        await submitCliPrompt(cliTerminalManager, session.sessionId, text, `trace:needs-you-page:${cliPaneId}`, `needs-you-page:${cliPaneId}:${Date.now()}`,
+          { onlyWhenReady: true, paneId: cliPaneId });
+      },
+      log: (error, paneId) => app.log.warn({ err: error, paneId }, "A card answered in its page could not reach its agent yet.") });
+    const stopPageWatch = browserControlActivity.onUse((paneId) => pageWatch.use(paneId));
+    app.addHook("onClose", async () => { stopPageWatch(); pageWatch.close(); });
+  }
 
   registerInternalAgentActionRoutes(app, {
     config, store, browserSessionManager, cliRuntimeVisibility, roomActionExecutor, vaultProtection: vault.protection,

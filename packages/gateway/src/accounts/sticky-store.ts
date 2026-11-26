@@ -1,6 +1,7 @@
 import type { GatewayProvider } from "@space/contracts";
 import type { GatewayRepository, GatewayStickyBinding, GatewayStickyKind } from "@space/db";
 import { BoundedMap } from "../proxy-util.js";
+import { STALE_READ_WAIT_MS } from "../stale-read.js";
 
 /**
  * Conversation-to-account bindings (sticky threads, prompt-cache sessions, response continuations), kept in
@@ -43,7 +44,9 @@ export class StickyStore {
     if (missedAt !== undefined && now - missedAt < NEGATIVE_MS) return undefined;
     if (!this.options.repository) return undefined;
     try {
-      const stored = await this.options.repository.findStickyBinding(keyHash, new Date(now).toISOString());
+      // A stalled database costs the binding (prompt-cache affinity), never the request.
+      const stored = await Promise.race([this.options.repository.findStickyBinding(keyHash, new Date(now).toISOString()),
+        new Promise<null>((resolve) => { setTimeout(resolve, STALE_READ_WAIT_MS, null).unref(); })]);
       if (stored) {
         this.memory.set(keyHash, { accountId: stored.accountId, expiresAt: stored.expiresAt ? Date.parse(stored.expiresAt) : now + this.ttl() });
         return stored.accountId;

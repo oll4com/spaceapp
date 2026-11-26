@@ -51,7 +51,6 @@ export const taskTitleSettingsSchema = z.object({
   subscriptionReservePercent: z.number().min(0).max(95).default(20),
   perTaskHourAttempts: z.number().int().min(1).max(60).default(8),
   perTaskDayAttempts: z.number().int().min(1).max(500).default(30),
-  globalDayAttempts: z.number().int().min(1).max(5000).default(200),
 });
 export type TaskTitleSettings = z.infer<typeof taskTitleSettingsSchema>;
 
@@ -96,6 +95,4 @@ export interface TaskTitleCandidateStatus {
   cooldownUntil: string | null;
   /** Can read attached images, so screenshots inform the title. */
   vision?: boolean;
-  /** Internal: the free model the daily picker verified with a real call. */
-  pickerVerified?: boolean;
 }

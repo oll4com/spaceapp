@@ -43,7 +43,7 @@ const pane = { id: "pane:monitoring01", roomId: "room:monitoring01", title: "Mon
 const event = (id: string, type: MonitoringEvent["type"], status: MonitoringEvent["status"], message: string, payload: Record<string, unknown> = {}): MonitoringEvent =>
   ({ id, ownerUserId: "user:operator", paneId: pane.id, type, status, message, payload, createdAt: at, updatedAt: at });
 const alert = (id: string, alertname: string, severity: MonitoringAlertView["severity"], state: MonitoringAlertView["state"] = "FIRING"): MonitoringAlertView => ({
-  id, alertname, severity, source: "PROMETHEUS", instance: "192.168.10.1:443", job: "static_blackbox_tcp", summary: `${alertname} summary`, description: `${alertname} description`,
+  id, alertname, severity, source: "PROMETHEUS", instance: "192.168.88.1:443", job: "static_blackbox_tcp", summary: `${alertname} summary`, description: `${alertname} description`,
   labels: { alertname, severity: severity.toLowerCase(), team: "netops" }, state, startsAt: at, endsAt: state === "RESOLVED" ? at : null, lastSeenAt: at
 });
 function state(metadata: MonitoringCopilotPaneMetadata = defaultMonitoringCopilotPaneMetadata()): MonitoringCopilotState {
@@ -56,7 +56,7 @@ function state(metadata: MonitoringCopilotPaneMetadata = defaultMonitoringCopilo
     events: [
       event("monevt:question1", "QUESTION", "OPEN", "Silence the RDP probe alerts tonight?", { options: ["Yes", "No"] }),
       event("monevt:guardian1", "GUARDIAN", null, "OVPN DOWN (office-mikrotik) reason=degraded_session", { level: "ALERT" }),
-      event("monevt:alert0001", "ALERT", null, "Firing: OpenwrtHttpsProbeDown on 192.168.10.1:443")
+      event("monevt:alert0001", "ALERT", null, "Firing: OpenwrtHttpsProbeDown on 192.168.88.1:443")
     ]
   };
 }

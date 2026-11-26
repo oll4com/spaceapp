@@ -127,6 +127,10 @@ describe("marketing copilot run loop", () => {
 
       // The approved post comes back as due; publishing passes the gate and needs the channel's own URL.
       expect((await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json()).toMatchObject({ kind: "PUBLISH", post: { id: postId } });
+      // Served again at once (an agent looping while it holds the post back), it comes after the 2 s poll step, not in a busy loop.
+      const repeatStarted = Date.now();
+      expect((await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json()).toMatchObject({ kind: "PUBLISH", post: { id: postId } });
+      expect(Date.now() - repeatStarted).toBeGreaterThanOrEqual(1_500);
       expect((await app.inject({ method: "POST", url: `${cli}/publish/begin`, headers: agent, payload: { postId } })).json().post.status).toBe("PUBLISHING");
       const wrongSite = await app.inject({ method: "POST", url: `${cli}/publish/done`, headers: agent, payload: { postId, url: "https://example.com/x" } });
       expect(wrongSite.statusCode).toBe(409);
@@ -179,7 +183,7 @@ describe("marketing copilot run loop", () => {
     const { run } = await service.startRun("user:owner", pane.id);
     await service.createBrief("user:owner", pane, { text: "A post about the Nous dock." });
     let text = "✻ Done.\n────\n❯ draft in progress\n────";
-    const kickoff = vi.fn(async (_pane: Pane, _run: MarketingRun) => undefined);
+    const kickoff = vi.fn<(pane: Pane, run: MarketingRun) => Promise<undefined>>(async () => undefined);
     const kick = createCopilotRunKick({ mode: "MARKETING_COPILOT", store, log: { warn: () => undefined }, paused: (candidate) => service.settingsOf(candidate).paused,
       runView: (owner, candidate) => service.runView(owner, candidate), kickoff,
       inspect: async () => ({ sessionId: "cli_session:1", promptFingerprint: "f", state: "IDLE", usageLimited: false, text }) as RoomPaneObservation });
@@ -199,7 +203,7 @@ describe("marketing copilot run loop", () => {
     expect(await service.runView("user:owner", pane)).toMatchObject({ status: "RUNNING", pending: [], backlog: 3 });
     // Claude Code 2.1 idle: the prompt row carries the finished turn's status; until 28/10 that read as a draft and nothing was typed.
     const text = ["✻ Cogitated for 18s", "────", "❯ Cogitated for 18s · done 5:49 PM", "────", "  ⏵⏵ bypass permissions on (shift+tab to cycle)"].join("\n");
-    const kickoff = vi.fn(async (_pane: Pane, _run: MarketingRun) => undefined);
+    const kickoff = vi.fn<(pane: Pane, run: MarketingRun) => Promise<undefined>>(async () => undefined);
     const kick = createCopilotRunKick({ mode: "MARKETING_COPILOT", store, log: { warn: () => undefined }, paused: (candidate) => service.settingsOf(candidate).paused,
       runView: (owner, candidate) => service.runView(owner, candidate), kickoff,
       inspect: async () => ({ sessionId: "cli_session:kate", promptFingerprint: "f", state: roomTerminalState(text), usageLimited: false, text }) as RoomPaneObservation });
@@ -360,4 +364,22 @@ describe("marketing copilot run loop", () => {
     expect(skill).toContain("name: space-marketing-copilot");
     await expect(readFile(new URL("../../../agent-skills/space-marketing-copilot/references/channels.md", import.meta.url), "utf8")).resolves.toContain("## Hacker News");
   });
+});
+
+describe("marketing copilot posts list", () => {
+  it("returns every post when no limit is asked (No Arbitrary Limits: the 200 default hid 13 approved posts from marketing-read on 21/11)", async () => {
+    const { app, headers, agent } = await fixture();
+    try {
+      for (let index = 0; index < 201; index += 1) {
+        expect((await app.inject({ method: "POST", url: `${cli}/posts`, headers: agent, payload: { channel: "X", body: `Draft ${index}` } })).statusCode).toBe(200);
+      }
+      const list = async (query: string) => app.inject({ method: "GET", url: `/api/marketing-copilot/posts${query}`, headers });
+      expect((await list("")).json().posts).toHaveLength(201);
+      expect((await list("?limit=1000")).json().posts).toHaveLength(201);
+      expect((await list("?limit=2")).json().posts).toHaveLength(2);
+      expect((await list("?limit=0")).statusCode).toBe(422);
+    } finally {
+      await app.close();
+    }
+  }, 60_000);
 });

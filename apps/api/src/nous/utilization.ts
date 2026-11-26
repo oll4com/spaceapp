@@ -1,8 +1,10 @@
+import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { loadavg } from "node:os";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { NOUS_LOAD_TARGET, nousLoadRangeSchema, type NousLoad, type NousLoadAverage, type NousLoadPart, type NousLoadPartKey, type NousLoadRange, type NousSpendMode } from "@space/contracts";
+import { NOUS_LOAD_TARGET, nousLoadRangeSchema, type NousLoad, type NousLoadAverage, type NousLoadPart, type NousLoadPartKey, type NousLoadRange, type NousSpendMode, type NousGoal } from "@space/contracts";
 import type { NousLoadBucket, NousRepository } from "@space/db";
 import type { HealthCollectorSample } from "../system-health-collector.js";
 import { classifyLoad, hostSwapText, type HostSwap, type HostSwapReader, type NousLoadLevel } from "./server-load.js";
@@ -31,11 +33,13 @@ export type NousOwnerParts = Pick<NousUtilizationInput, "tokens" | "panes" | "he
 export interface NousUtilization { overall: number; level: NousLoadLevel; limit: string | null; parts: NousLoadPart[]; host: string | null }
 
 /**
- * The blend v1 (tune with data): the server 60 % (CPU 25, memory 15, load 10, pressure 10), the token pools 25 %, CLI panes working 10 %,
- * helper slots 5 %. A part without data leaves the blend and the others share its weight. A hard limit holds the overall at 100: the
- * physical host's swap past 90% (classifyLoad), or no account of Nous's own pool with room (it can run no turn).
+ * The blend v2 (operator 21/11 «ναι σε ολα»): Load is the share of CLI panes working. v1 gave the server 60 % (CPU, memory, load, pressure) and
+ * Tokens 25 %: LLM-bound panes barely move a 20-core VM (21/11: CPU 29 %, load 28 %), so even every pane working read ~58 % and the 90 % target
+ * could never be met. The other parts stay shown and keep their own holds (OVERLOADED, pool room); weight 0 keeps them out of the overall.
+ * A part without data leaves the blend. A hard limit holds the overall at 100: the physical host's swap past 90% (classifyLoad) only; a pool with
+ * no room shows on the Tokens part, and the push still stops on CRITICAL (utilizationPushOn).
  */
-export const NOUS_LOAD_WEIGHTS: Record<NousLoadPartKey, number> = { cpu: 0.25, memory: 0.15, load: 0.1, pressure: 0.1, tokens: 0.25, panes: 0.1, helpers: 0.05 };
+export const NOUS_LOAD_WEIGHTS: Record<NousLoadPartKey, number> = { cpu: 0, memory: 0, load: 0, pressure: 0, tokens: 0, panes: 1, helpers: 0 };
 /**
  * A resource whose tasks stall 40 % of the time has no headroom left. Swap counts (at half) only without a PSI memory reading: swapped pages
  * stay out after memory frees (dev 31/10: swap 35 % with memory stalls at 0.4 %), and PSI already measures the stalls swapping causes.
@@ -62,7 +66,7 @@ export function nousUtilization(input: NousUtilizationInput): NousUtilization {
       detail: `this VM: stalls ${stall("cpu", psi.cpu)}, ${stall("memory", psi.memory)}, ${stall("io", psi.io)} · swap ${swap === null ? "?" : Math.round(swap)}%` },
     { key: "tokens", label: "Tokens", percent: percent(mean(pools)),
       detail: input.tokens ? `Claude Max ${input.tokens.claude === null ? "?" : Math.round(input.tokens.claude)}% · Codex ${input.tokens.codex === null ? "?" : Math.round(input.tokens.codex)}%`
-        + (input.tokens.gemini == null ? "" : ` · Gemini ${Math.round(input.tokens.gemini)}%`) : "no Gateway sample" },
+        + (input.tokens.gemini == null ? "" : ` · Gemini ${Math.round(input.tokens.gemini)}%`) + (input.tokens.noRoom ? ` · ${input.tokens.noRoom}` : "") : "no Gateway sample" },
     { key: "panes", label: "CLI panes", percent: percent(input.panes?.open ? (100 * input.panes.working) / input.panes.open : null),
       detail: input.panes ? `${input.panes.working} of ${input.panes.open} working` : "unknown" },
     { key: "helpers", label: "Helpers", percent: percent(input.helpers?.max ? (100 * input.helpers.live) / input.helpers.max : null),
@@ -72,7 +76,8 @@ export function nousUtilization(input: NousUtilizationInput): NousUtilization {
   const weight = known.reduce((sum, part) => sum + NOUS_LOAD_WEIGHTS[part.key], 0);
   const blend = weight ? known.reduce((sum, part) => sum + NOUS_LOAD_WEIGHTS[part.key] * part.percent!, 0) / weight : 0;
   const { level, reasons } = classifyLoad({ swapPercent: input.host?.percent ?? null, host: input.host?.host });
-  const limit = level === "OVERLOADED" ? `server OVERLOADED (${reasons.join(", ")})` : input.tokens?.noRoom ?? null;
+  // Operator 21/11 (nous_msg:694ff0a9): a pool with no room is pace, not a hard limit; it no longer forces 100 % or restarts the under-target timer.
+  const limit = level === "OVERLOADED" ? `server OVERLOADED (${reasons.join(", ")})` : null;
   return { overall: limit ? 100 : round(blend), level, limit, parts, host: input.host ? hostSwapText(input.host) : null };
 }
 
@@ -101,7 +106,8 @@ export function renderNousUtilization(summary: NousLoadSummary): string {
   const head = `Utilization ${Math.round(overall)}% (target ${target}%; avg today ${avgText(averages.today.value)}, yesterday ${avgText(averages.today.previous)}, 7 days ${avgText(averages.week.value)})`;
   const advice: string[] = [];
   const [cpu, load, memory, tokens] = [part("cpu"), part("load"), part("memory"), part("tokens")];
-  if (tokens !== null && tokens >= 85 && Math.max(cpu ?? 0, load ?? 0) < 60) advice.push("the server has room but the token pools are near their limit: prefer the pool with room (Provider advice) and Codex panes for coding");
+  if (tokens !== null && tokens >= 85 && Math.max(cpu ?? 0, load ?? 0) < 60) // Operator 21/11 20:00 BKK (nous_msg:eedece6d): Tokens 94% was read as "near their limit" while dev, lab and ntheo ran.
+  advice.push("the server has room and Tokens is the room in use, not a stop: every account not RATE_LIMITED or spent still runs, so fill its idle panes (Provider advice for which pool first)");
   if (tokens !== null && tokens < 60 && ((cpu ?? 0) >= 75 || (memory ?? 0) >= 85)) advice.push("the token pools have room but the server is busy: leave heavy builds for later, use helpers for reading and thinking");
   const what = summary.limit ? `: at a limit (${summary.limit}); start nothing new until it clears.`
     : overall >= target ? ": at the target; keep the work going, never past OVERLOADED or a pool's room."
@@ -112,7 +118,7 @@ export function renderNousUtilization(summary: NousLoadSummary): string {
 /**
  * Whether the 90 % push may run: under the target for 10 minutes on a CALM server, CLI panes under 90 % working (operator 3/11 23:11 BKK) and a
  * pool with room. Operator 13/11 07:09 BKK (nous_msg:5c0e7a6e): LOW (Nous's own pool ahead of its pace) is no stop, it silenced the push 13 h on
- * 11/11 while Codex and Gemini had room; only CRITICAL or no account with room (`limit`) stop it. Operator 13/11 20:05 BKK (nous_msg:5eab08b0): the
+ * 11/11 while Codex and Gemini had room; only CRITICAL or an OVERLOADED host (`limit`) stop it. Operator 13/11 20:05 BKK (nous_msg:5eab08b0): the
  * pace-based tokens part is no stop either, 12:00-12:51 UTC it read 100 (every account ahead of its week pace) while Claude Max had 5 h and week room.
  */
 export function utilizationPushOn(summary: NousLoadSummary, mode: NousSpendMode, freed = false): boolean {
@@ -121,12 +127,106 @@ export function utilizationPushOn(summary: NousLoadSummary, mode: NousSpendMode,
   return (summary.underForMs >= 10 * 60_000 || (freed && summary.overall < summary.target)) && summary.level === "CALM" && !summary.limit && mode !== "CRITICAL" && (part("panes") ?? 0) < 90;
 }
 
-/** The standing orders' inbox line (every 10 minutes, or at once for a pane that just finished) when the capacity stayed idle while work waits. */
-export function renderUtilizationLow(summary: NousLoadSummary, waiting: { plans: number; requests: number }): string {
+/**
+ * The standing orders' inbox line (every 10 minutes, or at once for a pane that just finished) when the capacity stayed idle while work waits.
+ * 21/11 (operator 10:40 BKK «Σου ζήτησα να τρέξεις load 90%»): `plans` counts runnable plans only (it said "23 open plans" while all 23 were
+ * parked), the daily-improvement queue is work too, and a free pane gets work before it closes; Tokens is pace, not room.
+ */
+export function renderUtilizationLow(summary: NousLoadSummary, waiting: { plans: number; requests: number; improvements?: string[]; findings?: RegistryFinding[]; goals?: number }): string {
+  const improvements = waiting.improvements ?? [];
+  const findings = waiting.findings ?? [];
+  const goals = waiting.goals ?? 0;
   return `Utilization stayed under the ${summary.target}% target for ${Math.round(summary.underForMs / 60_000)} min (now ${Math.round(summary.overall)}%, avg today ${avgText(summary.averages.today.value)}) `
-    + `while the server is CALM and the tokens have room. Idle capacity: ${partText(summary)}. Waiting: ${waiting.plans} open plan${waiting.plans === 1 ? "" : "s"}, `
-    + `${waiting.requests} operator request${waiting.requests === 1 ? "" : "s"}. Start the waiting work in parallel now, the world's "Score levers now" first (helpers for independent tasks, idle panes, new panes for waiting requests); `
-    + `close finished panes (saved to memory) before you open new ones, they hold the server's RAM; never past OVERLOADED or a pool's room.`;
+    + `while the server is CALM and no pool is at its limit. Idle capacity: ${partText(summary)} (the overall is the CLI panes working; Tokens is each pool's 5-hour or week room in use, the tighter per account). `
+    + `Runnable: ${waiting.plans} plan${waiting.plans === 1 ? "" : "s"} with a step to run, ${waiting.requests} operator request${waiting.requests === 1 ? "" : "s"}, `
+    + `${improvements.length} daily-improvement fix${improvements.length === 1 ? "" : "es"}, ${findings.length} quality-registry finding${findings.length === 1 ? "" : "s"}${goals ? `, ${goals} active goal${goals === 1 ? "" : "s"}` : ""}. Fill the idle capacity now, in parallel: hand each free CLI pane below its next piece of work `
+    + `(a plan step, a request, an improvement fix or a registry finding as a code change in its own worktree) before it closes, open new panes for the rest, helpers (space_subagents) for independent reading; `
+    + `close only panes whose work is done and that nothing below fits; never past OVERLOADED or a pool's room.`
+    + (improvements.length ? `\nDaily-improvement queue (nous/upgrades/queue.md OPEN lines, cause only: the evidence and fix are in the file):\n${improvements.map((line) => `- ${line}`).join("\n")}` : "")
+    + (findings.length ? `\nQuality registry (docs/quality/review-findings.json, resolution open or partial; one finding a pane: read its disposition, re-check it on origin/dev; `
+      + `code can finish it → fix it with a test and a dev-queue ticket and set resolution "fixed" with the commit; it waits on a decision or a release → leave it): `
+      + findings.map((finding) => `${finding.id} (${finding.severity})`).join(", ") : "");
+}
+
+export interface RegistryFinding { id: string; severity: string }
+/**
+ * 22/11 (operator nous_msg:0e499daa «load 90%»: 3 of 12 CLI panes working at 02:51Z, every plan parked on a real date, third party or the
+ * operator, the daily-improvement queue empty): the quality registry's confirmed findings not yet fixed (resolution open or partial, 10 on dev)
+ * are code work the push never named. Warm-owned ones are left out (Warm changes need the operator's prior approval). Most severe first.
+ */
+export function registryOpen(text: string): RegistryFinding[] {
+  let findings: Array<{ id?: unknown; status?: unknown; resolution?: unknown; severity?: unknown; owner?: unknown; waitsOn?: unknown }> = [];
+  try { findings = (JSON.parse(text) as { findings?: typeof findings }).findings ?? []; } catch { return []; }
+  // 22/11 (goal 5acd171d): a finding whose `waitsOn` names a release or decision has no code left (SEC-014 went to a pane 3 times in 30 min).
+  return findings.filter((f) => f.status === "confirmed" && (f.resolution === "open" || f.resolution === "partial") && typeof f.id === "string" && !/\bWarm\b/.test(String(f.owner ?? ""))
+    && !(typeof f.waitsOn === "string" && f.waitsOn.trim()))
+    .map((f) => ({ id: f.id as string, severity: typeof f.severity === "string" ? f.severity : "P?" }))
+    .sort((a, b) => a.severity.localeCompare(b.severity));
+}
+
+const upgradeQueueCause = (line: string): string => line.slice(7).split("; evidence:")[0]!.trim();
+/** The daily-improvement queue's OPEN lines (daily-review.ts writes "- OPEN <day> REVIEW: <cause>; evidence: …; fix: …"), each to its cause. */
+export const upgradeQueueOpen = (text: string): string[] => upgradeQueueOpenLines(text).map(upgradeQueueCause);
+/**
+ * The OPEN lines whole. 22/11 REVIEW (night utilization): a line marked "[DONE …]" in place but still starting "- OPEN" (the "(not taken)" lines)
+ * counted as runnable and went to a free pane after every API restart, which found it already fixed.
+ * 24/11: Nous can only append to queue.md, so a later "- DONE … was OPEN <cause>" line also closes its earlier OPEN line.
+ */
+export function upgradeQueueOpenLines(text: string): string[] {
+  const lines = text.split("\n");
+  const done = lines.flatMap((line, index) => (line.startsWith("- DONE ") ? [{ index, line }] : []));
+  return lines.filter((line, index) => {
+    if (!line.startsWith("- OPEN ") || line.includes("[DONE ")) return false;
+    const cause = upgradeQueueCause(line);
+    return !cause || !done.some((entry) => entry.index > index && entry.line.includes(`was OPEN ${cause}`));
+  });
+}
+/**
+ * 22/11 (operator nous_msg:694ff0a9 «load 90% … εως το πρωι», load 14-42 % all night): every push read "0 plans with a step to run" and the queue
+ * ran dry by 02:52Z, so the free-pane hand-out had nothing and Nous sent four panes the same finished piece. The operator's ACTIVE goals always
+ * have a next step beside their recorded wait («όλα θα τρέχουν παράλληλα»): each is a piece for a free CLI pane (any model), in priority order.
+ */
+export const goalPieces = (goals: NousGoal[]): Array<{ key: string; text: string; strong: boolean }> => goals.filter((goal) => goal.status === "ACTIVE")
+  .sort((left, right) => left.priority - right.priority).map((goal) => ({ key: `goal:${goal.id}`, strong: false,
+    text: `Work on the operator's ACTIVE Nous goal ${goal.id}: «${goal.text}»${goal.planIds.length ? ` (its plans: ${goal.planIds.join(", ")})` : ""}`
+      + `${goal.waitsOn ? `. It waits on ${goal.waitsOn.kind}: ${goal.waitsOn.what}; that wait stays with Nous` : ""}. First read what was already done for it `
+      + "(space-memory-recall, its plans, the latest pane reports naming it) so you repeat nothing; then do its next concrete step that needs neither the operator "
+      + "nor that wait, with the usual gates (mail through the Mail Copilot review, no payment, no promote). Report what moved with space-progress done naming the "
+      + "goal; if no such step exists, report that in one line and stop." }));
+
+/**
+ * 22/11 (operator nous_msg:37276cdc «Δεν έχεις πουσαρει καθόλου όλο το βράδυ στο 90%»): when every plan, fix, finding and goal is given, a free strong
+ * pane gets a hygiene sweep of one code area: unlabeled GitHub issues, failing/flaky tests, tsc errors, then eslint warnings (~4k), so the hand-out never runs dry.
+ */
+export function sweepPieces(root: string): Array<{ key: string; text: string }> {
+  const dirs = (path: string) => { try { return readdirSync(join(root, path), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name); } catch { return []; } };
+  const sources = ["apps", "packages"].flatMap((top) => dirs(top).filter((name) => dirs(`${top}/${name}`).includes("src")).map((name) => `${top}/${name}/src`));
+  // 22/11: apps/web/src/assets (only PNG/SVG, nothing eslint or tsc reads) went to a pane 3 times in 90 min; an area needs a code file.
+  const code = (path: string, recursive: boolean) => { try { return readdirSync(join(root, path), { recursive }).some((name) => /\.[cm]?[jt]sx?$/.test(String(name))); } catch { return false; } };
+  const areas = [...sources.flatMap((src) => [...(code(src, false) ? [`${src}/*.ts(x)`] : []), ...dirs(src).filter((name) => code(`${src}/${name}`, true)).map((name) => `${src}/${name}`)]),
+    ...(dirs(".").includes("scripts") ? ["scripts"] : [])];
+  return areas.map((area) => ({ key: `sweep:${area}`, text: `Hygiene sweep of ${area} (this pane is Space's own sweep pane: it takes only sweeps). `
+    + "Take the first source that has something: (1) an open GitHub issue without a label (gh issue list --state open --search no:label): fix it, or label it with what it waits on; "
+    + `(2) a test of ${area} that fails or flakes on origin/dev (the dev merge queue's FAILED batches: space-queue status --target dev --json); (3) tsc errors of its app or package; `
+    + `(4) eslint warnings in ${area} (npm run lint's eslint command on that path): clear one file's warnings with no behaviour change. Work in your own worktree from dev, with a test `
+    + "where behaviour changes; do not change --max-warnings in package.json; the ceiling is lowered once, separately; submit to the dev merge queue and report the ticket with space-progress done. "
+    + "Never touch Warm, terminal resize or other operator-protected code (AGENTS.md); nothing to fix there → report that in one line with space-progress done." }))
+    // 22/11 CONFLICT storm: ~17 sweeps each lowering the one --max-warnings line conflicted every batch; one held piece lowers it for all.
+    .concat({ key: "sweep:lint-ceiling", text: "Lint ceiling (the only hand-out that edits --max-warnings): in your own worktree from dev, run npm run lint's eslint command, "
+      + "set --max-warnings in package.json to the real warning count it reports (never higher than now), change nothing else, submit that one ticket to the dev "
+      + "merge queue and report it with space-progress done." });
+}
+
+/** Whether any git-changed file path falls in a `sweep:<area>` piece (goal 5acd171d: skip clean areas until dev touches them). */
+export function sweepAreaTouched(key: string, files: readonly string[]): boolean {
+  if (!key.startsWith("sweep:")) return true;
+  const area = key.slice("sweep:".length);
+  if (area === "lint-ceiling") return files.length > 0;
+  if (area.endsWith("/*.ts(x)")) {
+    const dir = area.slice(0, -"/*.ts(x)".length);
+    return files.some((file) => file.startsWith(`${dir}/`) && !file.slice(dir.length + 1).includes("/") && /\.[cm]?[jt]sx?$/.test(file));
+  }
+  return files.some((file) => file === area || file.startsWith(`${area}/`));
 }
 
 export interface NousLoadDeps {

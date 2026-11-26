@@ -6,7 +6,6 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import type { WorktreeService } from "./worktrees/worktree-service.js";
-import { defaultWorktreeBaseBranch } from "./worktrees/default-base-branch.js";
 
 export interface SkippedPaneType { typeId: string; label: string; reason: string }
 
@@ -128,7 +127,6 @@ export function createRoomPaneCommands(options: {
             repoPath,
             roomId,
             branchName: item.mode === "TERMINAL" ? item.worktreeBranch : undefined,
-            baseBranch: defaultWorktreeBaseBranch(repoPath),
             linkModules: true
           });
           result[index]!.cwd = wt.worktreePath;

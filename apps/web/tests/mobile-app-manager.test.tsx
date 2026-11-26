@@ -6,7 +6,8 @@ class FakeApiError extends Error {
   get code() { return this.input.code; }
   get details() { return this.input.details; }
 }
-const apiMock = vi.hoisted(() => ({ mobileInstance: vi.fn(), stepUpWithPassword: vi.fn(), setUpMobileInstance: vi.fn(), rotateMobileInstance: vi.fn(), createMobilePairing: vi.fn(), cancelMobilePairing: vi.fn() }));
+const apiMock = vi.hoisted(() => ({ mobileInstance: vi.fn(), stepUpWithPassword: vi.fn(), setUpMobileInstance: vi.fn(), rotateMobileInstance: vi.fn(), createMobilePairing: vi.fn(), cancelMobilePairing: vi.fn(),
+  requestStepUpMail: vi.fn(), stepUpWithMail: vi.fn(), passwordStatus: vi.fn(() => Promise.resolve({ hasPassword: true, stepUpUntil: null })) }));
 vi.mock("../src/api.js", () => ({ api: apiMock, SpaceApiError: FakeApiError }));
 const { MobileAppManager } = await import("../src/features/auth/MobileAppManager.js");
 const { settlePairAfterStepUp } = await import("../src/features/auth/mobile-pair-resume.js");
@@ -30,7 +31,7 @@ describe("MobileAppManager", () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/api/auth/google/start?stepUp=mobile"));
   });
 
-  it("not set up: Pair a phone, the SpaceApp password, Confirm, and the QR shows with no Set up step (7/11)", async () => {
+  it("not set up: Pair a phone, the password behind its link, Confirm, and the QR shows with no Set up step (7/11)", async () => {
     apiMock.mobileInstance.mockResolvedValueOnce({ configured: false }).mockResolvedValue(configured);
     apiMock.createMobilePairing.mockRejectedValueOnce(stepUpRequired()).mockResolvedValueOnce(offered);
     apiMock.stepUpWithPassword.mockResolvedValue({ steppedUp: true, until: new Date().toISOString() });
@@ -39,11 +40,15 @@ describe("MobileAppManager", () => {
     render(<MobileAppManager />);
     expect(screen.queryByRole("button", { name: "Set up" })).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: "Pair a phone" }));
-    expect(await screen.findByRole("button", { name: "Sign in to Google instead" })).toBeTruthy();
-    // The reason shows as a request, not an error (8/11), and the field takes the focus: a second click is no longer a silent loop.
-    expect(screen.getByRole("status").textContent).toBe("Confirm it is you");
+    expect(await screen.findByRole("button", { name: "Confirm with Google" })).toBeTruthy();
+    // The reason shows as a request, not an error (8/11), and Google takes the focus: a second click is no longer a silent loop.
+    expect(screen.getByRole("status").textContent).toBe("Confirm it is you to pair a phone.");
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(document.activeElement).toBe(screen.getByLabelText("Your SpaceApp password"));
+    // Google or a link by mail first, no password field (operator 17/11); the password stays behind a link for whoever knows it.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Confirm with Google" }));
+    expect(await screen.findByRole("button", { name: "Email me a link" })).toBeTruthy();
+    expect(document.querySelector("input[type=password]")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Use my password instead" }));
     fireEvent.change(screen.getByLabelText("Your SpaceApp password"), { target: { value: "secret words" } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(apiMock.stepUpWithPassword).toHaveBeenCalledWith("secret words"));
@@ -62,7 +67,7 @@ describe("MobileAppManager", () => {
     vi.stubGlobal("location", { ...window.location, assign });
     render(<MobileAppManager />);
     fireEvent.click(await screen.findByRole("button", { name: "Pair a phone" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Sign in to Google instead" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm with Google" }));
     expect(assign).toHaveBeenCalledWith("/api/auth/google/start?stepUp=mobile");
     cleanup();
     // The page came back with ?mobileStepUp=ok (useAppNotices settles it and opens Settings > Account): Mobile app pairs on its own.
@@ -77,16 +82,34 @@ describe("MobileAppManager", () => {
     expect(apiMock.createMobilePairing).toHaveBeenCalledTimes(2);
   });
 
-  it("offers only the password in the desktop app, whose Google sign-in is not a step-up", async () => {
+  it("in the desktop app, someone who does not know the password gets a link by mail and the pairing goes on, with no password changed (operator 17/11)", async () => {
+    apiMock.mobileInstance.mockResolvedValue(configured);
+    apiMock.createMobilePairing.mockRejectedValueOnce(stepUpRequired()).mockResolvedValueOnce(offered);
+    apiMock.requestStepUpMail.mockResolvedValue({ ok: true, sentTo: "owner@example.test" });
+    apiMock.stepUpWithMail.mockResolvedValue({ steppedUp: true, until: new Date(Date.now() + 5 * 60_000).toISOString() });
+    vi.stubGlobal("spaceDesktop", {});
+    render(<MobileAppManager />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pair a phone" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Email me a link" }));
+    const token = "c".repeat(43);
+    fireEvent.change(await screen.findByLabelText("Link from the mail"), { target: { value: `https://space.example.test/#space-step-up=${token}` } });
+    expect(document.querySelector("input[type=password]")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(await screen.findByRole("img", { name: "Pairing code" })).toBeTruthy();
+    expect(apiMock.stepUpWithMail).toHaveBeenCalledWith(token);
+    expect(apiMock.stepUpWithPassword).not.toHaveBeenCalled();
+  });
+
+  it("offers no Google in the desktop app, whose Google sign-in is not a step-up", async () => {
     apiMock.mobileInstance.mockResolvedValue({ configured: false });
     apiMock.createMobilePairing.mockRejectedValue(stepUpRequired());
     vi.stubGlobal("spaceDesktop", {});
     render(<MobileAppManager />);
     fireEvent.click(await screen.findByRole("button", { name: "Pair a phone" }));
-    expect(await screen.findByLabelText("Your SpaceApp password")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Sign in to Google instead" })).toBeNull();
-    // It says where Google works instead (8/11: the operator stopped at the desktop app's prompt).
-    expect(screen.getByRole("status").textContent).toMatch(/^Confirm it is you Google confirmation is not available in the desktop app/);
+    expect(await screen.findByRole("button", { name: "Email me a link" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Confirm with Google" })).toBeNull();
+    expect(document.querySelector("input[type=password]")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Confirm it is you to pair a phone.");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 

@@ -9,6 +9,14 @@ const base = import.meta.env.BASE_URL;
 const media = (name: string) => `${base}demo/media/${name}`;
 const workspace = SPACE_INSTALL_ROOT;
 type FileRecord = { directory: boolean; content: string };
+type LiveItem = Record<string, unknown> & { id: string; roomId: string };
+type BrowserPage = { pageId: string; kind: string; url: string; title: string; isActive: boolean; openerPageId: string | null; canGoBack: boolean; canGoForward: boolean };
+type BrowserState = {
+  session: Record<string, unknown> & { sessionId: string; roomId: string; currentUrl: string; targetUrl: string; viewport: unknown; streamMode: unknown; pages: BrowserPage[]; activePageId: string | null };
+  frame: Record<string, unknown> & { currentUrl: string; viewport: unknown };
+  websocket: Record<string, unknown>;
+};
+type Bookmark = { id: string; title: string; url: string; createdAt: string };
 
 export class MockServices {
   private sequence = 0;
@@ -29,12 +37,12 @@ export class MockServices {
   private selection = { projectId: "project-1-salesforce-crm", variantId: "javascript-react-node", mode: "SAMPLE" };
   private run: Record<string, unknown> | null = null;
   private modelSettings = new Map<string, { modelId: string; reasoningEffort: string }>();
-  private liveItems: any[] = [];
+  private liveItems: LiveItem[] = [];
   private epochs: Record<string, number> = {};
-  private browserStates = new Map<string, any>();
-  private bookmarks = new Map<string, any[]>();
-  private roomMessages = new Map<string, any[]>();
-  private playback = new Map<string, any>();
+  private browserStates = new Map<string, BrowserState>();
+  private bookmarks = new Map<string, Bookmark[]>();
+  private roomMessages = new Map<string, Record<string, unknown>[]>();
+  private playback = new Map<string, unknown>();
   private copilots = new MockCopilots();
 
   constructor(private readonly fixture: () => DemoFixture) {
@@ -47,9 +55,10 @@ export class MockServices {
   }
   snapshot() { return { sequence: this.sequence, selection: this.selection, run: this.run, messages: this.messages, files: [...this.files], sessions: this.sessions, models: [...this.modelSettings],
     liveItems: this.liveItems, epochs: this.epochs, browsers: [...this.browserStates], bookmarks: [...this.bookmarks], roomMessages: [...this.roomMessages], playback: [...this.playback] }; }
-  restore(value: any) {
-    if (!value || typeof value !== "object") return;
-    if (Number.isSafeInteger(value.sequence) && value.sequence >= 0) this.sequence = value.sequence;
+  restore(raw: unknown) {
+    if (!raw || typeof raw !== "object") return;
+    const value = raw as Partial<ReturnType<MockServices["snapshot"]>>;
+    if (typeof value.sequence === "number" && Number.isSafeInteger(value.sequence) && value.sequence >= 0) this.sequence = value.sequence;
     if (value.selection && typeof value.selection.projectId === "string" && typeof value.selection.variantId === "string") this.selection = value.selection;
     if (value.run?.id) this.run = value.run;
     if (Array.isArray(value.messages)) this.messages = value.messages;
@@ -57,7 +66,8 @@ export class MockServices {
     if (Array.isArray(value.liveItems)) this.liveItems = value.liveItems;
     if (value.epochs && typeof value.epochs === "object") this.epochs = value.epochs;
     for (const [key, name] of [["files", "files"], ["models", "modelSettings"], ["browsers", "browserStates"], ["bookmarks", "bookmarks"], ["roomMessages", "roomMessages"], ["playback", "playback"]] as const) {
-      if (Array.isArray(value[key]) && value[key].every((row: any) => Array.isArray(row) && row.length === 2 && typeof row[0] === "string")) (this as any)[name] = new Map(value[key]);
+      const rows: unknown = value[key];
+      if (Array.isArray(rows) && rows.every((row: unknown) => Array.isArray(row) && row.length === 2 && typeof row[0] === "string")) (this as unknown as Record<typeof name, Map<string, unknown>>)[name] = new Map(rows as [string, unknown][]);
     }
   }
   private id(prefix: string) { return `${prefix}:mock-${++this.sequence}`; }
@@ -77,12 +87,12 @@ export class MockServices {
     return { catalog: structuredClone(mockProjectCatalog), selection: { ...this.selection }, run: this.run, connections: [], sheets: { spreadsheetId: null, spreadsheetUrl: null, title: null, tab: null, verified: false, headerPresent: false, verifiedAt: null }, liveReady: false };
   }
   private browser(paneId: string) {
-    let state = this.browserStates.get(paneId);
+    let state: BrowserState | undefined = this.browserStates.get(paneId);
     if (state) return state;
     const roomId = this.fixture().panes.find(p => p.id === paneId)?.roomId ?? this.fixture().rooms[0]!.id;
     const url = "https://spaceapp.dev/";
     const pageId = this.id("browser_page");
-    const pages = [{ pageId, kind: "PAGE", url, title: "Discover Space", isActive: true, openerPageId: null, canGoBack: false, canGoForward: false }];
+    const pages: BrowserPage[] = [{ pageId, kind: "PAGE", url, title: "Discover Space", isActive: true, openerPageId: null, canGoBack: false, canGoForward: false }];
     const sessionId = `browser_session:${paneId}`;
     state = { session: { sessionId, paneId, roomId, ownerAgentId: "agent:demo", agentNumber: 3, profileId: "profile:demo", profilePath: "/demo/browser-profile", viewport: "desktop", targetUrl: url, currentUrl: url, title: "Discover Space", status: "READY", statusReason: "Local browser preview", lastFrameAt: now(), streamMode: "PREVIEW", resolvedStreamMode: "PREVIEW", runtimeState: "READY", capacityState: "AVAILABLE", controlState: "UNCONTROLLED", pages, activePageId: pageId, workerHeartbeatAt: now(), queuePosition: null, isActive: true, startedAt: now(), updatedAt: now(), endedAt: null }, frame: { sessionId, paneId, roomId, status: "READY", viewport: "desktop", currentUrl: url, title: "Discover Space", screenshotDataUrl: media("browser-preview.svg"), capturedAt: now() }, websocket: { paneId, sessionId, token: "mock-browser-only", expiresAt: "2099-01-01T00:00:00.000Z" } };
     this.browserStates.set(paneId, state); return state;
@@ -91,7 +101,7 @@ export class MockServices {
   invoke(method: string, args: unknown[]): { handled: boolean; value?: unknown } {
     const copilot = this.copilots.invoke(method, args);
     if (copilot.handled) return copilot;
-    const input = (args[0] ?? {}) as any;
+    const input = (args[0] ?? {}) as Record<string, unknown>;
     let value: unknown;
     switch (method) {
       case "artifactFileUrl": case "agentFilePreviewUrl": case "agentFileDownloadUrl": {
@@ -115,7 +125,7 @@ export class MockServices {
             kind: file.type.startsWith("image/") ? "IMAGE" : "EXPORT", mimeType: file.type || "text/plain", storageUri: `space-artifact://agent-files/${encodeURIComponent(file.name)}`,
             sha256: "0".repeat(64), byteSize: file.size, metadata: { originalFilename: file.name, source: "USER_UPLOAD", mockDataUrl: `data:${file.type || "text/plain"};base64,${btoa(binary)}` },
             createdAt: now(), expiresAt: null, pinnedAt: null, deletedAt: null };
-          this.fixture().artifacts.push(artifact as any); return artifact;
+          this.fixture().artifacts.push(artifact as unknown as DemoFixture["artifacts"][number]); return artifact;
         })).then(artifacts => ({ artifacts })) };
       }
       case "getLiveHistory": value = { ownerId: "user:demo-user", items: this.liveItems, epochs: this.epochs }; break;
@@ -136,7 +146,7 @@ export class MockServices {
       case "reportLiveVoiceLog": value = { ok: true }; break;
       case "getVoiceRealtimeHistory": value = { ok: true, roomId: args[0], items: [] }; break;
       case "bindHarnessTitleSession": value = { ok: true }; break;
-      case "saveLiveHistory": value = { receipts: (args[0] as any[]).map(({ item, epoch }) => {
+      case "saveLiveHistory": value = { receipts: (args[0] as { item: LiveItem; epoch: unknown }[]).map(({ item, epoch }) => {
         const accepted = args[1] === "user:demo-user" && epoch === (this.epochs[item.roomId] ?? 0);
         if (accepted) this.liveItems = [...this.liveItems.filter(row => row.id !== item.id), item];
         return { id: item.id, sessionId: item.sessionId, accepted };
@@ -210,30 +220,31 @@ export class MockServices {
       case "vncStreamWebSocketUrl": value = "demo-vnc://local"; break;
       case "browserSession": case "startBrowserSession": case "updateBrowserSession": case "navigateBrowser": case "setBrowserViewport": case "browserInput": {
         const paneId = String(args[0]), state = this.browser(paneId);
-        const changes = typeof args[1] === "object" ? args[1] as any : {};
+        const changes: { targetUrl?: string; viewport?: unknown; streamMode?: unknown } = typeof args[1] === "object" ? args[1] as { targetUrl?: string } : {};
         const url = method === "navigateBrowser" ? String(args[1]) : changes.targetUrl;
-        if (url) { state.session.currentUrl = state.session.targetUrl = state.frame.currentUrl = url; const active = state.session.pages.find((p: any) => p.pageId === state.session.activePageId); if (active) { active.url = url; active.title = url; } }
+        if (url) { state.session.currentUrl = state.session.targetUrl = state.frame.currentUrl = url; const active = state.session.pages.find(p => p.pageId === state.session.activePageId); if (active) { active.url = url; active.title = url; } }
         if (changes.viewport || method === "setBrowserViewport") state.session.viewport = state.frame.viewport = changes.viewport ?? args[1];
         if (changes.streamMode) state.session.streamMode = changes.streamMode;
         value = state; break;
       }
       case "browserFrame": value = this.browser(String(args[0])).frame; break;
       case "browserStreamTicket": value = { websocket: this.browser(String(args[0])).websocket }; break;
-      case "browserFrameWebSocketUrl": value = `demo-browser://local/${encodeURIComponent((args[0] as any).paneId)}`; break;
+      case "browserFrameWebSocketUrl": value = `demo-browser://local/${encodeURIComponent((args[0] as { paneId: string }).paneId)}`; break;
       case "browserStreamWebSocketUrl": value = null; break;
       case "browserPages": value = this.pagePayload(String(args[0])); break;
       case "createBrowserPage": case "activateBrowserPage": case "closeBrowserPage": {
         const paneId = String(args[0]), state = this.browser(paneId);
-        if (method === "createBrowserPage") { const page = { pageId: this.id("browser_page"), kind: "PAGE", url: (args[1] as any)?.url ?? "about:blank", title: "New tab", isActive: true, openerPageId: null, canGoBack: false, canGoForward: false }; state.session.pages.push(page); state.session.activePageId = page.pageId; }
+        if (method === "createBrowserPage") { const page = { pageId: this.id("browser_page"), kind: "PAGE", url: (args[1] as { url?: string } | undefined)?.url ?? "about:blank", title: "New tab", isActive: true, openerPageId: null, canGoBack: false, canGoForward: false }; state.session.pages.push(page); state.session.activePageId = page.pageId; }
         if (method === "activateBrowserPage") state.session.activePageId = String(args[1]);
-        if (method === "closeBrowserPage") { state.session.pages = state.session.pages.filter((p: any) => p.pageId !== args[1]); state.session.activePageId = state.session.pages[0]?.pageId ?? null; }
+        if (method === "closeBrowserPage") { state.session.pages = state.session.pages.filter(p => p.pageId !== args[1]); state.session.activePageId = state.session.pages[0]?.pageId ?? null; }
         for (const p of state.session.pages) p.isActive = p.pageId === state.session.activePageId;
-        const active = state.session.pages.find((p: any) => p.isActive); if (active) state.session.currentUrl = state.frame.currentUrl = active.url;
+        const active = state.session.pages.find(p => p.isActive); if (active) state.session.currentUrl = state.frame.currentUrl = active.url;
         value = this.pagePayload(paneId); break;
       }
       case "browserBookmarks": case "addBrowserBookmark": {
         const paneId = String(args[0]), { session } = this.browser(paneId), rows = this.bookmarks.get(paneId) ?? [];
-        if (method === "addBrowserBookmark") rows.push({ id: this.id("bookmark"), title: (args[1] as any)?.title ?? session.currentUrl, url: (args[1] as any)?.url ?? session.currentUrl, createdAt: now() });
+        const added = args[1] as { title?: string; url?: string } | undefined;
+        if (method === "addBrowserBookmark") rows.push({ id: this.id("bookmark"), title: added?.title ?? session.currentUrl, url: added?.url ?? session.currentUrl, createdAt: now() });
         this.bookmarks.set(paneId, rows); value = { sessionId: session.sessionId, paneId, roomId: session.roomId, bookmarks: rows }; break;
       }
       case "openBrowserBookmark": { const state = this.browser(String(args[0])), row = this.bookmarks.get(String(args[0]))?.find(b => b.id === args[1]); if (row) state.session.currentUrl = state.frame.currentUrl = row.url; value = state; break; }
@@ -256,7 +267,7 @@ export class MockServices {
         const current = this.modelSettings.get(String(args[0])) ?? { modelId: "gpt-6.1-sol", reasoningEffort: "high" };
         value = { status: "AVAILABLE", settings: { sessionId: `cli_session:${args[0]}`, threadId: null, current, models: ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna"].map(id => ({ id, displayName: id, isDefault: id === current.modelId, defaultReasoningEffort: "high", supportedReasoningEfforts: ["low", "medium", "high", "xhigh"] })), controlMode: "DIRECT", isTurnActive: false } }; break;
       }
-      case "updateCliModelSettings": this.modelSettings.set(String(args[0]), args[1] as any); value = { current: args[1], message: "Model selection saved in the demo." }; break;
+      case "updateCliModelSettings": this.modelSettings.set(String(args[0]), args[1] as { modelId: string; reasoningEffort: string }); value = { current: args[1], message: "Model selection saved in the demo." }; break;
       default: return { handled: false };
     }
     return { handled: true, value: structuredClone(value) };

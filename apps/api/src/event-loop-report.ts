@@ -1,5 +1,7 @@
 import { Session } from "node:inspector/promises";
-import { monitorEventLoopDelay, performance } from "node:perf_hooks";
+import { constants, monitorEventLoopDelay, performance, PerformanceObserver } from "node:perf_hooks";
+import { getHeapStatistics } from "node:v8";
+import { takeQueryRowCounts } from "@space/db";
 import { takeSpawnCounts } from "./safe-child-process.js";
 
 const RESOLUTION_MS = 20;
@@ -103,19 +105,36 @@ export function summarizeHeapProfile(head: HeapProfileNode, top = 6) {
  * that blocked the loop for `profileAfterBlockMs` (at most once per `profileEveryMs`), also run V8's sampling profiler
  * (10 ms) with the sampling heap profiler (128 KB) and log `event_loop.profile`: no other profiler reaches the API. A profiled interval ran at ~50% event-loop
  * utilization against ~4% without (dev, 2026-10-24), so it no longer runs every hour.
+ * Heap pressure also profiles (API audit 16/11: 904 -> 1,523 MB in 64 s before the 15/11 08:40 UTC heap-limit abort, with no profile
+ * running): past 60% of the heap limit it starts one, past 80% it logs it with `reason: "heap_pressure"` before the abort can lose it.
  */
 export function reportEventLoopLoad(
   log: { info: (fields: object, message: string) => void },
   intervalMs = 300_000,
-  { profileEveryMs = 3_600_000, profileAfterBlockMs = 1_000 }: { profileEveryMs?: number; profileAfterBlockMs?: number } = {}
+  { profileEveryMs = 3_600_000, profileAfterBlockMs = 1_000, pressureCheckMs = 5_000, heapUsedShare = () => {
+    const heap = getHeapStatistics();
+    return heap.used_heap_size / heap.heap_size_limit;
+  } }: { profileEveryMs?: number; profileAfterBlockMs?: number; pressureCheckMs?: number; heapUsedShare?: () => number } = {}
 ): () => void {
   const delay = monitorEventLoopDelay({ resolution: RESOLUTION_MS });
   delay.enable();
+  // public-host lag 14/11: 300-450 ms stalls in intervals with no fork and no profile; GC pauses (a full GC over swapped-out heap pages) are
+  // the suspect. V8 reports each pause with its kind, so every line says whether the slowest delay was a collection.
+  let gc = { pauseMs: 0, pauseMaxMs: 0, major: 0 };
+  const gcObserver = new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      gc.pauseMs += entry.duration;
+      gc.pauseMaxMs = Math.max(gc.pauseMaxMs, entry.duration);
+      if ((entry as { detail?: { kind?: number } }).detail?.kind === constants.NODE_PERFORMANCE_GC_MAJOR) gc.major += 1;
+    }
+  });
+  gcObserver.observe({ entryTypes: ["gc"] });
   let last = performance.eventLoopUtilization();
   let session: Session | null = null;
   let nextProfileAt = 0;
   let profilerFailed = false;
   let stopped = false;
+  let nextPressureProfileAt = 0;
 
   const startProfile = async () => {
     if (stopped || profilerFailed || Date.now() < nextProfileAt) return;
@@ -133,14 +152,14 @@ export function reportEventLoopLoad(
       started.disconnect();
     }
   };
-  const finishProfile = async () => {
+  const finishProfile = async (reason?: string) => {
     const running = session;
     session = null;
     if (!running) return;
     try {
       const { profile } = await running.post("Profiler.stop");
       const heap = await running.post("HeapProfiler.stopSampling").then(({ profile: sampled }) => summarizeHeapProfile(sampled.head), () => null);
-      log.info({ event: "event_loop.profile", ...summarizeCpuProfile(profile), ...heap }, "Event loop profile");
+      log.info({ event: "event_loop.profile", ...(reason ? { reason } : {}), ...summarizeCpuProfile(profile), ...heap }, "Event loop profile");
     } catch {
       profilerFailed = true;
     } finally {
@@ -158,22 +177,44 @@ export function reportEventLoopLoad(
     const { utilization } = performance.eventLoopUtilization(current, last);
     last = current;
     const blocked = lateMs(delay.max) >= profileAfterBlockMs;
+    const memory = process.memoryUsage();
     log.info({
       event: "event_loop.load",
       utilization: Math.round(utilization * 1000) / 1000,
       delayP50Ms: lateMs(delay.percentile(50)),
       delayP99Ms: lateMs(delay.percentile(99)),
       delayMaxMs: lateMs(delay.max),
-      spawns: takeSpawnCounts()
+      gcPauseMs: Math.round(gc.pauseMs),
+      gcPauseMaxMs: Math.round(gc.pauseMaxMs),
+      gcMajor: gc.major,
+      heapUsedMb: Math.round(memory.heapUsed / 2 ** 20),
+      rssMb: Math.round(memory.rss / 2 ** 20),
+      spawns: takeSpawnCounts(),
+      rowsRead: takeQueryRowCounts()
     }, "Event loop load");
     delay.reset();
+    gc = { pauseMs: 0, pauseMaxMs: 0, major: 0 };
     void finishProfile().then(() => blocked ? startProfile() : undefined);
   }), intervalMs);
   timer.unref();
+  // shortcut: a regular interval report that lands between 60% and 80% logs the pressure profile early without the reason; a separate session if that matters.
+  const pressureTimer = setInterval(() => {
+    if (stopped) return;
+    const share = heapUsedShare();
+    if (share >= 0.8 && session) void finishProfile("heap_pressure");
+    else if (share >= 0.6 && !session && Date.now() >= nextPressureProfileAt) {
+      nextPressureProfileAt = Date.now() + profileEveryMs;
+      nextProfileAt = 0;
+      void startProfile();
+    }
+  }, pressureCheckMs);
+  pressureTimer.unref();
   return () => {
     stopped = true;
     clearInterval(timer);
+    clearInterval(pressureTimer);
     delay.disable();
+    gcObserver.disconnect();
     void finishProfile();
   };
 }

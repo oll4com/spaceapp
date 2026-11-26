@@ -7,17 +7,17 @@ import {
   type CliSessionCleanupCodexCleaned,
   type CliSessionCleanupCounts,
   type CliSessionCleanupPreviewResponse,
-  type CliSessionCleanupResponse
+  type CliSessionCleanupResponse,
+  SPACE_INSTALL_ROOT
 } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
 
-const defaultCommand = "/opt/spaceapp/bin/space-cli-session-cleanup";
+const defaultCommand = `${SPACE_INSTALL_ROOT}/bin/space-cli-session-cleanup`;
 const maxOutputBytes = 32_000;
 const maxErrorBytes = 8_000;
 const previewTimeoutMs = 250_000;
 const mutationTimeoutMs = 920_000;
 const unavailableMessage = "CLI session cleanup is unavailable.";
-const executeFailureMessage = "CLI session cleanup did not complete. Refresh the preview before retrying.";
 
 export interface CliSessionCleanupPreviewInput {
   actorId: string;
@@ -152,7 +152,8 @@ export function createCliSessionCleanupService(options: {
           };
           const strip = <T>(item: T): T => {
             if (item && typeof item === "object") {
-              const { hitLimit, ...rest } = item as Record<string, unknown>;
+              const rest = { ...(item as Record<string, unknown>) };
+              delete rest.hitLimit;
               return rest as T;
             }
             return item;

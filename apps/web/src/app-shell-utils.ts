@@ -66,7 +66,8 @@ export const streamEventTypes: SpaceEvent["type"][] = [
   "MONITORING_COPILOT_UPDATED",
   "VIDEO_UPDATED",
   "NOTIFICATION_CREATED",
-  "NOTIFICATION_UPDATED"
+  "NOTIFICATION_UPDATED",
+  "INBOX_UPDATED"
 ];
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

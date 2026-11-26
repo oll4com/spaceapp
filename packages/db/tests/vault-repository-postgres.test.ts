@@ -20,6 +20,7 @@ const encode = new TextEncoder();
 const alice = "user:vault-alice";
 const bob = "user:vault-bob";
 const carol = "user:vault-carol";
+const dave = "user:vault-dave";
 
 async function enrollment(owner: string): Promise<VaultEnrollment> {
   const vaultId = newVaultHandle("vault");
@@ -65,7 +66,7 @@ describe.skipIf(unavailable !== null)(`vault repository on PostgreSQL${unavailab
     } finally {
       client.release();
     }
-    for (const user of [alice, bob, carol]) await pool.query("INSERT INTO users(id, email, role) VALUES ($1, $2, 'OPERATOR')", [user, `${user.slice(5)}@space.local`]);
+    for (const user of [alice, bob, carol, dave]) await pool.query("INSERT INTO users(id, email, role) VALUES ($1, $2, 'OPERATOR')", [user, `${user.slice(5)}@space.local`]);
     repository = new PostgresVaultRepository(pool);
   }, 120_000);
 
@@ -284,7 +285,8 @@ describe.skipIf(unavailable !== null)(`vault repository on PostgreSQL${unavailab
     const pending = { id: newVaultHandle("vault_pending"), kind: "NEW_ACCOUNT" as const, handle: newVaultHandle("vault_item"), label: "Synthetic shop", origin: "https://shop.example",
       sealedUsername: null, sealedPassword: sealed, paneId: "pane:vaultpane1", createdAt: new Date().toISOString(), loginPage: null };
     expect(await repository.addPending(alice, pending)).toBe(true);
-    expect(await repository.listPending(alice)).toEqual([pending]);
+    // A login saved without an authenticator key lists with sealedOtp null (99b7ae444a).
+    expect(await repository.listPending(alice)).toEqual([{ ...pending, sealedOtp: null }]);
     expect(await repository.listPending(bob)).toEqual([]);
     expect(await repository.deletePending(bob, pending.id)).toBe(false);
     expect(await repository.deletePending(alice, pending.id)).toBe(true);
@@ -292,7 +294,7 @@ describe.skipIf(unavailable !== null)(`vault repository on PostgreSQL${unavailab
     // A saved login without a password (migration 0231).
     const usernameOnly = { ...pending, id: newVaultHandle("vault_pending"), sealedUsername: sealed, sealedPassword: null };
     expect(await repository.addPending(alice, usernameOnly)).toBe(true);
-    expect(await repository.listPending(alice)).toEqual([usernameOnly]);
+    expect(await repository.listPending(alice)).toEqual([{ ...usernameOnly, sealedOtp: null }]);
     // A login page set by handle (migration 0295) lands on the waiting login, for its owner only.
     expect(await repository.setLoginPage(bob, usernameOnly.handle, "https://shop.example/login")).toBe(0);
     expect(await repository.setLoginPage(alice, usernameOnly.handle, "https://shop.example/login")).toBe(1);
@@ -391,6 +393,53 @@ describe.skipIf(unavailable !== null)(`vault repository on PostgreSQL${unavailab
     }
     expect((await repository.listHandoffKeys(alice)).find((key) => key.id === kept)).toMatchObject({ hasValue: true, kept: true, savedBy: "pane:keys-a", expiresAt: null, usedByPaneId: "pane:keys-a" });
     expect(await repository.takeHandoffKey(bob, kept, "pane:keys-a")).toBeNull();
+  });
+
+  it("a link push replaces another Vault only on request and only while it holds no item, waiting login or agent access (operator 23/11)", async () => {
+    const local = await repository.enroll(dave, await enrollment(dave));
+    const linked = { ...await enrollment(dave), recovery: null, epoch: 1, inbox: null };
+    await expect(repository.applyLinkSync(dave, { vault: linked })).rejects.toThrow("VAULT_DIFFERS");
+    await pool.query("UPDATE vaults SET agent_access = true WHERE id = $1", [local.vaultId]);
+    await expect(repository.applyLinkSync(dave, { vault: linked, replaceEmpty: true })).rejects.toThrow("VAULT_DIFFERS");
+    await pool.query("UPDATE vaults SET agent_access = false WHERE id = $1", [local.vaultId]);
+    const kept = await item(dave, local.vaultId);
+    await repository.saveItem(dave, kept);
+    await expect(repository.applyLinkSync(dave, { vault: linked, replaceEmpty: true })).rejects.toThrow("VAULT_DIFFERS");
+    await repository.deleteItems(dave, [kept.metadata.id]);
+    const pending = { id: newVaultHandle("vault_pending"), kind: "NEW_ACCOUNT" as const, handle: newVaultHandle("vault_item"), label: "Synthetic shop", origin: "https://shop.example",
+      sealedUsername: null, sealedPassword: { v: 1, alg: "X25519-HKDF-A256GCM", purpose: "TRANSPORT", keyVersion: 1, epk: "E".repeat(43), nonce: "N".repeat(16), ct: "C".repeat(40) } as const, paneId: "pane:vaultpane1", createdAt: new Date().toISOString(), loginPage: null };
+    expect(await repository.addPending(dave, pending)).toBe(true);
+    await expect(repository.applyLinkSync(dave, { vault: linked, replaceEmpty: true })).rejects.toThrow("VAULT_DIFFERS");
+    expect((await repository.getVault(dave))?.vaultId).toBe(local.vaultId);
+    await repository.deletePending(dave, pending.id);
+
+    const landed = await item(dave, linked.vaultId);
+    expect(await repository.applyLinkSync(dave, { vault: linked, items: [landed], replaceEmpty: true })).toEqual({ items: 1, delegation: false, replaced: local.vaultId });
+    expect((await repository.getVault(dave))?.vaultId).toBe(linked.vaultId);
+    expect((await repository.listItemRecords(dave)).map((entry) => entry.metadata.id)).toEqual([landed.metadata.id]);
+    expect((await repository.listAudit(dave)).map((entry) => entry.event.reason)).toContain("REPLACED_VAULT_ITEMS_1");
+    expect((await pool.query("SELECT 1 FROM vaults WHERE id = $1", [local.vaultId])).rows).toEqual([]);
+
+    // A delegation a hand-over extended keeps its first digest (broker delegate-pending): it lands all the same (hz 23/11, BAD_DELEGATION).
+    const handle = landed.metadata.id;
+    const scope = { ownerUserId: dave, vaultId: linked.vaultId, keyVersion: 1, generation: 1 };
+    const keyEnvelope = await sealVaultEnvelope(vaultRandomBytes(32), vaultRandomBytes(32), { ...scope, purpose: "FILL_KEY" });
+    const fillEnvelopes = { [handle]: { PASSWORD: await sealVaultEnvelope(vaultRandomBytes(32), encode.encode("synthetic"), { ...scope, purpose: "FILL_FIELD", itemId: handle, field: "PASSWORD" }) } };
+    const broker = await generateVaultSigningKey();
+    const extended = (overrides: Record<string, unknown> = {}) => signVaultCertificate(broker.privateKey, { v: 1 as const, kind: "DELEGATION" as const,
+      certId: newVaultHandle("vault_delegation"), ownerUserId: dave, vaultId: linked.vaultId, generation: 1, unlockEpoch: 1, envelopeDigest: "D".repeat(43),
+      items: [{ handle, origins: ["https://example.com"], fields: ["PASSWORD" as const], approvalMode: "FULL" as const, submit: true }],
+      issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3_600_000).toISOString(), ...overrides }, 1);
+    await expect(repository.applyLinkSync(dave, { delegation: { certificate: await extended({ ownerUserId: bob }), keyEnvelope, fillEnvelopes } })).rejects.toThrow("BAD_DELEGATION");
+    expect(await repository.applyLinkSync(dave, { delegation: { certificate: await extended(), keyEnvelope, fillEnvelopes } })).toMatchObject({ delegation: true });
+    expect((await repository.getActiveDelegation(dave))?.fillEnvelopes).toEqual(fillEnvelopes);
+    // A waiting login the sender's dock has not imported (no item here yet) lands too; another owner's item never does (hz 23/11).
+    const claim = { origins: ["https://example.com"], fields: ["PASSWORD" as const], approvalMode: "FULL" as const, submit: true };
+    const waiting = { handle: newVaultHandle("vault_item"), ...claim };
+    expect(await repository.applyLinkSync(dave, { delegation: { certificate: await extended({ items: [{ handle, ...claim }, waiting] }), keyEnvelope, fillEnvelopes } })).toMatchObject({ delegation: true });
+    const theirs = await item(alice, (await repository.getVault(alice))!.vaultId);
+    await repository.saveItem(alice, theirs);
+    await expect(repository.applyLinkSync(dave, { delegation: { certificate: await extended({ items: [{ handle: theirs.metadata.id, ...claim }] }), keyEnvelope, fillEnvelopes: {} } })).rejects.toThrow("BAD_DELEGATION");
   });
 
   it("keeps a per-vault hash chain that reveals tampering", async () => {

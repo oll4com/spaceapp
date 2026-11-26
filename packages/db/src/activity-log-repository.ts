@@ -317,7 +317,7 @@ export class PostgresActivityLogRepository implements ActivityLogRepository {
       });
     } catch (error) {
       if (typeof error === "object" && error && "code" in error && error.code === "23505") {
-        throw new Error("Activity log event already exists.");
+        throw new Error("Activity log event already exists.", { cause: error });
       }
       throw error;
     }

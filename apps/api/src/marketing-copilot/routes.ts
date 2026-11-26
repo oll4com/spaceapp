@@ -112,7 +112,8 @@ export function registerMarketingCopilotRoutes(app: FastifyInstance, service: Ma
   // ---- posts and reviews ---------------------------------------------------------------------------
   app.get("/api/marketing-copilot/posts", routeOptions, async (request) => {
     const owner = await deps.authenticatedOwner(request);
-    const raw = parseQuery(z.object({ status: z.string().max(200).optional(), channel: marketingChannelSchema.optional(), campaignId: marketingCampaignIdSchema.optional(), limit: z.coerce.number().int().min(1).max(500).default(200) }).strict(), request.query ?? {});
+    // No limit = every post (No Arbitrary Limits 31/10): marketing-read and Nous see all; the web pane asks its own limit.
+    const raw = parseQuery(z.object({ status: z.string().max(200).optional(), channel: marketingChannelSchema.optional(), campaignId: marketingCampaignIdSchema.optional(), limit: z.coerce.number().int().min(1).optional() }).strict(), request.query ?? {});
     return { posts: await service.listPosts(owner, { status: list(raw.status)?.map((entry) => marketingPostStatusSchema.parse(entry)), channel: raw.channel, campaignId: raw.campaignId, limit: raw.limit }) };
   });
   app.post("/api/marketing-copilot/posts/topic", routeOptions, async (request) => {

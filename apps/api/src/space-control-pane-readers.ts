@@ -41,7 +41,7 @@ export function createControlPaneReaders({
       });
       let roomCap: number | null = null;
       if (roomId) {
-        try { roomCap = (await store.getRoom(roomId)).paneCap; } catch {}
+        try { roomCap = (await store.getRoom(roomId)).paneCap; } catch { /* Room unreadable: no cap is reported. */ }
       }
       return { types, roomCap };
     },
@@ -62,7 +62,7 @@ export function createControlPaneReaders({
                 mediaSeconds: pb?.seconds || 0
               };
             }
-          } catch {}
+          } catch { /* No playback record: the pane reports no media state. */ }
           return null;
         }
         if (pane.mode === "TERMINAL" && pane.terminalRuntimeId === "cli:gemini") {
@@ -71,7 +71,7 @@ export function createControlPaneReaders({
           const rootPid = session ? (pids?.get(session.sessionId) ?? null) : null;
           const usageList = await Promise.race([
             antigravityUsageProvider(),
-            new Promise<{ data: any[] }>((r) => setTimeout(() => r({ data: [] }), 1500))
+            new Promise<{ data: never[] }>((r) => setTimeout(() => r({ data: [] }), 1500))
           ]).catch(() => ({ data: [] }));
           let catalog: Array<{ id: string; displayName: string }> = [];
           const runtime = findRuntime(await cliRuntimeRegistryCache.read(), pane.terminalRuntimeId);

@@ -36,3 +36,11 @@ export function copilotActionProblem(action: NousDecisionAction): string | null 
   return allowed.includes(action.decision) ? null
     : `"${action.decision}" is not a decision a ${action.copilot.toLowerCase()} copilot's ${action.item.toLowerCase()} takes: use ${allowed.join(", ")}.`;
 }
+
+/** A review's item detail (what space_copilot_items shows) when its time is past; Nous's ask checks it, since deciding it without a new time fails. */
+export const MARKETING_STALE_REVIEW = "MARKETING_STALE";
+export const marketingStaleReviewDetail = (scheduledAt: string) => `${MARKETING_STALE_REVIEW}: its time ${scheduledAt} is more than 24 hours past; approve or edit it only with a new future scheduledAt, or reject it.`;
+/** Overnight 21/11 (Daily Nous errors, 2 decisions failed 11:05Z): a yes that comes after the post's time passed by 24 h cannot publish it at a time
+ * nobody approved; the post stays in review (space_copilot_items shows it stale) and the decision is held, not failed. Null for any other error. */
+export const marketingStaleHeld = (error: unknown): string | null => error instanceof Error && error.message.startsWith(`${MARKETING_STALE_REVIEW}:`)
+  ? `Held: ${error.message} The post stays in review; ask again with a new scheduledAt, or reject it.` : null;

@@ -31,6 +31,17 @@ import { SPACE_INSTALL_ROOT } from "@space/contracts";
 /** A Space install's paths (this one's and the public image's), /etc, Proxmox and "production" count as production when no classifier answers. */
 const PRODUCTION_PATH = new RegExp(`${SPACE_INSTALL_ROOT.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}|\\/opt\\/spaceapp|\\/etc\\/|pve|production`, "i");
 
+/** JEV answers are unknown JSON: read a question's numeric field, or null when the model sent something else. */
+function answerNumber(answer: unknown, key: "noul" | "score"): number | null {
+  const value = answer && typeof answer === "object" ? (answer as Record<string, unknown>)[key] : undefined;
+  return typeof value === "number" ? value : null;
+}
+
+function answerChoice(answer: unknown): string | null {
+  const value = answer && typeof answer === "object" ? (answer as Record<string, unknown>).choice : undefined;
+  return typeof value === "string" ? value : null;
+}
+
 export interface DecisionsServiceOptions {
   baseUrl?: string | null;
   apiKey?: string | null;
@@ -185,10 +196,8 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
       }
       const destructiveAnswer = raw.answers.is_destructive;
       const prodAnswer = raw.answers.touches_production;
-      const destructiveConfidence = destructiveAnswer && typeof destructiveAnswer === "object" && "noul" in destructiveAnswer && typeof (destructiveAnswer as any).noul === "number"
-        ? (destructiveAnswer as any).noul : 0;
-      const prodConfidence = prodAnswer && typeof prodAnswer === "object" && "noul" in prodAnswer && typeof (prodAnswer as any).noul === "number"
-        ? (prodAnswer as any).noul : 0;
+      const destructiveConfidence = answerNumber(destructiveAnswer, "noul") ?? 0;
+      const prodConfidence = answerNumber(prodAnswer, "noul") ?? 0;
       return {
         available: true,
         isDestructive: destructiveConfidence > 0.35,
@@ -228,8 +237,7 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
         };
       }
       const answer = raw.answers.has_silent_failure;
-      const confidence = answer && typeof answer === "object" && "noul" in answer && typeof (answer as any).noul === "number"
-        ? (answer as any).noul : 0;
+      const confidence = answerNumber(answer, "noul") ?? 0;
       return {
         available: true,
         hasSilentFailure: confidence > 0.70,
@@ -260,11 +268,9 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
         return { available: false, status: null, confidence: null, reason: raw.reason, degraded: true };
       }
       const choiceObj = raw.answers.status;
-      const choice = choiceObj && typeof choiceObj === "object" && "choice" in choiceObj && typeof (choiceObj as any).choice === "string"
-        ? (choiceObj as any).choice as TaskCompletionStatus : null;
+      const choice = answerChoice(choiceObj) as TaskCompletionStatus | null;
       const noulObj = raw.answers.is_verified;
-      const confidence = noulObj && typeof noulObj === "object" && "noul" in noulObj && typeof (noulObj as any).noul === "number"
-        ? (noulObj as any).noul : null;
+      const confidence = answerNumber(noulObj, "noul");
       return {
         available: true,
         status: choice && ["YES", "NO", "NEEDS_REVIEW"].includes(choice) ? choice : null,
@@ -297,11 +303,9 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
         return { available: false, action: null, confidence: null, reason: raw.reason, degraded: true };
       }
       const choiceObj = raw.answers.action;
-      const action = choiceObj && typeof choiceObj === "object" && "choice" in choiceObj && typeof (choiceObj as any).choice === "string"
-        ? (choiceObj as any).choice as RecoveryAction : null;
+      const action = answerChoice(choiceObj) as RecoveryAction | null;
       const noulObj = raw.answers.urgency;
-      const confidence = noulObj && typeof noulObj === "object" && "noul" in noulObj && typeof (noulObj as any).noul === "number"
-        ? (noulObj as any).noul : null;
+      const confidence = answerNumber(noulObj, "noul");
       return {
         available: true,
         action: action && ["retry_same_agent", "switch_agent", "inspect_logs", "rollback", "ask_user"].includes(action) ? action : null,
@@ -340,11 +344,9 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
         return { available: false, agent: null, confidence: null, tier: "standard", degraded: true };
       }
       const choiceObj = raw.answers.agent;
-      const choice = choiceObj && typeof choiceObj === "object" && "choice" in choiceObj && typeof (choiceObj as any).choice === "string"
-        ? (choiceObj as any).choice as AgentRoute : null;
+      const choice = answerChoice(choiceObj) as AgentRoute | null;
       const noulObj = raw.answers.is_ambiguous;
-      const ambConfidence = noulObj && typeof noulObj === "object" && "noul" in noulObj && typeof (noulObj as any).noul === "number"
-        ? (noulObj as any).noul : 0;
+      const ambConfidence = answerNumber(noulObj, "noul") ?? 0;
 
       const effectiveAgent = ambConfidence > 0.65 ? "clarify" : choice;
       return {
@@ -387,11 +389,8 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
       }
       const scoreObj = raw.answers.complexity;
       let score = 3;
-      if (scoreObj && typeof scoreObj === "object" && "score" in scoreObj && typeof (scoreObj as any).score === "number") {
-        score = Math.max(1, Math.min(5, Math.round((scoreObj as any).score)));
-      } else if (typeof scoreObj === "number") {
-        score = Math.max(1, Math.min(5, Math.round(scoreObj)));
-      }
+      const rawScore = answerNumber(scoreObj, "score") ?? (typeof scoreObj === "number" ? scoreObj : null);
+      if (rawScore !== null) score = Math.max(1, Math.min(5, Math.round(rawScore)));
       if (score <= 2) {
         return { tier: "mini", score, recommendedModel: "gemini-3.8-flash-lite" };
       } else if (score === 3) {
@@ -439,8 +438,7 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
       }
 
       const answer = raw.answers.needs_browser;
-      const confidence = answer && typeof answer === "object" && "noul" in answer && typeof (answer as any).noul === "number"
-        ? (answer as any).noul : 0;
+      const confidence = answerNumber(answer, "noul") ?? 0;
       const needsBrowser = confidence > 0.45;
       return {
         available: true,
@@ -497,11 +495,9 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
       }
 
       const choiceObj = raw.answers.action;
-      const choice = choiceObj && typeof choiceObj === "object" && "choice" in choiceObj && typeof (choiceObj as any).choice === "string"
-        ? (choiceObj as any).choice as ConcurrencyAction : null;
+      const choice = answerChoice(choiceObj) as ConcurrencyAction | null;
       const noulObj = raw.answers.risk;
-      const confidence = noulObj && typeof noulObj === "object" && "noul" in noulObj && typeof (noulObj as any).noul === "number"
-        ? (noulObj as any).noul : null;
+      const confidence = answerNumber(noulObj, "noul");
 
       const validActions: ConcurrencyAction[] = ["allow", "wait", "queue", "isolate_worktree"];
       const action = choice && validActions.includes(choice) ? choice : "isolate_worktree";
@@ -560,8 +556,7 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
       }
 
       const choiceObj = raw.answers.most_relevant;
-      const choice = choiceObj && typeof choiceObj === "object" && "choice" in choiceObj && typeof (choiceObj as any).choice === "string"
-        ? (choiceObj as any).choice : null;
+      const choice = answerChoice(choiceObj);
 
       const scored = limitedCandidates.map((c, idx) => {
         const isTop = choice === `c_${idx}`;
@@ -671,14 +666,12 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
         };
       }
 
-      const answers = (raw.answers ?? {}) as Record<string, any>;
-      const targetChoice = answers.target_preference?.choice;
+      const answers = (raw.answers ?? {}) as Record<string, { choice?: unknown; score?: unknown } | undefined>;
       const validPrefs: TacticalTargetPreference[] = ["nearest", "threat", "rocks", "enemies"];
-      const targetPreference: TacticalTargetPreference = validPrefs.includes(targetChoice) ? targetChoice : "nearest";
+      const targetPreference = validPrefs.find((pref) => pref === answers.target_preference?.choice) ?? "nearest";
 
-      const styleChoice = answers.combat_style?.choice;
       const validStyles: TacticalCombatStyle[] = ["interceptor", "blitz", "kiting", "defensive"];
-      const combatStyle: TacticalCombatStyle = validStyles.includes(styleChoice) ? styleChoice : "interceptor";
+      const combatStyle = validStyles.find((style) => style === answers.combat_style?.choice) ?? "interceptor";
 
       const aggScore = Number(answers.aggression?.score);
       const mobScore = Number(answers.mobility?.score);

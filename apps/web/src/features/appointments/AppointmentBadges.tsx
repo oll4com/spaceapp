@@ -1,4 +1,4 @@
-import { APPOINTMENT_HOURS, appointmentWithinHours, type Appointment } from "@space/contracts";
+import { appointmentOutOfHours, type Appointment, type AppointmentHours } from "@space/contracts";
 import type { DateTimeSettings } from "../date-time-settings/date-time-settings.js";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import { appointmentClock, appointmentShortDay } from "./appointments-view.js";
@@ -13,14 +13,14 @@ export const APPOINTMENT_FORMAT_LABELS: Record<NonNullable<Appointment["format"]
 /**
  * Who or what is on the other side, whether the time is strict or any time until a deadline, and a time outside the operator's hours
  * (operator 6/11 10:15 BKK, nous_msg:ea6f0792). They are chrome, so they read the Interface language, never the Agent language (operator 6/11
- * 11:58 BKK, nous_msg:1affa0ad: Greek badges on his English interface). `hoursZone` is the owner's working zone the server checks in.
+ * 11:58 BKK, nous_msg:1affa0ad: Greek badges on his English interface). `hours`: the owner's Appointment hours the server checks (operator 17/11).
  */
-export function AppointmentBadges({ item, settings, hoursZone }: { item: Appointment; settings: DateTimeSettings; hoursZone: string }) {
+export function AppointmentBadges({ item, settings, hours }: { item: Appointment; settings: DateTimeSettings; hours: AppointmentHours }) {
   const language = useUiLanguage();
   const format = item.format ? APPOINTMENT_FORMAT_LABELS[item.format] : null;
   const deadline = item.deadlineAt ? `${appointmentShortDay(item.deadlineAt, settings, language)} ${appointmentClock(item.deadlineAt, settings)}` : "";
   // A deadline is a cut-off, not a meeting, so its hour is no warning.
-  const outside = item.status === "UPCOMING" && item.kind !== "DEADLINE" && !appointmentWithinHours(item, hoursZone);
+  const outside = appointmentOutOfHours(item, hours);
   return (
     <>
       {format ? <span className="appointments-badge"><span aria-hidden="true">{format.icon} </span>{uiText(language, format.label)}</span> : null}
@@ -28,7 +28,7 @@ export function AppointmentBadges({ item, settings, hoursZone }: { item: Appoint
       {item.timing === "FIXED" ? <> <span className="appointments-badge"><span aria-hidden="true">⏰ </span>{uiText(language, "Strict time")}</span></> : null}
       {/* Short "until Sat 7/11 20:42" on screen (operator 6/11 11:02 BKK); a screen reader still hears "Flexible". */}
       {item.timing === "FLEXIBLE" ? <> <span className="appointments-badge is-flexible"><span aria-hidden="true">⏳ </span><span className="sr-only">{uiText(language, "Flexible")} </span>{uiText(language, "until {when}", { when: deadline })}</span></> : null}
-      {outside ? <> <span className="appointments-badge is-warning"><span aria-hidden="true">⚠️ </span>{uiText(language, "Outside {from}–{to}", { from: APPOINTMENT_HOURS.from, to: APPOINTMENT_HOURS.to })}</span></> : null}
+      {outside ? <> <span className="appointments-badge is-warning"><span aria-hidden="true">⚠️ </span>{uiText(language, "Outside {from}–{to}", { from: hours.start, to: hours.end })}</span></> : null}
     </>
   );
 }

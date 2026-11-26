@@ -528,7 +528,7 @@ describe("shared health UI", () => {
     ).toBeTruthy();
     expect(mocks.models).toHaveBeenCalledTimes(1);
   });
-  it("keeps the workspace mounted and restores keyboard access after Health closes", async () => {
+  it("leaves the workspace usable while Resources is open and restores focus after it closes (nous_msg:2727df80)", async () => {
     render(
       <div className="space-shell">
         <textarea
@@ -550,18 +550,15 @@ describe("shared health UI", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(document.querySelector<HTMLElement>(".space-shell")?.inert).toBe(
-      true,
-    );
+    expect(document.querySelector<HTMLElement>(".space-shell")?.inert).toBeFalsy();
+    expect(screen.getByRole("dialog", { name: "Resources" }).getAttribute("aria-modal")).toBeNull();
     expect(screen.getByRole("textbox", { name: "Terminal input" })).toBe(
       terminal,
     );
     fireEvent.keyDown(screen.getByRole("dialog", { name: "Resources" }), {
       key: "Escape",
     });
-    expect(document.querySelector<HTMLElement>(".space-shell")?.inert).toBe(
-      false,
-    );
+    expect(document.querySelector<HTMLElement>(".space-shell")?.inert).toBeFalsy();
     expect(document.activeElement).toBe(terminal);
   });
   it("stores thresholds and applies the same warning to resources and rail", async () => {

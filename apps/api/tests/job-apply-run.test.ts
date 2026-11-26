@@ -204,8 +204,14 @@ describe("job copilot run supervisor", () => {
       expect(pausedNext.json()).toMatchObject({ done: false, waiting: true, reason: "PAUSED" });
       const resumed = await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers });
       expect(resumed.json()).toMatchObject({ status: "RUNNING", kickoffSent: true });
-      const acmeNext = await app.inject({ method: "POST", url: "/api/cli/job-apply/job/next", headers: agent, payload: { waitMs: 0 } });
+      // Slice 5 (plan clipboard:nsWKwUFhUFWA): with this session's profileHash the packet leaves the unchanged profile facts out.
+      const profileHash = (await app.inject({ method: "GET", url: "/api/cli/job-apply/profile", headers: agent })).json().profileHash as string;
+      expect(profileHash).toBe(packet.profileHash);
+      const acmeNext = await app.inject({ method: "POST", url: "/api/cli/job-apply/job/next", headers: agent, payload: { waitMs: 0, profileHash } });
       expect(acmeNext.json().application.id).toBe(acme!.id);
+      expect(acmeNext.json()).toMatchObject({ profileHash, profileUnchanged: expect.any(String) });
+      expect(acmeNext.json()).not.toHaveProperty("candidate");
+      expect(acmeNext.json()).toHaveProperty("answers");
       await app.inject({ method: "PATCH", url: `/api/cli/job-apply/applications/${acme!.id}`, headers: agent, payload: { status: "FAILED", notes: "not eligible: US work authorization" } });
       await app.inject({ method: "POST", url: "/api/cli/job-apply/job/report", headers: agent, payload: { applicationId: acme!.id, outcome: "failed", summary: "not eligible" } });
       const finished = await app.inject({ method: "POST", url: "/api/cli/job-apply/job/next", headers: agent, payload: { waitMs: 0 } });
@@ -216,6 +222,45 @@ describe("job copilot run supervisor", () => {
       expect(events.map((event) => event.type)).toEqual(["RUN_FINISHED", "NOTE", "FAILED", "STARTED", "RUN_RESUMED", "RUN_PAUSED", "NOTE", "VERIFIED", "SUBMITTED", "FIELD_FILLED", "STARTED", "RUN_STARTED", "NOTE", "NOTE"]);
       expect(roomEvents.length).toBe(events.length);
       expect(roomEvents[0]).toMatchObject({ roomId: pane.roomId, paneId: pane.id, type: "JOB_APPLY_UPDATED" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("job_next restarts a run Space finished when the copilot then queues postings, never after the operator's Stop", async () => {
+    const { app, pane, headers, agent } = await fixture();
+    try {
+      const paneUrl = `/api/panes/${encodeURIComponent(pane.id)}/job-apply`;
+      const next = async () => (await app.inject({ method: "POST", url: "/api/cli/job-apply/job/next", headers: agent, payload: { waitMs: 0 } })).json();
+      // 21/11: a discover run polled before discovery finished on the empty queue; the postings found next got NO_RUN.
+      expect((await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers })).json()).toMatchObject({ status: "RUNNING", queue: [] });
+      expect(await next()).toMatchObject({ done: true, reason: "QUEUE_EMPTY" });
+      expect(await next()).toMatchObject({ done: true, reason: "NO_RUN" });
+      const [acme] = (await app.inject({ method: "POST", url: `${paneUrl}/queue`, headers, payload: { urls: ["https://boards.greenhouse.io/acme/jobs/41"] } })).json().queued as Array<{ id: string }>;
+      expect(await next()).toMatchObject({ done: false, application: { id: acme!.id, status: "FILLING" } });
+      // The operator's Stop holds: queued postings wait for their Start.
+      expect((await app.inject({ method: "POST", url: `${paneUrl}/run/stop`, headers })).statusCode).toBe(200);
+      await app.inject({ method: "POST", url: `${paneUrl}/queue`, headers, payload: { urls: ["https://jobs.ashbyhq.com/globex/42"] } });
+      expect(await next()).toMatchObject({ done: true, reason: "NO_RUN" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("job_next restarts a finished run only while no other open Job Copilot pane of the owner runs (DEV3D-015)", async () => {
+    const { app, store, room, pane, headers, agent } = await fixture();
+    try {
+      const other = store.createPane({ roomId: room.id, title: "Job Copilot 2", mode: "JOB_APPLY", terminalRuntimeId: "cli:codex" });
+      const paneUrl = `/api/panes/${encodeURIComponent(pane.id)}/job-apply`;
+      const next = async () => (await app.inject({ method: "POST", url: "/api/cli/job-apply/job/next", headers: agent, payload: { waitMs: 0 } })).json();
+      await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers });
+      expect(await next()).toMatchObject({ done: true, reason: "QUEUE_EMPTY" });
+      expect((await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(other.id)}/job-apply/run/start`, headers })).statusCode).toBe(200);
+      await app.inject({ method: "POST", url: `${paneUrl}/queue`, headers, payload: { urls: ["https://boards.greenhouse.io/acme/jobs/41"] } });
+      expect(await next()).toMatchObject({ done: true, reason: "NO_RUN" });
+      // A run left in a closed pane holds nothing, as for the daily-target keeper.
+      store.updatePane(other.id, { isClosed: true, status: "CLOSED" });
+      expect(await next()).toMatchObject({ done: false, application: { status: "FILLING" } });
     } finally {
       await app.close();
     }

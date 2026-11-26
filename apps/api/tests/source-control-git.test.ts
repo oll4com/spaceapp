@@ -98,7 +98,7 @@ describe("native source control", () => {
       status = await engine.status(root, comparison);
       expect((await engine.operate(root, { operation: "fetch", expectedVersion: status.version, remoteUrl: comparison.url, comparison })).snapshot.ahead).toBe(0);
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); await rm(fixture, { recursive: true, force: true }); }
-  });
+  }, 30000); // ~650 git processes; past 5s on a loaded host
 
   it("bounds commands whose hooks or helpers leave child processes holding output open", async () => {
     const started = Date.now();

@@ -5,7 +5,7 @@ import { InMemorySiteSigninsRepository } from "@space/db";
 import Fastify from "fastify";
 import { JSDOM } from "jsdom";
 import { describe, expect, it, vi } from "vitest";
-import { generateVaultTransportKey, newVaultHandle, openWithVaultPrivateKey, sealVaultEnvelope, vaultBase64url, vaultHostSignupRequestSchema, vaultRandomBytes, VAULT_CARD_ROLES, type Pane, type VaultHostTarget } from "@space/contracts";
+import { generateVaultTransportKey, newVaultHandle, openWithVaultPrivateKey, sealToVaultPublicKey, sealVaultEnvelope, vaultBase64url, vaultHostSignupRequestSchema, vaultRandomBytes, VAULT_CARD_ROLES, type Pane, type VaultHostTarget } from "@space/contracts";
 import { createBrowserControlActivity } from "../src/browser-control-activity.js";
 import { pageReadout } from "../src/browser-page-readout.js";
 import { captureMaskedScreenshot } from "../src/browser-sessions.js";
@@ -13,7 +13,7 @@ import { issueCliBrowserBridgeToken, cliBrowserBridgeTokenHeader } from "../src/
 import { getApiConfig } from "../src/config.js";
 import { createVaultAgent } from "../src/vault/agent.js";
 import { VaultBrokerRefusedError } from "../src/vault/broker-client.js";
-import { assertVaultBrowserActionAllowed, createVaultProtection, registerVaultFences, vaultFillPageGone, type VaultOpenPage, type VaultProtectionStore } from "../src/vault/protection.js";
+import { assertVaultBrowserActionAllowed, createVaultProtection, registerVaultFences, vaultFillPageGone, VAULT_BLIND_FENCE, type VaultOpenPage, type VaultProtectionStore } from "../src/vault/protection.js";
 import { fenceCompletedHandoff, vaultFencedTargets } from "../src/vault/fence-hooks.js";
 import { registerVault, registerVaultAgentBridge, type VaultModule } from "../src/vault/wiring.js";
 import { SENTINEL, enrollment, fakeRepository, itemRecord } from "./support/vault-fakes.js";
@@ -25,6 +25,8 @@ const config = getApiConfig({ SPACE_LOG_LEVEL: "silent", SPACE_BROWSER_TOOL_BRID
 const PROTECTED = "pane:protected01";
 const OTHER = "pane:otherpane01";
 const LOGIN = "https://login.example";
+// The public example authenticator key (synthetic): what a setup QR carries.
+const OTP_KEY = "JBSWY3DPEHPK3PXP";
 const page = (patch: Partial<VaultHostTarget> = {}): VaultHostTarget =>
   ({ eligible: true, reason: null, targetId: "target-1", frameId: "frame-1", origin: LOGIN, document: "doc-1", ...patch });
 
@@ -32,7 +34,7 @@ const tabs = (active: string, ...others: string[]): VaultOpenPage[] =>
   [{ pageId: active, isActive: true }, ...others.map((pageId) => ({ pageId, isActive: false }))];
 
 function memoryProtection(live: () => VaultHostTarget = () => page(), pages?: () => VaultOpenPage[]) {
-  const rows = new Map<string, { owner: string; fill: any }>();
+  const rows = new Map<string, { owner: string; fill: unknown }>();
   const store: VaultProtectionStore = {
     protectPane: async (owner, paneId, fill) => { if (rows.has(paneId) && rows.get(paneId)!.owner !== owner) return false; rows.set(paneId, { owner, fill }); return true; },
     unprotectPane: async (owner, paneId) => rows.get(paneId)?.owner === owner && rows.delete(paneId),
@@ -143,8 +145,10 @@ describe("Vault protected browser", () => {
     expect((await command(OTHER, "PAGE_READOUT")).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
     // The Alibaba slider answers a status only, like a click (13/11): open to every pane that may act.
     for (const pane of [PROTECTED, OTHER]) expect((await command(pane, "SLIDER_CAPTCHA")).statusCode, pane).toBe(200);
-    // Every read stays refused for the pane holding the fence too, and the fence is still there.
-    for (const type of ["LIST_PAGES", "DEVTOOLS", "START_CAPTURE"]) expect((await command(PROTECTED, type)).json().error.code, type).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+    // So does the NetEase audio CAPTCHA (16/11): digits in, a status out.
+    for (const pane of [PROTECTED, OTHER]) expect((await command(pane, "AUDIO_CAPTCHA")).statusCode, pane).toBe(200);
+    // Every read stays refused for the pane holding the fence too (including PAGE_FORMS), and the fence is still there.
+    for (const type of ["LIST_PAGES", "DEVTOOLS", "START_CAPTURE", "PAGE_FORMS"]) expect((await command(PROTECTED, type)).json().error.code, type).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
     expect((await app.inject({ url: "/api/cli/browser/cdp/status", headers: { [cliBrowserBridgeTokenHeader]: agentToken(PROTECTED) } })).statusCode).toBe(409);
     expect(rows.get(PROTECTED)?.fill).toEqual({ targetId: "target-1", origin: LOGIN, document: "doc-1" });
     await app.close();
@@ -364,6 +368,32 @@ describe("Vault protected browser", () => {
   });
 });
 
+describe("Vault blind fence (authenticator setup page, nous_msg:cb10eefe6cc544e7af63ff64)", () => {
+  it("gives no pane a masked view of a page whose setup QR was read, and stays blind through a later fill on it", async () => {
+    const { protection, rows } = memoryProtection();
+    await protection.protect("user:alice", PROTECTED, { targetId: "target-1", origin: LOGIN, document: "doc-1" }, VAULT_BLIND_FENCE);
+    const activity = createBrowserControlActivity();
+    activity.noteAgent(PROTECTED, "pane:cliterminal1");
+    const fences = Fastify();
+    registerVaultFences(fences, { protection, config, controlActivity: activity });
+    fences.post("/api/cli/browser/actions", async () => ({ ok: true }));
+    fences.post("/api/cli/browser/commands", async () => ({ ok: true }));
+    const as = (paneId: string) => ({ [cliBrowserBridgeTokenHeader]: issueCliBrowserBridgeToken(config, { roomId: "room:vaultroom1", paneId, cliSessionId: "cli_session:vault01" })!,
+      "content-type": "application/json" });
+    try {
+      // The driving CLI, the fence's own pane, anyone: no masked screenshot, no readout. Clicks and typing stay.
+      for (const paneId of ["pane:cliterminal1", PROTECTED, OTHER]) {
+        expect((await fences.inject({ method: "POST", url: "/api/cli/browser/actions", headers: as(paneId), payload: { actions: [{ targetPaneId: PROTECTED, action: { type: "masked_screenshot" } }] } })).json().error.code, paneId).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+        expect((await fences.inject({ method: "POST", url: "/api/cli/browser/commands", headers: as(paneId), payload: { targetPaneId: PROTECTED, command: { type: "PAGE_READOUT" } } })).json().error.code, paneId).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+      }
+      expect((await fences.inject({ method: "POST", url: "/api/cli/browser/actions", headers: as("pane:cliterminal1"), payload: { actions: [{ targetPaneId: PROTECTED, action: { type: "click" } }] } })).statusCode).toBe(200);
+      // The code fill that confirms the enrolment names a viewer: the page still shows the key, so the fence stays blind.
+      await protection.protect("user:alice", PROTECTED, { targetId: "target-1", origin: LOGIN, document: "doc-1" }, "cli:cli_session:vault01");
+      expect(rows.get(PROTECTED)!.fill.viewer).toBe(VAULT_BLIND_FENCE);
+    } finally { await fences.close(); }
+  });
+});
+
 describe("Vault fill path for agents and Nous", () => {
   async function bridgeApp(options: { access?: boolean; origin?: string; approvalMode?: "ASSIST" | "FULL"; agentUse?: boolean; grants?: string[][];
     hostStatus?: "FILLED" | "SUBMITTED" | "BLOCKED"; signup?: (request: { certificate: unknown }) => { status: "FILLED" | "BLOCKED"; reason: string | null }; delegation?: false; autoGrantRefusal?: string;
@@ -377,8 +407,12 @@ describe("Vault fill path for agents and Nous", () => {
     /** Whether the host says it takes a generate policy (queue item 37: after its guarded restart). */
     hostTakesPolicy?: boolean;
     /** The item is a payment card (plan clipboard:qf0P640vyLp2); hostCards: the host fills cards. */
-    card?: boolean; hostCards?: boolean } = {}) {
-    const repository = fakeRepository() as ReturnType<typeof fakeRepository> & Record<string, any>;
+    card?: boolean; hostCards?: boolean;
+    /** The host reads a setup QR (mode OTP_QR, nous_msg:cb10eefe6cc544e7af63ff64); otpQrStatus: what it answers. */
+    hostOtpQr?: boolean; otpQrStatus?: "SAVED" | "BLOCKED";
+    /** The browser's tabs (the flow hold, nous_msg:722364f3); absent: the browser lists none. */
+    tabs?: { activePageId: string; pages: Array<{ pageId: string; isActive: boolean }> } } = {}) {
+    const repository = fakeRepository();
     const { body } = await enrollment((await generateVaultTransportKey()).publicKey, "user:alice");
     const { sealedServerShare: _sealed, ...rest } = body;
     await repository.enroll("user:alice", { ...rest, serverShareEnvelope: await sealVaultEnvelope(vaultRandomBytes(32), vaultRandomBytes(32), { ownerUserId: "user:alice", vaultId: body.vaultId, keyVersion: 1, purpose: "SERVER_SHARE" }) });
@@ -409,17 +443,26 @@ describe("Vault fill path for agents and Nous", () => {
       if (request.mode === "SIGNUP" && !vaultHostSignupRequestSchema.omit({ certificate: true }).safeParse(signup).success) {
         return { status: "BLOCKED" as const, reason: "BAD_REQUEST", sealedGenerated: null };
       }
+      // Like the real host's OTP_QR: the page's key sealed to the inbox, nothing else.
+      if (request.mode === "OTP_QR") {
+        const qr = request as unknown as { inboxPublicKey: string; ownerUserId: string; vaultId: string };
+        return options.otpQrStatus === "BLOCKED" ? { status: "BLOCKED" as const, reason: "QR_NOT_FOUND", sealedGenerated: null }
+          : { status: "SAVED" as const, reason: null, sealedGenerated: await sealToVaultPublicKey(vaultBase64url.decode(qr.inboxPublicKey), new TextEncoder().encode(OTP_KEY), { ownerUserId: qr.ownerUserId, vaultId: qr.vaultId, keyVersion: 1 }) };
+      }
       const reported = { ...(options.hostTyped !== undefined ? { typed: options.hostTyped } : {}), ...(options.hostDocument ? { document: options.hostDocument } : {}) };
       if (request.mode === "SIGNUP" && options.signup) { const answer = options.signup(request as { certificate: unknown }); return { ...answer, sealedGenerated: answer.status === "FILLED" ? sealed : null, ...reported }; }
       const status = options.hostStatus ?? "FILLED";
       return { status, reason: status === "FILLED" ? null : "FIELD_NOT_FOUND", sealedGenerated: status === "FILLED" && (request.mode === "GENERATE" || request.mode === "SIGNUP") ? sealed : null, ...reported };
     });
     const vaultTarget = vi.fn(async () => page({ origin: options.origin ?? LOGIN, ...((options.hostAcceptsFresh ?? Boolean(options.documentDirty)) ? { freshDocument: true } : {}),
-      ...(options.hostTakesPolicy ? { generatePolicy: true } : {}), ...(options.hostCards ? { cards: true } : {}) }));
+      ...(options.hostTakesPolicy ? { generatePolicy: true } : {}), ...(options.hostCards ? { cards: true } : {}), ...(options.hostOtpQr ? { otpQr: true } : {}) }));
+    const tabsState = options.tabs;
+    const activatePage = vi.fn(async (_pane: Pane, pageId: string) => { tabsState!.activePageId = pageId; });
+    const browserTabs = tabsState ? { listPages: async () => tabsState, activatePage } : {};
     const panes = [{ id: "pane:cliterminal1", roomId: "room:vaultroom1", mode: "TERMINAL", isClosed: false }, { id: PROTECTED, roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false },
       { id: OTHER, roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false }, { id: "pane:bobsbrowser", roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false }] as Pane[];
     const siteSignins = new InMemorySiteSigninsRepository();
-    const agent = createVaultAgent({ siteSignins, paneAccount: async () => "google:synthetic", repository, broker: { issueUse, signupAutoGrant } as never, protection, browser: { vaultTarget, vaultFill }, listPanes: async () => panes,
+    const agent = createVaultAgent({ siteSignins, paneAccount: async () => "google:synthetic", repository, broker: { issueUse, signupAutoGrant } as never, protection, browser: { vaultTarget, vaultFill, ...browserTabs }, listPanes: async () => panes,
       paneOwner: async (paneId) => paneId === "pane:bobsbrowser" ? "user:bob" : "user:alice", documentDirty: options.documentDirty, documentDirtiedBy: options.documentDirtiedBy });
     const vault = { repository, protection, broker: { issueUse }, agent } as unknown as VaultModule;
     const app = Fastify();
@@ -429,7 +472,7 @@ describe("Vault fill path for agents and Nous", () => {
     const generate = (purpose: "NEW_ACCOUNT" | "CHANGE_PASSWORD") => post("generate-fill",
       purpose === "CHANGE_PASSWORD" ? { purpose, handle, roles: ["NEW_PASSWORD", "CONFIRM_PASSWORD"] } : { purpose, label: "Synthetic new", username: "synthetic@example.com" });
     const audits = async () => (await repository.listAudit("user:alice", { limit: 50 })).map((entry) => entry.event);
-    return { app, post, fill, generate, siteSignins, issueUse, signupAutoGrant, vaultFill, vaultTarget, audits, repository, rows, sealed, handle, inbox, vault, vaultId: body.vaultId };
+    return { app, post, fill, generate, siteSignins, issueUse, signupAutoGrant, vaultFill, vaultTarget, activatePage, audits, repository, rows, sealed, handle, inbox, vault, vaultId: body.vaultId };
   }
 
   it("refuses a password reset while the stored sign-in works, unless the operator's order is passed (nous_msg:fe72e061)", async () => {
@@ -729,6 +772,63 @@ describe("Vault fill path for agents and Nous", () => {
     await app.close();
   });
 
+  it("holds the browser for the flow's agent from the key capture to the confirm: another agent's fill waits, the holder's lands in the flow's tab (nous_msg:722364f3)", async () => {
+    const tabs = { activePageId: "target-1", pages: [{ pageId: "target-1", isActive: true }] };
+    const { app, post, fill, handle, vault, vaultFill, activatePage } = await bridgeApp({ hostOtpQr: true, tabs });
+    try {
+      expect((await post("otp-save", { handle, targetPaneId: PROTECTED })).json()).toMatchObject({ status: "SAVED" });
+      expect(vault.protection.flowHold(PROTECTED)).toMatchObject({ holder: "cli:cli_session:vault01", tab: "target-1" });
+      // Another agent opened a tab in the same browser and it came to front (Hugo's Y Combinator tab).
+      tabs.pages.push({ pageId: "target-yc", isActive: false });
+      tabs.activePageId = "target-yc";
+      vaultFill.mockClear();
+      expect(await vault.agent.call({ owner: "user:alice", paneId: "pane:cliterminal1", roomId: "room:vaultroom1", path: "fill", body: { handle, fields: ["PASSWORD"], targetPaneId: PROTECTED },
+        traceId: "trace-hugo", viewer: "cli:cli_session:hugo01" })).toMatchObject({ status: "BLOCKED", reason: "BROWSER_HELD_BY_FLOW" });
+      expect(vaultFill).not.toHaveBeenCalled();
+      // The holder's confirm fill: the flow's tab comes back to front before the host types.
+      expect((await fill({ targetPaneId: PROTECTED })).json()).toMatchObject({ status: "FILLED" });
+      expect(activatePage).toHaveBeenCalledWith(expect.objectContaining({ id: PROTECTED }), "target-1", expect.any(String), { holderType: "AGENT", holderId: "cli:cli_session:vault01" });
+      expect(activatePage.mock.invocationCallOrder[0]).toBeLessThan(vaultFill.mock.invocationCallOrder[0]!);
+      // The flow's tab closed: the hold ends.
+      tabs.pages = [{ pageId: "target-yc", isActive: true }];
+      tabs.activePageId = "target-yc";
+      expect((await vault.agent.call({ owner: "user:alice", paneId: "pane:cliterminal1", roomId: "room:vaultroom1", path: "fill", body: { handle, fields: ["PASSWORD"], targetPaneId: PROTECTED },
+        traceId: "trace-hugo", viewer: "cli:cli_session:hugo01" })).reason).not.toBe("BROWSER_HELD_BY_FLOW");
+    } finally { await app.close(); }
+  });
+
+  it("sets an existing login's authenticator from the setup QR in its page: the key is only sealed to the inbox, never in the answer, the audit or a view (nous_msg:cb10eefe6cc544e7af63ff64)", async () => {
+    const { app, post, repository, inbox, handle, vaultId, vaultFill, rows } = await bridgeApp({ hostOtpQr: true });
+    try {
+      const saved = await post("otp-save", { handle, targetPaneId: PROTECTED });
+      // 5bc4e6665c: SAVED says the swap is not done yet (the strict result schema answered 500 without `next`).
+      expect(saved.json()).toEqual({ status: "SAVED", auditId: expect.stringMatching(/^vault_audit:/), reason: null, next: expect.stringContaining("Not done yet") });
+      expect(saved.body).not.toContain(OTP_KEY);
+      expect(vaultFill).toHaveBeenCalledWith(expect.objectContaining({ id: PROTECTED }), expect.objectContaining({ mode: "OTP_QR", origin: LOGIN, inboxPublicKey: expect.any(String) }), expect.any(String));
+      const [pending] = await repository.listPending("user:alice");
+      expect(pending).toMatchObject({ kind: "SET_OTP", handle, origin: LOGIN, sealedUsername: null, sealedPassword: null, paneId: PROTECTED });
+      expect(JSON.stringify(pending)).not.toContain(OTP_KEY);
+      expect(new TextDecoder().decode(await openWithVaultPrivateKey(inbox.privateKey, inbox.publicKey, pending!.sealedOtp, { ownerUserId: "user:alice", vaultId, keyVersion: 1 }))).toBe(OTP_KEY);
+      const [audit] = await repository.listAudit("user:alice", { limit: 1 });
+      expect(audit!.event).toMatchObject({ actor: "AGENT", action: "ITEM_SAVE", result: "SAVED", itemId: handle });
+      expect(JSON.stringify(audit)).not.toContain(OTP_KEY);
+      // The setup page shows the key as text: its fence lets no pane see it, not even masked.
+      expect(rows.get(PROTECTED)!.fill.viewer).toBe(VAULT_BLIND_FENCE);
+      // Another item's site, an unknown handle: refused before the host reads anything.
+      vaultFill.mockClear();
+      expect((await post("otp-save", { handle: newVaultHandle("vault_item"), targetPaneId: PROTECTED })).json()).toMatchObject({ status: "BLOCKED", reason: "ITEM_NOT_FOUND" });
+      expect(vaultFill).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+    for (const [options, expected] of [[{}, { status: "BLOCKED", reason: "OTP_QR_NEEDS_HOST_RESTART" }], [{ hostOtpQr: true, origin: "https://evil.example" }, { status: "ORIGIN_MISMATCH", reason: "ORIGIN_NOT_ITEM" }],
+      [{ hostOtpQr: true, otpQrStatus: "BLOCKED" }, { status: "BLOCKED", reason: "QR_NOT_FOUND", next: expect.stringContaining("call save_totp_from_qr again") }], [{ hostOtpQr: true, access: false }, { status: "BLOCKED" }]] as const) {
+      const other = await bridgeApp(options);
+      try {
+        expect((await other.post("otp-save", { handle: other.handle, targetPaneId: PROTECTED })).json()).toMatchObject(expected);
+        expect(await other.repository.listPending("user:alice")).toEqual([]);
+      } finally { await other.app.close(); }
+    }
+  });
+
   it("gives Nous the same fill, list and save as the agents, by pane and handle only", async () => {
     const { createNousTools } = await import("../src/nous/tools.js");
     const { vault, vaultFill, rows, handle, app } = await bridgeApp();
@@ -748,6 +848,12 @@ describe("Vault fill path for agents and Nous", () => {
     // Another owner reaches neither the room nor the Vault; a value, URL or selector is not an argument.
     expect((await tools.execute("space_vault_fill", { room: "Work", pane: "Login browser", handle, fields: ["PASSWORD"] }, { ...ctx, owner: "user:bob" })).ok).toBe(false);
     expect((await tools.execute("space_vault_fill", { room: "Work", pane: "Login browser", handle, fields: ["PASSWORD"], url: "https://example.com" }, ctx)).result).toContain("Invalid arguments");
+    expect((await tools.execute("space_vault_fill", { room: "Work", pane: "Login browser", handle, fields: ["USERNAME", "OTP"] }, ctx)).result).toContain("Invalid arguments");
+    // fields ["OTP"] is the agents' totp-fill (Vault Authenticator, plan clipboard:3aH7Gpr9F-yJ): the code is typed from the item's key.
+    const call = vi.fn(async () => ({ status: "FILLED", auditId: "a", reason: null }));
+    const otpTools = createNousTools({ rooms: async () => [room], listPanes: async () => [browser], vault: { agent: { call } } } as never);
+    expect((await otpTools.execute("space_vault_fill", { room: "Work", pane: "Login browser", handle, fields: ["OTP"], submit: true }, ctx)).ok).toBe(true);
+    expect(call).toHaveBeenCalledWith(expect.objectContaining({ path: "totp-fill", paneId: PROTECTED, body: { handle, submit: true, targetPaneId: PROTECTED } }));
     await app.close();
   });
 });

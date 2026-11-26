@@ -283,7 +283,7 @@ const providerRouteLabels: Record<GatewayProviderOrder[number]["route"], { name:
   CLAUDE: { name: "Claude", detail: "Claude Max subscription accounts, run by Claude Code" },
   CODEX: { name: "Codex", detail: "Codex subscription accounts, run by Codex" },
   CLAUDE_OPENCODE: { name: "Claude via OpenCode", detail: "Claude API-key account (paid per token, within its daily allowance), run by OpenCode; never Claude Code" },
-  ANTIGRAVITY: { name: "Gemini Argon (Antigravity)", detail: "Gemini 4 Argon models on the Antigravity accounts" },
+  ANTIGRAVITY: { name: "Gemini Neon (Antigravity)", detail: "Gemini 4 Neon models (Argon only as fallback) on the Antigravity accounts" },
   ANTIGRAVITY_FLASH: { name: "Gemini 3.8 Flash (Antigravity)", detail: "Gemini 3.8 Flash models on the Antigravity accounts" },
   ANTIGRAVITY_CLAUDE: { name: "Claude (Antigravity)", detail: "Claude models on the Antigravity accounts (their Claude · GPT quota), run by Nous's Gemini runtime" },
   BEDROCK: { name: "Claude on Amazon Bedrock (AWS credits)", detail: "Bedrock API key, Claude models on the AWS credit; a card is behind it, so the pool sends nothing until the credit is recorded and stops at 90% of it (Space Gateway clients only, not Nous)" },

@@ -6,7 +6,7 @@ import { paneSchema } from "../src/schemas.js";
 
 const selection = { environmentId: "env-live", projectId: "project-live", threadId: "thread-live", draftId: null };
 const metadata = { version: 1, revision: 1, generation: "75578f14-5020-4576-bfdf-0cc0831ecda4", lastSequence: 0, selection };
-const schemas = contracts as Record<string, any>;
+const schemas = contracts;
 
 it("rejects ambiguous selections, unsafe IDs and credential-bearing messages", () => {
   expect(schemas.t3CodeSelectionSchema, "Selection contract is missing").toBeDefined();

@@ -1,5 +1,5 @@
 import type {} from "./request-context.js";
-import type { FastifyInstance, RouteShorthandOptions } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { updateProviderSettingsInputSchema, updateUserSettingsInputSchema } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
 import type { CliRuntimeVisibilityPolicy } from "./cli-runtime-visibility.js";
@@ -40,7 +40,7 @@ export function registerSettingsRoutes(app: FastifyInstance, options: {
     });
     return settings;
   });
-  const getUserSettingsHandler = async (request: any, reply: any) => {
+  const getUserSettingsHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
     const settings = await store.getUserSettings(request.user.id);
     // Proofs and captures read the UI in English whatever the operator chose (plan clipboard:32etNsBgtbI- step 3): their fixed steps find
@@ -48,7 +48,7 @@ export function registerSettingsRoutes(app: FastifyInstance, options: {
     const browser = request.user.proofScope || request.user.automationScope || (request.user.brokerScope && !request.user.brokerScope.startsWith("ADMIN_ACTION:"));
     return browser ? { ...settings, uiLanguage: "en" } : settings;
   };
-  const patchUserSettingsHandler = async (request: any, reply: any) => {
+  const patchUserSettingsHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
     const input = parseBody(updateUserSettingsInputSchema, request.body);
     // An agent's session (hardening steps 5 and 19): an admin action changes only appearance; a proof drives the rest of the
@@ -64,7 +64,7 @@ export function registerSettingsRoutes(app: FastifyInstance, options: {
       action: "user_settings.update",
       targetType: "user_settings",
       targetId: request.user.id,
-      metadata: { userId: request.user.id }
+      metadata: { userId: request.user.id, keys: Object.keys(input) }
     });
     return updated;
   };

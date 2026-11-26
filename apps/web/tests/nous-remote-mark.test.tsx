@@ -48,6 +48,19 @@ describe("NousRemoteMark", () => {
     expect(await screen.findByRole("button", { name: "Take back" })).toBeTruthy();
   });
 
+  it("shows Under Nous with the superior Nous, its address, since and scopes (Space Link v2 step 9)", async () => {
+    apiMock.liveDeviceSessions.mockResolvedValue({ sessions: [{ deviceId: "appdev:a", app: "spaceapp-link", name: "SpaceApp vm207", ip: "203.0.113.7", since: at,
+      scopes: ["read", "act", "manage", "nous"], last: null, rttMs: null }], lease: null, takenBackAt: null,
+      superior: { deviceId: "appdev:a", label: "SpaceApp vm207", host: "vm207", since: at, scopes: ["read", "act", "manage", "nous"] } });
+    apiMock.listInstanceLinks.mockResolvedValue({ links: [] });
+    render(<NousRemoteMark active />);
+    const under = await screen.findByRole("button", { name: "Under Nous SpaceApp vm207" });
+    const info = under.getAttribute("title")!;
+    expect(info).toContain("vm207 from 203.0.113.7");
+    expect(info).toContain("May read, act, manage, nous");
+    expect(document.getElementById(under.getAttribute("aria-describedby")!)!.textContent).toBe(info);
+  });
+
   it("shows nothing without links, or where the routes answer an error", async () => {
     apiMock.liveDeviceSessions.mockRejectedValue(new Error("403"));
     apiMock.listInstanceLinks.mockResolvedValue({ links: [] });

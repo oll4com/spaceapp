@@ -9,6 +9,8 @@ import { PACE_CAP_REASON_PREFIX } from "./agents-dashboard.js";
 export const ROOM_MONITOR_ACTIVE_MS = 3_000;
 export const ROOM_MONITOR_QUIET_MS = 10_000;
 export const ROOM_MONITOR_EMPTY_MS = 30_000;
+/** 14/11 REVIEW: auto-answer tool/code boxes that clear within two minutes are not unanswered waits. */
+export const ROOM_MONITOR_TRANSIENT_WAIT_MS = 150_000;
 const EVENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const PRUNE_EVERY_MS = 60 * 60 * 1000;
 const SWEEP_EVERY_MS = 30_000;
@@ -108,6 +110,7 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
   const now = options.now ?? Date.now;
   const known = new Map<string, Map<string, RoomPaneActivityRecord>>();
   const nextDue = new Map<string, number>();
+  const transientWaits = new Map<string, Map<string, { at: number; sessionId: string | undefined; announced: boolean }>>();
   const overlapDue = new Map<string, number>();
   /** Per room: overlap title → its event, seeded from the stored events once. */
   const overlapEvents = new Map<string, Map<string, string>>();
@@ -121,7 +124,7 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
   let lastSweep = 0;
   let lastWarning = 0;
 
-  function forget(roomId: string) { known.delete(roomId); nextDue.delete(roomId); overlapDue.delete(roomId); overlapEvents.delete(roomId); overlapOpen.delete(roomId); }
+  function forget(roomId: string) { known.delete(roomId); nextDue.delete(roomId); transientWaits.delete(roomId); overlapDue.delete(roomId); overlapEvents.delete(roomId); overlapOpen.delete(roomId); }
 
   async function previousActivity(roomId: string) {
     let room = known.get(roomId);
@@ -140,7 +143,8 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
       const answered = (event.kind === "WAITING" || event.kind === "STUCK") && event.status === "OPEN" && reached !== undefined
         && reached >= Date.parse(event.createdAt) - ROOM_MONITOR_ANSWER_LEAD_MS;
       const resolved = await options.repository.updateEvent(event.eventId, answered ? { status: "HANDLED", decision: "A text Space sent for Nous or the Room Agent reached the pane and it moved on." }
-        : { status: "RESOLVED", decision: event.decision ?? "The pane moved on." }, ["OPEN", "ESCALATED"]);
+        // Goal 401b115b: a resolved escalation keeps its "Needs you:" reason (the scorecard names the operator from it) and says it ended.
+        : { status: "RESOLVED", decision: event.status === "ESCALATED" && event.decision ? `${event.decision} The pane moved on before anyone answered.` : event.decision ?? "The pane moved on." }, ["OPEN", "ESCALATED"]);
       if (resolved) await options.onEvent?.(resolved);
     }
   }
@@ -206,35 +210,59 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
   async function scanRoom(roomId: string, fresh = false): Promise<number> {
     const sample = await options.readActivity(roomId, fresh);
     const previous = await previousActivity(roomId);
+    const waits = transientWaits.get(roomId) ?? new Map<string, { at: number; sessionId: string | undefined; announced: boolean }>();
+    transientWaits.set(roomId, waits);
+    const openPanes = new Set(sample.data.filter((pane) => !pane.isClosed).map((pane) => pane.id));
+    for (const paneId of waits.keys()) if (!openPanes.has(paneId)) waits.delete(paneId);
+    let autoAnswer: Promise<boolean> | undefined;
     const changed: RoomPaneActivityRecord[] = [];
     let busy = false;
     let agents = 0;
     for (const pane of sample.data) {
       if (pane.isClosed) continue;
       const item = roomAgentSnapshotPane(pane, sample.details[pane.id]);
-      if (item.activity === "NONE") continue;
+      if (item.activity === "NONE") { waits.delete(pane.id); continue; }
       agents += 1;
       if (item.activity === "WORKING" || item.activity === "WAITING") busy = true;
       // A pane the reader could not classify keeps its last known state instead of flapping.
-      if (item.activity === "UNKNOWN") continue;
+      if (item.activity === "UNKNOWN") { waits.delete(pane.id); continue; }
       const before = previous.get(pane.id);
       const record: RoomPaneActivityRecord = { paneId: pane.id, roomId, activity: item.activity, reason: item.reason, since: item.since };
-      if (before && before.activity === record.activity && before.reason === record.reason) continue;
-      changed.push(record);
-      previous.set(pane.id, record);
-      // A pane that moved on from a question or a stop (answered, restarted) leaves no open problem to announce again.
-      if ((before?.activity === "WAITING" || before?.reason === "Not running") && record.activity !== "WAITING") await resolveWaiting(roomId, pane.id);
-      const transition = roomMonitorTransition(before, record);
+      if (!before || before.activity !== record.activity || before.reason !== record.reason) {
+        changed.push(record);
+        previous.set(pane.id, record);
+        // A pane that moved on from a question or a stop leaves no open problem to announce again.
+        if ((before?.activity === "WAITING" || before?.reason === "Not running") && record.activity !== "WAITING") await resolveWaiting(roomId, pane.id);
+      }
+      let transition = roomMonitorTransition(before, record);
+      const detail = sample.details[pane.id];
+      const toolBox = item.activity === "WAITING" && pane.mode === "TERMINAL" && pane.terminalRuntimeId?.startsWith("cli:")
+        && (item.reason === "Permission prompt" || (detail?.source === "screen" && detail.rule === "approval" && item.reason === "Needs input"));
+      let wait = waits.get(pane.id);
+      if (toolBox && await (autoAnswer ??= options.repository.autopilotEnabled(roomId))) {
+        if (!wait || wait.sessionId !== detail?.sessionId) {
+          wait = { at: now(), sessionId: detail?.sessionId, announced: false };
+          waits.set(pane.id, wait);
+        }
+        // Check even unchanged activity: the deadline must emit once without requiring the screen to change.
+        transition = !wait.announced && now() - wait.at >= ROOM_MONITOR_TRANSIENT_WAIT_MS ? roomMonitorTransition(undefined, record) : null;
+      } else {
+        // Turning Auto-answer off releases an unannounced wait immediately, even if the activity stayed the same.
+        if (wait && !wait.announced && record.activity === "WAITING") transition = roomMonitorTransition(undefined, record);
+        waits.delete(pane.id);
+        wait = undefined;
+      }
       if (!transition) continue;
       if (transition.severity === "ATTENTION") {
         // One open attention event per pane and question.
         const open = await options.repository.listEvents(roomId, { paneId: pane.id, statuses: ["OPEN", "ESCALATED"], limit: 5 });
-        if (open.some((event) => event.kind === transition.kind)) continue;
+        if (open.some((event) => event.kind === transition.kind)) { if (wait) wait.announced = true; continue; }
       }
       const name = item.paneName ?? item.title;
       const text = roomMonitorEventText(transition.kind, name, item.reason, { title: item.taskTitle, summary: item.taskSummary });
       const event = await options.repository.addEvent({ roomId, paneId: pane.id, paneName: item.paneName, kind: transition.kind,
         severity: transition.severity, title: text.title, detail: text.detail });
+      if (wait) wait.announced = true;
       await options.onEvent?.(event);
       if (event.severity === "ATTENTION") options.onAttention?.(event);
     }
@@ -259,7 +287,7 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
       const listed = new Set(rooms.map((room) => room.id));
       for (const roomId of nextDue.keys()) if (!listed.has(roomId)) forget(roomId);
       for (const room of rooms) {
-        if (room.archivedAt || room.kind === "CLI_RECOVERY" || disabled.has(room.id)) { known.delete(room.id); nextDue.delete(room.id); continue; }
+        if (room.archivedAt || room.kind === "CLI_RECOVERY" || disabled.has(room.id)) { known.delete(room.id); nextDue.delete(room.id); transientWaits.delete(room.id); continue; }
         const prompted = promptedRooms.get(room.id);
         const hot = prompted !== undefined && at - prompted < ROOM_MONITOR_PROMPTED_MS;
         if (prompted !== undefined && !hot) promptedRooms.delete(room.id);

@@ -278,14 +278,14 @@ export function usePersistentIconToolbar({
     if (!stringListsEqual(normalized, storedHiddenActionIds)) {
       setHiddenActionIds(normalized);
     }
-  }, [actions, hiddenActionIds, nonPersistentSet, preserveUnknownActionIds, setHiddenActionIds]);
+  }, [actions, hiddenActionIds, nonPersistentSet, preserveUnknownActionIds, setHiddenActionIds, storedHiddenActionIds]);
 
   useEffect(() => {
     const normalized = normalizeActionOrder(actionIds, orderedActionIds, preserveUnknownActionIds);
     if (!stringListsEqual(normalized, storedOrderedActionIds)) {
       setOrderedActionIds(normalized);
     }
-  }, [actionIds, orderedActionIds, preserveUnknownActionIds, setOrderedActionIds]);
+  }, [actionIds, orderedActionIds, preserveUnknownActionIds, setOrderedActionIds, storedOrderedActionIds]);
 
   const orderedActions = useMemo(() => {
     const normalizedOrder = normalizeActionOrder(actionIds, orderedActionIds, preserveUnknownActionIds);

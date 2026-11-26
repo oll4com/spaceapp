@@ -49,3 +49,16 @@ it("searches without accents or case, so Greek words typed plainly are found", (
   expect(settingsSearchMatches("notif", ["Notifications"])).toBe(true);
   expect(settingsSearchMatches("ειδοποιησεις", ["Language"])).toBe(false);
 });
+
+// UI review 22/11: no row shows above the sticky search, and on a phone every switch lines up with its ⓘ on the label's line.
+it("keeps the search over the dock's top padding and aligns switches and ⓘ", async () => {
+  const [{ readFileSync }, { resolve }] = await Promise.all([import("node:fs"), import("node:path")]);
+  const css = readFileSync(resolve(__dirname, "../src/features/settings/settings-disclosure.css"), "utf8");
+  const dockPadding = readFileSync(resolve(__dirname, "../src/styles.css"), "utf8").match(/\n\.dock-panel \{[^}]*padding: ([\d.]+)rem;/)?.[1];
+  expect(dockPadding).toBe("0.75");
+  expect(css).toMatch(/\.agent-settings-dock:not\(\.is-fullscreen\) > \.settings-dock-toolbar \{ top: -\.75rem; margin-top: -\.75rem; padding-top: \.75rem; \}/);
+  expect(css).toMatch(/\.settings-dock-toolbar \{[^}]*position: sticky;[^}]*background: var\(--modern-surface/);
+  expect(css).toMatch(/\.space-toggle-label, \.settings-flat-row-copy > strong\) \{\s*display: flex;/);
+  expect(css).toMatch(/> \.info-tip \{\s*flex: none;/);
+  expect(css).toMatch(/\.settings-flat-row\.space-toggle \.space-toggle-state \{ min-width: 6\.2em; \}/);
+});

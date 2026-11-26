@@ -294,7 +294,7 @@ export class DemoConnectionsService {
     if (!attempt || attempt.provider !== input.provider) {
       throw new DemoConnectionError("DEMO_OAUTH_STATE_INVALID", "The OAuth state is expired, reused, or belongs to another session.", 400);
     }
-    let verifier = "";
+    let verifier: string;
     try {
       const stored = await this.options.credentialStore.read(attempt.verifierRef);
       verifier = typeof stored.codeVerifier === "string" ? stored.codeVerifier : "";

@@ -91,7 +91,9 @@ export function createOpenCodePaneModel(options: {
         await store.updatePane(pane.id, {
           modelId: current.modelId
         }, traceId);
-      } catch {}
+      } catch {
+        // Best-effort sync of the stored model; the reading below still reports the CLI's real model.
+      }
     }
     const screen = await cliTerminalManager.observeRoomScreen(session.sessionId, true).catch(() => null);
     const screenIsRunning = screen ? roomTerminalState(screen.text) === "RUNNING" : false;
@@ -114,8 +116,7 @@ export function createOpenCodePaneModel(options: {
   };
   const applyOpenCodePaneSelection = async (
     pane: Pane, session: PaneCliSession, model: PaneCliModelSettings["models"][number], effort: string,
-    traceId: string, assertControl?: (current: PaneCliSession) => Promise<void>,
-    allModels?: PaneCliModelSettings["models"]
+    traceId: string, assertControl?: (current: PaneCliSession) => Promise<void>
   ) => cliTerminalManager.runSerializedTerminalMutation(session.sessionId, async () => {
     if (!model.supportedReasoningEfforts.includes(effort)) throw new SpaceConflictError("This reasoning level is not advertised by OpenCode.");
     const control = await resolveOpenCodeServerControl(session);
@@ -156,7 +157,9 @@ export function createOpenCodePaneModel(options: {
       throw new SpaceConflictError("OpenCode server did not confirm the selected model. Reopen the picker to refresh its current settings.");
     }
     await store.updatePaneCliSession(session.sessionId, {modelId:model.id,reasoningEffort:effort}, traceId);
-    try { await store.updatePane(pane.id, {modelId:model.id}, traceId); } catch {}
+    try { await store.updatePane(pane.id, {modelId:model.id}, traceId); } catch {
+      // The session row already holds the confirmed model; the pane default is only a mirror of it.
+    }
   });
 
   return { readPaneOpenCodeModelSettings, applyOpenCodePaneSelection };

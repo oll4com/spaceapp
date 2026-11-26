@@ -99,19 +99,18 @@ describe("CLI host persistence", () => {
     const threadId = "019f4e26-6780-778a-9acd-c72c780a634a";
     const forkedThreadId = "019f4e27-6780-778a-9acd-c72c780a634b";
 
-    const initial = store.claimPaneCliCodexThread(firstSession.sessionId, threadId, "AUTO", "trace:auto-claim");
+    const initial = store.claimPaneCliCodexThread(firstSession.sessionId, threadId, "AUTO");
     expect(initial).toMatchObject({ cliSessionId: firstSession.sessionId, source: "AUTO" });
     store.updatePaneCliSession(firstSession.sessionId, { status: "EXITED", isActive: false });
 
     expect(() =>
-      store.claimPaneCliCodexThread(secondSession.sessionId, threadId, "AUTO", "trace:silent-cross-pane")
+      store.claimPaneCliCodexThread(secondSession.sessionId, threadId, "AUTO")
     ).toThrow(SpaceConflictError);
 
     const transferred = store.claimPaneCliCodexThread(
       secondSession.sessionId,
       threadId,
-      "HISTORY_TRANSFER",
-      "trace:history-transfer"
+      "HISTORY_TRANSFER"
     );
     expect(transferred).toMatchObject({
       threadId,
@@ -125,8 +124,7 @@ describe("CLI host persistence", () => {
     const rebound = store.claimPaneCliCodexThread(
       secondSession.sessionId,
       forkedThreadId,
-      "AUTO",
-      "trace:fork-auto-bind"
+      "AUTO"
     );
     expect(rebound).toMatchObject({
       threadId: forkedThreadId,

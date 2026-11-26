@@ -17,7 +17,7 @@ const record = (patch: Partial<SpaceNotification> = {}): SpaceNotification => ({
   payload: { request: "Θέλω μία καρτέλα Done", summary: "Προστέθηκε η καρτέλα με επιβεβαίωση.", where: "dev", planId: "clipboard:done0001", tickets: ["q-20261029-060000-abcd"] }, ...patch });
 
 describe("Nous Done tab", () => {
-  it("shows the request, summary, operator time, live location and links; Got it removes it", async () => {
+  it("shows the request, summary, operator time, live location and links; Seen it removes it", async () => {
     const first = record();
     vi.mocked(api.ackNotification).mockResolvedValue({ notification: { ...first, status: "ACKED", ackedAt: at } });
     let items = [first];
@@ -31,22 +31,22 @@ describe("Nous Done tab", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open plan" }));
     expect(onOpenPlan).toHaveBeenCalledWith("clipboard:done0001");
     expect(screen.getByRole("link", { name: "q-20261029-060000-abcd" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Got it" }));
+    fireEvent.click(screen.getByRole("button", { name: "Seen it" }));
     await waitFor(() => expect(changed).toHaveBeenCalledWith(expect.objectContaining({ status: "ACKED" })));
     rerender(<NousDone requests={items} onOpenPlan={onOpenPlan} onAcknowledged={changed} />);
     expect(screen.queryByText("Θέλω μία καρτέλα Done")).toBeNull();
     expect(screen.queryByRole("region", { name: "Acknowledged" })).toBeNull();
     expect(screen.getByText("You’re up to date")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Got it" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Seen it" })).toBeNull();
   });
 
   it("keeps acknowledgement errors visible and the action available to retry", async () => {
     vi.mocked(api.ackNotification).mockRejectedValue(new Error("Connection lost"));
     const changed = vi.fn();
     render(<NousDone requests={[record()]} onOpenPlan={vi.fn()} onAcknowledged={changed} />);
-    fireEvent.click(screen.getByRole("button", { name: "Got it" }));
+    fireEvent.click(screen.getByRole("button", { name: "Seen it" }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Connection lost");
-    expect(screen.getByRole("button", { name: "Got it" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Seen it" }).hasAttribute("disabled")).toBe(false);
     expect(changed).not.toHaveBeenCalled();
   });
 
@@ -96,7 +96,7 @@ describe("Nous Done tab", () => {
     expect(api.notifications).toHaveBeenCalledWith(expect.objectContaining({ source: "NOUS", kind: "REQUEST_DONE", status: "ALL" }));
     expect(screen.getAllByRole("article")).toHaveLength(2);
     expect(screen.queryByRole("region", { name: "Acknowledged" })).toBeNull();
-    fireEvent.click(within(screen.getByRole("article", { name: "Θέλω μία καρτέλα Done" })).getByRole("button", { name: "Got it" }));
+    fireEvent.click(within(screen.getByRole("article", { name: "Θέλω μία καρτέλα Done" })).getByRole("button", { name: "Seen it" }));
     await waitFor(() => expect(screen.getByLabelText("Done count").textContent).toBe("1"));
     expect(screen.queryByText("Θέλω μία καρτέλα Done")).toBeNull();
     expect(screen.getByRole("article", { name: "Another request" })).toBeTruthy();

@@ -158,3 +158,14 @@
 .appointments-detail-sections dd { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
 .appointments-detail a { color: var(--appt-accent); }
 .appointments-detail a.appointments-join { color: var(--appt-bg-surface); }
+/* Post-call notes and recontact date (operator 25/11), in the pane's record and Nous's expanded row. */
+.appointments-followup { display: grid; grid-template-columns: 1fr auto; gap: 0.35rem 0.5rem; align-items: end; margin-top: 0.5rem; font-size: 0.8rem; }
+.appointments-followup label { display: grid; gap: 0.2rem; font-weight: 600; }
+.appointments-followup textarea, .appointments-followup input { font: inherit; font-weight: 400; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: 6px; padding: 0.25rem 0.4rem; opacity: 0.9; }
+.appointments-followup button { font: inherit; color: inherit; background: none; border: 1px solid currentColor; border-radius: 6px; padding: 0.2rem 0.6rem; cursor: pointer; }
+.appointments-followup button:disabled { opacity: 0.5; cursor: default; }
+.appointments-followup [role="status"] { grid-column: 1 / -1; margin: 0; }
+/* Recurring appointments, the Settings-format date fields and the recontact notice (operator 26/11, nous_msg:cfce1783). */
+.appointments-repeat { padding: 0 0.4rem; border: 1px solid currentColor; border-radius: 999px; font-size: 0.7rem; opacity: 0.85; }
+.appointments-input-hint { font-size: 0.7rem; opacity: 0.75; }
+:is(.appointments-notice, .nous-appointments-notice) { margin: 0.4rem 0.75rem; font-size: 0.8rem; }

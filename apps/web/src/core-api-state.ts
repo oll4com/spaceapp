@@ -41,10 +41,15 @@ function scheduleProbe() {
   probeTimer = globalThis.setTimeout(() => {
     void (async () => {
       let ok = false;
+      // Bounded: one probe that never answers would stop every later one, and the notice would stay until something else succeeded.
+      const controller = new AbortController();
+      const timeout = globalThis.setTimeout(() => controller.abort(), PROBE_MAX_MS);
       try {
-        ok = (await fetch("/readyz", { credentials: "include", cache: "no-store" })).ok;
+        ok = (await fetch("/readyz", { credentials: "include", cache: "no-store", signal: controller.signal })).ok;
       } catch {
         // Still unreachable: try again later.
+      } finally {
+        globalThis.clearTimeout(timeout);
       }
       if (run !== probeRun) return; // the outage ended (or another began) while this probe was out
       probeTimer = null;

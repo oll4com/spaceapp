@@ -1,3 +1,4 @@
+/* eslint-disable no-control-regex -- matching terminal escape and control characters is the point of this file */
 import { emitAppDiagnosticsPerformance } from "../../app-diagnostics/app-diagnostics-performance.js";
 
 export const TERMINAL_HIDDEN_PANE_BUFFER_LIMIT_BYTES = 128 * 1024;

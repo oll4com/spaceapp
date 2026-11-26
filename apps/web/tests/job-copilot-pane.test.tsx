@@ -665,7 +665,7 @@ describe("JobCopilotPane", () => {
     fireEvent.change(screen.getByLabelText("Board tokens"), { target: { value: "hooli, Initech" } });
     fireEvent.change(screen.getByLabelText("Title contains"), { target: { value: "backend" } });
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: /Search boards/ })); });
-    await waitFor(() => expect(apiMock.discoverJobApplyPostings).toHaveBeenCalledWith(pane.id, { query: "backend", tokens: ["hooli", "initech"], remote: undefined, limit: 100 }));
+    await waitFor(() => expect(apiMock.discoverJobApplyPostings).toHaveBeenCalledWith(pane.id, { query: "backend", tokens: ["hooli", "initech"], remote: true, limit: 100 }));
     await waitFor(() => expect(screen.getByText("Hooli")).toBeTruthy());
     expect(screen.getByRole("button", { name: "Tracked" })).toBeTruthy();
     expect(screen.getByText(/lever\/hooli: no board/)).toBeTruthy();

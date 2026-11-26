@@ -51,19 +51,22 @@ describe("where Nous's turns run (plan clipboard:1NF6u6gcCwtj, operator decision
     await new Promise<void>((resolve) => agent.listen(join(root, "credentials.sock"), resolve));
     try {
       const turn = { model: "claude-sonnet-5-5", effort: "medium", fallbackModel: null, system: "s", prompt: "p", maxTurns: 80, timeoutMs: 60_000, shell: false,
-        mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp", mcpToken: "tok_0123456789abcdefghij" };
+        mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp", mcpToken: "tok_0123456789abcdefghij" }; // synthetic MCP test token; gitleaks:allow
       // Nous 13/11 (goal 401b115b): no Claude Code signed in, and Nous still answers its first turn, on the Getting Started pane's free model.
       const signedOut = nousTurnBackend({ config: config({ publicDistribution: true, cliHostSocketPath: join(root, "host.sock") }) });
       expect(await signedOut.unavailable()).toBeNull();
-      expect(await signedOut.run!({ ...turn, caller: "nous-operator" }, new AbortController().signal))
+      const labels: string[] = [];
+      expect(await signedOut.run!({ ...turn, caller: "nous-operator" }, new AbortController().signal, undefined, (model) => labels.push(model)))
         .toEqual({ text: `Two things wait.\n\n${NOUS_FREE_MODEL_NOTE}`, isError: false, model: "opencode/big-pickle", costUsd: null,
           tokens: { "opencode/big-pickle": { inputTokens: 30, outputTokens: 8 } } });
       expect(requests.map((request) => request.action)).toEqual(["credential-status", "opencode-nous"]);
+      // 1.2.3 lab 20/11: the dock and an interim answer name OpenCode from the turn's start, not the picked Claude model.
+      expect(labels).toEqual(["opencode"]);
       expect(requests[0]).toEqual({ command: "claude-vscode-parity", action: "credential-status" });
       expect(requests.at(-1)).toMatchObject({ command: "opencode-vscode-parity", action: "opencode-nous" });
       // OpenCode picks its own free model: Claude's model, effort and fallback stay out of its request.
       expect(JSON.parse(String(requests.at(-1)!.input))).toEqual({ system: "s", prompt: "p", maxTurns: 80, shell: false, stream: false,
-        mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp", mcpToken: "tok_0123456789abcdefghij" });
+        mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp", mcpToken: "tok_0123456789abcdefghij" }); // synthetic MCP test token; gitleaks:allow
       // The suggestion is for the operator's answer; a helper's or a background turn's text stays as it is.
       expect((await signedOut.run!({ ...turn, caller: "nous-helper" }, new AbortController().signal)).text).toBe("Two things wait.");
       // A CLI container from before opencode-nous (run-spaceapp 1.2.0): Nous asks for Claude Code as it did before.
@@ -77,14 +80,15 @@ describe("where Nous's turns run (plan clipboard:1NF6u6gcCwtj, operator decision
       expect(await backend.unavailable()).toBeNull();
       // The answer is read at most once a minute, not on every dock refresh or turn.
       await backend.unavailable();
-      expect(await backend.run!(turn, new AbortController().signal)).toEqual({ text: "Done.", isError: false, costUsd: 0.01, tokens: null });
+      expect(await backend.run!(turn, new AbortController().signal, undefined, (model) => labels.push(model))).toEqual({ text: "Done.", isError: false, costUsd: 0.01, tokens: null });
+      expect(labels).toEqual(["opencode"]);
       expect(requests.slice(before).map((request) => request.action)).toEqual(["credential-status", "agent-tools"]);
       expect(JSON.parse(String(requests.at(-1)!.input))).toEqual({ model: "claude-sonnet-5-5", effort: "medium", system: "s", prompt: "p", maxTurns: 80, shell: false, stream: false,
-        mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp", mcpToken: "tok_0123456789abcdefghij" });
+        mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp", mcpToken: "tok_0123456789abcdefghij" }); // synthetic MCP test token; gitleaks:allow
       // An older CLI container: one answer saying to update, then Nous is unavailable (no turn of its own fails again and again).
       old = true;
       await expect(backend.run!({ model: "claude-sonnet-5-5", effort: "medium", system: "s", prompt: "p", maxTurns: 80, timeoutMs: 60_000,
-        mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp", mcpToken: "tok_0123456789abcdefghij" }, new AbortController().signal)).rejects.toThrow(NOUS_UPDATE_CLI);
+        mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp", mcpToken: "tok_0123456789abcdefghij" }, new AbortController().signal)).rejects.toThrow(NOUS_UPDATE_CLI); // synthetic MCP test token; gitleaks:allow
       expect(await backend.unavailable()).toBe(NOUS_UPDATE_CLI);
     } finally {
       agent.close();

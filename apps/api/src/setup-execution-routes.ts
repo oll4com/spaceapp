@@ -69,7 +69,7 @@ async function serverAvailability(connections: SetupConnectionsService, checkAge
     else if (feature.id === "utility:snip") available[feature.id] = "INSTALLABLE";
     else if (feature.id === "pane:live" && voiceSupported) available[feature.id] = "INSTALLABLE";
     else if (selectedServices[feature.id]) available[feature.id] = "INSTALLABLE";
-    else if (functionalChecks[feature.id]) available[feature.id] = "INSTALLABLE";
+    else if (functionalChecks[feature.id]) available[feature.id] = await (functionalChecks[feature.id]!.available?.() ?? true) ? "INSTALLABLE" : "UNAVAILABLE";
     else if (capabilityChecks[feature.id]) available[feature.id] = "AVAILABLE";
     else if (supportedSetupServices.has(feature.id)) available[feature.id] =
       feature.id === "dock:agent-sessions" && !checkAgentSessions ? "UNAVAILABLE" : "AVAILABLE";

@@ -46,3 +46,17 @@ it("shows the Load view's capacity in use and target as a Live tile that opens t
   fireEvent.click(tile);
   expect(open).toHaveBeenCalledOnce();
 });
+
+it("lists a linked SpaceApp's load under the Live tiles with the count (operator nous_msg:766c70a6)", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => Response.json(String(input).startsWith("/api/instance-links/load") ? { instances: [{ row: {
+    id: "link:hz", label: "Hetzner", host: "example.invalid", answering: true, answeredAt: "2026-11-15T02:00:00.000Z", overall: 62, level: "BUSY", error: null,
+    parts: [{ key: "cpu", label: "CPU", percent: 12, detail: "in use" }] } }] } : {})));
+  const overview = { plans: [], needsHands: [], trains: "", planMap: "", live: { rooms: 2, agents: { running: 1, waiting: 0, idle: 1, total: 2 } } } as unknown as NousOverview;
+  render(<NousLiveStats overview={overview} active />);
+  const linked = await screen.findByRole("region", { name: "Linked SpaceApps" });
+  expect(linked.textContent).toContain("1 linked · 1 connected");
+  expect(linked.textContent).not.toContain("average");
+  expect(linked.textContent).toContain("Hetzner example.invalid");
+  expect(linked.textContent).toContain("62% · BUSY");
+  expect(linked.textContent).toContain("CPU 12%");
+});

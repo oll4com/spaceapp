@@ -155,4 +155,28 @@ describe("worktree removal guard", () => {
       await operator.close();
     }
   });
+
+  it("restores a removed worktree at its path and branch, and nothing else", async () => {
+    const { worktreePath } = await service.createWorktree({ repoPath: repo, roomId: "room:guard", branchName: "feat/restore", baseBranch: "main", linkModules: false });
+    const branchAt = async () => (await execGit(worktreePath, ["branch", "--show-current"])).stdout.trim();
+    // A live checkout, an unrecorded folder and a path outside the managed root are left alone.
+    expect(await service.restoreWorktree(worktreePath)).toBe(false);
+    expect(await service.restoreWorktree(join(storage, "repo", "wt-unknown"))).toBe(false);
+    expect(await service.restoreWorktree(join(outside, "wt-unknown"))).toBe(false);
+    expect(await exists(join(storage, "repo", "wt-unknown"))).toBe(false);
+
+    await service.removeWorktree(worktreePath, true);
+    await mkdir(worktreePath); // the empty folder a session start left where the worktree was
+    expect(await service.restoreWorktree(worktreePath)).toBe(true);
+    expect(await branchAt()).toBe("feat/restore");
+    expect(await exists(join(worktreePath, "src", "index.ts"))).toBe(true);
+    expect((await service.getRecordedWorktree(worktreePath))?.status).toBe("ACTIVE");
+
+    // "clean" also deletes the merged branch: it starts again from the base.
+    await service.removeWorktree(worktreePath, true);
+    await execGit(repo, ["branch", "-D", "feat/restore"]);
+    expect(await service.restoreWorktree(worktreePath)).toBe(true);
+    expect(await branchAt()).toBe("feat/restore");
+    expect(await exists(join(worktreePath, "src", "index.ts"))).toBe(true);
+  });
 });

@@ -291,6 +291,12 @@ describe("Liquid Glass theme CSS contract", () => {
     expect(glassCss).toMatch(/\.pane-card:is\(\.is-target, \.is-completion-pending\):not\(\.is-drop-target\)::after\s*\{[^}]*inset: 0;[^}]*box-shadow: inset 0 0 0 2px var\(--lg-pane-ring\);/);
   });
 
+  // The frost over a sticky bar does not render inside the dock's blur: a translucent bar let the rows read through it.
+  it("keeps the Settings search bar opaque in both modes", () => {
+    expect(ruleBody(':root[data-interface-theme="liquid-glass"] .settings-dock-toolbar')).toContain("background: rgb(30 30 38);");
+    expect(ruleBody(':root[data-interface-theme="liquid-glass"][data-color-mode="light"] .settings-dock-toolbar')).toContain("background: rgb(250 250 253);");
+  });
+
   it("is loaded by the app and both demo entries", () => {
     expect(mainSource.match(/import\("\.\/features\/ui-theme\/liquid-glass-theme\.css"\)/g)).toHaveLength(2);
     for (const entry of ["../src/demo/mock-entry.tsx", "../src/demo/feature-entry.tsx"]) {

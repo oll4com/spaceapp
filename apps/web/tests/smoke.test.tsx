@@ -1410,7 +1410,7 @@ describe("Space web shell", () => {
     const uploadRequests: string[] = [];
     let selectedModelConfigId = "gpt-5.4-mini";
     let codexHistoryPreview = "Previous image task";
-    let paneRecord: Record<string, unknown> = {
+    const paneRecord: Record<string, unknown> = {
       id: "pane:codex-live",
       roomId: "room:codex-live",
       title: "Codex Pane",

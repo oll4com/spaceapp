@@ -12,6 +12,7 @@ type CodexLbSpeedCatalogProvider = () => Promise<CodexAppServerSocketModelOption
 
 function safeDisplayName(value: string, fallback: string): string {
   const normalized = value
+    // eslint-disable-next-line no-control-regex -- stripping control characters is the point
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .replace(/\s+/g, " ")
     .trim()

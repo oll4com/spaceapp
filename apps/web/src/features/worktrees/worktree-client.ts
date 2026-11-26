@@ -20,7 +20,9 @@ async function getCsrfHeader(signal?: AbortSignal): Promise<Record<string, strin
       csrfCache = { token: data.csrfToken, headerName, expiresAt: Date.now() + 60_000 };
       return { [headerName]: data.csrfToken };
     }
-  } catch {}
+  } catch {
+    // No token (offline or aborted): send without one and let the server's CSRF check answer.
+  }
   return {};
 }
 

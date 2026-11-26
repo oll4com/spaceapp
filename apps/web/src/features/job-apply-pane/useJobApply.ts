@@ -93,6 +93,7 @@ export function useJobApplyData(pane: Pane, enabled: boolean): JobApplyData {
   const mountedAt = useRef(Date.now());
   const browserStartRef = useRef<Promise<unknown> | null>(null);
   const inFlight = useRef<Promise<void> | null>(null);
+  const trackerVersion = useRef<string | undefined>(undefined);
 
   const ensureBrowser = useCallback(async (session: PaneBrowserSession | null) => {
     const stopped = !session || session.status === "CLOSED" || session.status === "ERROR";
@@ -110,7 +111,7 @@ export function useJobApplyData(pane: Pane, enabled: boolean): JobApplyData {
       try {
         const [profileResponse, applicationsResponse, settingsResponse, handoffResponse, browserResponse, runResponse, eventsResponse, statsResponse] = await withRefreshTimeout(Promise.all([
           api.jobApplyProfile(),
-          api.jobApplications(),
+          api.jobApplications(undefined, trackerVersion.current),
           api.jobApplySettings(pane.id),
           api.browserHandoff(pane.id).catch(() => null),
           api.browserSession(pane.id).catch(() => null),
@@ -119,7 +120,9 @@ export function useJobApplyData(pane: Pane, enabled: boolean): JobApplyData {
           api.jobApplyStats(Intl.DateTimeFormat().resolvedOptions().timeZone).catch(() => null)
         ]), "Job Copilot");
         setProfile(profileResponse.profile);
-        setApplicationsState(applicationsResponse.applications);
+        // null: the tracker is the one this pane holds (thousands of rows are not sent again every 8 s).
+        if (applicationsResponse.applications) setApplicationsState(applicationsResponse.applications);
+        trackerVersion.current = applicationsResponse.version;
         setSettings(settingsResponse.metadata);
         setHandoff(handoffResponse?.handoff ?? null);
         setBrowser(browserResponse?.session ?? null);

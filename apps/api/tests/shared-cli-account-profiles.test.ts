@@ -26,14 +26,14 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'shared-cli-profile-test-'));
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await new Promise<void>(resolve => server.once('listening', resolve));
-  const children: any[] = [];
+  const children: Array<EventEmitter & { args: string[]; exitCode: number | null; connected?: boolean; socket?: WebSocket }> = [];
   let seq = 0;
   server.on('connection', (socket: WebSocket) => {
-    const child = children.find(c => !c.connected); child.connected = true; child.socket = socket;
+    const child = children.find(c => !c.connected)!; child.connected = true; child.socket = socket;
     const pages = new Map<string, { targetId: string; type: string; url: string }>();
     socket.on('message', async raw => {
       const { id, method, params, sessionId } = JSON.parse(raw.toString());
-      let result: any = {};
+      let result: unknown = {};
       if (method === 'Target.createTarget') { const targetId = `page-${++seq}`; pages.set(targetId, { targetId, type: 'page', url: params.url }); result = { targetId }; }
       if (method === 'Target.attachToTarget') result = { sessionId: `cdp-${params.targetId}` };
       if (method === 'Target.getTargets') result = { targetInfos: [...pages.values()] };

@@ -1,7 +1,7 @@
-import { GATEWAY_DEFAULT_PROVIDER_ORDER, GATEWAY_FREE_PLAN_PAUSE_REASON, gatewayCompressionProvidersSchema, gatewayPaceDay, gatewayProviderOrderOf, isGatewayFreePlan } from "@space/contracts";
+import { GATEWAY_DEFAULT_PROVIDER_ORDER, GATEWAY_FREE_PLAN_PAUSE_REASON, GATEWAY_FREE_PLAN_SERVED_PROVIDERS, gatewayCompressionProvidersSchema, gatewayFreePlanPaused, gatewayPaceDay, gatewayProviderOrderOf, isGatewayFreePlan } from "@space/contracts";
 import { rollbackKeepingError } from "./rollback.js";
 import type {
-  GatewayAccount, GatewayAccountStatus, GatewayApiKey, GatewayApiKeyLimit, GatewayCompressionMode, GatewayLimitType,
+  GatewayAccount, GatewayAccountStatus, GatewayApiKey, GatewayResetGrant, GatewayApiKeyLimit, GatewayCompressionMode, GatewayLimitType,
   GatewayLimitWindow, GatewayOutputPolicy, GatewayProvider, GatewayReasoningEffort, GatewayRequestLog, GatewayRequestLogFacets,
   GatewayRequestLogFilter, GatewaySettings, GatewaySettingsUpdateRequest, GatewayTrafficClass, GatewayUsageAggregate, GatewayAnthropicUpstreamKey
 } from "@space/contracts";
@@ -360,7 +360,7 @@ export interface GatewayRepository {
   saveUsageWindows(accountId: string, windows: GatewayUsageWindowInput[]): Promise<void>;
   recordAccountState(accountId: string, state: { status: GatewayAccountStatus; statusReason: string | null; blockedUntil: string | null }): Promise<void>;
   touchAccounts(accountIds: string[], usedAt: string): Promise<void>;
-  saveResetCredits(accountId: string, available: number | null): Promise<void>;
+  saveResetCredits(accountId: string, available: number | null, grants?: GatewayResetGrant[] | null): Promise<void>;
   listApiKeys(): Promise<GatewayApiKeyRecord[]>;
   findApiKeyByHash(keyHash: string): Promise<GatewayApiKeyRecord | null>;
   createApiKey(input: GatewayApiKeyInsert): Promise<GatewayApiKeyRecord>;
@@ -626,6 +626,7 @@ function accountRecord(row: Record<string, unknown>, windows: Record<string, unk
     priority: Number(row.priority),
     warmupEnabled: Boolean(row.warmup_enabled),
     resetCreditsAvailable: num(row.reset_credits_available),
+    ...(Array.isArray(row.reset_credit_grants) ? { resetCreditGrants: row.reset_credit_grants as GatewayResetGrant[] } : {}),
     primaryWindow: window("PRIMARY"),
     secondaryWindow: window("SECONDARY"),
     ...(quotaKeys.length > 0 ? { quotaGroups: quotaKeys.map((key) => ({ key, primaryWindow: window("PRIMARY", key), secondaryWindow: window("SECONDARY", key) })) } : {}),
@@ -864,7 +865,7 @@ export class PostgresGatewayRepository implements GatewayRepository {
   }
 
   async upsertAccount(input: GatewayAccountInsert) {
-    const paidPlan = Boolean(input.planType && !isGatewayFreePlan(input.planType));
+    const paidPlan = Boolean(input.planType && !gatewayFreePlanPaused(input.provider, input.planType));
     const row = (await this.pool.query<Record<string, unknown>>(`INSERT INTO space_gateway_accounts(account_id,provider,label,email,
         external_account_id,plan_type,credentials_encrypted,credentials_expires_at,source,source_ref,last_refresh_at)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
@@ -889,12 +890,12 @@ export class PostgresGatewayRepository implements GatewayRepository {
     const paidPlan = Boolean(input.planType && !isGatewayFreePlan(input.planType));
     const row = (await this.pool.query<Record<string, unknown>>(`UPDATE space_gateway_accounts SET email=$2, external_account_id=$3,
         plan_type=COALESCE($4, plan_type), credentials_encrypted=$5, credentials_expires_at=$6, source=$7, source_ref=$8, last_refresh_at=$9,
-        status=CASE WHEN status='PAUSED' AND NOT (status_reason=$10 AND $11::boolean) THEN 'PAUSED' ELSE 'ACTIVE' END,
-        status_reason=CASE WHEN status='PAUSED' AND NOT (status_reason=$10 AND $11::boolean) THEN status_reason ELSE NULL END,
+        status=CASE WHEN status='PAUSED' AND NOT (status_reason=$10 AND ($11::boolean OR provider = ANY($12::text[]))) THEN 'PAUSED' ELSE 'ACTIVE' END,
+        status_reason=CASE WHEN status='PAUSED' AND NOT (status_reason=$10 AND ($11::boolean OR provider = ANY($12::text[]))) THEN status_reason ELSE NULL END,
         blocked_until=NULL, updated_at=now()
       WHERE account_id=$1 RETURNING account_id`,
     [accountId, input.email, input.externalAccountId, input.planType, input.credentialsEncrypted, input.credentialsExpiresAt, input.source, input.sourceRef,
-      input.lastRefreshAt, GATEWAY_FREE_PLAN_PAUSE_REASON, paidPlan])).rows[0];
+      input.lastRefreshAt, GATEWAY_FREE_PLAN_PAUSE_REASON, paidPlan, [...GATEWAY_FREE_PLAN_SERVED_PROVIDERS]])).rows[0];
     return row ? this.accountById(accountId) : null;
   }
 
@@ -954,8 +955,9 @@ export class PostgresGatewayRepository implements GatewayRepository {
       WHERE account_id=$1 AND status <> 'PAUSED'`, [accountId, state.status, state.statusReason?.slice(0, 500) ?? null, state.blockedUntil]);
   }
 
-  async saveResetCredits(accountId: string, available: number | null) {
-    await this.pool.query(`UPDATE space_gateway_accounts SET reset_credits_available=$2 WHERE account_id=$1`, [accountId, available]);
+  async saveResetCredits(accountId: string, available: number | null, grants: GatewayResetGrant[] | null = null) {
+    await this.pool.query(`UPDATE space_gateway_accounts SET reset_credits_available=$2, reset_credit_grants=$3 WHERE account_id=$1`,
+      [accountId, available, grants ? JSON.stringify(grants) : null]);
   }
 
   async touchAccounts(accountIds: string[], usedAt: string) {
@@ -1267,16 +1269,30 @@ export class PostgresGatewayRepository implements GatewayRepository {
     return rows.map(aggregateRecord);
   }
 
+  // Speed slice 26 (14/11): the Gateway dialog reads the last 24 h every 30 s; summing its ~70,000 rows took 227 ms mean, 6.6 s worst
+  // (~30,000 pages, stable). A window that starts at or after the kept one moves the kept sums by the rows that came since (ids above the
+  // last one read) and the rows that left (before the new start), in one statement; the whole window is summed again once an hour.
+  // shortcut: a deleted row (a Nous Gateway tenant's logs) or a second writer whose ids commit out of order shows after the hourly sum; sum every time if either becomes usual.
+  private usageKept: { since: string; lastId: string; summedAt: number; sums: GatewayUsageSummary } | null = null;
+
   async usageSince(since: string) {
-    const row = (await this.pool.query<Record<string, unknown>>(`SELECT count(*) AS requests,
-        count(*) FILTER (WHERE status <> 'success') AS errors, COALESCE(sum(input_tokens),0) AS input_tokens,
-        COALESCE(sum(output_tokens),0) AS output_tokens, COALESCE(sum(cost_usd),0) AS cost_usd,
-        COALESCE(sum(compression_tokens_saved),0) AS compression_tokens_saved
-      FROM space_gateway_request_logs WHERE requested_at >= $1`, [since])).rows[0]!;
-    return {
-      requests: Number(row.requests), errors: Number(row.errors), inputTokens: Number(row.input_tokens),
-      outputTokens: Number(row.output_tokens), costUsd: Number(row.cost_usd), compressionTokensSaved: Number(row.compression_tokens_saved)
-    };
+    const kept = this.usageKept;
+    const base = kept && Date.parse(since) >= Date.parse(kept.since) && Date.now() - kept.summedAt < 3_600_000 ? kept : null;
+    const columns = "status, input_tokens, output_tokens, cost_usd, compression_tokens_saved FROM space_gateway_request_logs";
+    const row = (await this.pool.query<Record<string, unknown>>(`SELECT COALESCE(sum(sign),0) AS requests,
+        COALESCE(sum(sign) FILTER (WHERE status <> 'success'),0) AS errors, COALESCE(sum(sign * input_tokens),0) AS input_tokens,
+        COALESCE(sum(sign * output_tokens),0) AS output_tokens, COALESCE(sum(sign * cost_usd),0) AS cost_usd,
+        COALESCE(sum(sign * compression_tokens_saved),0) AS compression_tokens_saved,
+        (SELECT COALESCE(max(id),0) FROM space_gateway_request_logs) AS last_id
+      FROM (SELECT 1 AS sign, ${columns} WHERE id > $1 AND requested_at >= $3
+        UNION ALL SELECT -1, ${columns} WHERE id <= $1 AND requested_at >= $2 AND requested_at < $3) moved`,
+    [base?.lastId ?? 0, base?.since ?? since, since])).rows[0]!;
+    const sum = (name: keyof GatewayUsageSummary, column: string) => (base?.sums[name] ?? 0) + Number(row[column]);
+    const sums = { requests: sum("requests", "requests"), errors: sum("errors", "errors"), inputTokens: sum("inputTokens", "input_tokens"),
+      outputTokens: sum("outputTokens", "output_tokens"), costUsd: sum("costUsd", "cost_usd"),
+      compressionTokensSaved: sum("compressionTokensSaved", "compression_tokens_saved") };
+    this.usageKept = { since, lastId: String(row.last_id), summedAt: base?.summedAt ?? Date.now(), sums };
+    return { ...sums };
   }
 
   async usageTotals(scope: { accountId?: string; apiKeyId?: string }) {
@@ -1364,22 +1380,39 @@ export class PostgresGatewayRepository implements GatewayRepository {
     return { days: await group("to_char(day, 'YYYY-MM-DD')"), models: await group("model"), accounts: await group("account_id"), providers: await group("provider") };
   }
 
+  /** weeklyPeaks' rows of the reset hours that ended an hour ago or more, from the day `from` on: a sample is recorded now() and counts
+   *  only up to its reset, so none joins them later. A removed account's rows stay until the restart (weeklyLostTokens skips them). */
+  private peaksKept: { from: string; until: string; rows: GatewayWeeklyPeak[] } | null = null;
+
+  /** The kept hours come first, then the read ones (by account, quota and reset). */
   async weeklyPeaks(from: string, to: string) {
-    const rows = (await this.pool.query<Record<string, unknown>>(`SELECT account_id, quota_key, max(reset_at) AS reset_at, max(used_percent) AS used_percent,
+    const days = [from, to].every((day) => /^\d{4}-\d{2}-\d{2}$/.test(day));
+    const start = `${from}T00:00:00.000Z`;
+    // The ended hours, at most to the end of the asked days.
+    const until = days ? [new Date((Math.floor(Date.now() / 3_600_000) - 1) * 3_600_000).toISOString(),
+      new Date(Date.parse(`${to}T00:00:00Z`) + 86_400_000).toISOString()].sort()[0]! : "";
+    const kept = days && this.peaksKept && this.peaksKept.from <= from && this.peaksKept.until >= start ? this.peaksKept : null;
+    const read = (await this.pool.query<Record<string, unknown>>(`SELECT account_id, quota_key, max(reset_at) AS reset_at, max(used_percent) AS used_percent,
         max(recorded_at) AS last_sample_at
       FROM space_gateway_usage_history WHERE usage_window = 'SECONDARY' AND reset_at IS NOT NULL AND recorded_at <= reset_at
-        AND reset_at >= ($1::timestamp AT TIME ZONE 'UTC') AND reset_at < (($2::timestamp + interval '1 day') AT TIME ZONE 'UTC')
-      GROUP BY account_id, quota_key, date_trunc('hour', reset_at) ORDER BY 1, 2, 3`, [from, to])).rows;
-    return rows.map((row): GatewayWeeklyPeak => ({ accountId: String(row.account_id), quotaKey: String(row.quota_key ?? ""), resetAt: iso(row.reset_at)!,
-      usedPercent: Number(row.used_percent), lastSampleAt: iso(row.last_sample_at)! }));
+        AND reset_at >= greatest($1::timestamp AT TIME ZONE 'UTC', $3::timestamptz) AND reset_at < (($2::timestamp + interval '1 day') AT TIME ZONE 'UTC')
+      GROUP BY account_id, quota_key, date_trunc('hour', reset_at) ORDER BY 1, 2, 3`, [from, to, kept?.until ?? "-infinity"])).rows
+      .map((row): GatewayWeeklyPeak => ({ accountId: String(row.account_id), quotaKey: String(row.quota_key ?? ""), resetAt: iso(row.reset_at)!,
+        usedPercent: Number(row.used_percent), lastSampleAt: iso(row.last_sample_at)! }));
+    // A read of older days only does not replace hours kept up to now.
+    if (kept ? until > kept.until : until > start && until >= (this.peaksKept?.until ?? "")) {
+      this.peaksKept = { from: kept?.from ?? from, until, rows: [...kept?.rows ?? [], ...read.filter((row) => row.resetAt < until)] };
+    }
+    return [...kept?.rows.filter((row) => row.resetAt >= start && row.resetAt.slice(0, 10) <= to) ?? [], ...read];
   }
 
   async projectUsage(since: string, until: string, timeZone: string, minutesOf?: string) {
     // An untagged request whose CLI session (sticky hash) also ran under exactly one pane tag, from `since` on, counts as that pane.
+    // min = max, not count(DISTINCT): no sort of the span's tagged rows on disk per parallel process (stable 14/11: 411 -> 288 ms a week).
     const rows = (await this.pool.query<Record<string, unknown>>(`WITH sessions AS (
         SELECT sticky_key_hash, min(project) AS pane FROM space_gateway_request_logs
         WHERE requested_at >= $1::timestamptz AND project LIKE 'pane:%' AND sticky_key_hash IS NOT NULL ${minutesOf === undefined ? "" : "AND false"}
-        GROUP BY 1 HAVING count(DISTINCT project) = 1)
+        GROUP BY 1 HAVING min(project) = max(project))
       SELECT ${minutesOf === undefined ? "to_char(l.requested_at AT TIME ZONE $3, 'YYYY-MM-DD')"
         : "to_char(l.requested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI')"} AS day,
         coalesce(nullif(l.project, ''), s.pane, 'key:' || l.api_key_id, 'client:' || nullif(l.client_name, ''), '') AS project, l.provider,
@@ -1579,7 +1612,7 @@ export class InMemoryGatewayRepository implements GatewayRepository {
       ? this.accounts.find((account) => account.provider === input.provider && account.externalAccountId === input.externalAccountId) : undefined;
     if (existing) {
       const keepPaused = existing.status === "PAUSED"
-        && !(existing.statusReason === GATEWAY_FREE_PLAN_PAUSE_REASON && input.planType && !isGatewayFreePlan(input.planType));
+        && !(existing.statusReason === GATEWAY_FREE_PLAN_PAUSE_REASON && input.planType && !gatewayFreePlanPaused(existing.provider, input.planType));
       Object.assign(existing, {
         email: input.email, planType: input.planType ?? existing.planType, credentialsEncrypted: input.credentialsEncrypted,
         credentialsExpiresAt: input.credentialsExpiresAt, lastRefreshAt: input.lastRefreshAt,
@@ -1607,7 +1640,7 @@ export class InMemoryGatewayRepository implements GatewayRepository {
     const account = this.accounts.find((item) => item.id === accountId);
     if (!account) return null;
     const keepPaused = account.status === "PAUSED"
-      && !(account.statusReason === GATEWAY_FREE_PLAN_PAUSE_REASON && input.planType && !isGatewayFreePlan(input.planType));
+      && !(account.statusReason === GATEWAY_FREE_PLAN_PAUSE_REASON && (GATEWAY_FREE_PLAN_SERVED_PROVIDERS.includes(account.provider) || (input.planType && !isGatewayFreePlan(input.planType))));
     Object.assign(account, { email: input.email, externalAccountId: input.externalAccountId, planType: input.planType ?? account.planType,
       credentialsEncrypted: input.credentialsEncrypted, credentialsExpiresAt: input.credentialsExpiresAt, source: input.source, sourceRef: input.sourceRef,
       lastRefreshAt: input.lastRefreshAt, blockedUntil: null, status: keepPaused ? "PAUSED" : "ACTIVE",
@@ -1663,9 +1696,9 @@ export class InMemoryGatewayRepository implements GatewayRepository {
   async touchAccounts(accountIds: string[], usedAt: string) {
     for (const account of this.accounts) if (accountIds.includes(account.id)) account.lastUsedAt = usedAt;
   }
-  async saveResetCredits(accountId: string, available: number | null) {
+  async saveResetCredits(accountId: string, available: number | null, grants: GatewayResetGrant[] | null = null) {
     const account = this.accounts.find((item) => item.id === accountId);
-    if (account) account.resetCreditsAvailable = available;
+    if (account) { account.resetCreditsAvailable = available; if (grants) account.resetCreditGrants = grants; else delete account.resetCreditGrants; }
   }
   async listApiKeys() { return this.keys.map((key) => ({ ...key })); }
   async findApiKeyByHash(keyHash: string) { const key = this.keys.find((item) => item.keyHash === keyHash); return key ? { ...key } : null; }
@@ -1865,7 +1898,11 @@ export class InMemoryGatewayRepository implements GatewayRepository {
   history: (GatewayUsageHistoryPoint & { accountId: string })[] = [];
   async usageHistory(accountId: string, since: string) {
     return this.history.filter((point) => point.accountId === accountId && point.recordedAt >= since)
-      .map(({ accountId: _account, ...point }) => point).sort((a, b) => a.recordedAt.localeCompare(b.recordedAt));
+      .map((stored) => {
+        const point: GatewayUsageHistoryPoint & { accountId?: string } = { ...stored };
+        delete point.accountId;
+        return point;
+      }).sort((a, b) => a.recordedAt.localeCompare(b.recordedAt));
   }
   async weekUsedAt(accountId: string, at: string, resetAt: string) {
     const reset = Date.parse(resetAt);

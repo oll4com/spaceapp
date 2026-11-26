@@ -15,7 +15,7 @@ vi.mock("../src/features/vault/vault-client.js", async (original) => ({
   ...await original<typeof import("../src/features/vault/vault-client.js")>(),
   setUpVault: mocks.setUpVault, unlockVault: mocks.unlockVault, recoverVault: mocks.recoverVault, encryptVaultItem: mocks.encryptVaultItem, decryptVaultItem: mocks.decryptVaultItem,
   vaultInboxKey: mocks.vaultInboxKey, importVaultPending: mocks.importVaultPending, signVaultSignupGrant: mocks.signVaultSignupGrant, delegateVaultItems: mocks.delegateVaultItems,
-  planDuplicateRemoval: mocks.planDuplicateRemoval
+  planDuplicateRemoval: mocks.planDuplicateRemoval, repairWipedKeyItems: async (_client: unknown, _unlocked: unknown, records: unknown[]) => records
 }));
 
 import { VaultDock } from "../src/features/vault/VaultDock.js";
@@ -568,6 +568,39 @@ describe("VaultDock", () => {
       policy: expect.objectContaining({ acceptedOriginRisks: ["http://forum.example"], agentUse: true, approvalMode: "FULL", submitAllowed: true })
     }), undefined));
     expect(mocks.vaultSaveItem).toHaveBeenCalled();
+  });
+  it("takes an authenticator key or otpauth link, shows its live code with the seconds left and copies it, and shows a login's code in its row (plan clipboard:3aH7Gpr9F-yJ)", async () => {
+    // Synthetic key (RFC 6238's test key), never a real one.
+    const key = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    const withOtp = { ...changed, metadata: { ...changed.metadata, fieldRoles: ["PASSWORD", "OTP"] as VaultItemRecord["metadata"]["fieldRoles"] }, fields: { PASSWORD: envelope, OTP: envelope } };
+    mocks.vaultItems.mockResolvedValue({ items: [withOtp.metadata] });
+    mocks.vaultItem.mockResolvedValue({ item: withOtp });
+    mocks.decryptVaultItem.mockImplementation(async (_keys: unknown, _item: unknown, fields: Record<string, unknown>) => Object.keys(fields).includes("OTP") ? { OTP: key } : {});
+    mocks.vaultState.mockResolvedValue(state());
+    mocks.encryptVaultItem.mockImplementation(async (_keys: unknown, draft: { label: string }) => ({ ...pending, metadata: { ...pending.metadata, label: draft.label, status: "ACTIVE" } }));
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(<VaultDock />);
+    fireEvent.change(await screen.findByLabelText("Master password"), { target: { value: "a synthetic master" } });
+    fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+    const row = await screen.findByRole("button", { name: "Copy the code for Mail" });
+    expect(row.textContent).toMatch(/^\d{3} \d{3}\d{1,2}s$/);
+    expect(mocks.decryptVaultItem).toHaveBeenCalledWith(expect.anything(), withOtp, { OTP: envelope });
+    fireEvent.click(screen.getByRole("button", { name: "Add item" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Synthetic forum" } });
+    fireEvent.change(screen.getByLabelText("Website address"), { target: { value: "https://forum.example" } });
+    fireEvent.change(screen.getByLabelText("Authenticator key"), { target: { value: "not a key!" } });
+    expect(screen.getByText(/Paste the key the site shows/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Authenticator key"), { target: { value: `otpauth://totp/Forum:me?secret=${key.toLowerCase()}&issuer=Forum` } });
+    const live = await screen.findByRole("button", { name: "Copy the code for Synthetic forum" });
+    const code = live.querySelector(".vault-totp-code")!.textContent!;
+    fireEvent.click(live);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(code.replace(" ", "")));
+    expect(await within(live).findByText("Copied")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    // A link with the default 6 digits, 30 s and SHA1 is kept as its bare key, which every Browser Host fills.
+    await waitFor(() => expect(mocks.encryptVaultItem).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ secrets: { OTP: key } }), undefined));
   });
   // Chrome import (plan clipboard:SMcT__jALB6R): read and parsed in the tab, every login encrypted before it is saved.
   it("imports a Chrome passwords export for the chosen Google account, with one summary and a delete-the-file reminder", async () => {

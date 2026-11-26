@@ -84,12 +84,17 @@ describe("CollapsedRoomRail", () => {
     const { container } = render(<Rail overrides={{ docks }} />);
     const bell = screen.getByRole("button", { name: "Show notifications" });
     expect(bell.dataset.railId).toBe("notifications");
-    expect(bell.title).toBe("Show notifications · 969 unread");
+    expect(bell.title).toBe("Show notifications · 969");
     expect(bell.querySelector(".room-rail-count")?.textContent).toBe("99+");
     // Right after Nous in the rail's own order, so it sits beside the Nous icon.
     expect(container.querySelector('[data-rail-id="nous"] + [data-rail-id="notifications"]')).not.toBeNull();
     fireEvent.click(bell);
     expect(toggleSideSurface).toHaveBeenCalledWith("notifications");
+    cleanup();
+    // With the Nous dock hidden, the rail hides Nous and keeps the Notifications bell (operator 17/11, nous_msg:e1bcd1d9).
+    const hiddenNous = render(<Rail overrides={{ docks: { ...docks, availableDocks: ["rooms", "notifications"] } }} />);
+    expect(hiddenNous.container.querySelector('[data-rail-id="nous"]')).toBeNull();
+    expect(hiddenNous.container.querySelector('[data-rail-id="notifications"]')).not.toBeNull();
     unread.total = 0;
   });
 

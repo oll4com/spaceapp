@@ -1,17 +1,21 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { nextDotScheduleRun, nousFailureCause, nousScoreRangeSchema, type NousScore, type NousScoreHistory, type NousScoreItem, type NousScoreRange,
-  type NousScoreTile, type NousTurnFacts, type NousMarketingPostRow, type NousMarketingReport, type NousDecision, type NousGoal, type NousProgram, type GatewayLostWindow } from "@space/contracts";
-import type { NousScoreSnapshot } from "@space/db";
+  type NousScoreTile, type NousTurnFacts, type NousMarketingPostRow, type NousMarketingReport, type NousDecision, type NousGoal, type NousGoalEvent, type NousProgram, type GatewayLostWindow } from "@space/contracts";
+import type { NousScoreSnapshot, PaneReport } from "@space/db";
 import type { SpaceEventBus } from "@space/runtime";
 import { BROWSER_IDLE_MS } from "../browser-reaper.js";
 import { spaceFailedUnderTurn } from "../room-agent-tools.js";
 import { tokenCount } from "./lost-tokens.js";
+import { NEVER_BUY_ANSWER, purchaseAsk } from "./allowances.js";
 import type { ApprovalSettlement } from "./approvals.js";
 import { predictionAccuracy } from "./predictions.js";
-import { NOUS_WEIGHTS, type NousDimension, type NousDimensionScore, type NousScorecard } from "./progress.js";
+import { titleWords } from "./pane-notices.js";
+import { NOUS_CARD_ANSWER, NOUS_WEIGHTS, type NousDimension, type NousDimensionScore, type NousScorecard } from "./progress.js";
+import { classifySpaceFailure } from "./space-provider.js";
 import { SETTLED_DECISION_OUTCOME } from "./workbench.js";
-import { scorePushItems, type UnworkedScoreVariable } from "./score-push.js";
+import { CLOSE_PARKED, scorePushItems, type PanelessPlan, type UnworkedScoreVariable } from "./score-push.js";
+import { heldToolFailures, historicalToolHold, toolErrorSamples } from "./tool-holds.js";
 
 /**
  * Score (operator 3/11 23:11 BKK «θα σε βαθμολογεί αρνητικά όσο πλάνα και request μένουν ανοιχτά», plan clipboard:1NF6u6gcCwtj): Nous's
@@ -78,7 +82,10 @@ export const NOUS_SCORE_WEIGHTS = {
    * 100 %; per day since its first try × the share it falls short (the lower the rate and the more days, the more); each program still open.
    */
   projectShortfallPerPoint: -0.2, projectDay: -1, programOpen: -1,
-  /** A program found but not applied to yet (operator 4/11 nous_msg:44e3fd48): new candidates must not swamp the Score. */
+  /**
+   * A program found but not applied to yet (operator 4/11 nous_msg:44e3fd48), or applied and waiting for an answer (Nous 14/11, nous_msg:cbc40ebc:
+   * applying must not cost more than not applying); only a DRAFT stays at programOpen.
+   */
   programNotApplied: -0.2,
   /**
    * Marketing (operator 5/11 10:42 BKK, plan clipboard:netzt-nNvtBL): per point of the marketing score below its target, and per day in a row
@@ -91,6 +98,8 @@ export const NOUS_SCORE_WEIGHTS = {
 export const NOUS_SCORE_REPLY_TARGET_MS = 2 * 60_000;
 export const NOUS_SCORE_DONE_TARGET_MS = 6 * 3_600_000;
 export const NOUS_SCORE_WINDOW_DAYS = 7;
+/** Each Score range's window (operator 14/11 nous_msg:cf45a823: the rows under 24 h, 7 days and 30 days show that period's own values). */
+export const NOUS_SCORE_PERIOD_DAYS: Record<NousScoreRange, number> = { "24h": 1, "7d": NOUS_SCORE_WINDOW_DAYS, "30d": 30 };
 export const NOUS_SCORE_STARTUP_MS = 2_000;
 /**
  * The only recompute is this timer's, plus one NOUS_SCORE_EVENT_DELAY_MS after the operator writes (operator 4/11 nous_msg:b85ffb5b: the
@@ -108,18 +117,54 @@ const LESSON_INCIDENT = /^--- Incident \((?:merged from \S+, )?(\d{4}-\d{2}-\d{2
 export interface NousScoreDayErrors { day: string; calls: number; failed: number; refused: number; corrections: number; lessons: number;
   declined: number; predictionMisses: number; couldHaveDecided: number; chatErrors: number; decisionsFailed: number;
   /** Failed calls (refused excluded) by tool: the causes the errors lever names for a code-fix pane. */
-  tools?: Record<string, number> }
+  tools?: Record<string, number>;
+  /** A counted (not held) failure's recorded error by tool: what a code-fix pane reads as the cause. */
+  causes?: Record<string, string>;
+  /** The counted corrections ("correction <message id>: <summary>"), lessons ("lesson <key> <date>") and prediction misses
+   * ("prediction miss <decision id>: <answer>"): the records behind the three counts. */
+  records?: string[];
+  /** Each counted cause's latest time, by tool name or count key ("corrections", "chatErrors", ...): the errors lever's "last …, leaves the window …". */
+  last?: Record<string, string> }
 const dayFormatters = new Map<string, Intl.DateTimeFormat>();
 export function scoreDay(at: number, timeZone: string): string {
   let formatter = dayFormatters.get(timeZone);
   if (!formatter) dayFormatters.set(timeZone, formatter = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }));
   return formatter.format(at);
 }
+/**
+ * The local days a goal progressed: Nous moved it (a PROGRESS or NOTE event), or a pane reported PROGRESS or DONE on one of its plans
+ * (plan W48 step 3: 16-22/11 the goals' plans moved on days no goal turn wrote a note, and each such day cost goalNoProgressDay).
+ */
+export function goalProgressDays(goal: Pick<NousGoal, "id" | "planIds">, events: ReadonlyArray<Pick<NousGoalEvent, "goalId" | "kind" | "at">>,
+  reports: ReadonlyArray<Pick<PaneReport, "planId" | "status" | "at">>, timeZone: string): string[] {
+  return [...new Set([...events.filter((event) => event.goalId === goal.id && (event.kind === "PROGRESS" || event.kind === "NOTE")).map((event) => event.at),
+    ...reports.filter((report) => report.planId && goal.planIds.includes(report.planId) && (report.status === "PROGRESS" || report.status === "DONE")).map((report) => report.at)]
+    .map((at) => scoreDay(Date.parse(at), timeZone)))];
+}
 const emptyDay = (day: string): NousScoreDayErrors => ({ day, calls: 0, failed: 0, refused: 0, corrections: 0, lessons: 0, declined: 0, predictionMisses: 0, couldHaveDecided: 0, chatErrors: 0, decisionsFailed: 0 });
+
+/**
+ * 14/11 slice 13: pve-az was shut down twice for its resize on 12/11 (its guests stopped 05:33-05:35Z and again by 05:43:46Z, back at 05:45:04Z;
+ * the gateway logged nothing 05:41:54-05:46:08Z). The two Claude turns cut there (05:33:00, 05:42:04) failed with a fragment of their own stream
+ * (the reader was fixed in 0e2bc46d9d): Space's own host going down, held like spaceFailedUnderTurn. Only a FAILED turn ending in these windows.
+ */
+const HOST_SHUTDOWNS = [["2026-11-12T05:32:30Z", "2026-11-12T05:35:30Z"], ["2026-11-12T05:41:30Z", "2026-11-12T05:46:10Z"]]
+  .map(([from, to]) => [Date.parse(from!), Date.parse(to!)] as const);
+const endedInHostShutdown = (endedAt: string) => { const at = Date.parse(endedAt); return HOST_SHUTDOWNS.some(([from, to]) => at >= from && at <= to); };
+/**
+ * 22/11 corrections ×39 (each read with the operator's words): three stored before the 20/11 burst hold (f190754841) break the persona's rule.
+ * 66ac312a (16/11 13:58) and ccf452a2 (17/11 03:14) repeat 1a3e96a0 and 89efda83 while that work was still open; 74a2b433 (18/11 15:22) is an
+ * order (move the Braintrust authenticator to the Vault), and its stale code card is charged once as 4fa67673. Only these stored rows; the hold in tools.ts covers new ones.
+ * 22/11 corrections ×37 (second read): db5f61ca (17/11 03:37, «Reset password … μόνο το εμαιλ») is the third ask in 90 min for 89efda83's reset, while Dana built it.
+ */
+const NOT_CORRECTIONS = new Set(["nous_msg:66ac312a9c12453db20081ad", "nous_msg:ccf452a2bf474536b8d4e685", "nous_msg:74a2b4338ca74e0e92394df9", "nous_msg:db5f61cafe3847b1ad5f59f6"]);
+
 export function nousScoreErrors(input: { now: number; timeZone: string; facts: NousTurnFacts[]; decisions: NousDecision[];
-  lessons: Array<{ key: string; text?: string; updatedAt: string; createdAt?: string | null }>; resetAt?: number }): NousScoreDayErrors[] {
+  lessons: Array<{ key: string; text?: string; updatedAt: string; createdAt?: string | null }>; resetAt?: number; windowDays?: number;
+  /** The window's operator messages (id, text, when); text marks a card answer, text and time a double send. */
+  messages?: Array<{ id: string; text?: string; at?: string }> }): NousScoreDayErrors[] {
   const days = new Map<string, NousScoreDayErrors>();
-  const since = Math.max(input.now - NOUS_SCORE_WINDOW_DAYS * DAY_MS, input.resetAt ?? 0);
+  const since = Math.max(input.now - (input.windowDays ?? NOUS_SCORE_WINDOW_DAYS) * DAY_MS, input.resetAt ?? 0);
   const on = (at: string) => {
     const time = Date.parse(at);
     if (!(time >= since && time <= input.now)) return null;
@@ -129,23 +174,106 @@ export function nousScoreErrors(input: { now: number; timeZone: string; facts: N
   };
   // 13/11 (5 of 37 corrections in 2 days re-marked an operator message an earlier outcome had charged): one operator message is one correction.
   const chargedMessages = new Set<string>();
+  const chargedByText = new Map<string, number[]>();
+  // 14/11 slice 7 (3 of 55 in 7 days, saved before or as b5d8566290 reached stable): the persona's rule tools.ts applies at outcome time,
+  // for corrections already stored: an answer from a card ("[Room · Pane] My answer to …") answers Nous's own question, never a correction.
+  const cardAnswers = new Set((input.messages ?? []).filter((message) => NOUS_CARD_ANSWER.test(message.text ?? "")).map((message) => message.id));
+  // Slice 15 (13/11 14:22 «δεν δουλεύει ούτε απο εκεί!!!…» and 10/11 04:37 sent twice seconds apart, each given its own outcome): a message
+  // with the same text as a charged one sent within DOUBLE_SEND_MS is the same send, so the same correction. Technical bound: a double send
+  // lands in seconds; the same words minutes later are a new complaint (repeats covers those).
+  const DOUBLE_SEND_MS = 60_000;
+  const sent = new Map((input.messages ?? []).map((message) => [message.id, { text: (message.text ?? "").replace(/\s+/g, " ").trim().toLowerCase(), at: Date.parse(message.at ?? "") }]));
+  // Bob 14/11 (three slices chased causes already fixed on stable): each cause's latest time, so the lever shows which still recur.
+  const seen = (day: NousScoreDayErrors, key: string, at: string) => { if (!(Date.parse(day.last?.[key] ?? "") >= Date.parse(at))) day.last = { ...day.last, [key]: at }; };
+  const doubleSend = (id: string) => {
+    const one = sent.get(id);
+    if (!one?.text) return false;
+    const times = chargedByText.get(one.text);
+    return Boolean(times?.some((at) => Math.abs(at - one.at) <= DOUBLE_SEND_MS));
+  };
   for (const fact of [...input.facts].sort((a, b) => a.endedAt.localeCompare(b.endedAt))) {
     const day = on(fact.endedAt);
     if (!day) continue;
     for (const [name, tool] of Object.entries(fact.tools)) {
-      const failed = Math.max(0, tool.failed - tool.refused);
-      day.calls += tool.calls; day.failed += failed; day.refused += tool.refused;
-      if (failed) day.tools = { ...day.tools, [name]: (day.tools?.[name] ?? 0) + failed };
+      const recordedFailures = Math.max(0, tool.failed - tool.refused);
+      const held = heldToolFailures(name, tool);
+      const failed = recordedFailures - held;
+      day.calls += tool.calls; day.failed += failed; day.refused += tool.refused + held;
+      if (failed) { day.tools = { ...day.tools, [name]: (day.tools?.[name] ?? 0) + failed }; seen(day, name, fact.endedAt); }
+      // Slice 8 (14/11: space_task_update ×6 and 13 other tools counted with no cause any view showed): the latest counted sample names it.
+      const cause = failed ? toolErrorSamples(tool).filter((error) => !historicalToolHold(name, error)).at(-1) : undefined;
+      if (cause) day.causes = { ...day.causes, [name]: cause.split("\n")[0]!.slice(0, 120) };
     }
     for (const outcome of fact.outcomes) {
       const ids = outcome.messageIds ?? [];
-      if (!outcome.correction || (ids.length && ids.every((id) => chargedMessages.has(id)))) continue;
-      ids.forEach((id) => chargedMessages.add(id));
-      day.corrections += 1;
+      if (!outcome.correction || (ids.length && ids.every((id) => chargedMessages.has(id) || cardAnswers.has(id) || doubleSend(id) || NOT_CORRECTIONS.has(id)))) continue;
+      // 14/11 (intratrade ×2, Nous provider ×3, load ×5, appointment links ×4 in 7 days): a complaint again about a mistake already charged is that one correction.
+      // shortcut: "not yet reported fixed" is Nous's word; compare with the Done record's time if repeats get misused.
+      const repeat = !!outcome.repeats && chargedMessages.has(outcome.repeats);
+      ids.forEach((id) => {
+        if (chargedMessages.has(id)) return;
+        chargedMessages.add(id);
+        const info = sent.get(id);
+        if (info?.text) {
+          const list = chargedByText.get(info.text);
+          if (list) list.push(info.at); else chargedByText.set(info.text, [info.at]);
+        }
+      });
+      if (!repeat) { day.corrections += 1; day.records = [...day.records ?? [], `correction ${ids[0] ?? "(no message)"}: ${outcome.summary}`]; seen(day, "corrections", fact.endedAt); }
     }
     // Daily Nous errors 13/11 (09:36, 09:37): a turn no account had quota for waits and runs again by design; the reliability score leaves it out too.
     // Daily Nous errors 13/11 (6 of 10 on 12/11, recorded FAILED before service.ts STOPPED them): Space's own restart or database is left out too.
-    if (fact.status === "TIMEOUT" || (fact.status === "FAILED" && nousFailureCause(fact) !== "quota" && !spaceFailedUnderTurn((fact.error ?? "").replace(/ \(earlier: [\s\S]*$/, "")))) day.chatErrors += 1;
+    // 14/11: Codex's five historical 429s said "already acted", before quota holds were recorded. Only the final route's cause counts;
+    // an earlier quota refusal must not forgive a later auth error, empty answer or genuine timeout. No turn is replayed here.
+    const error = (fact.error ?? "").replace(/ \(earlier: [\s\S]*$/, "");
+    const route = classifySpaceFailure(error);
+    const cause = nousFailureCause(fact);
+    // A route fault the router fails over on ("unavailable": 50x, VPN, Gemini sign-in, HTTP 400/403/404, an empty answer, a tool outside Nous,
+    // no first reply) ends a turn only when every route had it: the providers' or the gateway's outage, not Nous's (Daily Nous errors 18/11, 23/11).
+    const held = route === "quota" || route === "throttle" || route === "unavailable" || cause === "quota" || cause === "gateway" || spaceFailedUnderTurn(error)
+      || /Gemini requested a tool outside the Nous allowlist\./.test(error) || endedInHostShutdown(fact.endedAt);
+    if (fact.status === "TIMEOUT" || (fact.status === "FAILED" && !held)) { day.chatErrors += 1; seen(day, "chatErrors", fact.endedAt); }
+  }
+  // Decisions first: a lesson citing one they charged costs nothing (below).
+  const chargedDecisions = new Set<string>();
+  const sinceIso = new Date(since).toISOString();
+  // 12/11 04:54 (Plesk 2e8ad90b + e02eaed6, open together, both answered no: one wrong prediction charged twice): a miss on a twin of an ask
+  // already charged one (open at the same time, 60% of the smaller title's subject words, as R12-1's twin gate: numbers aside) is not charged again.
+  const subjectWords = (title: string) => new Set([...titleWords(title)].filter((word) => !/^\d+$/.test(word)));
+  const missed: Array<{ createdAt: string; answeredAt: string; words: Set<string> }> = [];
+  const twinMiss = (decision: NousDecision, words: Set<string>) => missed.some((earlier) => {
+    if (!(earlier.createdAt < decision.answeredAt! && decision.createdAt < earlier.answeredAt)) return false;
+    const min = Math.min(earlier.words.size, words.size);
+    if (min < 2) return false;
+    let shared = 0;
+    for (const word of earlier.words) if (words.has(word)) shared += 1;
+    return shared / min >= 0.6;
+  });
+  for (const decision of input.decisions) {
+    const answered = decision.answeredAt ? on(decision.answeredAt) : null;
+    if (answered) {
+      const at = decision.answeredAt!;
+      // 20/11 (363fd74a, Olla CSVs to a buyer, −5): a Never-buy decline the purchase check no longer matches was the rule misfiring, not Nous asking to buy.
+      const ruleMisfire = decision.answer === NEVER_BUY_ANSWER && !purchaseAsk(`${decision.title}\n${decision.recommendation ?? ""}`, decision.refs.sendKind);
+      if (decision.status === "DECLINED" && !ruleMisfire) { answered.declined += 1; seen(answered, "declined", at); }
+      // 22/11 (21/11 11:05Z ×2): a yes after a Marketing post's time went stale is held since 7337f27e7c ("Held: MARKETING_STALE…"), its ask since 1c782add38.
+      if (decision.outcome?.startsWith("Failed") && !decision.outcome.startsWith("Failed: MARKETING_STALE: ")) { answered.decisionsFailed += 1; seen(answered, "decisionsFailed", at); }
+      const prediction = predictionAccuracy([decision], [], sinceIso).decisions;
+      // 14/11 (Kevin/Akamai, 2 declined asks predicted yes, −16): a declined ask is charged once, as declined, not also as a missed prediction.
+      if (decision.status !== "DECLINED" && prediction.total > prediction.matched) {
+        const words = subjectWords(decision.title);
+        if (!twinMiss(decision, words)) {
+          // 22/11 (16/11 miss untraceable a week later): name the decision, as corrections and lessons are named, so the miss can be read.
+          answered.predictionMisses += prediction.total - prediction.matched; answered.records = [...answered.records ?? [], `prediction miss ${decision.id}: ${decision.answer ?? decision.status}`]; seen(answered, "predictionMisses", at);
+          missed.push({ createdAt: decision.createdAt, answeredAt: at, words });
+        }
+      }
+      if ((decision.status === "DECLINED" && !ruleMisfire) || decision.outcome?.startsWith("Failed") || prediction.total > prediction.matched) chargedDecisions.add(decision.id);
+    }
+    // Feedback is stored on the decision; attribute it to its answer, or creation while still open.
+    // 13/11 (Kevin's mail, 2 asks −16): a declined ask is charged once, as declined; Nous deciding alone would have done what the operator refused.
+    const day = answered ?? (!decision.answeredAt ? on(decision.createdAt) : null);
+    if (day && decision.couldHaveDecided && decision.status !== "DECLINED") { day.couldHaveDecided += 1; chargedDecisions.add(decision.id); seen(day, "couldHaveDecided", decision.answeredAt ?? decision.createdAt); }
   }
   // A lesson counts on its creation and on each incident it gained (a same-cause save or a merged lesson, at the merged one's own date), never on a
   // rewrite or the merge itself (4/11: 52 merges in 7 days each moved an old lesson into today). A note with no created_at counts only its incidents: its update
@@ -157,8 +285,22 @@ export function nousScoreErrors(input: { now: number; timeZone: string; facts: N
     .map((fact) => [Date.parse(fact.startedAt), Date.parse(fact.endedAt)] as const);
   // 13/11 slice 5: a correction's lesson saved in a later turn escaped the time match (4 of 11 cite the corrected message): one citing an operator
   // message a correction charged in the window costs nothing.
-  const corrected = input.facts.filter((fact) => on(fact.endedAt)).flatMap((fact) => fact.outcomes.filter((outcome) => outcome.correction).flatMap((outcome) => outcome.messageIds ?? []));
-  const citesCorrection = (text: string) => [...text.matchAll(/nous_msg:([A-Za-z0-9_-]{8,80})/g)].some(([, id]) => corrected.some((full) => full.startsWith(`nous_msg:${id}`)));
+  // 23/11 (lessons-1123-card-for-missing-button cites 931c907c; the charged correction b25510ce repeats it): the first complaint a correction repeats is that mistake too.
+  const corrected = input.facts.filter((fact) => on(fact.endedAt)).flatMap((fact) => fact.outcomes.filter((outcome) => outcome.correction)
+    .flatMap((outcome) => [...outcome.messageIds ?? [], ...outcome.repeats ? [outcome.repeats] : []]));
+  // 14/11 (lessons-prediction-misses-1112, -prediction-misses: the ledger's misses re-recorded outside the REVIEW): so does one citing a decision charged here.
+  const chargedByPrefix = new Map<string, string[]>();
+  for (const id of new Set([...corrected, ...chargedDecisions])) {
+    const colon = id.indexOf(":");
+    if (colon < 0 || id.length < colon + 9) continue;
+    const prefix = id.slice(0, colon + 9);
+    const list = chargedByPrefix.get(prefix);
+    if (list) list.push(id); else chargedByPrefix.set(prefix, [id]);
+  }
+  const citesCharged = (text: string) => chargedByPrefix.size > 0 && [...text.matchAll(/nous_(?:msg|decision):[A-Za-z0-9_-]{8,80}/g)].some(([cited]) => {
+    const bucket = chargedByPrefix.get(cited.slice(0, cited.indexOf(":") + 9));
+    return Boolean(bucket?.some((full) => full.startsWith(cited)));
+  });
   for (const lesson of input.lessons) {
     if (!/^lessons(?:-|$)/.test(lesson.key)) continue;
     const text = lesson.text ?? "";
@@ -167,22 +309,11 @@ export function nousScoreErrors(input: { now: number; timeZone: string; facts: N
     const parts = [{ at: lesson.createdAt ?? null, text: text.slice(0, incidents[0]?.index ?? text.length) },
       ...incidents.map((match, i) => ({ at: match[1]!.length === 10 ? `${match[1]}T00:00:00.000Z` : match[1]!, text: text.slice(match.index, incidents[i + 1]?.index ?? text.length) }))];
     for (const { at, text: part } of parts) {
-      if (!at || charged.some(([from, to]) => Date.parse(at) >= from && Date.parse(at) <= to) || citesCorrection(part)) continue;
-      const day = on(at); if (day) day.lessons += 1;
+      // The window first and one parse per part: every part parsed its date twice per charged turn (stable 14/11: 571 turns, 869 ms of main thread per compute).
+      const time = Date.parse(at ?? "");
+      if (!at || !(time >= since && time <= input.now) || charged.some(([from, to]) => time >= from && time <= to) || citesCharged(part)) continue;
+      const day = on(at); if (day) { day.lessons += 1; day.records = [...day.records ?? [], `lesson ${lesson.key} ${at}`]; seen(day, "lessons", at); }
     }
-  }
-  for (const decision of input.decisions) {
-    const answered = decision.answeredAt ? on(decision.answeredAt) : null;
-    if (answered) {
-      if (decision.status === "DECLINED") answered.declined += 1;
-      if (decision.outcome?.startsWith("Failed")) answered.decisionsFailed += 1;
-      const prediction = predictionAccuracy([decision], [], new Date(since).toISOString()).decisions;
-      answered.predictionMisses += prediction.total - prediction.matched;
-    }
-    // Feedback is stored on the decision; attribute it to its answer, or creation while still open.
-    // 13/11 (Kevin's mail, 2 asks −16): a declined ask is charged once, as declined; Nous deciding alone would have done what the operator refused.
-    const day = answered ?? (!decision.answeredAt ? on(decision.createdAt) : null);
-    if (day && decision.couldHaveDecided && decision.status !== "DECLINED") day.couldHaveDecided += 1;
   }
   return [...days.values()].sort((a, b) => a.day.localeCompare(b.day));
 }
@@ -193,7 +324,9 @@ export interface NousScoreInput {
   /** `waits`: its next step when no step can run (all open ones BLOCKED): the 90 % push sends it nothing, so its lever says so (13/11, 14 levers said "send"). */
   plans: Array<{ id: string; title: string; createdAt: string; working: boolean; stalled: string | null; progress?: number; pane?: string | null; waits?: string | null;
     /** `held`: the plan map's wait on someone else (plan-map planHoldText: the operator, a third party, a promote, a date, another plan, the server): no pane to open for it. */
-    held?: string | null }>;
+    held?: string | null;
+    /** `parkable`: the wait is recorded on the plan itself (its waitsOn, its park, an open plan it depends on), so it can be closed parked. */
+    parkable?: boolean }>;
   completedPlans: Array<{ id: string; title: string; at: string }>;
   /** Closed plans still parked: `since` its clock (parkedSince), `own` its open NOUS or AGENT conditions, `waits` the other open ones ("c1 OPERATOR: what"). */
   parked?: Array<{ id: string; title: string; progress: number; since: string; met: number; total: number; own: string[]; waits: string[] }>;
@@ -235,10 +368,14 @@ export interface NousScoreInput {
     posts: Array<Pick<NousMarketingPostRow, "id" | "number" | "channel" | "status" | "at" | "score" | "title"> & { kind?: string }> } | null;
   /** What the working panes are on: each working plan's title and each working pane's latest report; a variable none names has no pane on it. */
   working?: string[];
-  /** Each pane's latest report when it finished (DONE, or the TURN_END after it): one naming Response time reviewed its slow cases up to then. */
+  /** Each OPEN follow-up's note: a variable one names has its wait recorded, so the push skips it until the follow-up fires or closes. */
+  waits?: string[];
+  /** Every DONE or TURN_END pane report in the 7 days: one naming Response time or Daily Nous errors reviewed its cases up to then. */
   finished?: Array<{ at: string; text: string }>;
   /** The owner's score reset (NOUS_SCORE_RESET_NOTE): nothing before `at` counts, and `offset` (the score then) is taken off, so it read 0 then. */
   reset?: NousScoreReset | null;
+  /** The window's length in days (NOUS_SCORE_PERIOD_DAYS); NOUS_SCORE_WINDOW_DAYS when absent. */
+  windowDays?: number;
 }
 
 /**
@@ -262,20 +399,22 @@ const signed = (value: number) => `${value > 0 ? "+" : value < 0 ? "−" : ""}${
 const ageText = (ms: number) => ms >= DAY_MS ? `${Math.floor(ms / DAY_MS)} d` : ms >= HOUR_MS ? `${Math.floor(ms / HOUR_MS)} h` : `${Math.floor(ms / 60_000)} min`;
 const durationText = (ms: number) => ms < 60_000 ? `${Math.round(ms / 1000)} s` : ageText(ms);
 const median = (values: number[]) => { const sorted = [...values].sort((a, b) => a - b); return sorted[Math.floor(sorted.length / 2)] ?? 0; };
-/** Applications decided or waiting count toward a page's success rate; a withdrawn one does not. */
+/** A page counts its days from the first application sent (decided or waiting); a withdrawn one does not. */
 const SUBMITTED_PROGRAMS = new Set(["APPROVED", "REJECTED", "EXPIRED", "APPLIED", "IN_PROGRESS"]);
+/** Its success rate counts only the answered ones (Nous 14/11, nous_msg:cbc40ebc): a waiting application is neither won nor lost. */
+const ANSWERED_PROGRAMS = new Set(["APPROVED", "REJECTED", "EXPIRED"]);
 const OPEN_PROGRAMS = new Set(["APPLIED", "IN_PROGRESS", "DRAFT", "NOT_APPLIED"]);
 const tile = (key: NousScoreTile["key"], label: string, items: NousScoreItem[], detail: string): NousScoreTile =>
   ({ key, label, points: round(items.reduce((sum, item) => sum + item.points, 0)), detail, items: [...items].sort((a, b) => a.points - b.points) });
 
 /** Marketing's cost: the score short of its target (more each day in a row), failed and no-reach posts of the window, days without a result. */
-function marketingItems(input: NonNullable<NousScoreInput["marketing"]>, now: number, resetAt: number): NousScoreItem[] {
+function marketingItems(input: NonNullable<NousScoreInput["marketing"]>, now: number, resetAt: number, windowDays: number): NousScoreItem[] {
   const w = NOUS_SCORE_WEIGHTS;
   // Days before the reset do not count.
   const sinceReset = Math.floor((now - resetAt) / DAY_MS);
   const marketing = { ...input, daysBelowTarget: Math.min(input.daysBelowTarget, sinceReset), daysWithoutResult: Math.min(input.daysWithoutResult, sinceReset) };
   const short = marketing.score === null ? 0 : Math.max(0, marketing.target - marketing.score);
-  const recent = marketing.posts.filter((post) => Date.parse(post.at) > Math.max(now - NOUS_SCORE_WINDOW_DAYS * DAY_MS, resetAt));
+  const recent = marketing.posts.filter((post) => Date.parse(post.at) > Math.max(now - windowDays * DAY_MS, resetAt));
   const post = (entry: (typeof recent)[number], points: number, detail: string): NousScoreItem =>
     ({ id: entry.id, label: `#${entry.number} ${entry.channel}${entry.title ? `: ${entry.title.slice(0, 80)}` : ""}`, points, detail });
   return [
@@ -294,18 +433,21 @@ function marketingItems(input: NonNullable<NousScoreInput["marketing"]>, now: nu
 export interface NousScoreLever { id: string | null; label: string; points: number; perDay: number; action: string }
 
 /** The score and its tiles from what is open now and what happened in the window; pure. */
-export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "tiles" | "breakdown"> & { levers: NousScoreLever[]; unworked: UnworkedScoreVariable[]; projects: Array<{ name: string; points: number }> } {
+export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "tiles" | "breakdown"> & { levers: NousScoreLever[]; unworked: UnworkedScoreVariable[]; paneless: PanelessPlan[]; projects: Array<{ name: string; points: number }> } {
   const w = NOUS_SCORE_WEIGHTS;
   // After a reset every window and age starts at it: what was open then counts from then, what happened before never.
   const resetAt = input.reset ? Date.parse(input.reset.at) : 0;
   const from = (at: string) => Math.max(Date.parse(at), resetAt);
-  const since = Math.max(input.now - NOUS_SCORE_WINDOW_DAYS * DAY_MS, resetAt);
+  const span = input.windowDays ?? NOUS_SCORE_WINDOW_DAYS;
+  const period = span === 1 ? "24 h" : `${span} days`;
+  const since = Math.max(input.now - span * DAY_MS, resetAt);
   const inWindow = (at: string) => Date.parse(at) >= since && Date.parse(at) <= input.now;
   const plans = input.plans.map((plan): NousScoreItem => {
     const age = Math.max(0, input.now - from(plan.createdAt));
     const days = Math.floor(age / DAY_MS);
-    const points = w.openPlan + w.openPlanPerDay * days ** w.planAgeExponent + (plan.working ? 0 : w.planNoWorkingPane) + (plan.stalled ? w.planStalled : 0);
-    return { id: plan.id, label: plan.title, points, detail: [`open ${ageText(age)}`, plan.working ? "a pane works on it" : "no working pane",
+    // W47 step 1: a recorded wait (plan map `held`: a date, a third party, the operator...) is why no pane works on it, not "no working pane".
+    const points = w.openPlan + w.openPlanPerDay * days ** w.planAgeExponent + (plan.working || plan.held ? 0 : w.planNoWorkingPane) + (plan.stalled ? w.planStalled : 0);
+    return { id: plan.id, label: plan.title, points, detail: [`open ${ageText(age)}`, plan.working ? "a pane works on it" : plan.held || "no working pane",
       ...(plan.stalled ? [`STALLED: ${plan.stalled}`] : [])].join(" · ") };
   });
   const parkedCost = (age: number) => { const days = Math.floor(Math.max(0, age) / DAY_MS); return days ? w.parkedPlanPerDay * days ** w.planAgeExponent : 0; };
@@ -332,7 +474,7 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
   const approvedAt = (decision: Pick<NousDecision, "createdAt" | "answeredAt">) => from(decision.answeredAt ?? decision.createdAt);
   // 13/11 (3fac478d): the window takes the approval itself, as approvalStates does; the reset-clamped time let a decision approved 7 days
   // ago back in with no send check (sent 6/11 16:18, charged "no send of ours" from 13/11 16:18 while the 11/11 reset was in the window).
-  const approvedInWindow = (decision: Pick<NousDecision, "createdAt" | "answeredAt">) => Date.parse(decision.answeredAt ?? decision.createdAt) >= input.now - NOUS_SCORE_WINDOW_DAYS * DAY_MS;
+  const approvedInWindow = (decision: Pick<NousDecision, "createdAt" | "answeredAt">) => Date.parse(decision.answeredAt ?? decision.createdAt) >= input.now - span * DAY_MS;
   const scheduledFor = (id: string) => Date.parse(input.approvals?.scheduled?.[id] ?? "") || 0;
   const isMailSend = (decision: Pick<NousDecision, "refs">) => !!decision.refs.mailThread || !!decision.refs.recipients?.length;
   const approvalPoints = (age: number) => {
@@ -363,14 +505,14 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
     const age = Math.max(0, Math.floor((input.now - from(goal.createdAt)) / DAY_MS));
     const createdDay = Date.parse(`${scoreDay(from(goal.createdAt), input.timeZone)}T00:00:00Z`) / DAY_MS;
     // Only completed local days: today can still move. The score window is covered by the retained goal event log.
-    const days = Math.max(0, todayNumber - Math.max(createdDay, todayNumber - NOUS_SCORE_WINDOW_DAYS));
+    const days = Math.max(0, todayNumber - Math.max(createdDay, todayNumber - span));
     const progress = new Set(goal.progressDays.filter((day) => day < today && Date.parse(`${day}T00:00:00Z`) / DAY_MS >= todayNumber - days));
     const withoutProgress = Math.max(0, days - progress.size);
     // Overdue days begun before the reset are already in its offset; only later ones count (no jump to 1 d right after it).
     const overdueDays = (at: number) => goal.limit?.kind === "DATE" ? Math.max(0, Math.ceil((at - Date.parse(goal.limit.until)) / DAY_MS)) : 0;
     const late = Math.max(0, overdueDays(input.now) - overdueDays(resetAt));
     return { id: goal.id, label: goal.text, points: age * w.goalPerDay + withoutProgress * w.goalNoProgressDay + late * w.goalOverdueDay,
-      detail: `${age} d unmet · ${withoutProgress} d without progress in ${NOUS_SCORE_WINDOW_DAYS} days · ${late} d overdue` };
+      detail: `${age} d unmet · ${withoutProgress} d without progress in ${period} · ${late} d overdue` };
   });
   const errors = input.dailyErrors.filter((day) => day.day <= today && Date.parse(`${day.day}T00:00:00Z`) >= Date.parse(`${scoreDay(since, input.timeZone)}T00:00:00Z`));
   const errorCount = (day: NousScoreDayErrors) => day.failed + day.corrections + day.lessons + day.declined + day.predictionMisses + day.couldHaveDecided + day.chatErrors + day.decisionsFailed;
@@ -378,14 +520,14 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
   const dailyErrors = errors.map((day): NousScoreItem => ({ id: null, label: day.day === today ? `Today (${day.day})` : day.day,
     points: day.failed * w.toolFailure + day.corrections * w.correction + day.lessons * w.lesson + day.declined * w.decisionDeclined
       + day.predictionMisses * w.predictionMiss + day.couldHaveDecided * w.couldHaveDecided
-      + day.chatErrors * w.chatError + day.decisionsFailed * w.decisionFailed, detail: errorCounts(day) }));
+      + day.chatErrors * w.chatError + day.decisionsFailed * w.decisionFailed, detail: errorCounts(day), ...(day.records ? { records: day.records } : {}) }));
   const todaysErrors = errors.find((day) => day.day === today) ?? emptyDay(today);
   if (!errors.some((day) => day.day === today)) dailyErrors.push({ id: null, label: `Today (${today})`, points: 0, detail: errorCounts(todaysErrors) });
   const totals = errors.reduce((sum, day) => {
     for (const key of ["calls", "failed", "refused", "corrections", "lessons", "declined", "predictionMisses", "couldHaveDecided", "chatErrors", "decisionsFailed"] as const) sum[key] += day[key];
     return sum;
   }, emptyDay(today));
-  dailyErrors.push({ id: null, label: `${NOUS_SCORE_WINDOW_DAYS}-day totals`, points: 0, detail: errorCounts(totals) });
+  dailyErrors.push({ id: null, label: `${span === 1 ? "24-hour" : `${span}-day`} totals`, points: 0, detail: errorCounts(totals) });
   const requests = input.requests.map((request): NousScoreItem => {
     const age = Math.max(0, input.now - from(request.openedAt));
     const points = w.openRequest + (age > HOUR_MS ? w.requestPast1h : 0) + (age > 6 * HOUR_MS ? w.requestPast6h : 0) + (age > DAY_MS ? w.requestPast24h : 0);
@@ -413,7 +555,8 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
     const runs = input.taskRuns.filter((run) => run.taskId === task.id);
     const handled = new Set(runs.map((run) => scoreDay(Date.parse(run.dueAt), task.timeZone)));
     const owedFrom = task.nextRunAt ? Date.parse(task.nextRunAt) : Infinity;
-    for (let at = nextDotScheduleRun({ kind: "DAILY", time: task.time }, task.timeZone, Math.max(Date.parse(task.createdAt), since)); at !== null && at <= input.now - 24 * 3_600_000;
+    // The days judged in the window (each 24 h after its run), so 24 h has its one day and 7 days seven (14/11: 24 h had none, 7 days six).
+    for (let at = nextDotScheduleRun({ kind: "DAILY", time: task.time }, task.timeZone, Math.max(Date.parse(task.createdAt), since - DAY_MS, resetAt)); at !== null && at <= input.now - 24 * 3_600_000;
       at = nextDotScheduleRun({ kind: "DAILY", time: task.time }, task.timeZone, at)) if (at >= owedFrom || handled.has(scoreDay(at, task.timeZone))) due.push(scoreDay(at, task.timeZone));
     const ran = new Set(runs.filter((run) => run.typed).map((run) => scoreDay(Date.parse(run.dueAt), task.timeZone)));
     const missed = due.filter((day) => !ran.has(day));
@@ -465,15 +608,17 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
       detail: `${entry.succeeded} of ${entry.tried} ${entry.what}, ${Math.round(rate)} % · ${days} d${open.length ? ` · ${open.length} open` : ""}` };
   };
   const firstOf = (values: Array<string | null>) => values.filter((value): value is string => !!value).sort()[0] ?? null;
-  // One Startup programs row over every program (the oll4.com funding page is gone, operator 7/11 nous_msg:e9c06cd838de45f4bccda467).
-  const projectRows = [...[input.programs].flatMap((entries) => {
+  // One row per programs page (the oll4.com funding page is gone, operator 7/11 nous_msg:e9c06cd838de45f4bccda467): the Affiliate page (14/11,
+  // nous_msg:de448bc7) is its own project with its own success rate, not part of Startup programs'.
+  const projectRows = [...[false, true].map((affiliate) => input.programs.filter((program) => (program.page === "affiliate") === affiliate)).flatMap((entries) => {
     if (!entries.length) return [];
     const sent = entries.filter((program) => SUBMITTED_PROGRAMS.has(program.status));
-    const name = "Startup programs";
-    return [project({ name, succeeded: sent.filter((program) => program.status === "APPROVED").length, tried: sent.length, what: "applications approved",
+    const answered = entries.filter((program) => ANSWERED_PROGRAMS.has(program.status));
+    const name = entries[0]!.page === "affiliate" ? "Affiliate programs" : "Startup programs";
+    return [project({ name, succeeded: answered.filter((program) => program.status === "APPROVED").length, tried: answered.length, what: "answered applications approved",
       since: firstOf(sent.map((program) => program.appliedAt)) ?? firstOf(entries.map((program) => program.createdAt)) },
     entries.filter((program) => OPEN_PROGRAMS.has(program.status)).map((program): NousScoreItem =>
-      ({ id: program.id, label: `${program.parent} › ${program.program}`, points: program.status === "NOT_APPLIED" ? w.programNotApplied : w.programOpen, detail: `${name} · ${program.status.toLowerCase().replace(/_/g, " ")}` })))];
+      ({ id: program.id, label: `${program.parent} › ${program.program}`, points: program.status === "DRAFT" ? w.programOpen : w.programNotApplied, detail: `${name} · ${program.status.toLowerCase().replace(/_/g, " ")}` })))];
   }), ...input.projects.map((entry) => project(entry))];
   const projects = projectRows.flatMap((row) => row.items);
   const missedDays = dailyTasks.reduce((sum, item) => sum + item.points / w.dailyTaskMissed, 0);
@@ -491,23 +636,25 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
     tile("panes", "Open panes", [...panes, ...paneDays], `${panes.length} open`
       + (paneDays.length ? ` · ${round(input.paneDays.reduce((sum, day) => sum + day.average, 0) / input.paneDays.length)} open a day on average` : "")),
     tile("idlePanes", "Idle open panes", idlePanes, `${idlePanes.length} pane${idlePanes.length === 1 ? "" : "s"} idle past 60 min`),
-    tile("browsers", "Idle open browsers", [...idleBrowsers, ...reapedBrowsers], `${idleBrowsers.length} open unused past 30 min · ${reapedBrowsers.length} closed by Space in ${NOUS_SCORE_WINDOW_DAYS} days`),
+    tile("browsers", "Idle open browsers", [...idleBrowsers, ...reapedBrowsers], `${idleBrowsers.length} open unused past 30 min · ${reapedBrowsers.length} closed by Space in ${period}`),
     tile("goals", "Goals", goals, `${goals.length} active · unmet days, no progress and overdue`),
     tile("projects", "Big projects", projects, `${projectRows.length} projects · lower success and more days cost more`),
-    tile("dailyTasks", "Daily tasks", dailyTasks, `${dailyTasks.length} daily · ${missedDays} missed days in ${NOUS_SCORE_WINDOW_DAYS} days`),
-    tile("response", "Response time", response, todayResponse ? `Today: ${todayResponse.detail}` : `No operator message today · first answer within ${durationText(NOUS_SCORE_REPLY_TARGET_MS)}`),
-    tile("dailyErrors", "Daily Nous errors", dailyErrors, `Today: ${errorCount(todaysErrors)} · ${NOUS_SCORE_WINDOW_DAYS} days: ${errorCount(totals)}`),
+    tile("dailyTasks", "Daily tasks", dailyTasks, `${dailyTasks.length} daily · ${missedDays} missed days in ${period}`),
+    // The tile's points sum the window; its text names today's own and the earlier days' apart (14/11: "−80" beside "Today: …" briefed a 17th pass on today's −2).
+    tile("response", "Response time", response, (todayResponse ? `Today ${signed(todayResponse.points)}: ${todayResponse.detail}` : `No operator message today · first answer within ${durationText(NOUS_SCORE_REPLY_TARGET_MS)}`)
+      + (response.some((item) => item !== todayResponse && item.points) ? ` · earlier days ${signed(response.reduce((sum, item) => sum + (item === todayResponse ? 0 : item.points), 0))}, past: they leave as the window moves` : "")),
+    tile("dailyErrors", "Daily Nous errors", dailyErrors, `Today: ${errorCount(todaysErrors)} · ${period}: ${errorCount(totals)}`),
     tile("requests", "Open requests", requests, `${requests.length} open`),
     tile("approvedNotDone", "Approved but not done", approved, `${approved.length} not done · ${approved.filter((item) => item.points < 0).length} past the ${w.approvedNotDoneGraceHours} h grace`),
-    tile("completed", "Plans completed", completed, `${completed.length} in ${NOUS_SCORE_WINDOW_DAYS} days`),
-    tile("done", "Requests done", done, `${done.length} in ${NOUS_SCORE_WINDOW_DAYS} days`),
+    tile("completed", "Plans completed", completed, `${completed.length} in ${period}`),
+    tile("done", "Requests done", done, `${done.length} in ${period}`),
     tile("utilization", "Utilization", utilization, `${use ? `${Math.round(use.value)}% · target ${use.target}%` : "no sample yet"}`),
     tile("lostTokens", "Lost tokens", lostTokens, lostAtResets.length
-      ? `${round(lostAtResets.reduce((sum, row) => sum + row.lostPercent, 0))} points of weeks left unused at their resets in ${NOUS_SCORE_WINDOW_DAYS} days`
+      ? `${round(lostAtResets.reduce((sum, row) => sum + row.lostPercent, 0))} points of weeks left unused at their resets in ${period}`
         + (lostPriced.length ? ` ≈ ${tokenCount(lostPriced.reduce((sum, row) => sum + row.lostTokens!, 0))} tokens, $${Math.round(lostPriced.reduce((sum, row) => sum + (row.lostCostUsd ?? 0), 0))}` : "")
-      : `no week left room at its reset in ${NOUS_SCORE_WINDOW_DAYS} days`),
+      : `no week left room at its reset in ${period}`),
     tile("scorecard", "Scorecard", scorecard, card ? `${card.overall} vs ${card.baselineOverall} on ${card.baselineDate}` : "not read"),
-    ...(input.marketing ? [tile("marketing", "Marketing", marketingItems(input.marketing, input.now, resetAt), input.marketing.score === null
+    ...(input.marketing ? [tile("marketing", "Marketing", marketingItems(input.marketing, input.now, resetAt, span), input.marketing.score === null
       ? "no post measured yet" : `${input.marketing.score}/100 · target ${input.marketing.target} · ${input.marketing.daysBelowTarget} d below it`)] : []),
     ...(input.reset && !baseline ? [tile("reset", "Score reset", [{ id: null, label: `Set to 0 on ${input.reset.at.slice(0, 16).replace("T", " ")} UTC`, points: -input.reset.offset,
       detail: `the score then (${signed(input.reset.offset)}) taken off; only what happens after it moves the score` }], "only what happens after it counts")] : [])
@@ -529,22 +676,38 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
   // A variable no item lever removes (13/11, goal 84ba917a: "No move removes Daily Nous errors −538" left it to the window): the move that cuts it
   // at its cause. Errors name their causes with counts, worst first, for a code-fix pane.
   const totalTools = new Map<string, number>();
-  for (const day of errors) for (const [tool, count] of Object.entries(day.tools ?? {})) totalTools.set(tool, (totalTools.get(tool) ?? 0) + count);
-  const unnamed = totals.failed - [...totalTools.values()].reduce((sum, count) => sum + count, 0);
-  const errorCauses = ([...[...totalTools].map(([tool, count]) => [`${tool} failed`, count, w.toolFailure] as const), ["failed tools", unnamed, w.toolFailure],
-    ["corrections", totals.corrections, w.correction], ["lessons", totals.lessons, w.lesson], ["declined decisions", totals.declined, w.decisionDeclined],
-    ["prediction misses", totals.predictionMisses, w.predictionMiss], ["asked though it could decide", totals.couldHaveDecided, w.couldHaveDecided],
-    ["failed or timed-out turns", totals.chatErrors, w.chatError], ["decisions whose action failed", totals.decisionsFailed, w.decisionFailed]] as const)
-    .filter(([, count]) => count > 0).sort((a, b) => a[1] * a[2] - b[1] * b[2]).map(([what, count, weight]) => `${what} ×${count} (${signed(count * weight)})`).join(", ");
-  const windowDays = Math.max(1, Math.ceil((input.now - since) / DAY_MS));
+  const causes = new Map<string, string>();
+  const lastAt = new Map<string, string>();
+  for (const day of [...errors].sort((a, b) => a.day.localeCompare(b.day))) {
+    for (const [tool, count] of Object.entries(day.tools ?? {})) totalTools.set(tool, (totalTools.get(tool) ?? 0) + count);
+    for (const [tool, cause] of Object.entries(day.causes ?? {})) causes.set(tool, cause);
+    for (const [key, at] of Object.entries(day.last ?? {})) lastAt.set(key, at);
+  }
+  const utc = (time: number) => { const iso = new Date(time).toISOString(); return `${iso.slice(8, 10)}/${iso.slice(5, 7)} ${iso.slice(11, 16)}Z`; };
+  // A cause with no failure since its fix leaves the window then on its own: no pane to brief on it (Bob 14/11).
+  const recurs = (key?: string) => { const at = key && lastAt.get(key); return at ? `; last ${utc(Date.parse(at))}, leaves the window ${utc(Date.parse(at) + span * DAY_MS)}` : ""; };
   const words = (label: string) => label.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 4);
   const names = (text: string, label: string) => words(label).every((word) => text.toLowerCase().includes(word));
+  const reviewed = (label: string) => Math.max(0, ...(input.finished ?? []).filter((report) => names(report.text, label)).map((report) => Date.parse(report.at)));
+  // 20/11 (eighth pass on the same −479: seven passes had fixed or explained every cause): a cause last seen before a pane's finished report
+  // naming Daily Nous errors counts but briefs no pane again until it recurs, as Response time below.
+  const errorsReviewedAt = reviewed("Daily Nous errors");
+  const unnamed = totals.failed - [...totalTools.values()].reduce((sum, count) => sum + count, 0);
+  const countKeys = [["corrections", "corrections", w.correction], ["lessons", "lessons", w.lesson], ["declined decisions", "declined", w.decisionDeclined],
+    ["prediction misses", "predictionMisses", w.predictionMiss], ["asked though it could decide", "couldHaveDecided", w.couldHaveDecided],
+    ["failed or timed-out turns", "chatErrors", w.chatError], ["decisions whose action failed", "decisionsFailed", w.decisionFailed]] as const;
+  const errorCauses = ([...[...totalTools].map(([tool, count]) => ({ what: `${tool} failed`, count, weight: w.toolFailure, latest: causes.get(tool), key: tool })),
+    { what: "failed tools", count: unnamed, weight: w.toolFailure }, ...countKeys.map(([what, key, weight]) => ({ what, count: totals[key], weight, key }))] as Array<{ what: string; count: number; weight: number; latest?: string; key?: string }>)
+    .filter(({ count, key }) => count > 0 && !(Date.parse((key && lastAt.get(key)) || "") <= errorsReviewedAt)).sort((a, b) => a.count * a.weight - b.count * b.weight)
+    // 14/11: «space_db_query failed ("…57014") ×5» was read as five timeouts (two were, one turn); the count is every failure, the text only the latest's.
+    .map(({ what, count, weight, latest, key }) => `${what} ×${count} (${signed(count * weight)}${latest ? `; latest: "${latest}"` : ""}${recurs(key)})`).join(", ");
+  const windowDays = Math.max(1, Math.ceil((input.now - since) / DAY_MS));
   // A pane's finished report naming Response time reviewed today's slow cases before it: they count but brief no pane again until a newer one
   // (14/11: 381fe2d6, fixed by pass 11, kept pushing; each pane's last report, a TURN_END, never told the lever it was done).
-  // shortcut: each pane's latest report only, and a TURN_END naming the words counts even if its pane failed; read DONE rows by time if a brief is missed.
-  const reviewedAt = Math.max(0, ...(input.finished ?? []).filter((report) => names(report.text, "Response time")).map((report) => Date.parse(report.at)));
+  // shortcut: a TURN_END naming the words counts even if its pane failed; read DONE rows only if a failed pane's review hides a cause.
+  const reviewedAt = reviewed("Response time");
   const variableMoves: Partial<Record<NousScoreTile["key"], string>> = {
-    dailyErrors: `open or brief a code-fix pane with these causes and counts: ${errorCauses || "none counted"}; each cause it fixes stops its count`,
+    dailyErrors: errorCauses ? `open or brief a code-fix pane with these causes and counts: ${errorCauses}; each cause it fixes stops its count` : undefined,
     // Past days' misses are sunk (their causes were briefed and fixed, passes 1-12): only today's can still be cut, like dailyTasks' recovered runs.
     response: todayResponse && todayResponse.points < 0 && lateAt.get(todayResponse.label)! > reviewedAt
       ? `brief a code-fix pane on what made today's first answers or Dones slow (${todayResponse.detail})` : undefined,
@@ -572,8 +735,10 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
         perDay: w.openPlanPerDay * ((days + 1) ** w.planAgeExponent - days ** w.planAgeExponent),
         action: progress >= 95 ? "complete it with its proof (space_plan_update), it removes all of it"
           : plan.working ? `${plan.pane ?? "its pane"} works on it: send the next step the moment it reports`
+            // 21/11 (Score −2980, Open plans 70%: 11 waiting plans held open ~10 days at −200 each, "nothing until then"): open, a wait ages from creation.
+            : plan.held && plan.parkable ? `it ${plan.held} and no pane works on it: ${CLOSE_PARKED}`
             : plan.held ? `it ${plan.held}: no pane to open or send; clear the wait (you: one ask; a third party: follow up; a date or another plan: nothing until then)`
-            : plan.waits ? `every open step waits (next: ${plan.waits}): nothing to send; unblock its step when the wait ends (space_plan_update)`
+            : plan.waits ? `every open step waits (next: ${plan.waits}) and no wait is recorded: record it (space_plan_update waitsOn), unblock its step when the wait ends`
             : plan.pane ? `send ${plan.pane} its next step now` : "no pane works on it: open one and send the next step" };
     }),
     ...(input.parked ?? []).map((plan, index): NousScoreLever => ({ id: plan.id, label: `Parked plan [${plan.id}] "${plan.title}" ${plan.progress}% (${plan.met}/${plan.total} conditions met)`,
@@ -583,7 +748,7 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
     ...input.requests.map((request, index): NousScoreLever => {
       const age = Math.max(0, input.now - from(request.openedAt));
       return { id: request.id, label: `Request${request.id ? ` [${request.id}]` : ""} «${request.summary}»`, points: requests[index]!.points,
-        perDay: requestPoints(age + DAY_MS) - requestPoints(age), action: "deliver it and record it Done (space_request_done); a pane on it now if none works on it" };
+        perDay: requestPoints(age + DAY_MS) - requestPoints(age), action: "deliver it and record it Done (space_request_done); a pane on it now if none works on it; if it waits on a release or ticket, report it PENDING with release or tickets so its shipping brings it back" };
     }),
     ...notDone.map((decision, index): NousScoreLever => {
       const age = Math.max(0, input.now - approvedAt(decision));
@@ -611,14 +776,39 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
   // While the Score is negative, a variable over 5 % of it that no pane works on goes first, saying so.
   const unworked = withMove.filter(unworkedVariable).map((entry) => variableLever(entry, "no pane works on it: "));
   // The same variables as hold A items on every snapshot (score-push.ts, operator 13/11 07:23 BKK).
-  const unworkedVariables = withMove.filter(unworkedVariable).map((entry): UnworkedScoreVariable => ({ label: entry.label, share: entry.share, points: entry.points, move: variableMoves[entry.key]! }));
-  return { score, tiles, breakdown, levers: [...unworked, ...levers], unworked: unworkedVariables, projects: projectRows.map((row) => ({ name: row.name, points: row.points })) };
+  // 1071 (13/11: 20 of 34 pushes repeated the last set, four right after a follow-up named the variable): a recorded wait is not pushed again while it is open.
+  const unworkedVariables = withMove.filter((entry) => unworkedVariable(entry) && !(input.waits ?? []).some((text) => names(text, entry.label))).map((entry): UnworkedScoreVariable => ({ label: entry.label, share: entry.share, points: entry.points, move: variableMoves[entry.key]! }));
+  // Open past 24 h, no working pane, no recorded wait: a hold A item each (score-push.ts, plan clipboard:nLYbDf3TqBPm step 1).
+  // A wait recorded on the plan is one too, until it is closed parked (21/11: held open, it had no move and kept ageing).
+  const paneless = input.plans.flatMap((plan, index): PanelessPlan[] => {
+    const age = Math.max(0, input.now - from(plan.createdAt));
+    return !plan.working && (!plan.held || plan.parkable) && age > DAY_MS
+      ? [{ id: plan.id, title: plan.title, points: plans[index]!.points, age: ageText(age), ...(plan.held ? { held: plan.held } : {}) }] : [];
+  });
+  return { score, tiles, breakdown, levers: [...unworked, ...levers], unworked: unworkedVariables, paneless, projects: projectRows.map((row) => ({ name: row.name, points: row.points })) };
 }
 
-/** The world's "## Score levers now": a variable over 5 % of a negative Score that no pane works on first, then every lever costliest by tomorrow first. */
+/**
+ * The world's "## Score levers now": a variable over 5 % of a negative Score that no pane works on first, then every lever costliest by tomorrow first.
+ * A move several lines share (the whole action or its tail after a ": ") is written once above them and named on each line (20/11, plan
+ * clipboard:VypZ4sl7NR04: 21 request lines repeated one 198-character move, ~6,000 characters of every INBOX prompt).
+ */
 export function nousScoreLeversText(levers: NousScoreLever[]): string {
+  const tails = (action: string) => [action, ...[...action.matchAll(/: /g)].map((match) => action.slice(match.index + 2))];
+  const count = new Map<string, number>();
+  for (const lever of levers) for (const tail of new Set(tails(lever.action))) count.set(tail, (count.get(tail) ?? 0) + 1);
+  // Under 30 characters a name and its line above cost about what they save.
+  const shared = (action: string) => tails(action).find((tail) => tail.length >= 30 && count.get(tail)! > 1);
+  const names = new Map<string, string>();
+  const lines = levers.map((lever) => {
+    const move = shared(lever.action);
+    if (move && !names.has(move)) names.set(move, `[move ${names.size + 1}]`);
+    const action = move ? `${lever.action.slice(0, lever.action.length - move.length)}${names.get(move)}` : lever.action;
+    return `- ${lever.label.replace(/\s+/g, " ")} · ${signed(lever.points)} now → ${signed(lever.points + lever.perDay)} tomorrow · ${action}`;
+  });
   return ["## Score levers now (your first measure: take the top move first; points now → tomorrow if left · the move that cuts them)",
-    ...(levers.length ? levers.map((lever) => `- ${lever.label.replace(/\s+/g, " ")} · ${signed(lever.points)} now → ${signed(lever.points + lever.perDay)} tomorrow · ${lever.action}`) : ["- none"])].join("\n");
+    ...(names.size ? ["Moves several lines share (a line ending in [move N] takes that move):", ...[...names].map(([move, name]) => `${name} ${move}`)] : []),
+    ...(lines.length ? lines : ["- none"])].join("\n");
 }
 
 /** The world's line and space_nous_progress's: the score, its changes and the tile that costs most with its worst item. */
@@ -644,8 +834,8 @@ interface Repository {
 }
 
 /** Each completed local day of the window whose snapshots counted the open panes: their average and peak (today is charged by the open panes). */
-export function paneDaysOf(rows: ScoreRow[], now: number, timeZone: string): NousScoreInput["paneDays"] {
-  const first = scoreDay(now - NOUS_SCORE_WINDOW_DAYS * DAY_MS, timeZone), today = scoreDay(now, timeZone);
+export function paneDaysOf(rows: ScoreRow[], now: number, timeZone: string, windowDays = NOUS_SCORE_WINDOW_DAYS): NousScoreInput["paneDays"] {
+  const first = scoreDay(now - windowDays * DAY_MS, timeZone), today = scoreDay(now, timeZone);
   const days = new Map<string, number[]>();
   for (const row of rows) {
     const count = row.parts?.openPanes;
@@ -657,7 +847,7 @@ export function paneDaysOf(rows: ScoreRow[], now: number, timeZone: string): Nou
     .map(([day, counts]) => ({ day, average: counts.reduce((sum, count) => sum + count, 0) / counts.length, peak: Math.max(...counts) }));
 }
 
-export function createNousScore(deps: { repository: Repository; input(owner: string, now: number): Promise<Omit<NousScoreInput, "paneDays">>; owners(): Promise<string[]>;
+export function createNousScore(deps: { repository: Repository; input(owner: string, now: number): Promise<Omit<NousScoreInput, "paneDays"> & { periods?: Partial<Record<NousScoreRange, Pick<NousScoreInput, "dailyErrors">>> }>; owners(): Promise<string[]>;
   /** Stores the owner's reset (NOUS_SCORE_RESET_NOTE) so input() returns it from then on. */
   saveReset?(owner: string, reset: NousScoreReset): Promise<void>;
   /** Hands each snapshot's unworked variables to Nous as hold A items (wiring: service.notice "score-push"). */
@@ -668,7 +858,7 @@ export function createNousScore(deps: { repository: Repository; input(owner: str
   const now = deps.now ?? Date.now;
   const latest = new Map<string, NousScore>();
   const leversOf = new Map<string, NousScoreLever[]>();
-  const unworkedOf = new Map<string, UnworkedScoreVariable[]>();
+  const pushOf = new Map<string, ReturnType<typeof scorePushItems>>();
   const running = new Map<string, Promise<NousScore>>();
   // The retained snapshots (30 days), read once per owner; each snapshot this process writes is appended, so neither Δ nor the graph reads them again.
   const snapshots = new Map<string, Promise<ScoreRow[]>>();
@@ -689,17 +879,21 @@ export function createNousScore(deps: { repository: Repository; input(owner: str
     const [base, all] = await Promise.all([deps.input(owner, at), rowsOf(owner)]);
     // Snapshots before the reset count neither in the pane days nor in Δ.
     const history = base.reset ? all.filter((row) => Date.parse(row.at) >= Date.parse(base.reset!.at)) : all;
-    const { score, tiles, breakdown, levers, unworked } = nousScore({ ...base, paneDays: paneDaysOf(history, at, base.timeZone) });
+    // Each range from the same reads; the 7 days' is the score (Δ, graph, levers, push), the others only its rows (operator 14/11 nous_msg:cf45a823).
+    const scoreOf = (range: NousScoreRange) => nousScore({ ...base, ...base.periods?.[range], windowDays: NOUS_SCORE_PERIOD_DAYS[range],
+      paneDays: paneDaysOf(history, at, base.timeZone, NOUS_SCORE_PERIOD_DAYS[range]) });
+    const { score, tiles, breakdown, levers, unworked, paneless } = scoreOf("7d");
+    const periods = Object.fromEntries((["24h", "30d"] as const).map((range) => { const view = scoreOf(range); return [range, { score: view.score, tiles: view.tiles }]; }));
     // The snapshot nearest before the mark, within an hour of it (none when the history is younger).
     const ago = (ms: number) => {
       const before = history.filter((row) => Date.parse(row.at) <= at - ms && Date.parse(row.at) > at - ms - HOUR_MS).at(-1);
       return before ? round(score - before.score) : null;
     };
-    const view: NousScore = { at: new Date(at).toISOString(), score, change24h: ago(DAY_MS), change7d: ago(7 * DAY_MS), tiles, breakdown, resetAt: base.reset?.at ?? null };
+    const view: NousScore = { at: new Date(at).toISOString(), score, change24h: ago(DAY_MS), change7d: ago(7 * DAY_MS), tiles, breakdown, resetAt: base.reset?.at ?? null, periods };
     partsOf.set(view, { ...Object.fromEntries(tiles.map((entry) => [entry.key, entry.points])), openPanes: base.panes.length });
     latest.set(owner, view);
     leversOf.set(owner, levers);
-    unworkedOf.set(owner, unworked);
+    pushOf.set(owner, scorePushItems(score, unworked, paneless));
     return view;
   }
   function refresh(owner: string): Promise<NousScore> {
@@ -720,8 +914,8 @@ export function createNousScore(deps: { repository: Repository; input(owner: str
           const rows = await rowsOf(owner);
           rows.push({ at: view.at, score: view.score, parts });
           rows.splice(0, rows.findIndex((row) => Date.parse(row.at) >= now() - 30 * DAY_MS));
-          // shortcut: re-pushed every snapshot (15 min) while no working pane names the variable, a recorded wait included; skip variables a live follow-up names if this costs too many turns.
-          const push = scorePushItems(view.score, unworkedOf.get(owner) ?? []);
+          // Re-pushed every snapshot (15 min) while no working pane and no OPEN follow-up names the variable (nousScore `waits`) or the plan has no recorded wait.
+          const push = pushOf.get(owner);
           if (push) await deps.push?.(owner, push);
         } catch (error) { deps.warn?.(error); }
       }));

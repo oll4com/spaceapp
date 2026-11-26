@@ -250,7 +250,7 @@ export function claudePaneManagedTurnDriver(input: {
       await input.applyModel({ pane, active: session, modelId, reasoningEffort, traceId: `${traceId}:${randomUUID()}`, assertControl: assertCurrent });
     },
     serialize: (work) => terminal.runSerializedTerminalMutation(session.sessionId, work),
-    submit: (text) => submitCliPrompt(terminal, session.sessionId, text, traceId, `${traceId}:${randomUUID()}`, { assertCurrent }),
+    submit: (text) => submitCliPrompt(terminal, session.sessionId, text, traceId, `${traceId}:${randomUUID()}`, { assertCurrent, paneId: pane.id }),
     press: async (keys) => { await terminal.sendInput(session.sessionId, keys, traceId, null, `${traceId}:keys:${randomUUID()}`); },
     screen: () => terminal.observeRoomScreenUndimmed(session.sessionId),
     log: (step, error) => input.log?.({ event: "managed_plan.claude_driver_failed", step, paneId: pane.id, sessionId: session.sessionId,

@@ -1,7 +1,7 @@
 <h3 align="center">Self-hosted rooms where Claude Code, Codex, OpenCode and Gemini CLI keep working after you close the laptop.</h3>
 
 <p align="center">
-  <img src="docs/images/spaceapp-hero-banner.png" alt="SpaceApp workspace with multiple coding agents and tools in one room" width="760" />
+  <img src="docs/images/nous-orchestration-hero.gif" alt="Nous takes a goal, a Claude Code pane adds GET /health with a test, and Nous asks before the push to origin" width="760" />
 </p>
 
 ```bash
@@ -147,11 +147,12 @@ SpaceApp is hosted by Open Source Europe on Open Collective. Your support pays f
 
 <p align="center">
   <a href="https://oll4.com/?utm_source=github&utm_medium=readme"><img src="https://img.shields.io/badge/Created%20by-oll4.com-ffe900?style=for-the-badge&labelColor=0a0e13" alt="Created by oll4.com" height="36"></a>
+  <a href="https://e2b.dev/startups"><img src="https://img.shields.io/badge/SPONSORED%20BY-E2B%20FOR%20STARTUPS-ff3001?style=for-the-badge&labelColor=black" alt="SPONSORED BY E2B FOR STARTUPS" height="36"></a>
 </p>
 
-<h3 align="center">Accepted into Anthropic’s Claude for Startups program.<br>Enrolled in the OpenAI Partner Network.</h3>
+<h3 align="center">Accepted into Anthropic’s Claude for Startups and E2B for Startups programs.<br>Enrolled in the OpenAI Partner Network.</h3>
 
-<p align="center"><sub>Through SpaceApp's maker, oll4.com, since October 2026. Membership in a program is not an endorsement of SpaceApp by Anthropic, OpenAI or NVIDIA.<br>© 2025 NVIDIA, the NVIDIA logo, and NVIDIA Inception are trademarks and/or registered trademarks of NVIDIA Corporation in the U.S. and other countries.</sub></p>
+<p align="center"><sub>Through SpaceApp's maker, oll4.com, since October 2026. Membership in a program is not an endorsement of SpaceApp by Anthropic, E2B, OpenAI or NVIDIA.<br>© 2025 NVIDIA, the NVIDIA logo, and NVIDIA Inception are trademarks and/or registered trademarks of NVIDIA Corporation in the U.S. and other countries.</sub></p>
 
 <p align="center"><br><img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/nvidia-inception-program-badge-rgb-for-screen.svg" alt="NVIDIA Inception program member badge" width="150" /><br><br>SpaceApp is a member of NVIDIA Inception.<br><br></p>
 

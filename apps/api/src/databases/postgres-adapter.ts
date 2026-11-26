@@ -104,7 +104,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
   }
 
-  async getCatalog(databaseName?: string): Promise<DatabaseCatalog> {
+  async getCatalog(): Promise<DatabaseCatalog> {
     const currentDbRes = await this.pool.query("SELECT current_database() as db");
     const currentDatabase = currentDbRes.rows[0]?.db || "postgres";
 

@@ -1,4 +1,4 @@
-import { Compass, Database, Check, X, RefreshCw } from "../ui-theme/app-icons.js";
+import { Compass, X, RefreshCw } from "../ui-theme/app-icons.js";
 import type { DatabaseDiscoveryItem } from "@space/contracts";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 

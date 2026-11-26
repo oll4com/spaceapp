@@ -105,10 +105,11 @@ export function splitNousStreamLines(maxLineChars: number, takeLine: (line: stri
 export function createNousTurnReader(stream: boolean, onEvent?: (event: NousTurnEvent) => void) {
   let stdout = "";
   let lastJsonLine: string | null = null;
+  let answered = false;
   const lines = splitNousStreamLines(NOUS_TURN_MAX_OUTPUT_BYTES, (line) => {
     if (!line.trim()) return;
     const event = readNousStreamLine(line);
-    if (event && "result" in event) lastJsonLine = line;
+    if (event && "result" in event) { lastJsonLine = line; answered = true; }
     if (event && !("result" in event)) onEvent?.(event);
   });
   return {
@@ -117,6 +118,8 @@ export function createNousTurnReader(stream: boolean, onEvent?: (event: NousTurn
       stdout += chunk;
       return stdout.length > NOUS_TURN_MAX_OUTPUT_BYTES ? OVERSIZED_RESULT : null;
     },
+    /** Streamed, the result record has arrived whole: the answer is final even while the process lingers (`finish(0, stderr)` then reads it). */
+    answered: () => answered,
     finish(code: number | null, stderr: string, signal: string | null = null): NousTurnResult {
       const ended = stream ? lines.end() : null;
       if (ended) throw new Error(ended);

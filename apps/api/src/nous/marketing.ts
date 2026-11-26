@@ -164,7 +164,7 @@ export function buildMarketingReport(input: MarketingReportInput): NousMarketing
     totals: { ...count(rows), ...sum(rows), zeroReach: published.filter((row) => row.score === 0).length },
     conversations: { ...count(replies), ...sum(replies) },
     platforms, posts: rows, sources: marketingSources(input, rows), site: input.site ?? null,
-    funnel: marketingFunnel(input.site ?? null, input.installs ?? null), funnelByRef: marketingFunnelByRef(input.installs ?? null)
+    funnel: marketingFunnel(input.site ?? null, input.installs ?? null), funnelByRef: marketingFunnelByRef(input.installs ?? null, input.site ?? null)
   };
 }
 
@@ -178,15 +178,21 @@ export function marketingFunnel(site: NousSiteFunnel | null, installs: SystemAna
   ];
 }
 
-/** The funnel's install steps per launcher --ref channel (plan clipboard:UoygRDurSshE step 2.4), most started first; none until a ref arrives. */
-export function marketingFunnelByRef(installs: SystemAnalyticsInstall[] | null): NonNullable<NousMarketingReport["funnelByRef"]> {
+/** The whole funnel per channel (plan clipboard:UoygRDurSshE step 2.4): the site's utm_source joined to the launcher's --ref the Copy button carries,
+ * "none" for views and installs without one; most started first, then most viewed; none until a view has a source or an install a ref. */
+export function marketingFunnelByRef(installs: SystemAnalyticsInstall[] | null, site: NousSiteFunnel | null = null): NonNullable<NousMarketingReport["funnelByRef"]> {
   const rows = (installs ?? []).filter((row) => !row.internal);
-  if (!rows.some((row) => row.ref)) return [];
-  const groups = new Map<string, SystemAnalyticsInstall[]>();
-  for (const row of rows) groups.set(row.ref ?? "none", [...(groups.get(row.ref ?? "none") ?? []), row]);
-  return [...groups].map(([ref, list]) => ({ ref, started: list.length, completed: list.filter((row) => row.status === "COMPLETED").length,
-    firstCli: list.filter((row) => row.firstCli).length, activeSecondDay: list.filter((row) => row.activeDays >= 2).length }))
-    .sort((a, b) => b.started - a.started || a.ref.localeCompare(b.ref));
+  const sources = site?.sources ?? [];
+  if (!rows.some((row) => row.ref) && !sources.length) return [];
+  const total = (key: "views" | "installIntent") => sources.reduce((sum, source) => sum + source[key], 0);
+  const refs = new Set(["none", ...sources.map((source) => source.key), ...rows.map((row) => row.ref ?? "none")]);
+  return [...refs].map((ref) => {
+    const list = rows.filter((row) => (row.ref ?? "none") === ref);
+    const source = ref === "none" ? site && { views: site.views - total("views"), installIntent: site.installIntent - total("installIntent") } : sources.find((entry) => entry.key === ref);
+    return { ref, ...(site ? { views: source?.views ?? 0, installIntent: source?.installIntent ?? 0 } : {}), started: list.length,
+      completed: list.filter((row) => row.status === "COMPLETED").length, firstCli: list.filter((row) => row.firstCli).length, activeSecondDay: list.filter((row) => row.activeDays >= 2).length };
+  }).filter((row) => row.started || row.views)
+    .sort((a, b) => b.started - a.started || (b.views ?? 0) - (a.views ?? 0) || a.ref.localeCompare(b.ref));
 }
 
 function marketingSources(input: MarketingReportInput, rows: NousMarketingPostRow[]): NousMarketingSource[] {
@@ -267,7 +273,7 @@ export function marketingToolText(report: NousMarketingReport, args: { view?: "s
     "Platforms:", ...report.platforms.map((platform) => `- ${platform.channel}: score ${platform.score ?? "–"}, ${platform.posts} posts (${platform.published} published, ${platform.failed} failed, `
       + `${platform.measured} measured), ${numbers(platform)}, visits to our sites ${platform.visits ?? "–"}`),
     ...(report.funnel?.length ? [`Funnel (history period): ${report.funnel.map((step) => `${step.step} ${step.count}`).join(" → ")}.`] : []),
-    ...(report.funnelByRef?.length ? [`By channel (--ref): ${report.funnelByRef.map((row) => `${row.ref} started ${row.started}, completed ${row.completed}, first CLI ${row.firstCli}, second day ${row.activeSecondDay}`).join("; ")}.`] : []),
+    ...(report.funnelByRef?.length ? [`By channel (utm_source / --ref): ${report.funnelByRef.map((row) => `${row.ref}${row.views === undefined ? "" : ` views ${row.views}, interest ${row.installIntent},`} started ${row.started}, completed ${row.completed}, first CLI ${row.firstCli}, second day ${row.activeSecondDay}`).join("; ")}.`] : []),
     `Sources not connected: ${report.sources.filter((source) => !source.connected).map((source) => source.label).join(", ") || "none"}. view "posts" lists every post (channel, offset); view "sources" every source.`].join("\n");
 }
 

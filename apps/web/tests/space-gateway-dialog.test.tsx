@@ -267,6 +267,7 @@ describe("SpaceGatewayDialog", () => {
     fireEvent.change(screen.getByLabelText("Alias"), { target: { value: "Main" } });
     fireEvent.click(screen.getByRole("button", { name: "Save alias" }));
     await waitFor(() => expect(api.updateAccount).toHaveBeenCalledWith(account.id, { alias: "Main" }));
+    expect(screen.queryByText("Warm-up applies to Codex accounts only")).toBeNull();
     fireEvent.click(screen.getByRole("switch", { name: /Limit warm-up/ }));
     await waitFor(() => expect(api.updateAccount).toHaveBeenCalledWith(account.id, { warmupEnabled: true }));
     fireEvent.click(screen.getByRole("button", { name: "Export auth.json" }));
@@ -450,13 +451,13 @@ describe("SpaceGatewayDialog", () => {
     fireEvent.change(screen.getByLabelText("Nous Claude reserve (%)"), { target: { value: "15" } });
     fireEvent.change(screen.getByLabelText(/^Subscription accounts/), { target: { value: "WEEKLY_PACE" } });
     fireEvent.click(screen.getByRole("switch", { name: "Claude API key fallback" }));
-    // Nous's Space provider order: Claude → Codex → Claude via OpenCode → Gemini Argon → Gemini 3.8 Flash → Claude (Antigravity); Codex moved first.
+    // Nous's Space provider order: Claude → Codex → Claude via OpenCode → Gemini Neon → Gemini 3.8 Flash → Claude (Antigravity); Codex moved first.
     expect(screen.getByRole("button", { name: "Move Claude up" }).hasAttribute("disabled")).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Move Codex up" }));
     fireEvent.click(screen.getByRole("button", { name: "Save routing" }));
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ routingStrategy: "FILL_FIRST", subscriptionRouting: "WEEKLY_PACE", claudeReservePercent: 15, planPriority: ["plus", "prolite", "pro"],
       claudeApiKeyFallback: true, providerOrder: [{ route: "CODEX", enabled: true }, { route: "CLAUDE", enabled: true }, { route: "CLAUDE_OPENCODE", enabled: true },
-        { route: "ANTIGRAVITY", enabled: true }, { route: "ANTIGRAVITY_FLASH", enabled: true }, { route: "ANTIGRAVITY_CLAUDE", enabled: true }, { route: "BEDROCK", enabled: false }, { route: "VERTEX", enabled: false }] })));
+        { route: "ANTIGRAVITY", enabled: true }, { route: "ANTIGRAVITY_CLAUDE", enabled: true }, { route: "ANTIGRAVITY_FLASH", enabled: true }, { route: "BEDROCK", enabled: false }, { route: "VERTEX", enabled: false }] })));
     fireEvent.click(screen.getByRole("tab", { name: "Compression" }));
     fireEvent.click(await screen.findByLabelText("On"));
     // Shadow (measure without sending) is no longer offered anywhere.
@@ -688,6 +689,9 @@ describe("SpaceGatewayDialog", () => {
     render(<SpaceGatewayDialog client={api} initialTab="accounts" onClose={() => undefined} />);
     expect((await screen.findAllByText("Claude and GPT")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Gemini").length).toBeGreaterThan(0);
+    // Limit warm-up acts on Codex accounts only, so other providers get a note instead of the toggle.
+    expect(await screen.findByText("Warm-up applies to Codex accounts only")).toBeTruthy();
+    expect(screen.queryByRole("switch", { name: /Limit warm-up/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Add account" }));
     fireEvent.click(screen.getByRole("tab", { name: "Antigravity" }));
     expect(await screen.findByText("In Space Gateway")).toBeTruthy();
@@ -758,6 +762,19 @@ describe("SpaceGatewayDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm reset" }));
     await waitFor(() => expect(api.useResetCredit).toHaveBeenCalledWith(account.id, expect.stringMatching(/^[0-9a-f-]{36}$/)));
     expect(await screen.findByText("Team A: Weekly limit reset.")).toBeTruthy();
+    // A Claude reset names what it cleared (dev@ 14/11: a Fable reset left the week used).
+    vi.mocked(api.useResetCredit).mockResolvedValueOnce({ outcome: "RESET", windowsReset: ["five_hour"] });
+    fireEvent.click(await screen.findByRole("button", { name: "Use reset credit (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm reset" }));
+    expect(await screen.findByText("Team A: Reset credit spent. Cleared: 5-hour window. The week was not reset.")).toBeTruthy();
+  });
+
+  it("names a Claude account's reset grant, and a Fable-only one never as a week", async () => {
+    const fable = { ...account, provider: "CLAUDE" as const, planType: "max20x", resetCreditsAvailable: 1,
+      resetCreditGrants: [{ kind: "fable" as const, left: 1, endsAt: "2027-03-09T07:59:00.000Z" }] };
+    render(<SpaceGatewayDialog client={client({ accounts: vi.fn(async () => ({ data: [fable] })) })} initialTab="accounts" onClose={() => undefined} />);
+    const button = await screen.findByRole("button", { name: "Fable usage only" });
+    expect(button.getAttribute("title")).toBe("Spend one reset credit on this account: 1 Fable reset (Fable usage only, never a week)");
   });
 
   it("shows compression statistics by strategy", async () => {

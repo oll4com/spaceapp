@@ -3,8 +3,6 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
-  checkCodexSolAvailability,
-  checkGeminiAvailability,
   resolveAdvancedMissionModel,
   runOpenCodeText
 } from "../src/room-agent-model-resolver.js";

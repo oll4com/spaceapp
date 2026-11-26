@@ -1,12 +1,13 @@
 import { render, waitFor } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SensitiveDataMask,
   hasSensitiveText,
   instanceDomain,
-  normalizeText
+  normalizeText,
+  sensitiveSpans
 } from "../src/features/sensitive-data/SensitiveDataMask.js";
 
 describe("sensitive data mask helpers", () => {
@@ -42,6 +43,30 @@ describe("sensitive data mask helpers", () => {
     expect(instanceDomain("10.0.0.5")).toBeNull();
     const source = readFileSync(resolve(__dirname, "../src/features/sensitive-data/SensitiveDataMask.tsx"), "utf8");
     expect(source).not.toMatch(/\\?\.com\b/);
+  });
+
+  it("step 14: flags secrets and one-time codes, and only their own characters", () => {
+    // Split literals: the public export audit refuses a file holding a whole token or key header, even a fake one.
+    for (const secret of ["sk-ant-abcdef123456", "gh" + "p_abcdefghijklmnopqrstuvwxyz012345", "AK" + "IAABCDEFGHIJKLMNOP", "glpat-abcdefghijklmnopqrstu",
+      "spacecontrol.v1.abc.def", "eyJhbGciOiJI.eyJzdWIiOiIx.c2lnbmF0dXJl", "-----BEGIN " + "OPENSSH PRIVATE KEY-----", "SPACEAPP-PAIR:1:abc"]) {
+      expect(hasSensitiveText(secret), secret).toBe(true);
+    }
+    const value = (text: string) => sensitiveSpans(text, null).map(([start, end]) => text.slice(start, end));
+    expect(value("Your verification code is 482913, it expires soon")).toEqual(["482913"]);
+    expect(value("OTP: 1234")).toEqual(["1234"]);
+    expect(value("Ο κωδικός σας: 556677")).toEqual(["556677"]);
+    expect(value("password: hunter22 was saved")).toEqual(["hunter22"]);
+    expect(value("api_key=abc123def, then retry")).toEqual(["abc123def"]);
+    expect(value("Write to ops@example.net about pve.internal")).toEqual(["ops@example.net"]);
+    expect(value("Open http://nas.local:8443/share now")).toEqual(["http://nas.local:8443/share"]);
+  });
+
+  it("step 14: leaves names, dates, versions and usage words unmasked", () => {
+    for (const text of ["Home", "Local", "localhost", "Corp", "https://github.com/home", "https://example.org/local/lan",
+      "Code 2026-11-16", "code 1.2.0", "Tokens: 12,345", "max_tokens=1000", "Token budget: 5000", "The goal: ship the hero GIF",
+      "Pin the tab", "Add GET /health with a test"]) {
+      expect(hasSensitiveText(text, null), text).toBe(false);
+    }
   });
 
   it("leaves public IPs, external domains, and plain numbers unmasked", () => {
@@ -164,6 +189,7 @@ describe("sensitive data mask helpers", () => {
     expect(masks).not.toContain("!important");
     // 12/11: the operator scans the pairing QR himself; only agents' pictures blur it (browser-sessions.ts PAIRING_MASK).
     expect(masks).not.toContain('[data-sensitive-masked="pairing"]');
+    expect(css).toMatch(/::highlight\(space-sensitive\) \{[^}]*color: transparent[^}]*text-shadow/);
   });
 
   it("keeps a component's manual marker when masking is switched off and on again", async () => {
@@ -185,6 +211,27 @@ describe("sensitive data mask helpers", () => {
     container.appendChild(target);
     await waitFor(() => {
       expect(target.dataset.sensitiveMasked).toBe("text");
+    });
+  });
+
+  describe("with the CSS Custom Highlight API", () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it("blurs only the private value inside prose and clears it when switched off", async () => {
+      const registry = new Map<string, { ranges: Range[] }>();
+      vi.stubGlobal("CSS", { highlights: registry });
+      vi.stubGlobal("Highlight", class { ranges: Range[]; constructor(...ranges: Range[]) { this.ranges = ranges; } });
+      const { container, rerender } = render(<SensitiveDataMask enabled={true} />);
+      const prose = document.createElement("p");
+      // Two sibling text nodes, as React renders "Your code is {code}".
+      prose.append("Mail ops@example.net, your code is ", "482913", " for Home");
+      container.appendChild(prose);
+      await waitFor(() => {
+        expect(registry.get("space-sensitive")?.ranges.map((range) => range.toString())).toEqual(["ops@example.net", "482913"]);
+      });
+      expect(prose.hasAttribute("data-sensitive-masked")).toBe(false);
+      rerender(<SensitiveDataMask enabled={false} />);
+      await waitFor(() => expect(registry.has("space-sensitive")).toBe(false));
     });
   });
 });

@@ -12,6 +12,7 @@ import { VaultBrokerRefusedError } from "../src/vault/broker-client.js";
 const SECRET = "SYNTHETIC-sealed-fill-password";
 const ORIGIN = "https://login.example";
 const BASE32_SEED = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"; // "12345678901234567890" (RFC 6238 test key)
+let storedOtp = BASE32_SEED;
 
 function fakePage(html: string, options: { url?: string } = {}) {
   const dom = new JSDOM(html, { runScripts: "outside-only", url: `${ORIGIN}/signin` });
@@ -74,7 +75,7 @@ async function harness(fields: VaultUseClaims["fields"], overrides: Partial<Vaul
     verifyUse: async (capability) => { if ((capability as { sig: string }).sig.startsWith("f")) throw new Error("BAD_SIGNATURE"); return claims; },
     openFill: async ({ replyPublicKey }) => {
       opened();
-      const secrets = JSON.stringify({ USERNAME: "synthetic@example.com", PASSWORD: SECRET, OTP: BASE32_SEED, ...CARD });
+      const secrets = JSON.stringify({ USERNAME: "synthetic@example.com", PASSWORD: SECRET, OTP: storedOtp, ...CARD });
       return sealToVaultPublicKey(vaultBase64url.decode(replyPublicKey), new TextEncoder().encode(secrets), { ownerUserId: claims.ownerUserId, vaultId: claims.vaultId, keyVersion: 1 });
     }
   };
@@ -157,7 +158,7 @@ describe("Vault sealed fill (Browser Host)", () => {
     expect(await runSealedFill(fakePage(LOGIN).page, broker, { ...request("FILL"), selector: "#pass" }, now)).toMatchObject({ reason: "BAD_REQUEST" });
     expect(opened).not.toHaveBeenCalled();
     // A shared Chrome or a second tab no longer refuses (operator decision 2026-10-18): the API fences the filled browser instead.
-    expect(await readVaultTarget(fakePage(LOGIN).page)).toEqual({ eligible: true, reason: null, targetId: "target-1", frameId: "frame-1", origin: ORIGIN, document: "loader-1", freshDocument: true, generatePolicy: true, cards: true });
+    expect(await readVaultTarget(fakePage(LOGIN).page)).toEqual({ eligible: true, reason: null, targetId: "target-1", frameId: "frame-1", origin: ORIGIN, document: "loader-1", freshDocument: true, generatePolicy: true, cards: true, otpQr: true });
   });
 
   it("stops and clears what it typed when the page navigates away in the middle", async () => {
@@ -344,6 +345,79 @@ describe("Vault sealed fill (Browser Host)", () => {
     expect(value(window, "otp")).toBe(await vaultTotp(decodeVaultBase32(BASE32_SEED)!, now));
   });
 
+  it("fills two consecutive codes into two code boxes, one per fill (AWS virtual MFA enrolment)", async () => {
+    const { page, window } = fakePage('<form><input id="mfaCode1" type="text" name="mfaCode1"><input id="mfaCode2" type="text" name="mfaCode2"></form>');
+    const { broker, request } = await harness(["OTP"]);
+    const next = new Date(now.getTime() + 30_000);
+    expect(await runSealedFill(page, broker, request("TOTP"), now)).toMatchObject({ status: "FILLED", typed: true });
+    expect(await runSealedFill(page, broker, { ...request("TOTP"), freshDocument: false }, next)).toMatchObject({ status: "FILLED", typed: true });
+    expect(value(window, "mfaCode1")).toBe(await vaultTotp(decodeVaultBase32(BASE32_SEED)!, now));
+    expect(value(window, "mfaCode2")).toBe(await vaultTotp(decodeVaultBase32(BASE32_SEED)!, next));
+  });
+
+  it("fills a code from an otpauth URI key with its own digits, period and algorithm", async () => {
+    storedOtp = `otpauth://totp/Example:me@example.com?secret=${BASE32_SEED}&issuer=Example&digits=8&period=60&algorithm=SHA256`;
+    try {
+      const { page, window } = fakePage('<form><input id="otp" autocomplete="one-time-code"></form>');
+      const { broker, request } = await harness(["OTP"]);
+      expect((await runSealedFill(page, broker, request("TOTP"), now)).status).toBe("FILLED");
+      expect(value(window, "otp")).toBe(await vaultTotp(decodeVaultBase32(BASE32_SEED)!, now, { digits: 8, periodSeconds: 60, algorithm: "SHA256" }));
+    } finally { storedOtp = BASE32_SEED; }
+  });
+
+  it("finds dialog and accessible OTP inputs (aria-label, placeholder, numeric/maxlength=6, sole dialog box) while ignoring postal/search boxes", async () => {
+    const code = await vaultTotp(decodeVaultBase32(BASE32_SEED)!, now);
+    // Case 1: Google Account authenticator dialog with obfuscated id, autocomplete="off", aria-label/placeholder and a Verify button.
+    const googleModal = fakePage('<input id="bg-filter" placeholder="Search"><div role="dialog" aria-modal="true"><form>'
+      + '<input id="postal" placeholder="Postal code"><input id="c12" type="text" autocomplete="off" aria-label="Enter code" placeholder="Enter code">'
+      + '<button id="verify" type="button">Verify</button></form><p id="out"></p></div>');
+    googleModal.window.document.getElementById("verify")!.addEventListener("click", () => { googleModal.window.document.getElementById("out")!.textContent = "VERIFIED"; });
+    const sub = await harness(["OTP"], { submit: true });
+    expect(await runSealedFill(googleModal.page, sub.broker, { ...sub.request("TOTP"), freshDocument: false }, now)).toMatchObject({ status: "SUBMITTED", reason: null, typed: true });
+    expect(value(googleModal.window, "c12")).toBe(code);
+    expect(googleModal.window.document.getElementById("postal")!.getAttribute("value") ?? value(googleModal.window, "postal")).toBe("");
+    expect(googleModal.window.document.getElementById("out")!.textContent).toBe("VERIFIED");
+
+    // Case 1b: Braintrust's Change 2FA App dialog: no <form>, Cancel and Change buttons; the one confirm button is clicked (20/11).
+    const formless = fakePage('<div role="dialog"><input id="c6" type="text" inputmode="numeric" maxlength="6" aria-label="code">'
+      + '<button id="cancel">Cancel</button><button id="change">Change</button><p id="out"></p></div>');
+    const doc = formless.window.document;
+    doc.getElementById("cancel")!.addEventListener("click", () => { doc.getElementById("out")!.textContent = "CANCELLED"; });
+    doc.getElementById("change")!.addEventListener("click", () => { doc.getElementById("out")!.textContent = "CHANGED"; });
+    expect(await runSealedFill(formless.page, sub.broker, { ...sub.request("TOTP"), freshDocument: false }, now)).toMatchObject({ status: "SUBMITTED", reason: null, typed: true });
+    expect(doc.getElementById("out")!.textContent).toBe("CHANGED");
+
+    // Case 2: Unlabeled sole visible input inside [role="dialog"] (plus an unrelated page input outside the dialog).
+    const soleModal = fakePage('<input id="other" type="text"><div role="dialog"><input id="c99" type="text"></div>');
+    const plain = await harness(["OTP"]);
+    expect(await runSealedFill(soleModal.page, plain.broker, { ...plain.request("TOTP"), freshDocument: false }, now)).toMatchObject({ status: "FILLED", reason: null, typed: true });
+    expect(value(soleModal.window, "c99")).toBe(code);
+    expect(value(soleModal.window, "other")).toBe("");
+
+    // Case 2b: Numeric / maxlength=6 box outside dialog with inputmode="numeric".
+    const numericOutside = fakePage('<input id="other" type="text"><input id="n6" type="tel" maxlength="6" inputmode="numeric">');
+    expect(await runSealedFill(numericOutside.page, sub.broker, { ...sub.request("TOTP"), freshDocument: false }, now)).toMatchObject({ status: "FILLED", reason: "NO_FORM", typed: true });
+    expect(value(numericOutside.window, "n6")).toBe(code);
+    expect(value(numericOutside.window, "other")).toBe("");
+
+    // Case 3: Search or postal code boxes outside/inside a dialog never match OTP.
+    const nonOtp = fakePage('<form><input id="s" type="text" placeholder="Search"><input id="zip" type="text" placeholder="Postal code"></form>');
+    expect(await runSealedFill(nonOtp.page, plain.broker, { ...plain.request("TOTP"), freshDocument: false }, now)).toMatchObject({ status: "BLOCKED", reason: "FIELD_NOT_FOUND", typed: false });
+
+    // Case 3b: Label / aria-labelledby references match verification code input.
+    const labeled = fakePage('<form><span id="lbl">2FA Security Code</span><input id="x9" type="text" aria-labelledby="lbl"></form>');
+    expect(await runSealedFill(labeled.page, plain.broker, { ...plain.request("TOTP"), freshDocument: false }, now)).toMatchObject({ status: "FILLED", typed: true });
+    expect(value(labeled.window, "x9")).toBe(code);
+
+    // Case 4: Same-origin modal iframe holds the OTP box; cross-origin modal iframe is ignored.
+    const sameOriginFrame = fakeCheckout('<div role="dialog"><input id="c7" type="text" placeholder="6-digit code"></div>', { topHtml: "<h1>2SV</h1>", frameUrl: `${ORIGIN}/embed/totp` });
+    expect(await runSealedFill(sameOriginFrame.page, plain.broker, { ...plain.request("TOTP"), freshDocument: false }, now)).toMatchObject({ status: "FILLED", typed: true });
+    expect(value(sameOriginFrame.frame.window, "c7")).toBe(code);
+
+    const crossOriginFrame = fakeCheckout('<div role="dialog"><input id="c7" type="text" placeholder="6-digit code"></div>', { topHtml: "<h1>2SV</h1>", frameUrl: "https://other.example/embed/totp" });
+    expect(await runSealedFill(crossOriginFrame.page, plain.broker, { ...plain.request("TOTP"), freshDocument: false }, now)).toMatchObject({ status: "BLOCKED", reason: "FIELD_NOT_FOUND", typed: false });
+  });
+
   it("generates a password for the field's rules, fills new and confirm, and seals it only to the inbox key", async () => {
     const inbox = await generateVaultTransportKey();
     const { page, window } = fakePage('<form><input id="n1" type="password" autocomplete="new-password" maxlength="16"><input id="n2" type="password" autocomplete="new-password"></form>');
@@ -356,6 +430,31 @@ describe("Vault sealed fill (Browser Host)", () => {
     expect(JSON.stringify(answer)).not.toContain(generated);
     const opened = await openWithVaultPrivateKey(inbox.privateKey, inbox.publicKey, answer.sealedGenerated, { ownerUserId: claims.ownerUserId, vaultId: claims.vaultId, keyVersion: 1 });
     expect(new TextDecoder().decode(opened)).toBe(generated);
+  });
+
+  it("skips a sign-up's hidden autofill trap and fills Password and Confirm password with the same password (Huawei Cloud, 16/11)", async () => {
+    const inbox = await generateVaultTransportKey();
+    const { page, window } = fakePage('<form><div class="autofill-trap" aria-hidden="true"><input id="trapUser" type="text" name="username" tabindex="-1">' +
+      '<input id="trapPass" type="password" name="password" tabindex="-1" autocomplete="new-password"></div><input id="email" type="text">' +
+      '<input id="n1" type="password" autocomplete="new-password" maxlength="32"><input id="n2" type="password" autocomplete="new-password" maxlength="32"></form>');
+    const { broker, request } = await harness(["PASSWORD"], { generate: { roles: ["NEW_PASSWORD", "CONFIRM_PASSWORD"], inboxPublicKey: vaultBase64url.encode(inbox.publicKey) } });
+    expect((await runSealedFill(page, broker, request("GENERATE"), now)).status).toBe("FILLED");
+    expect(value(window, "n1")).not.toBe("");
+    expect(value(window, "n2")).toBe(value(window, "n1"));
+    expect(value(window, "trapUser") + value(window, "trapPass")).toBe("");
+  });
+
+  it("fills a new-password box a placeholder script turned into text, masked, and its confirm box with the same password (YeahPromos, 14/11)", async () => {
+    const inbox = await generateVaultTransportKey();
+    // YeahPromos /index/index/setPassword: its inputholder sets the empty #password to type=text until a change.
+    const { page, window } = fakePage('<form><input type="email" id="email" name="email"><input type="text" id="email_code" name="email_code">' +
+      '<input type="text" id="password" name="password" maxlength="256"><input type="password" id="passwordConfirm" name="repassword" maxlength="256"></form>');
+    const { broker, request } = await harness(["PASSWORD"], { generate: { roles: ["NEW_PASSWORD"], inboxPublicKey: vaultBase64url.encode(inbox.publicKey) } });
+    expect((await runSealedFill(page, broker, request("GENERATE"), now)).status).toBe("FILLED");
+    expect(value(window, "password")).toHaveLength(24);
+    expect(value(window, "passwordConfirm")).toBe(value(window, "password"));
+    expect((window.document.getElementById("password") as HTMLInputElement).type).toBe("password");
+    expect(value(window, "email") + value(window, "email_code")).toBe("");
   });
 
   it("follows the site's stated rules for a generated password and for the sign-up field it gives the broker (queue item 37)", async () => {
@@ -501,6 +600,36 @@ describe("Vault sealed fill (Browser Host)", () => {
     const { broker, request } = await harness(["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC"]);
     expect(await runSealedFill(checkout.page, broker, request("CARD"), now)).toMatchObject({ status: "FILLED", fields: { filled: ["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC"], disabled: [] } });
     expect([value(checkout.frame.window, "month"), value(checkout.frame.window, "year"), value(checkout.frame.window, "cvv")]).toEqual(["07", "2028", "123"]);
+  });
+
+  it("fills a card expiry kept in native <select> dropdowns (Azure sign-up step 3, FIELD_NOT_FOUND 18/11)", async () => {
+    const checkout = fakeCheckout(`<form><input id="cardNumber" name="cardNumber" autocomplete="cc-number">
+      <select id="cardExpMonth" name="cardExpMonth" autocomplete="cc-exp-month"><option value="">Month</option><option value="1">01</option><option value="2">02</option><option value="7">07 - July</option></select>
+      <select id="cardExpYear" name="cardExpYear" autocomplete="cc-exp-year"><option value="">Year</option><option value="2026">2026</option><option value="2028">2028</option></select>
+      <input id="cvv" name="cvv" autocomplete="cc-csc"></form>`);
+    const changes: string[] = [];
+    checkout.frame.window.document.addEventListener("change", (event) => changes.push((event.target as HTMLElement).id));
+    const { broker, request } = await harness(["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC"]);
+    const answer = await runSealedFill(checkout.page, broker, request("CARD"), now);
+    expect(answer).toMatchObject({ status: "FILLED", fields: { filled: ["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC"], disabled: [] } });
+    expect([value(checkout.frame.window, "cardExpMonth"), value(checkout.frame.window, "cardExpYear"), value(checkout.frame.window, "cvv")]).toEqual(["7", "2028", "123"]);
+    expect(changes).toEqual(["cardExpMonth", "cardExpYear"]);
+    expect(JSON.stringify(answer)).not.toContain("2028");
+  });
+
+  it("finds <select> expiry boxes by label or placeholder option, picks two-digit options, and clears all when no option fits", async () => {
+    const months = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, "0")).map((mm) => `<option value="${mm}">${mm}</option>`).join("");
+    const years = (list: number[]) => list.map((yy) => `<option value="${yy}">${yy}</option>`).join("");
+    const html = (yearOptions: string) => `<input id="number" name="cardNumber"><select id="m" name="ddl1"><option value="">MM</option>${months}</select>
+      <select id="y" aria-label="Expiration year"><option value="">YY</option>${yearOptions}</select><input id="cvv" name="cvv">`;
+    const ok = fakeCheckout(html(years([26, 27, 28, 29, 30, 31, 32, 33, 34, 35])));
+    const { broker, request } = await harness(["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC"]);
+    expect(await runSealedFill(ok.page, broker, request("CARD"), now)).toMatchObject({ status: "FILLED", fields: { filled: ["CARD_NUMBER", "CARD_EXPIRY", "CARD_CVC"] } });
+    expect([value(ok.frame.window, "m"), value(ok.frame.window, "y")]).toEqual(["07", "28"]);
+    // No option for 2028: nothing stays filled and the answer says a value was typed, so the fence stays.
+    const missing = fakeCheckout(html(years([26, 27])));
+    expect(await runSealedFill(missing.page, broker, request("CARD"), now)).toMatchObject({ status: "BLOCKED", reason: "FILL_FAILED", typed: true });
+    expect([value(missing.frame.window, "number"), value(missing.frame.window, "m"), value(missing.frame.window, "y")]).toEqual(["", "", ""]);
   });
 
   it("keeps cards and logins apart and finds no card outside an https frame, before the broker opens anything", async () => {

@@ -34,6 +34,14 @@ describe("focusNeedHold", () => {
     expect(await hold(agentCard(phone.body, {}, { checked: ["Vault: no phone item", "mail: none", "Space Memory: none"] }))).toBeNull();
   });
 
+  it("(b) refuses a document card until `checked` names a mail search and a try at the portal that issues it (2026-11-15 REVIEW, AADE/bank)", async () => {
+    const doc = agentCard("Please download the AADE tax notice (εκκαθαριστικό 2025) and upload it here");
+    expect(await hold(doc)).toMatch(/fetches a document itself. Name a mail search and a try at the portal/);
+    expect(await hold(agentCard(doc.body, {}, { checked: ["mail: searched 'εκκαθαριστικό', none"] }))).toMatch(/Name a try at the portal/);
+    expect(await hold(agentCard(doc.body, {}, { checked: ["mail: none", "AADE portal: needs the operator's TAXISnet sign-in"] }))).toBeNull();
+    expect(await hold(agentCard("I need the bank statement PDF for October"))).toMatch(/fetches a document itself/);
+  });
+
   it("(b) refuses a card entry while the Vault holds a card the agent can fill; the 3-D Secure approval passes (13/11 nous_msg:40c57252 Cartesia)", async () => {
     const vault = (cards: number | null) => (input: NotificationRaiseInput) =>
       focusNeedHold({ latestAttempt: async () => null, agentCards: async () => [], vaultCards: async () => cards, now: () => now }, input);
@@ -100,5 +108,19 @@ describe("focusNeedHold", () => {
     expect(await hold(nousCard([{ text: "When should the launch mail go out?" }]))).toBeNull();
     expect(await hold(nousCard([{ text: "Πότε να σταλεί το mail της κυκλοφορίας;" }]))).toBeNull();
     expect(await hold(nousCard([{ text: "Will you submit the YC application now?" }], ["operator order nous_msg:83c0acb8abc"]))).toBeNull();
+  });
+  // 21/11 «μου δινεις ερωτησεις χωρις να υπαρχει ερωτηση»: a card asks a concrete question or names the operator's act; status and FYI never become cards.
+  it("refuses a card with no question and no act, one that asks whether the operator did it, or one written to Nous", async () => {
+    expect(await hold(agentCard("Build finished, all tests green"))).toMatch(/no question and no act/);
+    expect(await hold(nousCard([{ text: "The spaceapp-hz switches are configured" }]))).toMatch(/no question and no act/);
+    expect(await hold(nousCard([{ text: "Waits on you: the Upwork proposal 44913614" }]))).toMatch(/no question and no act/);
+    expect(await hold(nousCard([{ text: "Άναψαν και οι δύο διακόπτες;" }]))).toMatch(/never asks whether the operator did/);
+    expect(await hold(nousCard([{ text: "Did you turn on both switches?" }]))).toMatch(/never asks whether the operator did/);
+    expect(await hold(nousCard([{ text: "Nous: through space_remote act, hand Nik the code" }]))).toMatch(/for Nous or an agent/);
+    expect(await hold(nousCard([{ text: "Which plan do we buy, Pro or Team? I recommend Pro." }]))).toBeNull();
+    expect(await hold(nousCard([{ text: "Approve the npm sign-in at the link" }]))).toBeNull();
+    expect(await hold(agentCard("The npm publish needs your approval"))).toBeNull();
+    // A copilot's card asks in payload.ask (Mail Copilot's "Μένει στο inbox").
+    expect(await hold(agentCard("Μένει στο inbox", {}, { ask: { question: "What should Mail Copilot do with this mail?", options: ["I handled it", "Ignore it"] } }))).toBeNull();
   });
 });

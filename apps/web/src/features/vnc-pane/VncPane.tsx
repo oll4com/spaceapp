@@ -48,7 +48,6 @@ export function VncPane({ pane, observerOnly = false }: VncPaneProps) {
       password: pane.vncTarget.password ?? undefined
     };
     setState("connecting");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.vncTarget, state, observerOnly]);
 
   useEffect(() => {

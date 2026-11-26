@@ -5,7 +5,7 @@ import { AccountPool, type CredentialRefresher } from "../src/accounts/account-p
 import { antigravityAccountActions } from "../src/admin/antigravity-sign-in.js";
 import { createCredentialCipher } from "../src/credential-cipher.js";
 import { createAntigravityRefresher } from "../src/providers/antigravity/credentials.js";
-import { startAntigravityUsagePoller } from "../src/providers/antigravity/usage-refresh.js";
+import { refreshAntigravityAccountUsage, startAntigravityUsagePoller } from "../src/providers/antigravity/usage-refresh.js";
 import { createClaudeRefresher } from "../src/providers/claude/credentials.js";
 
 // 31/10: three Google AI Pro accounts lapsed to free and still read "google-ai-pro" (the plan was read only at sign-in).
@@ -26,10 +26,10 @@ async function pool(provider: "ANTIGRAVITY" | "CLAUDE", planType: string, refres
 describe("plan re-read on token refresh", () => {
   const google = (tier: () => Response) => (async (url: string) => (String(url).includes("loadCodeAssist") ? tier() : json({ access_token: "at-2", expires_in: 3600 }))) as unknown as typeof fetch;
 
-  it("pauses an Antigravity account whose Google AI Pro lapsed to free, and keeps the plan when the tier read fails", async () => {
+  it("keeps serving an Antigravity account whose Google AI Pro lapsed to free, and keeps the plan when the tier read fails", async () => {
     const lapsed = await pool("ANTIGRAVITY", "google-ai-pro", createAntigravityRefresher({ now: () => nowMs, fetchImpl: google(() => json({ currentTier: { id: "free-tier" } })) }));
-    await expect(lapsed.accounts.credentials(await lapsed.account())).rejects.toMatchObject({ code: "free_plan_paused" });
-    expect(await lapsed.account()).toMatchObject({ planType: "free", status: "PAUSED", statusReason: GATEWAY_FREE_PLAN_PAUSE_REASON });
+    expect(await lapsed.accounts.credentials(await lapsed.account())).toMatchObject({ accessToken: "at-2" });
+    expect(await lapsed.account()).toMatchObject({ planType: "free", status: "ACTIVE", statusReason: null });
 
     const transient = await pool("ANTIGRAVITY", "google-ai-pro", createAntigravityRefresher({ now: () => nowMs, fetchImpl: google(() => json({}, 503)) }));
     expect(await transient.accounts.credentials(await transient.account())).toMatchObject({ accessToken: "at-2" });
@@ -39,6 +39,20 @@ describe("plan re-read on token refresh", () => {
       fetchImpl: google(() => json({ paidTier: { id: "g1-pro-tier", name: "Google AI Pro" }, currentTier: { id: "standard-tier" } })) }));
     await stillPro.accounts.credentials(await stillPro.account());
     expect(await stillPro.account()).toMatchObject({ planType: "google-ai-pro", status: "ACTIVE" });
+  });
+
+  it("resumes an Antigravity account the free-plan rule paused before, and leaves an administrator's pause alone (operator rule 2026-11-17)", async () => {
+    const free = await pool("ANTIGRAVITY", "free", createAntigravityRefresher({ now: () => nowMs, fetchImpl: google(() => json({ currentTier: { id: "free-tier" } })) }));
+    const { id } = await free.account();
+    await free.repository.setAccountStatus(id, "PAUSED", GATEWAY_FREE_PLAN_PAUSE_REASON);
+    free.accounts.invalidate();
+    expect((await free.accounts.accounts())[0]).toMatchObject({ planType: "free", status: "ACTIVE", statusReason: null });
+    expect(await free.account()).toMatchObject({ planType: "free", status: "ACTIVE", statusReason: null });
+    expect(await free.accounts.credentials(await free.account())).toMatchObject({ accessToken: "at-2" });
+
+    await free.repository.setAccountStatus(id, "PAUSED", "Paused by an administrator.");
+    free.accounts.invalidate();
+    expect((await free.accounts.accounts())[0]).toMatchObject({ status: "PAUSED", statusReason: "Paused by an administrator." });
   });
 
   it("automatically unpauses a free-paused Antigravity account when it upgrades or renews Google AI Pro (nth/mes, 2026-11-08)", async () => {
@@ -53,9 +67,7 @@ describe("plan re-read on token refresh", () => {
     }) as unknown as typeof fetch;
 
     const upgraded = await pool("ANTIGRAVITY", "free", createAntigravityRefresher({ now: () => nowMs, fetchImpl }));
-    // Trigger initial free-plan auto-pause.
-    await upgraded.accounts.accounts();
-    expect(await upgraded.account()).toMatchObject({ planType: "free", status: "PAUSED", statusReason: GATEWAY_FREE_PLAN_PAUSE_REASON });
+    await upgraded.repository.setAccountStatus((await upgraded.account()).id, "PAUSED", GATEWAY_FREE_PLAN_PAUSE_REASON);
 
     // Background usage poller re-checks free-paused accounts and restores renewed Google AI Pro accounts to ACTIVE.
     const poller = startAntigravityUsagePoller({ repository: upgraded.repository, pool: upgraded.accounts, intervalMs: 60_000, fetchImpl });
@@ -73,10 +85,25 @@ describe("plan re-read on token refresh", () => {
 
     // Account test action also unpauses a free-paused account that renewed its subscription, while preserving admin pauses.
     const tested = await pool("ANTIGRAVITY", "free", createAntigravityRefresher({ now: () => nowMs, fetchImpl }));
-    await tested.accounts.accounts();
+    await tested.repository.setAccountStatus((await tested.account()).id, "PAUSED", GATEWAY_FREE_PLAN_PAUSE_REASON);
     const res = await antigravityAccountActions({ repository: tested.repository, pool: tested.accounts, fetchImpl, now: () => nowMs }).test(await tested.account(), {});
     expect(res).toMatchObject({ ok: true, planType: "google-ai-pro" });
     expect(await tested.account()).toMatchObject({ planType: "google-ai-pro", status: "ACTIVE", statusReason: null });
+  });
+
+  it("reads a free Antigravity account's quota, and a refusal of that read is no fault of the account", async () => {
+    const google = (quota: () => Response) => (async (url: string) => {
+      if (String(url).includes("loadCodeAssist")) return json({ cloudaicompanionProject: "project-1", currentTier: { id: "free-tier" } });
+      if (String(url).includes("retrieveUserQuota")) return quota();
+      return json({ access_token: "at-2", expires_in: 3600 });
+    }) as unknown as typeof fetch;
+    const served = await pool("ANTIGRAVITY", "free", createAntigravityRefresher({ now: () => nowMs, fetchImpl: google(() => json({ groups: [{ displayName: "Gemini Models", buckets: [{ window: "5h", remainingFraction: 0.5 }] }] })) }));
+    await refreshAntigravityAccountUsage({ repository: served.repository, pool: served.accounts, account: await served.account(), fetchImpl: google(() => json({ groups: [{ displayName: "Gemini Models", buckets: [{ window: "5h", remainingFraction: 0.5 }] }] })) });
+    expect(await served.account()).toMatchObject({ planType: "free", status: "ACTIVE", quotaGroups: [{ key: "gemini", primaryWindow: { usedPercent: 50 } }] });
+
+    const refused = await pool("ANTIGRAVITY", "free", createAntigravityRefresher({ now: () => nowMs, fetchImpl: google(() => json({}, 403)) }));
+    await expect(refreshAntigravityAccountUsage({ repository: refused.repository, pool: refused.accounts, account: await refused.account(), fetchImpl: google(() => json({}, 403)) })).resolves.toBeNull();
+    expect(await refused.account()).toMatchObject({ planType: "free", status: "ACTIVE" });
   });
 
   it("pauses a Claude account whose profile now shows a free plan, and keeps the plan when the profile read fails", async () => {

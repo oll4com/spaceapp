@@ -9,115 +9,37 @@ import {
   type CodexUsageAccountList,
 } from "@space/contracts";
 import { getApiConfig } from "../src/config.js";
-import {
-  generateNativeOpenCodeTitle,
-  resolveNativeOpenCodeRuntime,
-  nativeOpenCodeModelCatalog,
-} from "../src/task-title-opencode.js";
-import { TaskTitleProviders, TitleProviderFailure } from "../src/task-title-providers.js";
-import { OpenCodeTitleModelRetired } from "../src/task-title-opencode.js";
+import { TaskTitleProviders } from "../src/task-title-providers.js";
+import type { CliMoveRunner } from "../src/chess/chess-cli.js";
 
-vi.mock("../src/task-title-opencode.js", () => ({
-  OpenCodeTitleModelRetired: class OpenCodeTitleModelRetired extends Error {},
-  resolveNativeOpenCodeRuntime: vi.fn(async () => process.execPath),
-  nativeOpenCodeModelCatalog: vi.fn(async () => ({
-    providers: [
-      {
-        id: "opencode",
-        models: { "standalone-free": { cost: { input: 0, output: 0 } } },
-      },
-    ],
-  })),
-  generateNativeOpenCodeTitle: vi.fn(
-    async () =>
-      '{"title":"Task title","description":"Task details","steps":[]}',
-  ),
-}));
-vi.mock("@space/opencode-control", () => ({
-  resolveOpenCodeTitleFallbackControl: async () => ({
-    serverPort: 4096,
-    serverHost: "localhost",
-    serverUsername: "test",
-    serverPassword: "test",
-  }),
-  openCodeServerBaseUrl: () => "http://localhost:4096",
-}));
 function fixture({
   remaining = 80,
   stale = false,
   trustedGateway = true,
   keyFile = "/test-only/subscription-key",
-  freeModelStatePath = "/test-only/missing-free-model-state.json",
-  models,
+  runClaude,
 }: {
   remaining?: number | null;
   stale?: boolean;
   trustedGateway?: boolean;
   keyFile?: string;
-  freeModelStatePath?: string;
-  models?: Record<string, unknown>;
+  runClaude?: CliMoveRunner;
 } = {}) {
   const repository = new InMemoryTaskTitleRepository();
   const store = new InMemorySpaceStore();
   vi.spyOn(store, "listProviders").mockReturnValue([
-    {
-      id: "codex-lb",
-      type: "CODEX_LB",
-      status: "VERIFIED",
-      baseUrl: "https://subscription.invalid/v1/",
-    },
+    { id: "codex-lb", type: "CODEX_LB", status: "VERIFIED", baseUrl: "https://subscription.invalid/v1/" },
   ] as any);
-  vi.spyOn(store, "listModels").mockReturnValue([
-    {
-      id: "mini",
-      providerId: "codex-lb",
-      status: "VERIFIED",
-      runtimeId: "mini",
-      displayName: "Mini",
-    },
-  ] as any);
-  const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
-    if (String(url).endsWith("/config/providers"))
-      return Response.json({
-        providers: [
-          {
-            id: "opencode",
-            models: models ?? {
-              "free-flash": { cost: { input: 0, output: 0 } },
-              "paid-model": { cost: { input: 1, output: 1 } },
-              "missing-price": {},
-              "old-free": {
-                cost: { input: 0, output: 0 },
-                status: "deprecated",
-              },
-            },
-          },
-          {
-            id: "unverified-provider",
-            models: { "free-claim": { cost: { input: 0, output: 0 } } },
-          },
-        ],
-      });
-    return Response.json({
-      choices: [
-        {
-          message: {
-            content:
-              '{"title":"Task title","description":"Task details","steps":[]}',
-          },
-        },
-      ],
-    });
-  });
+  // Only Codex's cheap model names tasks; the others on the same gateway are never asked.
+  vi.spyOn(store, "listModels").mockReturnValue(
+    ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"].map((id) => ({ id, providerId: "codex-lb", status: "VERIFIED", runtimeId: id, displayName: id })) as any,
+  );
+  const fetchImpl = vi.fn<(url: string | URL, init?: RequestInit) => Promise<Response>>(async () =>
+    Response.json({ output_text: '{"title":"Task title","summary":"Task details"}' }),
+  );
   const usage = async () =>
     ({
-      data: [
-        {
-          id: "account",
-          fiveHourRemainingPercent: remaining,
-          weeklyRemainingPercent: remaining,
-        },
-      ],
+      data: [{ id: "account", fiveHourRemainingPercent: remaining, weeklyRemainingPercent: remaining }],
       isStale: stale,
     }) as CodexUsageAccountList;
   const service = new TaskTitleProviders({
@@ -128,177 +50,104 @@ function fixture({
       SPACE_CODEX_LB_KEY_FILE: keyFile,
       SPACE_CODEX_LB_KEY_NAME: "space-title-test",
     } : {}),
-    opencodeCommand: process.execPath,
     usage,
     fetchImpl: fetchImpl as typeof fetch,
-    freeModelStatePath,
+    runClaude,
   });
   return { service, repository, fetchImpl };
 }
-describe("economical title model routing", () => {
-  it("does not trust a catalog's subscription label without the configured dedicated gateway", async () => {
+const gemini = ["gemini-3.5-flash-lite", "gemini-3.8-flash-tiered", "gemini-3-flash"];
+const ids = async (f: ReturnType<typeof fixture>, policy = taskTitleSettingsSchema.parse({})) =>
+  (await f.service.eligible(policy, null)).map((c) => c.modelId);
+
+describe("cheap main-provider title models (operator 22/11: no free models)", () => {
+  it("asks only Claude Haiku, Codex Luna and Antigravity Gemini Flash, cheapest first, never a free model", async () => {
+    const f = fixture({ runClaude: vi.fn() });
+    await f.service.refresh();
+    await f.service.refresh();
+    const all = await f.service.eligible(taskTitleSettingsSchema.parse({}), null);
+    expect(new Set(all.map((c) => c.modelId))).toEqual(new Set([...gemini, "gpt-5.6-luna", "claude-haiku-5-5"]));
+    expect(all.every((c) => c.billing === "subscription")).toBe(true);
+    expect(all.some((c) => /^(opencode|gateway:pool):/.test(c.id))).toBe(false);
+    // Metadata only: discovery sends no prompt.
+    expect(f.fetchImpl).not.toHaveBeenCalled();
+  });
+  it("offers nothing without the configured dedicated gateway or a Claude worker", async () => {
     const f = fixture({ trustedGateway: false });
     await f.service.refresh();
-    expect((await f.service.eligible(taskTitleSettingsSchema.parse({}), null)).every(c => c.billing === "free")).toBe(true);
-  });
-  it("uses a native metadata catalog when no running server is available", async () => {
-    const f = fixture();
-    f.fetchImpl.mockRejectedValueOnce(Error("No server"));
-    await f.service.refresh();
-    expect(nativeOpenCodeModelCatalog).toHaveBeenCalled();
-    expect(
-      (await f.service.eligible(taskTitleSettingsSchema.parse({}), null))[0]
-        ?.modelId,
-    ).toBe("standalone-free");
-  });
-  it("excludes native generations when the runtime controls are not verified", async () => {
-    vi.mocked(resolveNativeOpenCodeRuntime).mockResolvedValueOnce(null);
-    const f = fixture();
-    await f.service.refresh();
-    expect(
-      (await f.service.eligible(taskTitleSettingsSchema.parse({}), null)).every(
-        (c) => c.billing === "subscription",
-      ),
-    ).toBe(true);
-  });
-  it("discovers metadata without prompts and excludes paid, deprecated and unknown-cost routes", async () => {
-    const f = fixture();
-    await f.service.refresh();
-    await f.service.refresh();
-    expect(f.fetchImpl).toHaveBeenCalledTimes(1);
-    expect(
-      (await f.service.eligible(taskTitleSettingsSchema.parse({}), null)).map(
-        (c) => c.modelId,
-      ),
-    ).toEqual(["free-flash", "mini"]);
-  });
-  it("uses one bounded text call with no tools and records successful availability", async () => {
-    const f = fixture();
-    await f.service.refresh();
-    const candidate = (
-      await f.service.eligible(taskTitleSettingsSchema.parse({}), null)
-    )[0]!;
-    await candidate.generate(
-      "Summarize menu repair",
-      AbortSignal.timeout(1000),
-    );
-    expect(f.fetchImpl).toHaveBeenCalledTimes(1);
-    expect(generateNativeOpenCodeTitle).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: process.execPath,
-        modelId: "free-flash",
-        prompt: "Summarize menu repair",
-      }),
-    );
-    expect((await f.service.status())[0]?.availability).toBe("available");
+    expect(await ids(f)).toEqual([]);
   });
   it.each([{ remaining: null }, { remaining: 10 }, { stale: true }])(
-    "excludes subscription routes with unknown, exhausted or stale quota (%j)",
+    "drops Codex with unknown, exhausted or stale quota but keeps the others (%j)",
     async (input) => {
       const f = fixture(input);
       await f.service.refresh();
-      expect(
-        (
-          await f.service.eligible(taskTitleSettingsSchema.parse({}), null)
-        ).every((c) => c.billing === "free"),
-      ).toBe(true);
+      expect(new Set(await ids(f))).toEqual(new Set(gemini));
     },
   );
-  it("honors provider cooldowns, subscription allowlists and global provider exclusions", async () => {
+  it("honors provider cooldowns, subscription allowlists and provider exclusions", async () => {
     const f = fixture();
     await f.service.refresh();
-    await f.repository.cooldown(
-      "provider:opencode",
-      new Date(Date.now() + 60000).toISOString(),
-    );
-    expect(
-      (await f.service.eligible(taskTitleSettingsSchema.parse({}), null)).map(
-        (c) => c.modelId,
-      ),
-    ).toEqual(["mini"]);
-    expect(
-      await f.service.eligible(
-        taskTitleSettingsSchema.parse({ subscriptionProviderIds: ["another"] }),
-        null,
-      ),
-    ).toEqual([]);
-    expect(
-      await f.service.eligible(
-        taskTitleSettingsSchema.parse({ allowedProviderIds: ["opencode"] }),
-        null,
-      ),
-    ).toEqual([]);
+    await f.repository.cooldown("provider:gateway-antigravity", new Date(Date.now() + 60000).toISOString());
+    expect(await ids(f)).toEqual(["gpt-5.6-luna"]);
+    expect(await ids(f, taskTitleSettingsSchema.parse({ subscriptionProviderIds: ["another"] }))).toEqual([]);
+    expect(await ids(f, taskTitleSettingsSchema.parse({ allowedProviderIds: ["codex-lb"] }))).toEqual(["gpt-5.6-luna"]);
   });
-  it("prefers the picker-verified free model and sends screenshots to a model that can see them", async () => {
-    const root = await mkdtemp(join(tmpdir(), "title-picker-"));
-    try {
-      const freeModelStatePath = join(root, "state.json");
-      await writeFile(freeModelStatePath, JSON.stringify({ healthy: true, rawModelId: "big-pickle" }));
-      const free = { cost: { input: 0, output: 0 } };
-      const f = fixture({
-        freeModelStatePath,
-        models: {
-          "free-flash": free,
-          "big-pickle": free,
-          "vision-free": { ...free, capabilities: { attachment: true, input: { text: true, image: true } } },
-          "text-only-free": { ...free, capabilities: { attachment: false, input: { text: true, image: false } } },
-        },
-      });
-      await f.service.refresh();
-      const policy = taskTitleSettingsSchema.parse({});
-      expect((await f.service.eligible(policy, null))[0]?.modelId).toBe("big-pickle");
-      const withImages = await f.service.eligible(policy, null, { images: true });
-      expect(withImages.map((c) => [c.modelId, c.vision])).toEqual([
-        ["vision-free", true],
-        ["mini", true],
-        ["big-pickle", false],
-        ["free-flash", false],
-        ["text-only-free", false],
-      ]);
-      await withImages[0]!.generate("Name the task", AbortSignal.timeout(1000), ["/uploads/shot.png"]);
-      expect(generateNativeOpenCodeTitle).toHaveBeenLastCalledWith(
-        expect.objectContaining({ modelId: "vision-free", images: ["/uploads/shot.png"] }),
-      );
-      await withImages[2]!.generate("Name the task", AbortSignal.timeout(1000), ["/uploads/shot.png"]);
-      expect(generateNativeOpenCodeTitle).toHaveBeenLastCalledWith(
-        expect.objectContaining({ modelId: "big-pickle", images: undefined }),
-      );
-      expect((await f.service.status()).some((c) => "pickerVerified" in c)).toBe(false);
-    } finally { await rm(root, { recursive: true, force: true }); }
-  });
-  it("attaches screenshots to the subscription gateway as input images", async () => {
+  it("attaches screenshots to Codex as input images and names the gateway row", async () => {
     const root = await mkdtemp(join(tmpdir(), "title-gateway-"));
     try {
       const keyFile = join(root, "key"), image = join(root, "shot.png");
       await writeFile(keyFile, "secret-test-key\n");
       await writeFile(image, "png-bytes");
-      vi.mocked(resolveNativeOpenCodeRuntime).mockResolvedValueOnce(null);
       const f = fixture({ keyFile });
       await f.service.refresh();
-      const [gateway] = await f.service.eligible(taskTitleSettingsSchema.parse({}), null, { images: true });
-      expect(gateway?.billing).toBe("subscription");
-      await gateway!.generate("Name the task", AbortSignal.timeout(1000), [image]);
+      const [codex] = await f.service.eligible(taskTitleSettingsSchema.parse({}), null, { images: true });
+      expect(codex?.modelId).toBe("gpt-5.6-luna");
+      await codex!.generate("Name the task", AbortSignal.timeout(1000), [image]);
       const body = JSON.parse(String(f.fetchImpl.mock.calls.at(-1)?.[1]?.body));
+      expect(body.model).toBe("gpt-5.6-luna");
       expect(body.input[1].content).toEqual([
         { type: "input_text", text: "Name the task" },
         { type: "input_image", image_url: `data:image/png;base64,${Buffer.from("png-bytes").toString("base64")}` },
       ]);
       expect(body.tools).toEqual([]);
-      // OBS-006: the gateway row is named by the task's key, and an id that is no header value sends none.
       expect(new Headers(f.fetchImpl.mock.calls.at(-1)?.[1]?.headers).get("x-request-id")).toBeNull();
-      await gateway!.generate("Name the task", AbortSignal.timeout(1000), undefined, "cli:codex:default:task-1");
+      await codex!.generate("Name the task", AbortSignal.timeout(1000), undefined, "cli:codex:default:task-1");
       expect(new Headers(f.fetchImpl.mock.calls.at(-1)?.[1]?.headers).get("x-request-id")).toBe("cli:codex:default:task-1");
-      await gateway!.generate("Name the task", AbortSignal.timeout(1000), undefined, "x".repeat(121));
-      expect(new Headers(f.fetchImpl.mock.calls.at(-1)?.[1]?.headers).get("x-request-id")).toBeNull();
+      expect((await f.service.status()).find((c) => c.modelId === "gpt-5.6-luna")?.availability).toBe("available");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
-  it("rests a free model the service has retired for a day", async () => {
-    const f = fixture();
+  it("asks Antigravity Gemini through the gateway with the dedicated key", async () => {
+    const root = await mkdtemp(join(tmpdir(), "title-gemini-"));
+    try {
+      const keyFile = join(root, "key");
+      await writeFile(keyFile, "secret-test-key\n");
+      const f = fixture({ keyFile });
+      await f.service.refresh();
+      const all = await f.service.eligible(taskTitleSettingsSchema.parse({}), null);
+      const flash = all.find((c) => c.id === "gateway:antigravity:gemini-3.8-flash-tiered")!;
+      f.fetchImpl.mockResolvedValueOnce(Response.json({ text: '{"title":"T"}' }));
+      expect(await flash.generate("Name the task", AbortSignal.timeout(1000), undefined, "cli:codex:default:task-1")).toBe('{"title":"T"}');
+      const [url, init] = f.fetchImpl.mock.calls.at(-1)!;
+      expect(String(url)).toBe("https://subscription.invalid/gemini/v1/generate");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret-test-key");
+      expect(JSON.parse(String(init?.body))).toEqual({ model: "gemini-3.8-flash-tiered", prompt: expect.stringMatching(/^You name tasks[\s\S]*Name the task$/) });
+      f.fetchImpl.mockResolvedValueOnce(new Response("", { status: 429, headers: { "retry-after": "60" } }));
+      const failure = await flash.generate("Name the task", AbortSignal.timeout(1000)).catch((error) => error);
+      expect([failure.status, failure.retryAfterSeconds]).toEqual([429, 60]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it("runs Claude Haiku as headless Claude Code on the gateway profile", async () => {
+    const runClaude = vi.fn(async () => '{"title":"T","summary":"S"}');
+    const f = fixture({ trustedGateway: false, runClaude });
     await f.service.refresh();
-    const [free] = await f.service.eligible(taskTitleSettingsSchema.parse({}), null);
-    vi.mocked(generateNativeOpenCodeTitle).mockRejectedValueOnce(new OpenCodeTitleModelRetired());
-    const failure = await free!.generate("Name the task", AbortSignal.timeout(1000)).catch((error) => error);
-    expect(failure).toBeInstanceOf(TitleProviderFailure);
-    expect([failure.status, failure.retryAfterSeconds]).toEqual([410, 86_400]);
+    const [haiku] = await f.service.eligible(taskTitleSettingsSchema.parse({}), null);
+    expect(haiku?.id).toBe("claude:claude-haiku-5-5");
+    const signal = AbortSignal.timeout(1000);
+    expect(await haiku!.generate("Name the task", signal, ["/uploads/shot.png"], "trace-1")).toBe('{"title":"T","summary":"S"}');
+    expect(runClaude).toHaveBeenCalledWith({
+      runtimeId: "cli:claude", model: "claude-haiku-5-5", effort: null, claudeProfile: "space-gateway",
+      prompt: expect.stringMatching(/^You name tasks[\s\S]*Name the task$/), signal, traceId: "trace-1",
+    });
   });
 });

@@ -136,16 +136,21 @@ export function createCliAccountProfileCommands(options: CliAccountProfileComman
           : runtimeId === "cli:kimi"
             ? readKimiAccountProfileDetails(profileId)
             : readCursorAccountProfileDetails(profileId);
-  // The linked-accounts view reads every profile's sign-in identity; a short cache keeps
-  // repeated menu opens from spawning one native probe per profile each time.
-  const cliAccountIdentityCacheTtlMs = 30_000;
+  // The linked-accounts view and the browser census read every profile's sign-in identity; the cache keeps them from
+  // spawning one native probe per profile each time (30 s held ~325 profile-info probes per 6 h on stable, speed Phase 2
+  // Slice 8, 21/11). Sign-in, sign-out and profile changes invalidate it.
+  const cliAccountIdentityCacheTtlMs = 5 * 60_000;
   const cliAccountIdentityCache = new Map<string, { expiresAt: number; value: Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null; login?: string | null }> }>();
   const readCachedCliAccountIdentity = (runtimeId: CliAccountProfileRuntimeId, profileId: string) => {
     const key = cliAccountProfileKey(runtimeId, profileId);
     const cached = cliAccountIdentityCache.get(key);
     if (cached && cached.expiresAt > Date.now()) return cached.value;
+    // DEV3D-012: a failed probe (timeout, busy wrapper) is not cached, so the next read retries instead of showing UNAVAILABLE for 5 min.
     const value = readCliAccountProfileDetails(runtimeId, profileId)
-      .catch(() => ({ authStatus: "UNAVAILABLE" as const, email: null }));
+      .catch(() => {
+        if (cliAccountIdentityCache.get(key)?.value === value) cliAccountIdentityCache.delete(key);
+        return { authStatus: "UNAVAILABLE" as const, email: null };
+      });
     cliAccountIdentityCache.set(key, { expiresAt: Date.now() + cliAccountIdentityCacheTtlMs, value });
     return value;
   };

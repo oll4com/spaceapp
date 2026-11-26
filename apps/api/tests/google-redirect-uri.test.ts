@@ -32,7 +32,7 @@ describe("Google redirect URI follows the host the browser is on", () => {
     const app = await createApp({
       config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "false" }),
       store: new InMemorySpaceStore(),
-      auth: { sessionSecret: "test-secret-with-enough-length-123456", devLogin: false, googleClientId: "id", googleClientSecret: "secret", secureCookies: false, googleRedirectUri: configured }
+      auth: { sessionSecret: "test-secret-with-enough-length-123456", devLogin: false, googleClientId: "id", googleClientSecret: "secret", secureCookies: false, googleRedirectUri: configured } // synthetic test session secret; gitleaks:allow
     });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 400 }));
     try {

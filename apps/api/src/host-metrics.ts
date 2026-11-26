@@ -125,7 +125,7 @@ export function observeMemoryWorkers({
   if (!force && now - lastMemoryWorkerScan < memoryWorkerScanIntervalMs) return;
   lastMemoryWorkerScan = now;
   const found = new Map<MemoryWorkerName, { pid: number; stats: HostProcessStats }>();
-  let pids: number[] = [];
+  let pids: number[];
   try { pids = listPids(); } catch { pids = []; }
   for (const pid of pids) {
     if (found.size === memoryWorkers.length) break;

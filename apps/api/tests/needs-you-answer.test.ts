@@ -7,6 +7,7 @@ import { InMemorySpaceNotificationsRepository } from "@space/db";
 import { makeSpaceId, SpaceConflictError, SpaceEventBus, SpaceNotFoundError } from "@space/runtime";
 import { ZodError } from "zod";
 import { createNotificationService } from "../src/notifications/service.js";
+import { NEVER_BUY_ANSWER } from "../src/nous/allowances.js";
 import { registerNousPaneBoardRoutes, type PaneBoardRouteDeps } from "../src/nous/pane-board-routes.js";
 import { createPlanNeedsYou } from "../src/nous/plan-needs-you.js";
 import { parseBody, parseQuery } from "../src/route-parsing.js";
@@ -19,18 +20,19 @@ describe("answering a needs-you record from its card", () => {
   const apps: FastifyInstance[] = [];
   afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
-  async function fixture(person = true, phone = false) {
+  async function fixture(person = true, phone = false, recommend?: () => Promise<{ option: string; answers: number } | null>) {
     const late: { answers?: ReturnType<typeof registerNousPaneBoardRoutes> } = {};
     const always: Array<{ key: string; label: string }> = [];
-    const clock = { quiet: false };
+    const clock = { quiet: false, neverBuy: false };
     const notifications = createNotificationService({ repository: new InMemorySpaceNotificationsRepository(), eventBus: new SpaceEventBus(), userSettings: async () => ({ notifications: null }) as never,
       recordRoomEvent: async (input) => eventSchema.parse({ ...input, id: makeSpaceId("event"), workflowId: null, createdAt: new Date().toISOString() }),
-      nous: { held: async () => false, raised: () => {}, autoAnswer: async (record) => (await late.answers!.autoAnswer(record))?.notification ?? null } });
+      nous: { held: async () => false, raised: () => {}, ...(recommend ? { recommend } : {}), autoAnswer: async (record) => (await late.answers!.autoAnswer(record))?.notification ?? null } });
     const deps = {
       answerPrompt: vi.fn<PaneBoardRouteDeps["answerPrompt"]>(),
       answerCopilot: vi.fn<PaneBoardRouteDeps["answerCopilot"]>(async () => "Answered; the copilot continues with it."),
       send: vi.fn<PaneBoardRouteDeps["send"]>(async () => ({}) as NousMessage),
       sendToPane: vi.fn<PaneBoardRouteDeps["sendToPane"]>(async () => ({ ok: true, display: "Sent to Andy", result: "ok" })),
+      typeCode: vi.fn<PaneBoardRouteDeps["typeCode"]>(async () => null),
       decideCopilot: vi.fn<PaneBoardRouteDeps["decideCopilot"]>(async () => "The mail copilot's review was approved."),
       requestMailFix: vi.fn<NonNullable<PaneBoardRouteDeps["requestMailFix"]>>(async () => {}),
       briefCopilot: vi.fn<NonNullable<PaneBoardRouteDeps["briefCopilot"]>>(async () => "The Freelance Copilot has the brief."),
@@ -46,7 +48,7 @@ describe("answering a needs-you record from its card", () => {
     app.setErrorHandler((error, _request, reply) => reply.code(error instanceof SpaceNotFoundError ? 404 : error instanceof SpaceConflictError ? 409 : error instanceof ZodError ? 422
       : (error as { statusCode?: number }).statusCode ?? 500).send({ error: error.message }));
     late.answers = registerNousPaneBoardRoutes(app, { routeOptions: {}, owner: async () => owner, parseBody, parseQuery,
-      rememberAlways: async (_owner, kind) => { always.push(kind); }, alwaysKinds: async () => always.map((kind) => kind.key), quiet: async () => clock.quiet,
+      rememberAlways: async (_owner, kind) => { always.push(kind); }, alwaysKinds: async () => always.map((kind) => kind.key), quiet: async () => clock.quiet, neverBuy: async () => clock.neverBuy,
       assertPerson: () => { if (!person) throw Object.assign(new Error("Only the operator answers."), { statusCode: 403 }); },
       board: { board: vi.fn(), tick: vi.fn() } as never, notifications,
       pane: async (_owner, paneId) => paneId === pane.id ? { room, pane } : null, ...deps });
@@ -175,32 +177,49 @@ describe("answering a needs-you record from its card", () => {
     expect(await f.notifications.get(owner, later)).toMatchObject({ status: "ACKED" });
   });
 
+  it("operator 23/11 08:56 BKK: words typed into a card that closed meanwhile reach Nous; a pick or a code on it is still refused", async () => {
+    const f = await fixture();
+    const id = await f.raise({ question: "Which colour?", options: ["Red", "Blue"], answer: { kind: "PANE" } });
+    expect((await f.answer(id, { option: "Blue" })).statusCode).toBe(200);
+    expect((await f.answer(id, { option: "Red" })).statusCode).toBe(409);
+    expect((await f.answer(id, { text: "make it darker" })).json()).toMatchObject({ routed: "NOUS", notification: { status: "ACKED", payload: { answer: { text: "Blue" } } } });
+    expect(f.deps.send).toHaveBeenLastCalledWith(owner, "[Alpha · Andy] My answer to \"Which colour?\": make it darker (the card had already closed)", expect.objectContaining({ person: true }));
+    const code = await f.raise({ question: "The code", code: true, answer: { kind: "PANE" } }, "NEEDS_HANDS", "NOUS");
+    await f.notifications.setStatus(owner, code, "ACKED");
+    expect((await f.answer(code, { text: "481516" })).statusCode).toBe(409);
+  });
+
   it("R27-3: a one-time code goes into the pane's prompt and is kept nowhere: not the record, the ledger, Nous or an inbox line", async () => {
     const f = await fixture();
     const ask: NeedsYouAsk = { question: "The 6-digit Upwork code from your SMS", code: true, answer: { kind: "PANE" } };
     const id = await f.raise(ask, "NEEDS_HANDS", "NOUS");
     expect((await f.answer(id, { option: "Go now" })).statusCode).toBe(409);
     expect((await f.answer(id, { text: " 481 516 " })).json()).toMatchObject({ routed: "PANE", display: "Typed into Andy; the code is kept nowhere." });
-    expect(f.deps.sendToPane).toHaveBeenCalledWith(owner, room, pane, "Operator's one-time code for your needs-you (The 6-digit Upwork code from your SMS): 481 516");
+    expect(f.deps.typeCode).toHaveBeenCalledWith(owner, room, pane, "Operator's one-time code for your needs-you (The 6-digit Upwork code from your SMS): 481 516");
+    expect(f.deps.sendToPane).not.toHaveBeenCalled();
     const record = await f.notifications.get(owner, id);
     expect(record).toMatchObject({ status: "ACKED", payload: { answer: { text: "(a one-time code, typed into the pane; not kept)", routed: "PANE" } } });
     // The whole code, either way it was typed: "481" alone is in about 1 random id in 200 (CI 42895663412).
     for (const code of ["481516", "481 516"]) expect(JSON.stringify(record)).not.toContain(code);
     expect(f.deps.ledger).not.toHaveBeenCalled();
     expect(f.deps.send).not.toHaveBeenCalled();
-    // A pane that does not take it: 409 without the code, the card stays open, Nous hears why without the code.
+    // A pane that does not take it (15/11 Dino/Jack: 3 codes never arrived, the card stayed ACKED): 409 without the code, the card stays
+    // open saying so, Nous hears it urgently without the code.
     const again = await f.raise(ask, "NEEDS_HANDS", "NOUS");
-    f.deps.sendToPane.mockResolvedValueOnce({ ok: false, display: "Not sent", result: "Not sent: Andy: \"Operator's one-time code …: 902211\" was refused (pane closed)" });
+    f.deps.typeCode.mockResolvedValueOnce("Andy refused \"Operator's one-time code …: 902211\" (pane closed)");
     const failed = await f.answer(again, { text: "902211" });
     expect(failed.statusCode).toBe(409);
-    expect(failed.json().error).toContain("The code is not kept");
+    expect(failed.json().error).toContain("Your code did not arrive");
+    expect(failed.json().error).toContain("type a fresh one");
+    expect((await f.notifications.get(owner, again))?.payload).toMatchObject({ answerError: { text: expect.stringContaining("type a fresh one") } });
+    expect(f.deps.inbox).toHaveBeenCalledWith(owner, `needs-you-answer-failed:${again}`, expect.stringMatching(/^Urgent: /));
     expect(JSON.stringify([failed.json(), f.deps.inbox.mock.calls, await f.notifications.get(owner, again)])).not.toContain("902211");
     expect(await f.notifications.get(owner, again)).toMatchObject({ status: "OPEN" });
     // From a phone Space types into no pane, and a code goes nowhere else.
     const phone = await fixture(true, true);
     const fromPhone = await phone.raise(ask, "NEEDS_HANDS", "NOUS");
     expect((await phone.answer(fromPhone, { text: "481516" })).statusCode).toBe(409);
-    expect(phone.deps.sendToPane).not.toHaveBeenCalled();
+    expect(phone.deps.typeCode).not.toHaveBeenCalled();
     expect(phone.deps.send).not.toHaveBeenCalled();
   });
 
@@ -210,7 +229,7 @@ describe("answering a needs-you record from its card", () => {
       title: "PayPal sent an SMS code", body: "MFA: PayPal sent an SMS code", link: { roomId: room.id, paneId: "pane:dana0001", target: "tab:page:paypal01" }, dedupeKey: "browser-handoff:pane:dana0001",
       payload: { codePane: pane.id, ask: { question: "Enter the sign-in code on paypal.com", code: true, answer: { kind: "PANE" } } } })).id;
     expect((await f.answer(id, { text: "123456" })).json()).toMatchObject({ routed: "PANE", display: "Typed into Andy; the code is kept nowhere." });
-    expect(f.deps.sendToPane).toHaveBeenCalledWith(owner, room, pane, "Operator's one-time code for your needs-you (Enter the sign-in code on paypal.com): 123456");
+    expect(f.deps.typeCode).toHaveBeenCalledWith(owner, room, pane, "Operator's one-time code for your needs-you (Enter the sign-in code on paypal.com): 123456");
   });
 
   it("keeps the card waiting with the reason when its route fails, answers 409 with the copilot's words and tells Nous once (R13-6)", async () => {
@@ -298,6 +317,28 @@ describe("answering a needs-you record from its card", () => {
     expect(f.deps.sendToPane).toHaveBeenCalledTimes(1);
   });
 
+  it("audit §4 item 4: with \"Never buy\" on, a purchase question is answered no purchase at once; off, or a review, it is the operator's", async () => {
+    // L1261 (14/11, «Καμία αγορά»), L861 (a Nous hands card to buy 80 Connects).
+    const f = await fixture();
+    const connects: NeedsYouAsk = { question: "Πόσα Upwork Connects να αγοράσουμε για τις προτάσεις;", options: ["20", "80"], recommended: "20", answer: { kind: "COPILOT_QUESTION", copilot: "FREELANCE", questionId: "flq:1" } };
+    const first = await f.raise(connects, "NEEDS_USER", "FREELANCE_COPILOT");
+    expect((await f.notifications.get(owner, first))?.status).toBe("OPEN");
+    // An open card of the pane takes a new one in (mergedKeys): only a new card is answered, so the operator answers this one first.
+    expect((await f.answer(first, { option: "20" })).statusCode).toBe(200);
+    f.clock.neverBuy = true;
+    const record = await f.notifications.get(owner, await f.raise({ ...connects, question: "Buy 20 Upwork Connects ($3.72) for the low-price proposals?" }, "NEEDS_USER", "FREELANCE_COPILOT"));
+    expect(record).toMatchObject({ status: "ACKED", payload: { answer: { text: NEVER_BUY_ANSWER, by: "NEVER_BUY" } } });
+    expect(f.deps.answerCopilot).toHaveBeenLastCalledWith(owner, expect.objectContaining({ copilot: "FREELANCE", questionId: "flq:1", answer: NEVER_BUY_ANSWER }));
+    const hands = await f.notifications.get(owner, await f.raise({ question: "Ξαναπερνάς την κάρτα στο Upwork, ώστε να αγοράσει τα 80 Connects;", options: ["Ναι", "Όχι"], answer: { kind: "NOUS" } }, "NEEDS_HANDS", "NOUS"));
+    expect(hands?.status).toBe("ACKED");
+    expect(f.deps.send).toHaveBeenLastCalledWith(owner, expect.stringContaining(`Space answered by the operator's "Never buy" rule`), expect.objectContaining({ person: false }));
+    // A review (spending Connects already bought is no purchase question), and a question with no paid thing, stay the operator's.
+    const review = await f.raise({ question: "Buy time: send the proposal for 16 Connects?", options: ["Approve", "Decline"], answer: { kind: "COPILOT_DECISION", copilot: "FREELANCE", item: "REVIEW", itemId: "flrev:abc000001" } }, "REVIEW_REQUESTED", "FREELANCE_COPILOT");
+    expect((await f.notifications.get(owner, review))?.status).toBe("OPEN");
+    expect((await f.notifications.get(owner, await f.raise({ question: "Renew the TLS certificate now?", options: ["Yes", "No"], answer: { kind: "PANE" } })))?.status).toBe("OPEN");
+    expect(f.deps.ledger).toHaveBeenCalledTimes(1); // the operator's own answer only
+  });
+
   it("carries where the operator answered from to Nous; Space's own answers carry none (plan clipboard:4TXfIZzj8ITW)", async () => {
     const f = await fixture();
     const id = await f.raise(makeNeedsYouAsk("Which colour?", { kind: "NOUS" }, ["Red", "Blue"], "Blue"));
@@ -305,6 +346,8 @@ describe("answering a needs-you record from its card", () => {
     expect((await f.answer(id, { option: "Red" }, { "user-agent": phone, "x-space-client": "app=WEB; view=nous:needs-you; vp=412x915" })).statusCode).toBe(200);
     expect(f.deps.send).toHaveBeenCalledWith(owner, expect.stringContaining("Red"), expect.objectContaining({ person: true,
       client: { app: "WEB", os: "ANDROID", form: "PHONE", view: "nous:needs-you", viewport: "412x915" } }));
+    // 2026-11-15 REVIEW 5(a): the card keeps the answering device for phoneSliderHold.
+    expect((await f.notifications.get(owner, id))?.payload.answer).toMatchObject({ text: "Red", form: "PHONE" });
   });
 
   it("sends a pane's answer as its next prompt, keeps it on the record and acknowledges it once", async () => {
@@ -370,6 +413,42 @@ describe("answering a needs-you record from its card", () => {
     expect(f.deps.send).toHaveBeenLastCalledWith(owner, "[Alpha · Andy] My answer to \"Which phone goes on Form A as the applicant's phone?\": +66 00 000 0000",
       { person: true, refs: { roomId: room.id, paneId: pane.id }, client: { app: "UNKNOWN" } });
     expect((await f.notifications.list(owner, { status: "WAITING", limit: 20 })).map((item) => item.id)).not.toContain(id);
+  });
+
+  it("Goal 7365014c: recommendedDefault cards log predicted: null and match: null; real recommended and baseRate cards still score", async () => {
+    const f = await fixture();
+    // Derived plan-wait card: raise() injects recommendedDefault: true ("Need help from an agent").
+    const planCard = (await f.notifications.raise({ ownerUserId: owner, roomId: room.id, paneId: null, source: "NOUS", kind: "NEEDS_YOU", severity: "ATTENTION",
+      title: "Space Link", body: "Pair the phone", link: { roomId: room.id }, dedupeKey: "nous:plan:clipboard:spaceLink1", telegram: null,
+      payload: { planId: "clipboard:spaceLink1", derived: true, what: "Pair the phone",
+        ask: { question: "This plan waits on you: Pair the phone", options: ["Done", "Need help from an agent", "Not now"], answer: { kind: "NOUS" } } } }));
+    expect(planCard.payload).toMatchObject({ recommendedDefault: true, ask: { recommended: "Need help from an agent" } });
+    expect((await f.answer(planCard.id, { option: "Done" })).statusCode).toBe(200);
+    expect(f.deps.ledger).toHaveBeenLastCalledWith(owner, expect.objectContaining({ predicted: null, answer: "Done", match: null, ref: planCard.id }));
+
+    // "Go now" branch with recommendedDefault: true also logs predicted: null and match: null.
+    const defaultGoNow = await f.raise({ question: "Check the tab", options: ["Go now", "Not now"], answer: { kind: "NOUS" } }, "NEEDS_HANDS", "NOUS");
+    expect((await f.notifications.get(owner, defaultGoNow))?.payload).toMatchObject({ recommendedDefault: true, ask: { recommended: "Go now" } });
+    expect((await f.answer(defaultGoNow, { option: "Go now" })).statusCode).toBe(200);
+    expect(f.deps.ledger).toHaveBeenLastCalledWith(owner, expect.objectContaining({ predicted: null, answer: "Go now", match: null, ref: defaultGoNow }));
+
+    // Real producer recommended still scores match: true and match: false.
+    const realHit = await f.raise({ question: "Ship now?", options: ["Ship", "Wait"], recommended: "Ship", answer: { kind: "NOUS" } }, "NEEDS_YOU", "NOUS");
+    expect((await f.answer(realHit, { option: "Ship" })).statusCode).toBe(200);
+    expect(f.deps.ledger).toHaveBeenLastCalledWith(owner, expect.objectContaining({ predicted: "Ship", answer: "Ship", match: true, ref: realHit }));
+    const realMiss = await f.raise({ question: "Ship now?", options: ["Ship", "Wait"], recommended: "Ship", answer: { kind: "NOUS" } }, "NEEDS_YOU", "NOUS");
+    expect((await f.answer(realMiss, { option: "Wait" })).statusCode).toBe(200);
+    expect(f.deps.ledger).toHaveBeenLastCalledWith(owner, expect.objectContaining({ predicted: "Ship", answer: "Wait", match: false, ref: realMiss }));
+
+    // Learned baseRate recommendation (no recommendedDefault) still scores match: true and match: false.
+    const fb = await fixture(true, false, async () => ({ option: "Approve", answers: 5 }));
+    const baseHit = await fb.raise({ question: "Approve the draft?", options: ["Approve", "Decline"], answer: { kind: "NOUS" } }, "NEEDS_YOU", "NOUS");
+    expect((await fb.notifications.get(owner, baseHit))?.payload).toMatchObject({ baseRate: { option: "Approve", answers: 5 }, ask: { recommended: "Approve" } });
+    expect((await fb.answer(baseHit, { option: "Approve" })).statusCode).toBe(200);
+    expect(fb.deps.ledger).toHaveBeenLastCalledWith(owner, expect.objectContaining({ predicted: "Approve", answer: "Approve", match: true, ref: baseHit }));
+    const baseMiss = await fb.raise({ question: "Approve the draft?", options: ["Approve", "Decline"], answer: { kind: "NOUS" } }, "NEEDS_YOU", "NOUS");
+    expect((await fb.answer(baseMiss, { option: "Decline" })).statusCode).toBe(200);
+    expect(fb.deps.ledger).toHaveBeenLastCalledWith(owner, expect.objectContaining({ predicted: "Approve", answer: "Decline", match: false, ref: baseMiss }));
   });
 
   it("takes answers from a person only", async () => {

@@ -447,7 +447,8 @@ still unmeasured.
   - Alert (since 2026-10-12): `scripts/vm-backup-watch.mjs` (daily user timer
     `space-vm-backup-watch.timer`) reads the Proxmox backup list and vzdump tasks
     through read-only `pvesh` and adds a Space clipboard note when the newest public-host
-    backup is older than 8 days or the last vzdump task failed.
+    backup is older than 8 days or the last vzdump task failed. Off since 2026-11-15 (timer disabled, units kept):
+    public-host and its Proxmox host `pve` are gone, so it notified nobody; the nightly offsite run below is the alert now.
   - Off public-host since 2026-10-16: `space-db-backup-offsite.timer` (root, daily
     04:20 local, `deploy/space-db-backup-offsite.{sh,service,timer}`, script installed
     as `/etc/space-db-backup-offsite.sh`) copies every complete run off public-host and checks each dump
@@ -462,6 +463,16 @@ still unmeasured.
     host task log shows the weekly job failed for public-host on 2026-09-23
     (`pve_backup_safety_hook.sh job-init`) and 2026-09-30, and succeeded on
     2026-10-07 (with one warning).
+  - Artifact bytes off the host since 2026-11-15 (DATA-003, Nous decision 37749): the same nightly run
+    (02:40 Asia/Bangkok on public-host, target `b2:intratrade-pve-offsite/space-vm208/artifacts` beside its `db`)
+    copies `/opt/spaceapp/var/artifacts` (Agent Files, uploads, screenshots, CLI workspaces; ~16.4 GB, 28k files)
+    with `rclone copy`, never sync, so nothing on B2 is deleted. Browser profiles (`browser-profiles*`) stay on
+    the host: they hold the operator's cookies and sign-ins. The copy runs only inside 02:00-05:00 Bangkok
+    (operator rule 653b6c94), at 8 MiB/s, and `timeout` stops it at 05:00; the next night goes on from what is
+    on B2. A complete copy writes `/var/lib/space-db-backup-offsite/artifacts-copied-at`; when that is older than
+    36 hours (two failed nights, or none ever) the run fails and the unit's `ExecStopPost` adds a Space clipboard
+    note. Guard: `scripts/tests/space-db-backup-offsite.test.mjs`. Rollback of the installed copy:
+    `sudo mv /etc/space-db-backup-offsite.sh.bak-20261115 /etc/space-db-backup-offsite.sh && sudo mv /etc/systemd/system/space-db-backup-offsite.service.bak-20261115 /etc/systemd/system/space-db-backup-offsite.service && sudo systemctl daemon-reload`.
 - **The real backup was restored once, without a VM boot** (2026-10-12; see
   [VM archive restore drill](#vm-archive-restore-drill-2026-10-12)). The
   archive is complete and verified, both filesystems and PostgreSQL come back,

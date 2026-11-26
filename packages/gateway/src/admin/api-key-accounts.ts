@@ -43,9 +43,9 @@ export const googleAiEntry: ApiKeyProviderEntry = {
  * one joins those keys at once (7/11: Inception joined at 12:05Z and no free-pools key reached it, so Nous and the panes could not use it).
  */
 export const FREE_POOL_KEY_PROVIDERS: ReadonlySet<GatewayProvider> = new Set(["NVIDIA", "GROQ", "CLOUDFLARE_AI", "ADAPTION", "AMD_TOKEN_LAB", "INCEPTION",
-  "JINA", "MIXEDBREAD", "AGENTROUTER", "FREEAI", "AZURE_OPENAI", "ZAI", "SILICONFLOW", "OVH", "MISTRAL", "GOOGLE_AI", "OPENROUTER"]);
-/** Never on Nous's `nous-free-pools` key (space-admin-action NOUS_FREE_POOL_PROVIDERS): relays, embedding pools, Mistral's training free tier. */
-export const NOUS_FREE_POOL_KEY_EXCLUDED: ReadonlySet<GatewayProvider> = new Set(["AGENTROUTER", "FREEAI", "JINA", "MIXEDBREAD", "MISTRAL"]);
+  "JINA", "MIXEDBREAD", "AGENTROUTER", "FREEAI", "AZURE_OPENAI", "ZAI", "SILICONFLOW", "OVH", "MISTRAL", "GOOGLE_AI", "OPENROUTER", "BEDROCK"]);
+/** Never on Nous's `nous-free-pools` key (space-admin-action NOUS_FREE_POOL_PROVIDERS): relays, embedding pools, Mistral's training free tier, cloud credit pools. */
+export const NOUS_FREE_POOL_KEY_EXCLUDED: ReadonlySet<GatewayProvider> = new Set(["AGENTROUTER", "FREEAI", "JINA", "MIXEDBREAD", "MISTRAL", "BEDROCK"]);
 
 function entryFor(provider: unknown): ApiKeyProviderEntry | null {
   if (provider === "CLAUDE") return claudeEntry;

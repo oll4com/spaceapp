@@ -13,7 +13,7 @@ import { createSpacePgPool, type PgClientLike, type PgPoolLike } from "./space-s
 // reaches Postgres through here. Every method takes the owner first, and a disabled owner's vault reads as absent.
 
 export class VaultConflictError extends Error {
-  constructor(readonly code: "VAULT_EXISTS" | "STALE_EPOCH" | "BAD_DELEGATION" | "NOT_DELEGATED") { super(`Vault: ${code}`); }
+  constructor(readonly code: "VAULT_EXISTS" | "STALE_EPOCH" | "BAD_DELEGATION" | "NOT_DELEGATED" | "NO_VAULT" | "VAULT_DIFFERS") { super(`Vault: ${code}`); }
 }
 
 export interface VaultState extends VaultEnrollment {
@@ -195,17 +195,8 @@ export class PostgresVaultRepository {
       if (!vault) return null;
       const results: Array<VaultItemRecord | null> = [];
       for (const item of items) {
+        const saved = await this.upsertItem(client, vault, owner, item);
         const { metadata } = item;
-        // A handle belongs to one owner for good: another owner's id is never overwritten.
-        const saved = await client.query<ItemRow>(`INSERT INTO vault_items AS i (id, vault_id, owner_user_id, label, origins, field_roles, policy, key_version, dek_envelope, fields, status, history, google_account_id, login_key, login_page, card)
-          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, $12::jsonb, $13, $14, $15, $16::jsonb)
-          ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, origins = EXCLUDED.origins, field_roles = EXCLUDED.field_roles, policy = EXCLUDED.policy,
-            key_version = EXCLUDED.key_version, dek_envelope = EXCLUDED.dek_envelope, fields = EXCLUDED.fields, status = EXCLUDED.status, history = EXCLUDED.history,
-            google_account_id = EXCLUDED.google_account_id, login_key = EXCLUDED.login_key, login_page = EXCLUDED.login_page, card = EXCLUDED.card, updated_at = now()
-          WHERE i.owner_user_id = EXCLUDED.owner_user_id AND i.vault_id = EXCLUDED.vault_id
-          RETURNING ${itemColumns}`,
-        [metadata.id, vault.id, owner, metadata.label, metadata.origins, metadata.fieldRoles, JSON.stringify(metadata.policy), item.keyVersion,
-          JSON.stringify(item.dekEnvelope), JSON.stringify(item.fields), metadata.status, JSON.stringify(item.history), metadata.googleAccountId, metadata.loginKey, metadata.loginPage, metadata.card ? JSON.stringify(metadata.card) : null]);
         if (!saved.rows[0]) { results.push(null); continue; }
         await this.audit(client, vault, { actor: "OPERATOR", action: "ITEM_SAVE", result: "OK", itemId: metadata.id });
         results.push(fromItemRow(saved.rows[0]));
@@ -275,6 +266,21 @@ export class PostgresVaultRepository {
    * Stores a broker-signed delegation as the next generation. The broker verifies its own signature; here the claims must
    * match this owner, vault, epoch and next generation, name only this owner's items, and digest the exact fill envelopes.
    */
+  /** One item's upsert inside the caller's transaction; no row when its handle belongs to another owner or vault. */
+  private async upsertItem(client: PgClientLike, vault: VaultRow, owner: string, item: VaultItemRecord) {
+    const { metadata } = item;
+        // A handle belongs to one owner for good: another owner's id is never overwritten.
+        return client.query<ItemRow>(`INSERT INTO vault_items AS i (id, vault_id, owner_user_id, label, origins, field_roles, policy, key_version, dek_envelope, fields, status, history, google_account_id, login_key, login_page, card)
+          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, $12::jsonb, $13, $14, $15, $16::jsonb)
+          ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, origins = EXCLUDED.origins, field_roles = EXCLUDED.field_roles, policy = EXCLUDED.policy,
+            key_version = EXCLUDED.key_version, dek_envelope = EXCLUDED.dek_envelope, fields = EXCLUDED.fields, status = EXCLUDED.status, history = EXCLUDED.history,
+            google_account_id = EXCLUDED.google_account_id, login_key = EXCLUDED.login_key, login_page = EXCLUDED.login_page, card = EXCLUDED.card, updated_at = now()
+          WHERE i.owner_user_id = EXCLUDED.owner_user_id AND i.vault_id = EXCLUDED.vault_id
+          RETURNING ${itemColumns}`,
+        [metadata.id, vault.id, owner, metadata.label, metadata.origins, metadata.fieldRoles, JSON.stringify(metadata.policy), item.keyVersion,
+          JSON.stringify(item.dekEnvelope), JSON.stringify(item.fields), metadata.status, JSON.stringify(item.history), metadata.googleAccountId, metadata.loginKey, metadata.loginPage, metadata.card ? JSON.stringify(metadata.card) : null]);
+  }
+
   async createDelegation(owner: string, input: { certificate: unknown; keyEnvelope: unknown; fillEnvelopes: unknown; inboxKeyEnvelope?: unknown }) {
     const certificate = vaultDelegationCertificateSchema.parse(input.certificate);
     const keyEnvelope = vaultSymmetricEnvelopeSchema.parse(input.keyEnvelope);
@@ -460,18 +466,18 @@ export class PostgresVaultRepository {
     return row?.publicKey ? { publicKey: row.publicKey, privateKeyEnvelope: vaultSymmetricEnvelopeSchema.parse(row.privateKeyEnvelope) } : null;
   }
 
-  async addPending(owner: string, input: VaultPendingSecret): Promise<boolean> {
+  async addPending(owner: string, input: Omit<VaultPendingSecret, "sealedOtp"> & Partial<Pick<VaultPendingSecret, "sealedOtp">>): Promise<boolean> {
     const pending = vaultPendingSecretSchema.parse({ ...input, label: fitLabel(input.label, input.handle) });
     const vault = await this.getVault(owner);
     if (!vault) return false;
-    await this.pool.query(`INSERT INTO vault_pending (id, vault_id, owner_user_id, kind, handle, label, origin, sealed_username, sealed_password, pane_id, created_at, login_page)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12)`,
-    [pending.id, vault.vaultId, owner, pending.kind, pending.handle, pending.label, pending.origin, json(pending.sealedUsername), json(pending.sealedPassword), pending.paneId, pending.createdAt, pending.loginPage]);
+    await this.pool.query(`INSERT INTO vault_pending (id, vault_id, owner_user_id, kind, handle, label, origin, sealed_username, sealed_password, pane_id, created_at, login_page, sealed_otp)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, $13::jsonb)`,
+    [pending.id, vault.vaultId, owner, pending.kind, pending.handle, pending.label, pending.origin, json(pending.sealedUsername), json(pending.sealedPassword), pending.paneId, pending.createdAt, pending.loginPage, json(pending.sealedOtp)]);
     return true;
   }
   async listPending(owner: string): Promise<VaultPendingSecret[]> {
     const rows = (await this.pool.query<Record<string, unknown> & { id: string; createdAt: Date | string }>(`SELECT p.id, p.kind, p.handle, p.label, p.origin, p.sealed_username AS "sealedUsername",
-        p.sealed_password AS "sealedPassword", p.pane_id AS "paneId", p.created_at AS "createdAt", p.login_page AS "loginPage"
+        p.sealed_password AS "sealedPassword", p.pane_id AS "paneId", p.created_at AS "createdAt", p.login_page AS "loginPage", p.sealed_otp AS "sealedOtp"
       FROM vault_pending p JOIN users u ON u.id = p.owner_user_id AND u.disabled_at IS NULL WHERE p.owner_user_id = $1 ORDER BY p.created_at`, [owner])).rows;
     return readable(rows, (row) => vaultPendingSecretSchema.parse({ ...row, label: fitLabel(String(row.label), String(row.handle)), createdAt: iso(row.createdAt) }));
   }
@@ -572,6 +578,99 @@ export class PostgresVaultRepository {
   async deleteHandoffKey(owner: string, id: string): Promise<boolean> {
     const result = await this.pool.query(`DELETE FROM vault_handoff_keys WHERE owner_user_id = $1 AND id = $2`, [owner, id]);
     return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
+  }
+
+  // Space Link Vault sync (plan clipboard:TcX66vjNuZDv step 2): the sending side's change mark and changed items, the receiving side's apply.
+  /** Changes when the vault row, an item or the active delegation (an extension too) changes; a fill's audit does not. */
+  async linkMark(owner: string): Promise<string | null> {
+    const row = (await this.pool.query<{ mark: string }>(`SELECT concat_ws('|', v.updated_at, (SELECT max(updated_at) FROM vault_items WHERE vault_id = v.id),
+        (SELECT md5(certificate::text || coalesce(fill_envelopes::text, '')) FROM vault_delegations WHERE vault_id = v.id AND status = 'ACTIVE')) AS mark ${activeOwnerVault}`, [owner])).rows[0];
+    return row?.mark ?? null;
+  }
+  /** The vault row's fields that cross (never the server share: the broker seals it to the other broker) and items changed since `since`. */
+  async linkSnapshot(owner: string, since: string | null) {
+    const row = (await this.pool.query<VaultRow & { inboxPublicKey: string | null; inboxPrivateEnvelope: unknown }>(`SELECT ${vaultColumns},
+      v.inbox_public_key AS "inboxPublicKey", v.inbox_private_envelope AS "inboxPrivateEnvelope" ${activeOwnerVault}`, [owner])).rows[0];
+    if (!row) return null;
+    // A transaction that started before the last read can commit an older updated_at after it: five minutes back resends those (an upsert again).
+    const items = (await this.pool.query<ItemRow & { updatedAt: Date | string }>(`SELECT ${itemColumns}, i.updated_at AS "updatedAt" FROM vault_items i
+      WHERE i.owner_user_id = $1 AND i.vault_id = $2 AND ($3::timestamptz IS NULL OR i.updated_at > $3::timestamptz - interval '5 minutes') ORDER BY i.updated_at, i.id`,
+    [owner, row.id, since])).rows;
+    const vault = fromVaultRow(row);
+    return { vault: { vaultId: vault.vaultId, kdf: vault.kdf, passwordEnvelope: vault.passwordEnvelope, unlockPublicKey: vault.unlockPublicKey,
+      unlockKeyVersion: vault.unlockKeyVersion, recovery: vault.recovery, epoch: vault.epoch, agentAccess: vault.agentAccess,
+      inbox: row.inboxPublicKey ? { publicKey: row.inboxPublicKey, privateKeyEnvelope: vaultSymmetricEnvelopeSchema.parse(row.inboxPrivateEnvelope) } : null },
+    serverShareEnvelope: vault.serverShareEnvelope, items: readable(items, fromItemRow), itemsAt: items.length ? iso(items.at(-1)!.updatedAt) : since };
+  }
+  /**
+   * The linked Vault's state lands here in one transaction, audited once as LINK_SYNC (SYSTEM). The same vault id only: a different
+   * vault of this owner is refused (VAULT_DIFFERS; its person decides), unless replaceEmpty and it holds nothing (no item, nothing
+   * pending, no agent access): then it is dropped and the linked one lands in its place. No vault yet: it is created with the linked one's id.
+   */
+  async applyLinkSync(owner: string, input: {
+    vault?: Omit<VaultEnrollment, "vaultId"> & { vaultId: string; recovery: VaultRecovery | null; epoch: number; inbox: { publicKey: string; privateKeyEnvelope: unknown } | null };
+    items?: VaultItemRecordInput[];
+    delegation?: { certificate: unknown; keyEnvelope: unknown; fillEnvelopes: unknown; inboxKeyEnvelope?: unknown };
+    replaceEmpty?: boolean;
+  }): Promise<{ items: number; delegation: boolean; replaced: string | null }> {
+    const next = input.vault && { ...vaultEnrollmentSchema.parse({ vaultId: input.vault.vaultId, kdf: input.vault.kdf, passwordEnvelope: input.vault.passwordEnvelope,
+      serverShareEnvelope: input.vault.serverShareEnvelope, unlockPublicKey: input.vault.unlockPublicKey, unlockKeyVersion: input.vault.unlockKeyVersion }),
+    recovery: input.vault.recovery === null ? null : vaultRecoverySchema.parse(input.vault.recovery), epoch: input.vault.epoch,
+    inbox: input.vault.inbox && vaultInboxKeyRequestSchema.parse(input.vault.inbox) };
+    const items = (input.items ?? []).map((entry) => vaultItemRecordSchema.parse({ ...entry, metadata: { ...entry.metadata, label: fitLabel(entry.metadata.label, entry.metadata.id) } }));
+    const delegation = input.delegation && { certificate: vaultDelegationCertificateSchema.parse(input.delegation.certificate),
+      keyEnvelope: vaultSymmetricEnvelopeSchema.parse(input.delegation.keyEnvelope), fillEnvelopes: vaultFillEnvelopesSchema.parse(input.delegation.fillEnvelopes),
+      inboxKeyEnvelope: input.delegation.inboxKeyEnvelope === undefined ? null : vaultSymmetricEnvelopeSchema.parse(input.delegation.inboxKeyEnvelope) };
+    return this.transaction(async (client) => {
+      let vault = await this.lock(client, owner);
+      let replaced: string | null = null;
+      if (vault && next && next.vaultId !== vault.id) {
+        // Operator 23/11 (nous_msg:931c907c): a pinned link may replace a Vault only while it holds nothing; one item, waiting login or agent access keeps it.
+        const held = await client.query(`SELECT 1 FROM vault_items WHERE vault_id = $1 UNION ALL SELECT 1 FROM vault_pending WHERE vault_id = $1 LIMIT 1`, [vault.id]);
+        if (!input.replaceEmpty || vault.agentAccess || held.rows.length) throw new VaultConflictError("VAULT_DIFFERS");
+        await client.query(`DELETE FROM vaults WHERE id = $1`, [vault.id]);
+        replaced = vault.id;
+        vault = null;
+      }
+      if (!vault && next) {
+        await client.query(`INSERT INTO vaults (id, owner_user_id, format_version, kdf, password_envelope, server_share_envelope, unlock_public_key, unlock_key_version, audit_head)
+          SELECT $1, $2, 1, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8 FROM users WHERE id = $2 AND disabled_at IS NULL`,
+        [next.vaultId, owner, JSON.stringify(next.kdf), JSON.stringify(next.passwordEnvelope), JSON.stringify(next.serverShareEnvelope), next.unlockPublicKey, next.unlockKeyVersion, GENESIS]);
+        vault = await this.lock(client, owner);
+      }
+      if (!vault) throw new VaultConflictError("NO_VAULT");
+      if (next) {
+        await client.query(`UPDATE vaults SET kdf = $2::jsonb, password_envelope = $3::jsonb, server_share_envelope = $4::jsonb, unlock_public_key = $5, unlock_key_version = $6,
+            recovery = $7::jsonb, epoch = $8, inbox_public_key = $9, inbox_private_envelope = $10::jsonb, updated_at = now() WHERE id = $1`,
+        [vault.id, JSON.stringify(next.kdf), JSON.stringify(next.passwordEnvelope), JSON.stringify(next.serverShareEnvelope), next.unlockPublicKey, next.unlockKeyVersion,
+          json(next.recovery), next.epoch, next.inbox?.publicKey ?? null, next.inbox ? JSON.stringify(next.inbox.privateKeyEnvelope) : null]);
+      }
+      let saved = 0;
+      for (const item of items) if (await this.upsertItem(client, vault, owner, item)) saved += 1;
+      if (delegation) {
+        const { claims } = delegation.certificate;
+        const handles = claims.items.map((item) => item.handle);
+        // A handle not here yet is a login the sending dock has not imported (delegate-pending joins waiting logins; hz 23/11, 502 handles,
+        // 501 items): it lands, and its item comes with a later push. A handle that is another owner's or Vault's item never does.
+        const foreign = (await client.query(`SELECT 1 FROM vault_items WHERE id = ANY($3) AND (owner_user_id <> $1 OR vault_id <> $2) LIMIT 1`, [owner, vault.id, handles])).rows;
+        // No envelopeDigest check: a hand-over (broker delegate-pending, extendDelegation) adds envelopes under the first digest, and this
+        // certificate was signed again by this broker only after it verified the root-pinned linked broker's signature (move-in).
+        if (claims.ownerUserId !== owner || claims.vaultId !== vault.id || foreign.length
+          || !Object.keys(delegation.fillEnvelopes).every((handle) => handles.includes(handle))) throw new VaultConflictError("BAD_DELEGATION");
+        await client.query(`UPDATE vault_delegations SET status = 'REVOKED', key_envelope = NULL, fill_envelopes = NULL, inbox_key_envelope = NULL, revoked_at = now()
+          WHERE vault_id = $1 AND status = 'ACTIVE'`, [vault.id]);
+        // A second landing of a generation replaces its row: an extension (broker delegate-pending) is a new certificate id at the same generation.
+        await client.query(`INSERT INTO vault_delegations (id, vault_id, owner_user_id, generation, certificate, key_envelope, fill_envelopes, inbox_key_envelope, status)
+          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, 'ACTIVE')
+          ON CONFLICT (vault_id, generation) DO UPDATE SET id = EXCLUDED.id, certificate = EXCLUDED.certificate, key_envelope = EXCLUDED.key_envelope,
+            fill_envelopes = EXCLUDED.fill_envelopes, inbox_key_envelope = EXCLUDED.inbox_key_envelope, status = 'ACTIVE', revoked_at = NULL`,
+        [claims.certId, vault.id, owner, claims.generation, JSON.stringify(delegation.certificate), JSON.stringify(delegation.keyEnvelope), JSON.stringify(delegation.fillEnvelopes),
+          delegation.inboxKeyEnvelope ? JSON.stringify(delegation.inboxKeyEnvelope) : null]);
+        await client.query(`UPDATE vaults SET delegation_generation = $2, agent_access = true, updated_at = now() WHERE id = $1`, [vault.id, claims.generation]);
+      }
+      await this.audit(client, vault, { actor: "SYSTEM", action: "LINK_SYNC", result: "OK", reason: `${replaced ? "REPLACED_" : ""}${next ? "VAULT_" : ""}ITEMS_${saved}${delegation ? "_DELEGATION" : ""}` });
+      return { items: saved, delegation: Boolean(delegation), replaced };
+    });
   }
 
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }

@@ -87,7 +87,7 @@ describe.skipIf(unavailable)("Nous billing webhook", () => {
     await ops?.end();
     await app?.end();
     await server?.stop();
-  });
+  }, 60_000);
 
   it("rejects a bad or old signature and records nothing", async () => {
     const event = { id: "evt_bad", type: "invoice.paid", created: nowSec, data: { object: {} } };

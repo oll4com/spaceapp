@@ -20,6 +20,7 @@ import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/
 import { getApiConfig } from "../src/config.js";
 import { fetchPublicUrl } from "../src/public-url-fetch.js";
 import { markSignin } from "../src/signin-readback.js";
+import { nightHandoffLine } from "../src/notifications/browser-handoff.js";
 import { fakeRepository } from "./support/vault-fakes.js";
 import type { SpaceAgentControl } from "../src/space-agent.js";
 
@@ -3611,6 +3612,23 @@ describe("Space API", () => {
     });
   });
 
+  it("refreshes the MCP registry at API start, so tool schema hashes follow the deployed servers (ops.logs 15/11)", async () => {
+    const auth = await authedApp({
+      config: getApiConfig({
+        SPACE_MCP_DISCOVERY_SMOKE_ENABLED: "true",
+        SPACE_MCP_SERVERS_JSON: JSON.stringify([
+          { id: "test-stdio", displayName: "Test stdio", transport: "stdio", command: process.execPath, args: [fixturePath], enabled: true }
+        ])
+      })
+    });
+    await vi.waitFor(async () => {
+      const mcp = await auth.app.inject({ method: "GET", url: "/api/mcp", headers: { cookie: auth.cookie } });
+      expect(mcp.json().tools).toEqual([expect.objectContaining({ id: "test-stdio:list_files", schemaHash: fixtureToolSchemaHash })]);
+    }, { timeout: 10_000 });
+    const smoke = await auth.app.inject({ method: "GET", url: "/api/admin/mcp/discovery-smoke", headers: { cookie: auth.cookie } });
+    expect(smoke.json().data).toMatchObject({ status: "VERIFIED", actorUserId: null });
+  });
+
   it("executes an approved allowlisted MCP tool and records an artifact", async () => {
     const artifactRoot = await mkdtemp(join(tmpdir(), "space-api-mcp-artifacts-"));
     const auth = await authedApp({
@@ -5786,6 +5804,40 @@ describe("Space API", () => {
     expect(store.getBrowserHandoffRequest(handoff.handoffRequestId)?.status).toBe("COMPLETED");
   });
 
+  it("moves a night handoff to the browser Take control reopened and accepts it there", async () => {
+    // nous_msg:efbc6ddef88f4e2daebfa884: a handoff asked in quiet hours closes its browser; Take control starts a new session on its page.
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Night handoff", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Job Copilot", mode: "BROWSER" });
+    const sessionId = `browser_session:${pane.id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+    const checkout = "https://shop.example.test/checkout";
+    const base = { paneId: pane.id, roomId: room.id, ownerAgentId: "agent:1", agentNumber: 1, profileId: `profile:${pane.id}`, profilePath: `/tmp/${pane.id}`,
+      viewport: "desktop" as const, targetUrl: checkout, currentUrl: checkout, title: "Shop", status: "READY" as const, isActive: true };
+    store.createPaneBrowserSession({ ...base, sessionId: "browser_session:night" });
+    const night = store.createBrowserHandoffRequest({ sessionId: "browser_session:night", paneId: pane.id, roomId: room.id, requestedByType: "AGENT",
+      requestedById: "cli:cli_session:test", reason: `CAPTCHA: tick the box${nightHandoffLine(checkout)}`, ttlSeconds: 36_000 });
+    // The restart closes the night session; the host stores the lease the operator takes on it.
+    store.createPaneBrowserSession({ ...base, sessionId });
+    store.createBrowserControlLease({ leaseId: "browser_lease:test", sessionId, paneId: pane.id, roomId: room.id, holderType: "OPERATOR",
+      holderId: "user:dev-operator", reason: "Direct browser interaction", ttlSeconds: 60 });
+    const { app, cookie, csrfToken } = await authedApp({
+      store,
+      config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true" }),
+      browserSessionManager: fakeBrowserSessionManager({ enabled: true })
+    });
+    const acquired = await app.inject({
+      method: "POST",
+      url: `/api/panes/${encodeURIComponent(pane.id)}/browser/control/acquire`,
+      headers: { cookie, [csrfHeaderName]: csrfToken },
+      payload: { holderType: "OPERATOR", holderId: "space-user", ttlSeconds: 60 }
+    });
+    expect(acquired.statusCode, acquired.body).toBe(200);
+    expect(store.getBrowserHandoffRequest(night.handoffRequestId)?.status).toBe("CANCELLED");
+    expect(store.listBrowserHandoffRequests(room.id).find((handoff) => handoff.sessionId === sessionId)).toMatchObject({
+      status: "ACCEPTED", reason: night.reason, requestedById: night.requestedById, controlLeaseId: acquired.json().lease.leaseId
+    });
+  });
+
   it("releases an operator lease nobody has pressed for 60 s on its heartbeat, never one still in use", async () => {
     // Operator report 2026-10-15: a Space tab on an old web bundle kept heartbeating a lease for an hour and blocked the agents.
     const start = Date.parse("2026-10-15T10:00:00.000Z");
@@ -6083,11 +6135,14 @@ describe("Space API", () => {
     const held = await ask("LOGIN","Invalid username or password");
     expect(held.statusCode, held.body).toBe(200);
     expect(held.json()).toMatchObject({status:"READ_BACK_FIRST",message:expect.stringContaining("space_vault_request_fill")});
+    // 20/11 (Cody, info@example.invalid): an ask that names an account the stored login is not goes to the operator.
+    expect((await ask("LOGIN","Sign in as other@oracle.example")).json().handoff).toBeDefined();
+    await app.inject({method:"POST",url:"/api/cli/browser/commands",headers,payload:{targetPaneId:browser.id,command:{type:"CANCEL_HANDOFF"}}});
     markSignin(owner,"https://signon.oracle.example/","tried");
     expect((await ask("LOGIN","Invalid username or password")).json()).toMatchObject({status:"READ_BACK_FIRST",message:expect.stringContaining("never read")});
     // A bot check stays the operator's.
     expect((await ask("CAPTCHA","Solve the hCaptcha")).json().handoff).toBeDefined();
-    expect(store.listBrowserHandoffRequests(room.id)).toHaveLength(1);
+    expect(store.listBrowserHandoffRequests(room.id)).toHaveLength(2);
     await app.inject({method:"POST",url:"/api/cli/browser/commands",headers,payload:{targetPaneId:browser.id,command:{type:"CANCEL_HANDOFF"}}});
     markSignin(owner,"https://signon.oracle.example/","read",Date.now()+1);
     expect((await ask("LOGIN","Invalid username or password after the Vault login")).json().handoff.reason).toContain("Stored method VAULT_LOGIN");
@@ -7415,6 +7470,9 @@ describe("Space API", () => {
     expect(denied.statusCode).toBe(404);
     const deleted = await app.inject({ method: "DELETE", url: path, headers });
     expect(deleted.statusCode).toBe(200);
+    // The real site sends SAMEORIGIN; a live fetch that fails or times out makes the route fall back to EMBEDDED, so the answer is fixed here.
+    vi.mocked(fetchPublicUrl).mockImplementationOnce(async (url) => ({ url, status: 200, ok: true, text: "<title>OpenAI Status</title>",
+      headers: { "content-type": "text/html", "x-frame-options": "SAMEORIGIN" } }));
     const inspected = await app.inject({ method: "GET", url: "/api/links/inspect?url=https://status.openai.com/", headers });
     expect(inspected.statusCode).toBe(200);
     expect(inspected.json()).toMatchObject({ url: "https://status.openai.com/", openMode: "NEW_TAB", canEmbed: false });

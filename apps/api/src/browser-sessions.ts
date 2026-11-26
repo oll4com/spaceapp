@@ -49,6 +49,7 @@ import { readVaultTarget, runSealedFill, vaultPageFrames, type SealedFillPage } 
 import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
 import { BrowserControlHeldError } from "./browser-errors.js";
 import type { SpaceApiConfig } from "./config.js";
+import { challengeFitScript } from "./challenge-fit.js";
 import { youTubeAdBlockScript } from "./youtube-ad-block.js";
 import {
   classifyGoogleBrowserEvidence,
@@ -74,8 +75,6 @@ interface ViewportSize {
   deviceScaleFactor: number;
   mobile: boolean;
 }
-
-const DEEPSEEK_HARNESS_BROWSER_ORIGIN = "http://10.254.240.21:3080";
 
 /**
  * Caps a pane profile's HTTP cache at 256 MB and stops Chrome's on-device model downloads: caches were 8.4 of the
@@ -245,6 +244,8 @@ export interface BrowserBinaryFrame {
 export interface BrowserFrameStreamHandle {
   id: string;
   profile: BrowserStreamProfile;
+  /** Browser Host IPC only: resolves when the host connection carrying this stream closed, which ended it. */
+  ended?: Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -263,6 +264,8 @@ export interface BrowserAudioStreamHandle {
   sampleRate: number;
   channels: number;
   format: "s16le";
+  /** Browser Host IPC only: resolves when the host connection carrying this stream closed, which ended it. */
+  ended?: Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -281,6 +284,8 @@ interface BrowserStreamSubscriber extends BrowserFramePacing {
 interface BrowserProfileRuntime {
   /** The proxy routes this Chrome started with (Freelance Copilot per-platform egress); null: no proxy. */
   egressKey?: string | null;
+  /** The route name this Chrome started on (a Freelance Copilot's: its pane route); null: no route. */
+  egressRoute?: FreelanceEgressRoute | null;
   process: ChildProcessWithoutNullStreams;
   xvfb?: ChildProcessWithoutNullStreams;
   display?: number;
@@ -294,9 +299,13 @@ interface BrowserProfileRuntime {
 interface BrowserRuntime {
   profile: BrowserProfileRuntime;
   profilePath: string;
+  /** The pane this runtime serves: its stop finds it even when the pane's stored session is gone or replaced. */
+  paneId: string;
   ownedPages: Set<string>;
   closing: boolean;
   viewportDimensions?: BrowserViewportDimensions;
+  /** The challenge-fit script of each page (CDP session) while it is mobile, by its script identifier. */
+  challengeFits?: Map<string, string>;
   process: ChildProcessWithoutNullStreams;
   xvfb?: ChildProcessWithoutNullStreams;
   display?: number;
@@ -322,8 +331,12 @@ interface BrowserRuntime {
   vaultProtected?: boolean;
   /** The proxy routes this pane needs (a Freelance Copilot's); null: any Chrome of its account. */
   egressKey: string | null;
+  /** The one route chosen for this pane (none for a Freelance Copilot's per-platform routes): it joins any Chrome started on that route. */
+  egressRoute: FreelanceEgressRoute | null;
   /** Last use by a viewer, an agent or the server (epoch ms): an unused window leaves the display (showWindow). */
   usedAt: number;
+  /** The move off a detached active tab now running (`reactivate`); every use waits for it. */
+  reactivating?: Promise<void>;
 }
 
 /** Another Google account's Chrome (shared with the panes that use that account) holding some of a pane's tabs. */
@@ -409,6 +422,8 @@ export interface BrowserSessionManager {
   captureFrame(sessionId: string): Promise<BrowserFrame>;
   stopPane(paneId: string, traceId?: string, context?: BrowserHostActorContext): Promise<void>;
   stopDetached?(session: PaneBrowserSession): Promise<void>;
+  /** Closes the Chromes no open pane's active session holds any more (after the grace); returns how many it closed. */
+  sweepOrphanChromes?(now?: number): Promise<number>;
   stopRoom(roomId: string, traceId?: string, context?: BrowserHostActorContext): Promise<void>;
   closeAll(): Promise<void>;
   issueFrameTicket(paneId: string, sessionId: string, ttlMs: number): BrowserFrameToken;
@@ -1563,6 +1578,7 @@ export class BrowserRequestGuard {
   ) {
     this.allowedLocalOrigins = new Set(
       (Array.isArray(allowedLocalOrigins) ? allowedLocalOrigins : [allowedLocalOrigins])
+        .filter(Boolean) // an unset harness origin (SPACE_HARNESS_ORIGIN) allows nothing
         .map((origin) => new URL(origin).origin)
     );
   }
@@ -1629,18 +1645,24 @@ export function googleReturnOrigins(evidenceOrigin: string, redirectUri: string 
   } catch { return []; }
 }
 
-export async function assertSafeBrowserTargetUrl(raw: string, allowedLocalOrigin: string): Promise<string> {
-  return new BrowserRequestGuard([allowedLocalOrigin, DEEPSEEK_HARNESS_BROWSER_ORIGIN]).assertAllowed(raw);
+export async function assertSafeBrowserTargetUrl(raw: string, config: Pick<SpaceApiConfig, "browserEvidenceTargetOrigin" | "harnessOrigin">): Promise<string> {
+  return new BrowserRequestGuard([config.browserEvidenceTargetOrigin, config.harnessOrigin]).assertAllowed(raw);
 }
 
 // Twice the Browser Host's 30 s request bound: a send never ends before the request waiting on it, but a Chrome that stopped
 // answering (13/11, pane:PAmSde500V-P) no longer holds its pane's start, and every stop queued behind it, forever.
 export const CDP_SEND_TIMEOUT_MS = 60_000;
+/** The probe of a Chrome whose command timed out: a live Chrome answers Browser.getVersion and `1` in milliseconds; past this it counts as not answering. */
+export const CDP_PROBE_TIMEOUT_MS = 3_000;
+/** How long a Chrome stays with nothing holding it before the orphan sweep closes it (longer than any start, check or move). */
+export const ORPHAN_CHROME_GRACE_MS = 10 * 60_000;
 
 export class CdpClient {
   private nextId = 1;
-  private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
+  private readonly pending = new Map<number, { key: string; resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
   private readonly listeners = new Set<(event: CdpEvent) => void>();
+  /** Targets (a page's CDP session, "" for the browser) whose last command timed out with no answer since (API audit 16/11). */
+  private readonly stalls = new Set<string>();
 
   private constructor(private readonly ws: WebSocket, private readonly sendTimeoutMs = CDP_SEND_TIMEOUT_MS) {
     this.ws.addEventListener("message", (event) => {
@@ -1657,6 +1679,7 @@ export class CdpClient {
         const pending = this.pending.get(message.id);
         this.pending.delete(message.id);
         if (!pending) return;
+        this.stalls.delete(pending.key);
         if (message.error) {
           pending.reject(new Error(message.error.message ?? "Chrome DevTools Protocol command failed."));
         } else {
@@ -1691,17 +1714,29 @@ export class CdpClient {
     return new CdpClient(ws, sendTimeoutMs);
   }
 
-  async send<T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> {
+  get open(): boolean {
+    return this.ws.readyState === WebSocket.OPEN;
+  }
+
+  /** Whether the browser or this page left a command unanswered (or the socket closed): its next action probes it first. */
+  stalled(sessionId?: string): boolean {
+    return !this.open || this.stalls.has("") || Boolean(sessionId && this.stalls.has(sessionId));
+  }
+
+  async send<T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}, sessionId?: string, timeoutMs = this.sendTimeoutMs): Promise<T> {
     if (this.ws.readyState !== WebSocket.OPEN) throw new Error("Chrome DevTools Protocol socket is not open.");
     const id = this.nextId;
     this.nextId += 1;
+    const key = sessionId ?? "";
     const response = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Chrome DevTools Protocol ${method} timed out after ${this.sendTimeoutMs}ms.`));
-      }, this.sendTimeoutMs);
+        this.stalls.add(key);
+        reject(new Error(`Chrome DevTools Protocol ${method} timed out after ${timeoutMs}ms.`));
+      }, timeoutMs);
       timer.unref();
       this.pending.set(id, {
+        key,
         resolve: (value) => { clearTimeout(timer); resolve(value as T); },
         reject: (reason) => { clearTimeout(timer); reject(reason); }
       });
@@ -1929,7 +1964,11 @@ export async function dispatchBrowserRuntimeInput(
       "Input.dispatchTouchEvent",
       { type: input.eventType, touchPoints: input.touchPoints, modifiers: input.modifiers ?? 0 },
       cdpSessionId
-    );
+    ).catch((error: unknown) => {
+      // Work/Hugo 20/11: an app that resends an end Chrome already took (its first answer timed out) finds the touch over: nothing is left to end.
+      if (input.eventType !== "touchStart" && error instanceof Error && error.message.startsWith("Must send a TouchStart first")) return;
+      throw error;
+    });
   } else if (input.type === "DIALOG") {
     await client.send(
       "Page.handleJavaScriptDialog",
@@ -2095,7 +2134,7 @@ export async function applyRestoreState(
       "return ok;",
       "})()"
     ].join(" ");
-    let ready = false;
+    let ready: boolean;
     try {
       const result = (await client.send(
         "Runtime.evaluate",
@@ -2112,10 +2151,15 @@ export async function applyRestoreState(
   }
 }
 
-export function createBrowserSessionManager(options: { store: SpaceStore; config: SpaceApiConfig }): BrowserSessionManager {
+export function createBrowserSessionManager(options: { store: SpaceStore; config: SpaceApiConfig; cdpSendTimeoutMs?: number }): BrowserSessionManager {
   const { store, config } = options;
   const runtimes = new Map<string, BrowserRuntime>();
   const profiles = new Map<string, BrowserProfileRuntime>();
+  /** Chromes whose background probe (answering) is still out, so a burst of actions sends one probe. */
+  const probing = new Set<CdpClient>();
+  /** Every Chrome this host started, by profile path, until it exits: the orphan sweep also finds one no map points to. */
+  const launchedChromes = new Map<BrowserProfileRuntime, string>();
+  const orphanSince = new Map<BrowserProfileRuntime, number>();
   const profileTails = new Map<string, Promise<unknown>>();
   function withProfileLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
     const next = (profileTails.get(path) ?? Promise.resolve()).catch(() => undefined).then(operation);
@@ -2491,7 +2535,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   const captureCommands = new Map<string, "STOP" | "CANCEL">();
   const requestGuard = new BrowserRequestGuard([
     config.browserEvidenceTargetOrigin,
-    DEEPSEEK_HARNESS_BROWSER_ORIGIN,
+    config.harnessOrigin,
     ...googleReturnOrigins(config.browserEvidenceTargetOrigin, process.env.SPACE_GOOGLE_REDIRECT_URI || process.env.GOOGLE_REDIRECT_URI)
   ]);
   let capturePumpRunning = false;
@@ -2625,6 +2669,17 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     const product = size.mobile ? (await runtime.client.send<{ product: string }>("Browser.getVersion")).product : "";
     await runtime.client.send("Emulation.setUserAgentOverride", size.mobile ? mobileUserAgentOverride(product, viewport === "mobile") : { userAgent: "" }, runtime.cdpSessionId);
     await runtime.client.send("Emulation.setTouchEmulationEnabled", size.mobile ? { enabled: true, maxTouchPoints: 5 } : { enabled: false }, runtime.cdpSessionId);
+    // A phone page moves a reCAPTCHA challenge back inside its right edge (nous_msg:f93235c0); without the script it only stays clipped.
+    const fits = runtime.challengeFits ??= new Map<string, string>();
+    const fit = fits.get(runtime.cdpSessionId);
+    if (size.mobile && !fit) {
+      const added = await runtime.client.send<{ identifier: string }>("Page.addScriptToEvaluateOnNewDocument",
+        { source: challengeFitScript(), worldName: "space-challenge-fit", runImmediately: true }, runtime.cdpSessionId).catch(() => undefined);
+      if (added?.identifier) fits.set(runtime.cdpSessionId, added.identifier);
+    } else if (!size.mobile && fit) {
+      fits.delete(runtime.cdpSessionId);
+      await runtime.client.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: fit }, runtime.cdpSessionId).catch(() => undefined);
+    }
     runtime.viewportDimensions = { width: size.width, height: size.height };
   }
 
@@ -2634,6 +2689,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   // A headless Chrome (light browser step 5) paints off the display too but minimizes: page hidden, rAF 0, back at 60 fps
   // on "normal", a frozen page too (probe 13/11).
   const WINDOW_IDLE_MS = 5 * 60_000;
+  // Chrome answers a touch about once per frame it paints (45 ms measured 14/11); one held this long is waiting for a frame.
+  const TOUCH_REPAINT_MS = 1_000;
   // X11 positions are 16-bit: 20000 plus a 4K-wide window still fits.
   const OFFSCREEN_LEFT = 20_000;
   type WindowBounds = { left: number; top: number } | { windowState: "normal" };
@@ -2709,6 +2766,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     let loud: Promise<Set<string> | null> | undefined;
     const sounding = () => loud ??= soundingChromeProfiles(pulse).catch(() => null);
     for (const [path, profile] of profiles) void hideIdleWindows(profile, path, sounding);
+    void sweepOrphanChromes().catch(() => undefined);
   }, 60_000);
   windowSweep.unref();
 
@@ -2727,12 +2785,41 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     }
   }
 
+  /**
+   * API audit 16/11 (one pane's Chrome stopped answering; each of its actions then waited the 60 s CDP bound): a runtime whose browser or
+   * active page left a command unanswered fails its actions at once with BROWSER_UNRESPONSIVE, whose details name the pane, its Chrome and
+   * that Chrome's other panes, while a probe runs in the background: its answer clears the mark, so the next action runs. The API reports it
+   * to Nous and, when it still does not answer about 30 s later, relaunches it through the route's stop+start path (browser-unresponsive.ts,
+   * operator order 20/11).
+   */
+  async function answering(runtime: BrowserRuntime, sessionId: string): Promise<void> {
+    const { client, cdpSessionId } = runtime;
+    if (!client.stalled(cdpSessionId)) return;
+    if (client.open && !probing.has(client)) {
+      probing.add(client);
+      void Promise.allSettled([client.send("Browser.getVersion", {}, undefined, CDP_PROBE_TIMEOUT_MS),
+        client.send("Runtime.evaluate", { expression: "1" }, cdpSessionId, CDP_PROBE_TIMEOUT_MS)]).finally(() => probing.delete(client));
+    }
+    const profilePath = runtime.pageProfiles.get(runtime.targetId) ?? runtime.profilePath;
+    const otherPanes = [...profiles.get(profilePath)?.members ?? []].map((member) => member.paneId).filter((id) => id !== runtime.paneId);
+    const why = client.open ? "left a command unanswered and has not answered since" : "lost its DevTools connection";
+    console.warn(JSON.stringify({ event: "browser.unresponsive", paneId: runtime.paneId, sessionId, profilePath, otherPanes, why }));
+    throw new SpaceFeatureDisabledError("BROWSER_UNRESPONSIVE",
+      `This pane's Chrome ${why}, so the action was not run. Space relaunches it on the same page, network route and `
+      + "tabs if it still does not answer in about 30 s. Retry in a few seconds: a probe runs in the background and the next action runs once Chrome answers.",
+      { paneId: runtime.paneId, sessionId, profilePath, otherPanes, why });
+  }
+
   /** `use: false` for reads that are no use of the page (the open view's tab list poll), so they leave an idle window hidden. */
   function ensureRuntime(session: PaneBrowserSession, use = true): Promise<BrowserRuntime> {
     if (closingAll || closingSessions.has(session.sessionId)) return Promise.reject(new SpaceConflictError("The browser session is closing."));
     const existing = runtimes.get(session.sessionId);
     if (existing && existing.process.exitCode === null && existing.process.signalCode === null) {
-      return use ? showWindow(existing).then(() => existing) : Promise.resolve(existing);
+      // Work/Emma 20/11: a request between its active tab's detach and the move off it went to the dead CDP session
+      // ("Session with given id not found"); a failed move left the pane so for good.
+      return answering(existing, session.sessionId)
+        .then(() => existing.reactivating ?? (existing.targetId && existing.pageSessions.get(existing.targetId) !== existing.cdpSessionId ? reactivate(existing) : undefined))
+        .then(() => use ? showWindow(existing).then(() => existing) : existing);
     }
     const pending = runtimeStarts.get(session.sessionId);
     if (pending) return pending;
@@ -2752,20 +2839,20 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
    * pane browser (plan clipboard:iLvBs5eOMZjF). Null when nothing was chosen (or a Freelance pane is all direct); an
    * explicit "This server" is key "direct". The PAC holds the route, so a route change changes the key and relaunches Chrome.
    */
-  async function egressFor(paneId: string): Promise<{ args: string[]; env: Record<string, string>; key: string } | null> {
+  async function egressFor(paneId: string): Promise<{ args: string[]; env: Record<string, string>; key: string; route: FreelanceEgressRoute; perPlatform: boolean } | null> {
     const pane = await Promise.resolve(store.getPane(paneId)).catch(() => null);
     if (!pane) return null;
     const freelance = pane.mode === "FREELANCE_COPILOT" ? resolveFreelanceCopilotPaneMetadata(pane.freelanceCopilotMetadata).settings : null;
     const route = freelance ? freelance.browserEgress : await Promise.resolve(store.getPaneBrowserRoute(paneId)).catch(() => null);
     if (!route) return null;
-    const pac = freelance ? freelanceEgressPac(freelance) : browserRoutePac(route);
-    if (!pac) return freelance ? null : { args: [], env: {}, key: "direct" };
+    const pac = freelance ? freelanceEgressPac(freelance, config.vpnSocksProxies) : browserRoutePac(route, config.vpnSocksProxies);
+    if (!pac) return freelance ? null : { args: [], env: {}, key: "direct", route, perPlatform: false };
     const locale = egressLocales[route];
     return {
       args: [`--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,${Buffer.from(pac).toString("base64")}`, "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         ...(locale ? [`--accept-lang=${locale.acceptLang}`] : [])],
       env: locale ? { TZ: locale.timeZone } : {},
-      key: createHash("sha256").update(pac).digest("hex")
+      key: createHash("sha256").update(pac).digest("hex"), route, perPlatform: Boolean(freelance)
     };
   }
 
@@ -2811,7 +2898,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     return ["--headless=new", `--screen-info={${width}x${height}}`, ...(userAgent ? [`--user-agent=${userAgent}`] : [])];
   }
 
-  async function launchProfile(session: Pick<PaneBrowserSession, "profilePath" | "viewport">, egress: { args: string[]; env: Record<string, string>; key: string } | null = null): Promise<BrowserProfileRuntime> {
+  async function launchProfile(session: Pick<PaneBrowserSession, "profilePath" | "viewport">, egress: { args: string[]; env: Record<string, string>; key: string; route: FreelanceEgressRoute } | null = null): Promise<BrowserProfileRuntime> {
     await mkdir(session.profilePath, { recursive: true, mode: 0o700 });
     await forgetChromeSavedLogins(session.profilePath);
     await keepSessionCookies(session.profilePath).catch(() => undefined);
@@ -2879,9 +2966,9 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       // A cold first launch (Chrome and its libraries read from disk) took ~3.5-6.5 s of the old 10 s on CI runners and once
       // more (Security 42911060446); 20 s still fits the Browser Host's 30 s request with Xvfb, CDP and the first page.
       const wsUrl = await waitForChromeWebSocket(chrome, 20_000);
-      client = await CdpClient.connect(wsUrl, 10_000);
+      client = await CdpClient.connect(wsUrl, 10_000, options.cdpSendTimeoutMs);
       const profile: BrowserProfileRuntime = {
-        egressKey: egress?.key ?? null, process: chrome, client, ...(xvfb ? { xvfb } : {}), ...(display !== null ? { display } : {}),
+        egressKey: egress?.key ?? null, egressRoute: egress?.route ?? null, process: chrome, client, ...(xvfb ? { xvfb } : {}), ...(display !== null ? { display } : {}),
         owners: new Map(), attachments: new Map(), members: new Set(), detach: () => undefined
       };
       profile.detach = client.onEvent(event => {
@@ -2918,7 +3005,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
             const opener = pageOpeners.get(id);
             pageOpeners.delete(id);
             // A page that closes itself (a sign-in popup) must not leave its pane on a dead target.
-            if (owner && owner.targetId === id && !owner.closing) void reactivateOwnedPage(owner, opener).catch(() => undefined);
+            if (owner && owner.targetId === id && !owner.closing) void reactivate(owner, opener).catch(() => undefined);
             if (owner && owner.profile !== profile && !owner.closing) void pruneAccountTabs(owner).catch(() => undefined);
           }
         }
@@ -2928,6 +3015,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         filter: [{ type: "page", exclude: false }]
       });
       profiles.set(session.profilePath, profile);
+      launchedChromes.set(profile, session.profilePath);
+      chrome.once("exit", () => { launchedChromes.delete(profile); orphanSince.delete(profile); });
       return profile;
     } catch (error) {
       // The launch's own error is the answer; a Chrome that will not stop frees its display when it exits.
@@ -2964,6 +3053,11 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     const sessionId = [...runtimes].find(([, candidate]) => candidate === runtime)?.[0];
     const session = sessionId ? await store.getPaneBrowserSession(sessionId) : undefined;
     return session?.isActive && !closingAll && !closingSessions.has(session.sessionId) && !runtime.closing ? session : undefined;
+  }
+
+  /** One move off a dead active tab at a time, shared by the detach event and the next use. */
+  function reactivate(runtime: BrowserRuntime, openerId?: string): Promise<void> {
+    return runtime.reactivating ??= reactivateOwnedPage(runtime, openerId).finally(() => { runtime.reactivating = undefined; });
   }
 
   async function reactivateOwnedPage(runtime: BrowserRuntime, openerId: string | undefined): Promise<void> {
@@ -3137,11 +3231,11 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       const chrome = home ? runtime.profile : await joinAccountTab(runtime, session, path, { profileId: accountTab.profileId!, label: accountTab.label });
       if (chrome === from) {
         // Already in that account: a sign-in request opens Google sign-in in the tab.
-        if (accountTab.url) await from.client.send("Page.navigate", { url: await assertSafeBrowserTargetUrl(accountTab.url, config.browserEvidenceTargetOrigin) }, runtime.pageSessions.get(accountTab.pageId));
+        if (accountTab.url) await from.client.send("Page.navigate", { url: await assertSafeBrowserTargetUrl(accountTab.url, config) }, runtime.pageSessions.get(accountTab.pageId));
         return;
       }
       const rawUrl = accountTab.url ?? (page.url && /^https?:\/\//i.test(page.url) ? page.url : "about:blank");
-      const url = rawUrl === "about:blank" ? rawUrl : await assertSafeBrowserTargetUrl(rawUrl, config.browserEvidenceTargetOrigin);
+      const url = rawUrl === "about:blank" ? rawUrl : await assertSafeBrowserTargetUrl(rawUrl, config);
       const pageId = await createOwnedPage(runtime, url, runtime.targetId !== accountTab.pageId, chrome);
       // The new tab takes the view first, so the old one never closes while the pane shows it.
       if (runtime.targetId === accountTab.pageId) await activateRuntimePage(session, runtime, pageId);
@@ -3305,13 +3399,17 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     // A pane with a network route (a Freelance Copilot's, or one chosen for the pane) only joins a Chrome started with it (else
     // it leaves from the wrong country); a Chrome with no key runs on this server's address. The account's Chrome restarts
     // with the route and the panes sharing the account come back on it with their tabs. Another pane's chosen route is
-    // refused: two routes would restart each other's Chrome in turn.
-    let egress: Awaited<ReturnType<typeof egressFor>> = null;
+    // refused: two routes would restart each other's Chrome in turn. A pane's one chosen route also joins a Freelance Copilot's
+    // Chrome on that pane route (its platforms keep their own routes), and that Chrome may restart a Chrome of such panes
+    // (Leo refused on Dana's account, 16/11): only the route name must match.
+    let egress: Awaited<ReturnType<typeof egressFor>>;
     let moved: string[] = [];
     try {
       egress = await egressFor(session.paneId);
-      if (egress && profile && (profile.egressKey ?? "direct") !== egress.key) {
-        if ([...profile.members].some(member => member.egressKey)) throw new SpaceConflictError("BROWSER_ROUTE: another pane uses this browser account on another network route; give both the same route, close the other pane, or use another browser account.");
+      const chosen = egress && !egress.perPlatform ? egress.route : null;
+      if (egress && profile && (profile.egressKey ?? "direct") !== egress.key && !(chosen && profile.egressRoute === chosen)) {
+        const route = egress.route;
+        if ([...profile.members].some(member => member.egressKey && member.egressRoute !== route)) throw new SpaceConflictError("BROWSER_ROUTE: another pane uses this browser account on another network route; give both the same route, close the other pane, or use another browser account.");
         moved = [...runtimes].filter(([, member]) => member.profile === profile).map(([id]) => id);
         await closeProfile(profile, session.profilePath);
         profile = undefined;
@@ -3323,7 +3421,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     let runtime: BrowserRuntime | undefined;
     try {
       runtime = {
-        profile, profilePath: session.profilePath, ownedPages: new Set(), closing: false,
+        profile, profilePath: session.profilePath, paneId: session.paneId, ownedPages: new Set(), closing: false,
         process: chrome,
         ...(xvfb ? { xvfb } : {}),
         ...(display !== null ? { display } : {}),
@@ -3342,6 +3440,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         pageProfiles: new Map(),
         accountWork: Promise.resolve(),
         egressKey: egress?.key ?? null,
+        egressRoute: egress && !egress.perPlatform ? egress.route : null,
         usedAt: Date.now()
       };
       profile.members.add(runtime);
@@ -3693,12 +3792,31 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     const session = await requireActiveSession(pane);
     await requireControlLease(session, input.leaseId, context);
     const runtime = await ensureRuntime(session);
-    await dispatchBrowserRuntimeInput(runtime.client, runtime.cdpSessionId, input);
+    const sent = dispatchBrowserRuntimeInput(runtime.client, runtime.cdpSessionId, input);
+    // Work/Hugo 20/11: Chrome answers a touch only once the page paints a frame, and a page that paints none (frozen and thawed on the
+    // display, probe 13/11) held the operator's taps 30 s and never got them. A move of its window off the display and back makes it
+    // paint, and the held touch goes on (repro 20/11); a mouse input waits for no frame.
+    if (input.type === "TOUCH" && await Promise.race([sent.then(() => false, () => false), sleep(TOUCH_REPAINT_MS).then(() => true)])) {
+      await repaint(runtime).catch(() => undefined);
+    }
+    await sent;
     return session;
   }
 
+  /** Moves the window of the pane's active page off the display and back, so a page that stopped painting paints again. */
+  async function repaint(runtime: BrowserRuntime): Promise<void> {
+    const { client } = runtime;
+    const profile = [runtime.profile, ...[...runtime.accountTabs.values()].map((tab) => tab.profile)].find((each) => each.client === client);
+    const found = await client.send<{ windowId: number; bounds: { left?: number; top?: number; windowState?: string } }>(
+      "Browser.getWindowForTarget", { targetId: runtime.targetId });
+    if (found.bounds.windowState !== "normal") return;
+    const { left = 0, top = 0 } = found.bounds;
+    await client.send("Browser.setWindowBounds", { windowId: found.windowId, bounds: profile?.xvfb ? { left: OFFSCREEN_LEFT, top: 0 } : { windowState: "minimized" } });
+    await client.send("Browser.setWindowBounds", { windowId: found.windowId, bounds: profile?.xvfb ? { left, top } : { windowState: "normal" } });
+  }
+
   async function navigateSession(session: PaneBrowserSession, rawUrl: string): Promise<PaneBrowserSession> {
-    const targetUrl = await assertSafeBrowserTargetUrl(rawUrl, config.browserEvidenceTargetOrigin);
+    const targetUrl = await assertSafeBrowserTargetUrl(rawUrl, config);
     // The guard keeps the fragment out of everything stored; only Chrome gets it (single-page routes such as portal.azure.com/#view/...).
     const fragment = targetUrl === "about:blank" ? "" : new URL(rawUrl).hash;
     let current = await store.updatePaneBrowserSession(session.sessionId, {
@@ -4165,10 +4283,83 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     return store.updateBrowserCaptureJob(jobId, { statusReason: "Capture stop requested; finalizing recorded output." });
   }
 
+  /** Forgets a session's runtime and releases its Chrome (closed when no other pane uses it). */
+  async function dropRuntime(sessionId: string): Promise<void> {
+    const runtime = runtimes.get(sessionId);
+    runtimes.delete(sessionId);
+    capacity.releaseSession(sessionId);
+    capacity.releaseLive(`stream:${sessionId}`);
+    try {
+      runtime?.detachDiagnostics();
+    } catch {
+      // Best effort: process termination below is the authoritative cleanup.
+    }
+    if (runtime) await releaseRuntime(runtime);
+  }
+
+  /**
+   * Orphan Chrome sweep (operator 14/11 21:53 BKK: 97 Chrome processes outlived their panes). A Chrome is held while its profile
+   * is busy (a start, a Google check, a move) or any pane using it has an active session on an open pane: that covers a
+   * control lease, a handoff and a needs-you, which all sit on a live pane's session. Anything else (room deleted, pane closed
+   * while its stop failed, a Chrome no map points to) closes after ORPHAN_CHROME_GRACE_MS, one JSON line each.
+   */
+  async function chromeHolders(profile: BrowserProfileRuntime, path: string): Promise<{ held: boolean; panes: string[]; stale: string[] }> {
+    const panes: string[] = [];
+    const stale: string[] = [];
+    if (profiles.get(path) !== profile) return { held: false, panes, stale };
+    if (profileTails.has(path) || googleChecks.has(path)) return { held: true, panes, stale };
+    for (const member of profile.members) {
+      panes.push(member.paneId);
+      const sessionId = [...runtimes].find(([, runtime]) => runtime === member)?.[0];
+      if (!sessionId) continue;
+      if (runtimeStarts.has(sessionId) || paneStarts.has(member.paneId)) return { held: true, panes, stale };
+      const session = await store.getPaneBrowserSession(sessionId);
+      if (!session?.isActive) continue;
+      const pane = await Promise.resolve(store.getPane(session.paneId)).catch((error: unknown) => { if (error instanceof SpaceNotFoundError) return null; throw error; });
+      if (pane && !pane.isClosed) return { held: true, panes, stale };
+      stale.push(sessionId);
+    }
+    return { held: false, panes, stale };
+  }
+
+  let orphanSweepRunning = false;
+  async function sweepOrphanChromes(now = Date.now()): Promise<number> {
+    if (closingAll || orphanSweepRunning) return 0;
+    orphanSweepRunning = true;
+    let closed = 0;
+    try {
+      for (const [profile, path] of [...launchedChromes]) {
+        if (!chromeAlive(profile)) continue;
+        // A store that does not answer holds every Chrome: the sweep never closes one it cannot prove free.
+        const holders = await chromeHolders(profile, path).catch(() => ({ held: true, panes: [] as string[], stale: [] as string[] }));
+        if (holders.held) { orphanSince.delete(profile); continue; }
+        const since = orphanSince.get(profile) ?? now;
+        orphanSince.set(profile, since);
+        if (now - since < ORPHAN_CHROME_GRACE_MS) continue;
+        orphanSince.delete(profile);
+        console.log(JSON.stringify({ event: "browser_orphan_chrome_closed", pid: profile.process.pid ?? null, profilePath: path,
+          tracked: profiles.get(path) === profile, panes: holders.panes, orphanForMs: now - since }));
+        for (const sessionId of [...runtimes].filter(([, runtime]) => profile.members.has(runtime)).map(([id]) => id)) await dropRuntime(sessionId).catch(() => undefined);
+        for (const sessionId of holders.stale) {
+          await Promise.resolve(store.updatePaneBrowserSession(sessionId, { status: "CLOSED", statusReason: "Browser closed: its pane is closed.", runtimeState: "STOPPED",
+            controlState: "UNCONTROLLED", isActive: false, endedAt: nowIso() })).catch(() => undefined);
+        }
+        if (chromeAlive(profile)) {
+          if (profiles.get(path) === profile) await withProfileLock(path, () => closeProfile(profile, path)).catch(() => undefined);
+          else await stopChromeAndDisplay(profile.process, profile.client, profile.xvfb, profile.display).catch(() => undefined);
+        }
+        closed += 1;
+      }
+    } finally { orphanSweepRunning = false; }
+    return closed;
+  }
+
   async function stopPaneById(paneId: string, _traceId?: string, context?: BrowserHostActorContext, skipStartWait = false): Promise<void> {
     // A start still running after this is hung on its Chrome; the stop closes that Chrome, which ends the start.
     if (!skipStartWait) await withTimeout<unknown>(paneStarts.get(paneId) ?? Promise.resolve(), CDP_SEND_TIMEOUT_MS, "Browser start wait timed out.").catch(() => undefined);
     const active = await store.getActivePaneBrowserSession(paneId);
+    // A runtime of an older or deleted session of this pane is no one's any more: no stop would ever reach its Chrome.
+    for (const [sessionId, runtime] of [...runtimes]) if (runtime.paneId === paneId && sessionId !== active?.sessionId) await dropRuntime(sessionId);
     if (!active) return;
     await assertCanMutate(active, context);
     closingSessions.add(active.sessionId);
@@ -4320,13 +4511,15 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         let restore: { scrollX?: number | null; scrollY?: number | null; videoPaused?: boolean | null } = {};
         if (!session) {
           const prior = await store.getLatestPaneBrowserSession(input.pane.id);
+          // 19/11 REVIEW (space_browser_set_route ×3): a Chrome stopped on chrome://newtab or chrome-error:// (a route change's
+          // stop+start) comes back on its http(s) target or the default page, never failing its start on a page it may not open.
           const restoreUrl =
             prior && (prior.status === "CLOSED" || prior.status === "ERROR") && input.pane.mode !== "YOUTUBE"
-              ? (prior.currentUrl ?? prior.targetUrl)
+              ? [prior.currentUrl, prior.targetUrl].find((url) => url && (url === "about:blank" || /^https?:\/\//i.test(url))) ?? null
               : null;
           const targetUrl = await assertSafeBrowserTargetUrl(
             input.targetUrl ?? restoreUrl ?? config.browserSessionsDefaultUrl,
-            config.browserEvidenceTargetOrigin
+            config
           );
           if (prior?.profilePath === expectedProfilePath && (!input.targetUrl || targetUrl === (prior.currentUrl ?? prior.targetUrl)) && (prior.status === "CLOSED" || prior.status === "ERROR")) {
             restore = {
@@ -4408,7 +4601,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       const session = await requireActiveSession(pane);
       await assertCanMutate(session, context);
       const runtime = await ensureRuntime(session);
-      const url = rawUrl ? await assertSafeBrowserTargetUrl(rawUrl, config.browserEvidenceTargetOrigin) : "about:blank";
+      const url = rawUrl ? await assertSafeBrowserTargetUrl(rawUrl, config) : "about:blank";
       const pageId = await createOwnedPage(runtime, url, !activate);
       if (activate) await activateRuntimePage(session, runtime, pageId);
       return refreshPages(session, runtime);
@@ -4546,18 +4739,10 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       closingSessions.add(session.sessionId);
       try {
         await runtimeStarts.get(session.sessionId)?.catch(() => undefined);
-        const runtime = runtimes.get(session.sessionId);
-        runtimes.delete(session.sessionId);
-        capacity.releaseSession(session.sessionId);
-        capacity.releaseLive(`stream:${session.sessionId}`);
-        try {
-          runtime?.detachDiagnostics();
-        } catch {
-          // Best effort: process termination below is the authoritative cleanup.
-        }
-        if (runtime) await releaseRuntime(runtime);
+        await dropRuntime(session.sessionId);
       } finally { closingSessions.delete(session.sessionId); }
     },
+    sweepOrphanChromes,
     async stopRoom(roomId, traceId, context) {
       const sessions = await store.listActivePaneBrowserSessions(roomId);
       await Promise.all(sessions.map((session) => stopPaneById(session.paneId, traceId, context)));
@@ -4568,21 +4753,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       for (const { timer } of googleCheckTimers.values()) clearTimeout(timer);
       googleCheckTimers.clear();
       await Promise.allSettled([...paneStarts.values(), ...runtimeStarts.values(), ...[...googleChecks.values()].map(check => check.promise), ...profileMoves, profileMoveRecovery]);
-      const sessions = [...runtimes.keys()];
-      await Promise.all(
-        sessions.map(async (sessionId) => {
-          const runtime = runtimes.get(sessionId);
-          runtimes.delete(sessionId);
-          capacity.releaseSession(sessionId);
-          capacity.releaseLive(`stream:${sessionId}`);
-          try {
-            runtime?.detachDiagnostics();
-          } catch {
-            // Closing the API should not hang on CDP socket state.
-          }
-          if (runtime) await releaseRuntime(runtime);
-        })
-      );
+      await Promise.all([...runtimes.keys()].map(dropRuntime));
     },
     async recoverCaptureJobs() {
       const recovery = await recoverInterruptedBrowserCaptureJobs(store, config.browserEvidenceArtifactRoot);
@@ -4671,15 +4842,15 @@ export interface ElementScreenshotClip {
 }
 
 export async function resolveElementScreenshotClip(
-  client: { send: (method: string, params?: Record<string, unknown>, sessionId?: string) => Promise<any> },
+  client: { send: (method: string, params?: Record<string, unknown>, sessionId?: string) => Promise<unknown> },
   sessionId: string,
   selector: string
 ): Promise<ElementScreenshotClip | null> {
-  const doc = await client.send("DOM.getDocument", {}, sessionId);
+  const doc = await client.send("DOM.getDocument", {}, sessionId) as { root?: { nodeId?: number } } | null;
   if (!doc?.root?.nodeId) return null;
-  const queried = await client.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector }, sessionId);
+  const queried = await client.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector }, sessionId) as { nodeId?: number } | null;
   if (!queried?.nodeId) return null;
-  const box = await client.send("DOM.getBoxModel", { nodeId: queried.nodeId }, sessionId);
+  const box = await client.send("DOM.getBoxModel", { nodeId: queried.nodeId }, sessionId) as { model?: { border?: [number, number, number, number, number, number, number, number] } } | null;
   const border = box?.model?.border;
   if (!border || !Array.isArray(border) || border.length < 8) return null;
   const xs = [border[0], border[2], border[4], border[6]];

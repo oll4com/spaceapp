@@ -11,7 +11,9 @@ substitute the private source SHA for a public Git SHA.
 `review-findings.json` gives each substantive observation a stable ID, source,
 disposition, owner, affected code, reproduction/evidence pointer and a
 `resolution` (fixed, partial, open, accepted-tradeoff, product-decision,
-not-a-defect). `KNOWN_LIMITATIONS.md` is generated from it. The early
+not-a-defect), and `waitsOn` when an open or partial finding has no code left
+and waits only on a release or decision (Nous's free-pane hand-out skips it).
+`KNOWN_LIMITATIONS.md` is generated from it. The early
 observations are the supplied roadmap's synthesis, not verbatim review quotes;
 the complete Kimi attachment remains unavailable. Claude reviews exist since
 2026-10-12, and the 2026-10-14 reviews of the v1.1.4 snapshot are recorded as

@@ -189,6 +189,29 @@ describe("marketing copilot analytics", () => {
     expect(measured.metrics).toEqual({ likes: 30, reposts: 3 });
     expect((await service.analytics(owner)).topPosts.map((entry) => entry.id)).toEqual([post.id]);
   });
+
+  it("asks again a day after a not_measurable reading until the week's reading, and a real reading clears the flag (22/11)", async () => {
+    let at = Date.parse("2026-10-01T10:00:00.000Z");
+    const now = () => new Date(at).toISOString();
+    const repository = new InMemoryMarketingCopilotRepository(now);
+    const service = createMarketingCopilotService({ repository, now });
+    const full = { ...pane, marketingCopilotMetadata: { ...defaultMarketingCopilotPaneMetadata(), settings: { ...defaultMarketingCopilotPaneMetadata().settings, autonomy: "FULL" as const } } };
+    const { post } = await service.createPost(owner, full, { channel: "X", kind: "POST", body: "SpaceApp runs your AI coding CLIs side by side.", assets: [] });
+    await service.beginPublish(owner, full, post.id);
+    await service.finishPublish(owner, full, { postId: post.id, url: "https://x.com/spaceapp/status/2" });
+    at += 25 * 3_600_000;
+    await service.recordPostMetrics(owner, full, { postId: post.id, metrics: { not_measurable: 1 } });
+    expect(await service.postsToMeasure(owner)).toEqual([]);
+    at += 25 * 3_600_000;
+    expect((await service.postsToMeasure(owner)).map((entry) => entry.id)).toEqual([post.id]);
+    expect((await service.recordPostMetrics(owner, full, { postId: post.id, metrics: { likes: 4 } })).metrics).toEqual({ likes: 4 });
+    at += 25 * 3_600_000;
+    expect(await service.postsToMeasure(owner)).toEqual([]);
+    at += 5 * 86_400_000;
+    await service.recordPostMetrics(owner, full, { postId: post.id, metrics: { not_measurable: 1 } });
+    at += 2 * 86_400_000;
+    expect(await service.postsToMeasure(owner)).toEqual([]);
+  });
 });
 
 describe("GitHub issues watch (goal e803a663, queue 28/10 01:45)", () => {

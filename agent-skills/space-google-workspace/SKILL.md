@@ -1,6 +1,6 @@
 ---
 name: space-google-workspace
-description: Google Workspace CLI (googleworkspace/cli, gws 0.22.5) skills for Gmail, Drive, Calendar, Sheets, Docs, Slides, Chat, Meet, Forms, Tasks, Keep, People, Classroom, Apps Script and Admin reports, plus workflow recipes and personas. Use when the operator asks an agent to read or change their Google Workspace data through gws. Needs the operator's one-time gws sign-in; inside a Mail Copilot pane use space_mailcopilot instead.
+description: "Google Workspace through the gws CLI (Gmail, Drive, Calendar, Sheets, Docs, Slides, Chat, Meet, Forms, Tasks, Admin). Needs the operator's gws sign-in; in a Mail Copilot pane use space_mailcopilot."
 metadata:
   category: TOOL_ADAPTER
 ---

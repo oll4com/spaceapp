@@ -10,8 +10,10 @@ import { createMailTransports, type MailTransportDeps } from "./transports.js";
 import { createGmailClient, type GmailClient } from "../mail-copilot/gmail-client.js";
 import { header, parseParticipants } from "../mail-copilot/gmail-mime.js";
 import { registerMailCampaignsRoutes, type MailCampaignsRouteDependencies } from "./routes.js";
+import { lookupIp, registerMailOpenTracking, trackedMailHtml, type MailTracker } from "./open-tracking.js";
 import { createMailCampaignsService, type MailCampaignsService, type MailCampaignsServiceOptions } from "./service.js";
 import { mailSite } from "./site.js";
+import { registerMailSiteFeed } from "./site-feed.js";
 
 export interface MailCampaignsWiring extends MailCampaignsRouteDependencies {
   databaseUrl: string | null | undefined;
@@ -33,6 +35,12 @@ export interface MailCampaignsWiring extends MailCampaignsRouteDependencies {
   unsubscribeSecret: string;
   /** The public one-click endpoint, e.g. https://oll4.com/u/ (SPACE_MAIL_UNSUBSCRIBE_BASE_URL); unset: mailto unsubscribe only. */
   unsubscribeBase?: string | null;
+  /** Per sender domain (SPACE_MAIL_UNSUBSCRIBE_BASE_URLS "domain=url,…"); unset: DEFAULT_UNSUBSCRIBE_BASES. */
+  unsubscribeBases?: string;
+  /** Open tracking: filled with this repository's tracker when the instance has the public relay for the pixel (`trackingRelay`). */
+  mailTracker?: { current?: MailTracker; relay: string | null; relays?: Record<string, string> };
+  /** Tests replace the reverse DNS and ipinfo.io lookup of a hit's IP. */
+  lookup?: typeof lookupIp;
   /** Instance job mail-campaign-sender (stable only): mails approved campaigns every 15 s. */
   senderJob: boolean;
   /** Instance job mail-campaign-health (stable only): address health and Gmail senders' bounces and replies every 10 minutes. */
@@ -52,6 +60,15 @@ function unsubscribeBase(value: string | null | undefined): string | null {
   const url = new URL(value || DEFAULT_UNSUBSCRIBE_BASE);
   if (url.protocol !== "https:" || url.hash || !(/\/$/.test(url.toString()) || /\?t=$/.test(url.toString()))) throw new Error("SPACE_MAIL_UNSUBSCRIBE_BASE_URL must be an https URL ending in / or ?t=.");
   return url.toString();
+}
+/** A domain with its own endpoint, so its mail never names oll4.com (operator 23/11: unboxexpert.com without oll4.com anywhere). */
+export const DEFAULT_UNSUBSCRIBE_BASES = "unboxexpert.com=https://unboxexpert.com/u/?t=";
+export function unsubscribeBases(value: string | undefined): Record<string, string> {
+  return Object.fromEntries((value || DEFAULT_UNSUBSCRIBE_BASES).split(",").filter((entry) => entry.trim()).map((entry) => {
+    const [domain, url] = [entry.slice(0, entry.indexOf("=")).trim(), entry.slice(entry.indexOf("=") + 1).trim()];
+    if (!domain || !/^[a-z0-9.-]+$/.test(domain) || !url) throw new Error("SPACE_MAIL_UNSUBSCRIBE_BASE_URLS entries must be domain=https URL.");
+    return [domain, unsubscribeBase(url)!];
+  }));
 }
 
 /** Mail Campaigns (plan clipboard:IJ2ovfLg1Lbw), kept out of the composition root: its repository, service and operator routes. */
@@ -114,9 +131,18 @@ export function registerMailCampaigns(app: FastifyInstance, deps: MailCampaignsW
       return gmailMessageById(createGmailClient({ accessToken: await google.googleAccessToken(owner, account, "MAIL_READ"), fetchImpl: deps.fetchImpl }), messageId);
     },
     unsubscribeKey: Buffer.from(hkdfSync("sha256", Buffer.from(deps.unsubscribeSecret, "utf8"), Buffer.from("space-mail-campaigns"), Buffer.from("unsubscribe-token"), 32)),
-    unsubscribeBase: unsubscribeBase(deps.unsubscribeBase ?? process.env.SPACE_MAIL_UNSUBSCRIBE_BASE_URL)
+    unsubscribeBase: unsubscribeBase(deps.unsubscribeBase ?? process.env.SPACE_MAIL_UNSUBSCRIBE_BASE_URL),
+    unsubscribeBases: unsubscribeBases(deps.unsubscribeBases ?? process.env.SPACE_MAIL_UNSUBSCRIBE_BASE_URLS),
+    trackingRelay: deps.mailTracker?.relay ?? null,
+    trackingRelays: deps.mailTracker?.relays
   } });
   registerMailCampaignsRoutes(app, service, deps);
+  registerMailOpenTracking(app, repository, deps);
+  registerMailSiteFeed(app, service, repository, deps.unsubscribeSecret);
+  const tracking = deps.mailTracker;
+  // A From domain with its own relay gets its pixel there, as campaigns do (operator 23/11: unboxexpert.com mail never names oll4.com).
+  if (tracking?.relay) tracking.current = async (owner, { from, ...input }) =>
+    (await trackedMailHtml(repository, tracking.relays?.[from?.split("@")[1]?.toLowerCase() ?? ""] ?? tracking.relay!, { ownerUserId: owner, ...input })).html;
   if (deps.senderJob) {
     let running = false;
     const timer = setInterval(() => {

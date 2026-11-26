@@ -99,9 +99,8 @@ export function ProjectSourcePicker({ context, defaultParent, isAdmin, client = 
   const run = async (label: string, input: OpenProjectInput) => {
     if (busyRef.current) return;
     busyRef.current = true; setBusy(label); setError(null);
-    let result: OpenProjectResult | null = null;
     try {
-      result = await client.openProject(input);
+      const result = await client.openProject(input);
       if (mounted.current) setPrepared(result);
       await onOpened(result);
       if (mounted.current) { busyRef.current = false; close(); }

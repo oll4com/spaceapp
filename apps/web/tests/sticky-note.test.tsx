@@ -13,7 +13,6 @@ vi.mock("../src/api.js", () => ({ api: mocks }));
 
 import {
   StickyNoteWindow,
-  useStickyNoteWindows,
   StickyNoteLayer
 } from "../src/features/clipboard-dock/StickyNoteWindow.js";
 import {

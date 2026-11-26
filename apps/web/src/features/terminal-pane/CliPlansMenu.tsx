@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ClipboardItem, TaskMetadata, ManagedPlanExecution, PaneCliModelSettings, StageModelSelection } from "@space/contracts";
+import { planShownStatus } from "@space/contracts";
 import { api } from "../../api.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import {
@@ -16,7 +17,6 @@ import {
   Loader2,
   RotateCw,
   Search,
-  Sparkles,
   X
 } from "../ui-theme/app-icons.js";
 import { SPACE_CLIPBOARD_UPDATED_EVENT } from "../clipboard-dock/clipboard-events.js";
@@ -261,7 +261,7 @@ function resolveActivePlan(
         );
         if (storedMatch) return guess(storedMatch);
       }
-    } catch {}
+    } catch { /* storage unavailable; nothing to remember */ }
   }
 
   // 4. Match via clipboard item metadata:
@@ -387,15 +387,17 @@ async function readOpenPlans(): Promise<ClipboardItem[]> {
   for (let page = 1; page <= OPEN_PLANS_MAX_PAGES; page += 1) {
     const response = await api.clipboardItems({
       source: "PLAN",
-      includeCompleted: false,
+      // Open plans and closed ones with work left, so any plan under 100% can be picked (operator 26/11).
+      unfinished: true,
       page,
       pageSize: OPEN_PLANS_PAGE_SIZE
     });
     items.push(...(response?.data ?? []));
     if (page >= (response?.pagination?.totalPages ?? 1)) break;
   }
-  const openPlans = items.filter(
-    (item) => !item.isCompleted && item.executionStatus !== "COMPLETED"
+  // Same rule as Nous's "Closed with work left": a plan closed at 100% is done, whatever its steps or park say.
+  const openPlans = items.filter((item) =>
+    item.isCompleted ? item.progressPercentage < 100 : item.executionStatus !== "COMPLETED"
   );
   // Newest to oldest
   openPlans.sort((a, b) => {
@@ -682,12 +684,12 @@ export function CliPlansMenu({
     if (!pane?.id || typeof api?.updatePlanProgress !== "function") return;
     try {
       localStorage.setItem(`space_active_plan_${pane.id}`, plan.id);
-    } catch {}
+    } catch { /* storage unavailable; nothing to remember */ }
     await api.updatePlanProgress(plan.id, {
       paneId: pane.id,
       roomId: pane.roomId ?? undefined,
       paneTitle: pane.paneName ?? pane.title ?? undefined
-    } as any);
+    });
   }, [pane?.id, pane?.roomId, pane?.paneName, pane?.title]);
 
   // Remember only real bindings; a heuristic guess must not become sticky for this pane.
@@ -695,7 +697,7 @@ export function CliPlansMenu({
     if (!activeMatch || activeMatch.basis === "guess" || !pane?.id) return;
     try {
       localStorage.setItem(`space_active_plan_${pane.id}`, activeMatch.plan.id);
-    } catch {}
+    } catch { /* storage unavailable; nothing to remember */ }
   }, [activeMatch, pane?.id]);
 
   useEffect(() => {
@@ -750,10 +752,10 @@ export function CliPlansMenu({
     if (pane?.id) {
       try {
         if (localStorage.getItem(`space_active_plan_${pane.id}`) === plan.id) localStorage.removeItem(`space_active_plan_${pane.id}`);
-      } catch {}
+      } catch { /* storage unavailable; nothing to remember */ }
     }
     void finishPlanAction(
-      () => api.updatePlanProgress(plan.id, { paneId: null, roomId: null, paneTitle: null } as any),
+      () => api.updatePlanProgress(plan.id, { paneId: null, roomId: null, paneTitle: null }),
       "The plan could not be detached from this pane. Try again."
     );
   };
@@ -815,7 +817,11 @@ export function CliPlansMenu({
   }, [active, needsCompletedPanePlan, paneId, openPlansSignature]);
 
   const displayPlan = activePlan ?? completedPanePlan;
-  const isDisplayPlanCompleted = !activePlan && Boolean(completedPanePlan);
+  // Parking closes a plan at any %, so a closed pane plan reads PARKED, never a finished 100% (operator 26/11).
+  const displayPlanStatus = displayPlan
+    ? planShownStatus({ status: displayPlan.executionStatus ?? "COMPLETED", progress: displayPlan.progressPercentage, steps: displayPlan.steps, parked: displayPlan.parked }).status
+    : null;
+  const isDisplayPlanCompleted = !activePlan && Boolean(completedPanePlan) && displayPlanStatus === "COMPLETED";
 
   const effectiveViewMode = userViewMode ?? (managedExecution || displayPlan ? "active_plan" : "all_plans");
 
@@ -925,7 +931,7 @@ export function CliPlansMenu({
     : activePlan
     ? `Active plan: ${activePlan.title || "Plan"} (${activePlan.progressPercentage}%)`
     : completedPanePlan
-    ? `Completed plan: ${completedPanePlan.title || "Plan"}`
+    ? `${isDisplayPlanCompleted ? "Completed" : "Parked"} plan: ${completedPanePlan.title || "Plan"}${isDisplayPlanCompleted ? "" : ` (${completedPanePlan.progressPercentage}%)`}`
     : plans.length > 0
       ? `Open plans (${plans.length})`
       : "Open plans";
@@ -1067,9 +1073,15 @@ export function CliPlansMenu({
             {activePlan.progressPercentage}%
           </span>
         ) : completedPanePlan ? (
-          <span className="terminal-plans-button-badge is-active-badge is-completed-badge" aria-hidden="true" title="Plan completed">
-            ✓ 100%
-          </span>
+          isDisplayPlanCompleted ? (
+            <span className="terminal-plans-button-badge is-active-badge is-completed-badge" aria-hidden="true" title="Plan completed">
+              ✓ 100%
+            </span>
+          ) : (
+            <span className="terminal-plans-button-badge" aria-hidden="true" title="Plan parked">
+              {completedPanePlan.progressPercentage}%
+            </span>
+          )
         ) : plans.length > 0 ? (
           <span className="terminal-plans-button-badge" aria-hidden="true">
             {plans.length > 9 ? "9+" : plans.length}
@@ -1328,9 +1340,9 @@ export function CliPlansMenu({
                           ) : null}
                           <span
                             className="terminal-plan-status-tag"
-                            data-status={displayPlan.executionStatus}
+                            data-status={displayPlanStatus ?? displayPlan.executionStatus}
                           >
-                            {displayPlan.executionStatus}
+                            {displayPlanStatus ?? displayPlan.executionStatus}
                           </span>
                         </div>
                       </div>
@@ -1897,7 +1909,7 @@ export function CliPlansMenu({
 
                             <div className="terminal-plan-item-meta">
                               <span className="terminal-plan-pane-tag" data-on-pane={onPane ? "true" : "false"} title={assignee ? `Linked to ${assignee}` : "Not linked to a pane"}>
-                                {onPane ? `On ${assignee}` : assignee ? "Pane closed" : "No pane"}
+                                {onPane ? `On ${assignee}` : plan.isCompleted ? "Closed" : assignee ? "Pane closed" : "No pane"}
                               </span>
                               <Clock3 aria-hidden="true" style={{ width: 11, height: 11 }} />
                               <span>{dateLabel}</span>

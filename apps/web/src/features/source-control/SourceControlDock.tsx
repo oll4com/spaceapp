@@ -308,7 +308,7 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
   const lastRemoteFetch = useRef<{ bindingId: string; at: number } | null>(null);
   const draftKey = `space:git-draft:${JSON.stringify([userId, project])}`;
   useEffect(() => { try { setMessage(localStorage.getItem(draftKey) || ""); } catch { setMessage(""); } }, [draftKey]);
-  const editMessage = (value: string) => { setMessage(value); try { localStorage.setItem(draftKey, value); } catch {} };
+  const editMessage = (value: string) => { setMessage(value); try { localStorage.setItem(draftKey, value); } catch { /* storage unavailable: draft kept in memory */ } };
   useEffect(() => {
     const controller = new AbortController();
     const load = async () => {
@@ -318,7 +318,7 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
         // Registry order (GitHub first) for the automatic choice; menus stay alphabetical.
         const usable = data.filter(state => state.enabled && state.available && providerAvailability(state) === "connected");
         let remembered: string | null = null;
-        try { remembered = localStorage.getItem(providerChoiceKey); } catch {}
+        try { remembered = localStorage.getItem(providerChoiceKey); } catch { /* storage unavailable: automatic choice */ }
         setProvider(current => {
           if (current !== "local" && enabledProviders(data).some(state => state.id === current)) return current;
           if (!providerChosen.current && remembered === "local") return "local";
@@ -330,8 +330,8 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
     };
     void load(); window.addEventListener(SOURCE_CONTROL_CONNECTION_EVENT, load);
     return () => { controller.abort(); window.removeEventListener(SOURCE_CONTROL_CONNECTION_EVENT, load); };
-  }, [client, userId]);
-  const chooseProvider = (next: DockProvider) => { providerChosen.current = true; setProvider(next); try { localStorage.setItem(providerChoiceKey, next); } catch {} };
+  }, [client, userId, providerChoiceKey]);
+  const chooseProvider = (next: DockProvider) => { providerChosen.current = true; setProvider(next); try { localStorage.setItem(providerChoiceKey, next); } catch { /* storage unavailable: choice kept for this session */ } };
   // A project opened from the picker selects its cloned repository after the provider switch resets the list.
   const pendingRepository = useRef<GitRemoteRepository | null>(null);
   // Confirmation for an action that also switches the binding; shown once the new binding is ready.
@@ -358,7 +358,6 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
     }, search.trim() ? 300 : 0);
     return () => { clearTimeout(timer); controller.abort(); };
     // The selected repository is kept visible but must not refetch the list.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, provider, enabled, userId, connectionKey, search]);
   useEffect(() => {
     const controller = new AbortController(); const current = ++context.current;
@@ -378,7 +377,6 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
       }
     }).catch(error => { if (!controller.signal.aborted && current === context.current) setError(error.message); });
     return () => { controller.abort(); if (current === context.current) ++context.current; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, project, provider, enabled, userId, connectionKey, bindRequest, providersReady]);
   useEffect(() => {
     if (!binding || !isDockActive) return;
@@ -458,7 +456,7 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
       if (current === context.current) {
         const epoch = ++statusEpoch.current;
         busyRef.current = false; setBusy(false);
-        try { const status = await client.status(id); if (current === context.current && epoch === statusEpoch.current) setSnapshot(status); } catch {}
+        try { const status = await client.status(id); if (current === context.current && epoch === statusEpoch.current) setSnapshot(status); } catch { /* status refresh failed: the operation error above is what matters */ }
       }
     }
   };
@@ -472,7 +470,7 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
     try {
       // 1. Provider states (enabled/connected) may have changed in Plugins.
       let states = providerStates;
-      try { states = await client.providers(); setProviderStates(states); } catch {}
+      try { states = await client.providers(); setProviderStates(states); } catch { /* keep the last known provider states */ }
       const selected = provider === "local" ? null : states.find(state => state.id === provider) ?? null;
       const usable = !!selected && selected.enabled && providerAvailability(selected) === "connected";
 
@@ -482,12 +480,12 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
           const page = await client.listRepositories({ provider, query: search.trim() || undefined, page: 1 });
           setRepos(page.data);
           setNextCursor(page.nextCursor || page.nextPage ? { cursor: page.nextCursor, page: page.nextCursor ? null : page.nextPage } : null);
-        } catch {}
+        } catch { /* keep the current list; refresh continues */ }
       }
 
       // 3. Project defaults and worktrees.
       if (project) {
-        try { setProjectDefaults(await client.defaults(project)); } catch {}
+        try { setProjectDefaults(await client.defaults(project)); } catch { /* keep the last known defaults */ }
         await refreshWorktrees();
       }
 
@@ -524,7 +522,7 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
             setDiff(selection.remote
               ? await client.diff(activeBinding.id, selection.path, false, undefined, true)
               : await client.diff(activeBinding.id, selection.path, selection.staged, undefined));
-          } catch {}
+          } catch { /* keep the open diff as shown */ }
         }
         if (epoch === statusEpoch.current) {
           setNotice(REFRESHED_NOTICE);

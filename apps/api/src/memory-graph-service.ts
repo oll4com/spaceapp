@@ -1,5 +1,5 @@
 import { createMemorySourceTopology } from "./memory-source-topology.js";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { spawn } from "./safe-child-process.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +49,22 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
   const loadGraphModule = () => {
     graphModule ??= import("@space/memory-graph");
     return graphModule;
+  };
+  // The persisted snapshot (28 MB, 49 MB for all months) was read and schema-parsed on every request: 0.4-0.9 s of blocked event
+  // loop each (profile 2026-11-21). Parsed once per file identity; a write renames a new file in, so the next read parses again.
+  const parsedSnapshots = new Map<string, { identity: string; read: Promise<MemoryGraphSnapshot | null> }>();
+  const readPersistedSnapshot = async (filename = "snapshot.json"): Promise<MemoryGraphSnapshot | null> => {
+    const graph = await loadGraphModule();
+    const path = join(options.rootDir, filename);
+    const info = await stat(path).catch(() => null);
+    const identity = info ? `${info.ino}:${info.mtimeMs}:${info.size}` : "";
+    const known = parsedSnapshots.get(path);
+    if (info && known?.identity === identity) return known.read;
+    const read = graph.createMemoryGraphSnapshotStore({ rootDir: options.rootDir, filename }).read();
+    if (info) parsedSnapshots.set(path, { identity, read });
+    else parsedSnapshots.delete(path);
+    read.catch(() => { if (parsedSnapshots.get(path)?.read === read) parsedSnapshots.delete(path); });
+    return read;
   };
   const listMonthlyPaths = async (): Promise<string[]> => {
     const entries = await readdir(memoryDir, { withFileTypes: true });
@@ -145,17 +161,13 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
     },
     async getCachedSnapshot() {
       const graph = await loadGraphModule();
-      const persisted = await graph.createMemoryGraphSnapshotStore({ rootDir: options.rootDir }).read();
+      const persisted = await readPersistedSnapshot();
       if (invalidatedSourceHash === "*" || persisted?.sourceHash === invalidatedSourceHash || !isCurrentSnapshot(persisted)) return null;
       return graph.calculateMemoryGraphSourceHash(await readSources()) === persisted.sourceHash ? persisted : null;
     },
     async getArchiveSnapshot() {
       const graph = await loadGraphModule();
-      const store = graph.createMemoryGraphSnapshotStore({
-        rootDir: options.rootDir,
-        filename: graph.ALL_MONTHS_SNAPSHOT_FILENAME
-      });
-      const persisted = await store.read();
+      const persisted = await readPersistedSnapshot(graph.ALL_MONTHS_SNAPSHOT_FILENAME);
       if (persisted && isCurrentSnapshot(persisted)) {
         archiveSnapshot = persisted;
         return archiveSnapshot;
@@ -185,7 +197,7 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
       initialLoad = null;
       archiveSnapshot = null;
       try {
-        const persisted = await store.read();
+        const persisted = await readPersistedSnapshot();
         invalidatedSourceHash = persisted?.sourceHash ?? invalidatedSourceHash;
         await store.invalidate();
       } catch (error) {
@@ -195,7 +207,7 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
     },
     async getSnapshot() {
       const graph = await loadGraphModule();
-      const persisted = await graph.createMemoryGraphSnapshotStore({ rootDir: options.rootDir }).read();
+      const persisted = await readPersistedSnapshot();
       const sources = await readSources();
       if (isCurrentSnapshot(persisted) && invalidatedSourceHash !== "*" && persisted.sourceHash !== invalidatedSourceHash) {
         snapshot = persisted;

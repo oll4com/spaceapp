@@ -1,6 +1,6 @@
 ---
 name: space-control-mcp
-description: "Manual for the Space Control MCP tools (space-control backend): room and pane control, inspect sections, schedules, watches, debug incidents and the one-by-one tool health check. Use when operating Space rooms or panes through Space Control, or when the operator asks to check its tools."
+description: "Space Control tools manual: rooms, panes, inspect, schedules, watches, debug incidents and the tool health check."
 metadata:
   category: TOOL_ADAPTER
 ---

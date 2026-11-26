@@ -61,6 +61,8 @@ export interface BrowserHostBinaryFrame {
 export interface BrowserHostStreamHandle {
   id: string;
   profile: BrowserHostStreamProfile;
+  /** IPC client only: resolves when the Browser Host connection carrying this stream closed, which ended it. */
+  ended?: Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -79,6 +81,8 @@ export interface BrowserHostAudioStreamHandle {
   sampleRate: number;
   channels: number;
   format: "s16le";
+  /** IPC client only: resolves when the Browser Host connection carrying this stream closed, which ended it. */
+  ended?: Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -114,6 +118,8 @@ export interface BrowserHostHealth {
   status: BrowserHostStatus;
   capacity: BrowserHostCapacity | null;
   captureMetrics: BrowserHostCaptureMetrics;
+  /** The host drops pane-row fields and enum values it does not know instead of refusing the pane (absent on older hosts). */
+  tolerantPaneRows?: boolean;
 }
 
 export interface BrowserHostPageList {

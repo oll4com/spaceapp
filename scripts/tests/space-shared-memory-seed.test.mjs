@@ -26,3 +26,12 @@ test("refreshes exact registry-safe prereleases while rejecting malformed versio
   assert.throws(() => run(`validateSeed(${JSON.stringify(prerelease)}, '1.2.0')`));
   assert.throws(() => run(`validateSeed({...${JSON.stringify(seed)}, releaseVersion:'01.2.0'}, '01.2.0')`));
 });
+
+test("a seed staged for a newer release passes the staged check, an older one and the exact check refuse it (14/11: a 1.2.2 seed under setup 1.2.1 blocked every remote push for 30 h)", () => {
+  const staged = { ...seed, releaseVersion: "1.2.2" };
+  assert.equal(run(`console.log(JSON.stringify(validateSeed(${JSON.stringify(staged)}, '1.2.1', { allowStaged: true })))`), true);
+  assert.equal(run(`console.log(JSON.stringify(validateSeed(${JSON.stringify({ ...seed, releaseVersion: "1.2.0" })}, '1.1.9', { allowStaged: true })))`), true);
+  assert.throws(() => run(`validateSeed(${JSON.stringify(staged)}, '1.2.1')`));
+  assert.throws(() => run(`validateSeed(${JSON.stringify(staged)}, '1.2.3', { allowStaged: true })`));
+  assert.throws(() => run(`validateSeed(${JSON.stringify(staged)}, '1.10.0', { allowStaged: true })`));
+});

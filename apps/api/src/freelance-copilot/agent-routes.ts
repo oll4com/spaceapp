@@ -122,8 +122,7 @@ export function registerFreelanceCopilotAgentRoutes(app: FastifyInstance, servic
   handle("get", "profile", async ({ owner }) => {
     const candidate = await deps.candidate?.(owner) ?? null;
     if (!candidate) return { candidate: null };
-    const { email: _email, phone: _phone, ...rest } = candidate;
-    return { candidate: rest };
+    return { candidate: Object.fromEntries(Object.entries(candidate).filter(([key]) => key !== "email" && key !== "phone")) };
   });
   handle("post", "accounts", async ({ owner, pane }, request) => ({ account: await service.updateAccount(owner, pane, body(freelanceAccountUpdateSchema, request), "AGENT") }));
   handle("post", "mail/recent", async ({ owner }, request) => ({ messages: await service.recentMail(owner, body(z.object({ ...mailFilter, channel: freelanceChannelSchema.optional(), limit: z.number().int().min(1).default(10) }).strict(), request)) }));

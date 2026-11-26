@@ -1,6 +1,4 @@
 import type { GatewayAccountRecord } from "@space/db";
-import { detectProject } from "../../client-detect.js";
-import { NOUS_PROJECTS } from "../../router/balancer.js";
 import { CLAUDE_API_BASE_URL } from "./headers.js";
 
 /**
@@ -17,12 +15,12 @@ export const isClaudeApiKeyAccount = (account: Pick<GatewayAccountRecord, "provi
 /**
  * Operator rule 2026-10-27: the API key's credits serve only clients outside Claude Code (OpenCode, Oh My Pi, Hermes, Droid,
  * Qoder, T3 Code, ...); Claude Code (Nous, its helpers, panes, pane board) runs on the Max subscriptions alone. Read from the
- * user agent, not `x-client` or the session header: Oh My Pi sends Claude Code's session header too.
+ * user agent, not `x-client` or the session header: Oh My Pi sends Claude Code's session header too. Operator 17/11
+ * (nous_msg:35d3e36f8d414784bde8e43f) supersedes the 8/11 «Nous never on the API budget»: Nous's "Claude via OpenCode" route spends the
+ * key like any other non-Claude-Code client, after the Max accounts and within the monthly budget pacer (api-budget.ts).
  */
 export const isClaudeCodeRequest = (headers: Record<string, string | string[] | undefined>): boolean =>
-  /claude-code\/|claude-cli\/|claude-vscode\//i.test(String(headers["user-agent"] ?? ""))
-  // Nous never spends the key (operator decision 8/11), whatever its user agent: its "Claude via OpenCode" route sent Node's (~$158 in November).
-  || NOUS_PROJECTS.has(detectProject(headers) ?? "");
+  /claude-code\/|claude-cli\/|claude-vscode\//i.test(String(headers["user-agent"] ?? ""));
 
 /** Whether a key works: the model list costs nothing and answers 401 to a bad key. */
 export async function checkClaudeApiKey(apiKey: string, fetchImpl: typeof fetch = fetch, baseUrl = CLAUDE_API_BASE_URL): Promise<{ ok: boolean; status: number }> {
@@ -37,5 +35,13 @@ export async function checkClaudeApiKey(apiKey: string, fetchImpl: typeof fetch 
   }
 }
 
-/** Anthropic's answer when the organization's prepaid credits are used up: a 400 that names the credit balance. */
-export const claudeCreditsExhausted = (status: number, message: string): boolean => status === 400 && /credit balance/i.test(message);
+/** Anthropic's answer when the organization's prepaid credits are used up (a 400 that names the credit balance) or its monthly API limit is crossed (a 429). */
+export const claudeCreditsExhausted = (status: number, message: string): boolean =>
+  (status === 400 && /credit balance/i.test(message)) || (status === 429 && /reached your API usage limits/i.test(message));
+
+/** When the monthly-limit answer says access returns ("regain access on 2026-12-01 at 00:00 UTC"), in epoch seconds. */
+export function claudeAccessReturnsAt(message: string): number | undefined {
+  const match = /regain access on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2}) UTC/i.exec(message);
+  const at = match ? Date.parse(`${match[1]}T${match[2]}:00Z`) / 1000 : Number.NaN;
+  return Number.isFinite(at) ? at : undefined;
+}

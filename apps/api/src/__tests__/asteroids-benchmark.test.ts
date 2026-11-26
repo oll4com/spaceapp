@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fetchModelTactics } from "../benchmark-routes.js";
 
 describe("fetchModelTactics with Jev AI", () => {
@@ -81,19 +81,25 @@ describe("fetchModelTactics with Jev AI", () => {
 
   it("registers and serves codex models in /api/asteroids/benchmark/models", async () => {
     const fastify = (await import("fastify")).default();
-    const { registerBenchmarkRoutes } = await import("../benchmark-routes.js");
+    const { registerBenchmarkRoutes, CODEX_LB_BASE_URL } = await import("../benchmark-routes.js");
+    // A fixed Codex catalog: the host's live gateway and ~/.codex/models_cache.json differ by machine (hz lists only gpt-6.1-sol, 15/11).
+    const realFetch = globalThis.fetch;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => String(input) === `${CODEX_LB_BASE_URL}/v1/models`
+      ? Promise.resolve(Response.json({ data: [{ id: "gpt-5.6-sol" }, { id: "gpt-6-astra" }] }))
+      : realFetch(input, init));
     registerBenchmarkRoutes(fastify, {});
     const res = await fastify.inject({ method: "GET", url: "/api/asteroids/benchmark/models" });
     expect(res.statusCode).toBe(200);
-    const json = JSON.parse(res.payload);
+    const json = JSON.parse(res.payload) as { models: Array<{ id: string; providerId: string }>; providers: Array<{ id: string }> };
     expect(json.models).toBeDefined();
-    const codexModels = json.models.filter((m: any) => m.providerId === "codex");
+    const codexModels = json.models.filter((m) => m.providerId === "codex");
     expect(codexModels.length).toBeGreaterThan(0);
-    expect(codexModels.map((m: any) => m.id)).toContain("codex/gpt-5.6-sol");
-    const claudeModels = json.models.filter((m: any) => m.providerId === "claude").map((m: any) => m.id);
+    expect(codexModels.map((m) => m.id)).toContain("codex/gpt-5.6-sol");
+    const claudeModels = json.models.filter((m) => m.providerId === "claude").map((m) => m.id);
     expect(claudeModels).toEqual(["claude/claude-opus-5-5", "claude/claude-sonnet-5-5", "claude/claude-haiku-5-5", "claude/claude-fable-5-1"]);
-    expect(json.models.find((m: any) => m.id === "baseline/scripted-pilot")).toMatchObject({ providerId: "baseline" });
-    expect(json.providers.map((provider: any) => provider.id)).toContain("claude");
+    expect(json.models.find((m) => m.id === "baseline/scripted-pilot")).toMatchObject({ providerId: "baseline" });
+    expect(json.providers.map((provider) => provider.id)).toContain("claude");
+    fetchSpy.mockRestore();
     await fastify.close();
   });
 });

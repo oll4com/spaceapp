@@ -14,7 +14,7 @@ import { InMemoryJobApplyRepository } from "../src/job-apply/memory-repository.j
 import { decodeQuotedPrintable, extractCode, extractLinks, sourceToText, type MailboxFactory, type MailboxReader } from "../src/job-apply/mailbox.js";
 import { createJobApplyService, parseCsv, type JobApplyGoogleAccess, type JobApplyServiceOptions } from "../src/job-apply/service.js";
 import { companyKey, gmailScanQuery, matchConfirmationEmail } from "../src/job-apply/gmail-mailbox.js";
-import { JOB_APPLY_IMPORTED_URL_PREFIX, importedJobPostingUrl, type ConnectorCapability } from "@space/contracts";
+import { JOB_APPLY_IMPORTED_URL_PREFIX, importedJobPostingUrl, jobApplyDiscoverRequestSchema, type ConnectorCapability } from "@space/contracts";
 
 vi.setConfig({ testTimeout: 30_000 });
 const csrfHeaderName = "x-space-csrf-token";
@@ -546,6 +546,28 @@ describe("job copilot data", () => {
     expect(await service.pendingItems("user:a", "pane:jobs0001")).toEqual([]);
   });
 
+  it("answers a poll that holds the tracker's version with no applications until one is added, written or removed", async () => {
+    let clock = "2026-11-14T08:00:00.000Z";
+    const repository = new InMemoryJobApplyRepository(() => clock);
+    const { service } = await serviceFixture(undefined, { repository, now: () => clock });
+    const post = { company: "Acme", role: "Dev", ats: "greenhouse", status: "QUEUED" } as const;
+    const { application } = await service.createApplication("user:a", { ...post, url: "https://boards.greenhouse.io/acme/jobs/51" });
+    const first = await service.applicationsUnless("user:a", {});
+    expect(first.applications?.map((row) => row.id)).toEqual([application.id]);
+    expect(await service.applicationsUnless("user:a", {}, first.version)).toEqual({ applications: null, version: first.version });
+    expect((await service.applicationsUnless("user:b", {}, first.version)).applications).toEqual([]);
+
+    clock = "2026-11-14T08:00:01.000Z";
+    await service.updateApplication("user:a", application.id, { notes: "limit: wait" });
+    const written = await service.applicationsUnless("user:a", {}, first.version);
+    expect(written.applications?.[0]?.notes).toBe("limit: wait");
+    const { application: second } = await service.createApplication("user:a", { ...post, url: "https://boards.greenhouse.io/acme/jobs/52" });
+    const added = await service.applicationsUnless("user:a", {}, written.version);
+    expect(added.applications).toHaveLength(2);
+    await service.removeFromQueue("user:a", second.id);
+    expect((await service.applicationsUnless("user:a", {}, added.version)).applications).toHaveLength(1);
+  });
+
   it("starts over without deleting anything: stops runs, closes open postings, archives the rest, refuses a second click", async () => {
     let clock = "2026-10-14T05:00:00.000Z";
     const repository = new InMemoryJobApplyRepository(() => clock);
@@ -726,20 +748,25 @@ describe("job copilot discovery", () => {
   it("scans public boards, filters titles, dedupes against the tracker and remembered board tokens", async () => {
     const { service: base } = await serviceFixture();
     const calls: string[] = [];
+    // Within the 30-day freshness window, in the same order as before.
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
     const fetchImpl = (async (input: string | URL | Request) => {
       const url = String(input);
       calls.push(url);
       if (url.includes("boards-api.greenhouse.io/v1/boards/acme/jobs")) {
         return new Response(JSON.stringify({ jobs: [
-          { id: 1, title: "Senior Backend Engineer", absolute_url: "https://boards.greenhouse.io/acme/jobs/1", location: { name: "Remote - EU" }, updated_at: "2026-10-10T00:00:00Z" },
+          { id: 1, title: "Senior Backend Engineer", absolute_url: "https://boards.greenhouse.io/acme/jobs/1", location: { name: "Remote - EU" }, updated_at: daysAgo(6) },
           { id: 2, title: "Account Development Representative", absolute_url: "https://boards.greenhouse.io/acme/jobs/2", location: { name: "Athens" } }
         ] }), { status: 200, headers: { "content-type": "application/json" } });
       }
       if (url.includes("api.lever.co/v0/postings/globex")) {
-        return new Response(JSON.stringify([{ id: "a", text: "Backend Engineer (Platform)", hostedUrl: "https://jobs.lever.co/globex/a", categories: { location: "Berlin" }, workplaceType: "remote", createdAt: 1760000000000 }]), { status: 200 });
+        return new Response(JSON.stringify([
+          { id: "a", text: "Backend Engineer (Platform)", hostedUrl: "https://jobs.lever.co/globex/a", categories: { location: "Berlin" }, workplaceType: "remote", createdAt: Date.parse(daysAgo(10)) },
+          { id: "h", text: "Backend Engineer (Chat)", hostedUrl: "https://jobs.lever.co/globex/h", categories: { location: "Remote or Hybrid - Wrocław" }, workplaceType: "hybrid", createdAt: Date.parse(daysAgo(10)) }
+        ]), { status: 200 });
       }
       if (url.includes("api.ashbyhq.com/posting-api/job-board/initech")) {
-        return new Response(JSON.stringify({ jobs: [{ title: "Staff Backend Engineer", jobUrl: "https://jobs.ashbyhq.com/initech/x", location: "London", isRemote: false, publishedAt: "2026-10-11T00:00:00Z" }] }), { status: 200 });
+        return new Response(JSON.stringify({ jobs: [{ title: "Staff Backend Engineer", jobUrl: "https://jobs.ashbyhq.com/initech/x", location: "London", isRemote: false, publishedAt: daysAgo(5) }] }), { status: 200 });
       }
       return new Response("{}", { status: 404 });
     }) as typeof fetch;
@@ -747,10 +774,17 @@ describe("job copilot discovery", () => {
     await service.createApplication("user:a", { company: "Globex", role: "Backend", ats: "lever", url: "https://jobs.lever.co/globex/a" });
     await service.rememberMemory("user:a", { kind: "SITE", text: "ashby:initech", tags: ["board-token"], source: "AGENT" });
     const result = await service.discover("user:a", { query: "backend engineer", tokens: ["acme", "globex", "nothere"], sites: ["greenhouse", "lever", "ashby"], limit: 50 });
+    // Fully remote by default: the hybrid Lever role (Wrocław) and the on-site Ashby role are never offered for the queue.
     expect(result.postings.map((posting) => [posting.company, posting.role, posting.remote, posting.tracked])).toEqual([
-      ["Initech", "Staff Backend Engineer", false, false],
       ["Acme", "Senior Backend Engineer", true, false],
       ["Globex", "Backend Engineer (Platform)", true, true]
+    ]);
+    const everyWorkplace = await service.discover("user:a", { query: "backend engineer", tokens: ["acme", "globex"], sites: ["greenhouse", "lever", "ashby"], remote: false, limit: 50 });
+    expect(everyWorkplace.postings.map((posting) => [posting.role, posting.remote])).toEqual([
+      ["Staff Backend Engineer", false],
+      ["Senior Backend Engineer", true],
+      ["Backend Engineer (Chat)", false],
+      ["Backend Engineer (Platform)", true]
     ]);
     expect(result.scanned.filter((entry) => entry.error === "no board").map((entry) => `${entry.ats}:${entry.board}`).sort()).toEqual(["ashby:acme", "ashby:globex", "ashby:nothere", "greenhouse:globex", "greenhouse:nothere", "lever:acme", "lever:nothere"]);
     expect(result.scanned.filter((entry) => entry.error === null).map((entry) => `${entry.ats}:${entry.board}`).sort()).toEqual(["ashby:initech", "greenhouse:acme", "lever:globex"]);
@@ -759,7 +793,129 @@ describe("job copilot discovery", () => {
     const remoteOnly = await service.discover("user:a", { query: "backend", tokens: ["acme", "globex"], sites: ["greenhouse", "lever"], remote: true, limit: 10 });
     expect(remoteOnly.postings.map((posting) => posting.company)).toEqual(["Acme", "Globex"]);
     expect(parseBoardPayload("greenhouse", "acme", { jobs: [{ title: "x" }] })).toEqual([]);
-    expect(matchesQuery({ url: "https://x", ats: "lever", board: "b", company: "B", role: "Backend Engineer", location: "Athens, Greece", remote: null, postedAt: null }, { query: "engineer", location: "greece" })).toBe(true);
+    expect(matchesQuery({ url: "https://x", ats: "lever", board: "b", company: "B", role: "Backend Engineer", location: "Athens, Greece", remote: null, postedAt: null }, { query: "engineer", location: "greece", remote: false })).toBe(true);
+    expect(matchesQuery({ url: "https://x", ats: "lever", board: "b", company: "B", role: "Backend Engineer", location: "Athens, Greece", remote: null, postedAt: null }, { query: "engineer", location: "greece" })).toBe(false);
+    expect(parseBoardPayload("greenhouse", "acme", { jobs: [
+      { title: "A", absolute_url: "https://x/1", location: { name: "Remote or Hybrid - Wrocław" } },
+      { title: "B", absolute_url: "https://x/2", location: { name: "London (On-site)" } },
+      { title: "C", absolute_url: "https://x/3", location: { name: "Remote - EU" } }
+    ] }).map((posting) => posting.remote)).toEqual([false, false, true]);
+    expect(parseBoardPayload("lever", "b", [{ text: "A", hostedUrl: "https://x/1", workplaceType: "unspecified", categories: { location: "Remote" } }])[0]?.remote).toBe(true);
+    expect(parseBoardPayload("ashby", "b", { jobs: [{ title: "A", jobUrl: "https://x/1", workplaceType: "Hybrid", isRemote: true }] })[0]?.remote).toBe(false);
     expect(matchesQuery({ url: "https://x", ats: "lever", board: "b", company: "B", role: "Backend Engineer", location: "Athens, Greece", remote: null, postedAt: null }, { query: "frontend" })).toBe(false);
+  });
+
+  it("discover drops postings with an exclude word in the title or location as a whole word (jobrun:FxwhONTgsfU2)", () => {
+    const exclude = ["rust", "go", "terraform", "c#", ".net", "us only", "brazil"];
+    const keeps = (role: string, location = "Remote - EU") =>
+      matchesQuery({ url: "https://x", ats: "lever", board: "b", company: "B", role, location, remote: true, postedAt: null }, { query: "engineer", exclude });
+    expect(keeps("Sr Full-Stack Engineer (Rust + React)")).toBe(false);
+    expect(keeps("Senior Backend Engineer (Go)")).toBe(false);
+    expect(keeps("DevOps / Infrastructure Engineer (Terraform / CloudFormation)")).toBe(false);
+    expect(keeps("Senior Full-Stack Web Engineer (.NET/C#, MongoDB)")).toBe(false);
+    expect(keeps("Platform Engineer, Windows (ASP.NET)")).toBe(false);
+    expect(keeps("Senior Software Engineer (Backend)", "Seattle (US only)")).toBe(false);
+    expect(keeps("Senior Software Engineer", "Remote (Brazil)")).toBe(false);
+    // Whole words only: no stack inside another word, and an empty or missing list keeps everything.
+    expect(keeps("Django Engineer (Trusted Golang-free)")).toBe(true);
+    expect(keeps("Senior Platform Engineer", "Remote - Greece")).toBe(true);
+    expect(matchesQuery({ url: "https://x", ats: "lever", board: "b", company: "B", role: "Go Engineer", location: null, remote: true, postedAt: null }, { query: "engineer" })).toBe(true);
+    expect(() => jobApplyDiscoverRequestSchema.parse({ exclude: [""] })).toThrow();
+  });
+
+  it("discover drops stale postings and remote postings geofenced away from Greece/EU (goal 91e45be1)", () => {
+    const now = Date.parse("2026-11-16T00:00:00Z");
+    const keeps = (location: string | null, role = "Senior Software Engineer", postedAt: string | null = "2026-11-11T00:00:00Z", input: { location?: string } = {}) =>
+      matchesQuery({ url: "https://x", ats: "lever", board: "b", company: "B", role, location, remote: true, postedAt }, { query: "engineer", ...input }, now);
+    expect(keeps("Remote - EU", undefined, "2026-10-01T00:00:00Z")).toBe(false);
+    expect(keeps("Remote - EU", undefined, null)).toBe(true);
+    expect(keeps("Seattle, US (US Only)")).toBe(false);
+    expect(keeps("Remote (US only)")).toBe(false);
+    expect(keeps("Remote (Brazil only)")).toBe(false);
+    expect(keeps("Remote (Brazil)")).toBe(false);
+    expect(keeps("Remote - Egypt")).toBe(false);
+    expect(keeps("Remote", "Backend Engineer (Canada residents)")).toBe(false);
+    expect(keeps("Remote - Worldwide")).toBe(true);
+    expect(keeps("Remote - Greece")).toBe(true);
+    expect(keeps("Remote - EU")).toBe(true);
+    expect(keeps("Remote (EU only)")).toBe(true);
+    expect(keeps("Remote, fully distributed (UTC+2)")).toBe(true);
+    expect(keeps("Berlin")).toBe(true);
+    expect(keeps(null)).toBe(true);
+    expect(keeps("Remote - Spain", undefined, undefined, { location: "spain" })).toBe(true);
+  });
+
+  it("discover searches Himalayas by query and keeps only jobs open to Greece/EU by their country list", async () => {
+    const now = Date.now() / 1000;
+    const job = (id: number, locationRestrictions: string[], extra: Record<string, unknown> = {}) => ({
+      title: `Full-Stack Engineer ${id}`, companyName: "Lemon", companySlug: "lemon", guid: `https://himalayas.app/companies/lemon/jobs/${id}`,
+      applicationLink: `https://himalayas.app/companies/lemon/jobs/${id}?utm_source=api`, locationRestrictions, pubDate: now - 86_400, expiryDate: now + 86_400, ...extra
+    });
+    const parsed = parseBoardPayload("himalayas", "full-stack", { jobs: [
+      job(1, []), job(2, ["Greece", "Spain"]), job(3, ["Egypt"]), job(4, ["United States"]), job(5, [], { expiryDate: now - 60 }), job(6, ["European Union"])
+    ] });
+    expect(parsed.map((posting) => [posting.url.split("/").pop(), posting.location, posting.remote])).toEqual([
+      ["1", "Remote", true], ["2", "Remote (Greece and 1 more countries)", true], ["6", "Remote (European Union)", true]
+    ]);
+    const urls: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = String(input);
+      urls.push(url);
+      const page = Number(new URL(url).searchParams.get("page"));
+      return new Response(JSON.stringify({ jobs: page === 1 ? Array.from({ length: 20 }, (_, index) => job(index + 10, index % 2 ? ["Egypt"] : [])) : [job(99, ["Greece"])] }), { status: 200 });
+    }) as typeof fetch;
+    const discovery = createDiscovery({ fetchImpl, timeoutMs: 2000 });
+    const result = await discovery.search({ query: "full-stack engineer", sites: ["himalayas"], tokens: ["acme"], limit: 50 } as never, [], async () => false);
+    expect(urls).toEqual([
+      "https://himalayas.app/jobs/api/search?q=full-stack%20engineer&country=Greece&page=1",
+      "https://himalayas.app/jobs/api/search?q=full-stack%20engineer&country=Greece&page=2"
+    ]);
+    expect(result.postings).toHaveLength(11);
+    expect(result.scanned).toEqual([{ ats: "himalayas", board: "full-stack engineer", count: 11, error: null }]);
+    expect((await discovery.search({ sites: ["himalayas"], limit: 50 } as never, [], async () => false)).scanned).toEqual([{ ats: "himalayas", board: "search", count: 0, error: "needs a query" }]);
+  });
+
+  it("discover searches LinkedIn (HTML cards, keeps earlier pages on a 429) and Workable (paged by token) by query", async () => {
+    const day = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
+    const card = (id: number, title: string, location: string) => `<li>
+      <div class="base-card" data-entity-urn="urn:li:jobPosting:${id}"><h3 class="base-search-card__title">
+        ${title}
+      </h3><h4 class="base-search-card__subtitle">
+        <a class="hidden-nested-link" href="https://www.linkedin.com/company/acme-co?trk=x">
+          Acme &amp; Co
+        </a></h4><span class="job-search-card__location">
+          ${location}
+        </span><time class="job-search-card__listdate" datetime="${day}">2 days ago</time></div></li>`;
+    const workable = (id: number, workplace: string) => ({ id: `w${id}`, title: `Backend Engineer ${id}`, state: "published", workplace, created: new Date().toISOString(),
+      url: `https://jobs.workable.com/view/w${id}/backend`, company: { title: "Flex Compute" }, location: { city: "Athens", countryName: "Greece" } });
+    const urls: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      urls.push(url.toString());
+      if (url.hostname === "www.linkedin.com") {
+        const start = Number(url.searchParams.get("start"));
+        if (start === 10) return new Response("", { status: 429 });
+        return new Response(Array.from({ length: 10 }, (_, index) => card(index + 1, index === 0 ? "Backend Engineer &amp; SRE" : `Backend Engineer ${index}`, "Athens, Attiki, Greece")).join(""), { status: 200 });
+      }
+      const cursor = url.searchParams.get("pageToken");
+      return new Response(JSON.stringify(cursor ? { jobs: [workable(3, "remote")] } : { jobs: [workable(1, "remote"), workable(2, "hybrid")], nextPageToken: "next" }), { status: 200 });
+    }) as typeof fetch;
+    const result = await createDiscovery({ fetchImpl, timeoutMs: 2000 }).search({ query: "backend engineer", sites: ["linkedin", "workable"], limit: 50 } as never, [], async () => false);
+    expect(urls.sort()).toEqual([
+      "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=backend%20engineer&location=Greece&f_WT=2&f_TPR=r2592000&start=0",
+      "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=backend%20engineer&location=Greece&f_WT=2&f_TPR=r2592000&start=10",
+      "https://jobs.workable.com/api/v1/jobs?query=backend%20engineer&location=Greece&workplace=remote",
+      "https://jobs.workable.com/api/v1/jobs?query=backend%20engineer&location=Greece&workplace=remote&pageToken=next"
+    ].sort());
+    expect(result.scanned).toEqual([
+      { ats: "linkedin", board: "backend engineer", count: 10, error: "HTTP 429" },
+      { ats: "workable", board: "backend engineer", count: 2, error: null }
+    ]);
+    expect(result.postings.find((posting) => posting.url === "https://www.linkedin.com/jobs/view/1")).toMatchObject({
+      ats: "linkedin", board: "acme-co", company: "Acme & Co", role: "Backend Engineer & SRE", location: "Athens, Attiki, Greece", remote: true
+    });
+    expect(result.postings.filter((posting) => posting.ats === "workable").map((posting) => [posting.url, posting.company, posting.location]).sort()).toEqual([
+      ["https://jobs.workable.com/view/w1/backend", "Flex Compute", "Athens, Greece"], ["https://jobs.workable.com/view/w3/backend", "Flex Compute", "Athens, Greece"]
+    ]);
   });
 });

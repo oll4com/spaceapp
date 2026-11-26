@@ -103,7 +103,6 @@ export class InMemoryTaskTitleRepository implements TaskTitleRepository {
     )
       return false;
     if (
-      this.attempts.length >= policy.globalDayAttempts ||
       this.attempts.filter((a) => a.key === key).length >=
         policy.perTaskDayAttempts ||
       this.attempts.filter((a) => a.key === key && a.at > at - 3_600_000)
@@ -216,22 +215,20 @@ export class PostgresTaskTitleRepository implements TaskTitleRepository {
     let rollbackFailed = false;
     try {
       await client.query("BEGIN");
-      // One transaction-wide lock makes global/accounting limits race-safe across API processes.
+      // One transaction-wide lock makes the per-task limits race-safe across API processes.
       await client.query("SELECT pg_advisory_xact_lock(728461902)");
       await client.query(
         "DELETE FROM task_title_attempts WHERE attempted_at <= $1::timestamptz - interval '1 day'",
         [now],
       );
       const result = await client.query<{
-        global: number;
         day: number;
         hour: number;
         recent: number;
         batch: number;
         duplicate: number;
       }>(
-        `SELECT count(*)::int AS global,
-        count(*) FILTER(WHERE task_key=$1)::int AS day,
+        `SELECT count(*) FILTER(WHERE task_key=$1)::int AS day,
         count(*) FILTER(WHERE task_key=$1 AND attempted_at > $2::timestamptz - interval '1 hour')::int AS hour,
         count(*) FILTER(WHERE task_key=$1 AND attempted_at > $2::timestamptz - interval '1 minute' AND batch_id<>$3)::int AS recent,
         count(*) FILTER(WHERE task_key=$1 AND batch_id=$3)::int AS batch,
@@ -244,7 +241,6 @@ export class PostgresTaskTitleRepository implements TaskTitleRepository {
         count.recent === 0 &&
         count.batch < 2 &&
         count.duplicate === 0 &&
-        count.global < policy.globalDayAttempts &&
         count.day < policy.perTaskDayAttempts &&
         count.hour < policy.perTaskHourAttempts;
       if (allowed)

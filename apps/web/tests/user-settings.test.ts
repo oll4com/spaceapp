@@ -1,8 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installSpaceRuntime, type SpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 import {
-  defaultDateTimeSettings,
-  DATE_TIME_SETTINGS_STORAGE_KEY,
   DATE_TIME_SETTINGS_UPDATED_EVENT,
   readDateTimeSettings,
   writeDateTimeSettings,
@@ -10,7 +8,6 @@ import {
 } from "../src/features/date-time-settings/date-time-settings.js";
 import {
   defaultVoiceComposerSettings,
-  VOICE_SETTINGS_STORAGE_KEY,
   VOICE_SETTINGS_UPDATED_EVENT,
   readVoiceComposerSettings,
   writeVoiceComposerSettings,
@@ -18,21 +15,17 @@ import {
 } from "../src/voice-settings.js";
 import {
   defaultKeyboardAutocorrectSettings,
-  KEYBOARD_AUTOCORRECT_SETTINGS_STORAGE_KEY,
   KEYBOARD_AUTOCORRECT_SETTINGS_UPDATED_EVENT,
   readKeyboardAutocorrectSettings,
   writeKeyboardAutocorrectSettings,
   applyServerKeyboardAutocorrectSettings
 } from "../src/features/keyboard-autocorrect/keyboard-autocorrect-settings.js";
 import {
-  SUPPRESS_NOTIFICATIONS_STORAGE_KEY,
   readStoredSuppressNotifications,
   writeStoredSuppressNotifications,
   applyServerSuppressNotifications
 } from "../src/notifications-settings.js";
 import {
-  WARM_ROOM_ENABLED_STORAGE_KEY,
-  WARM_ROOM_CONNECTED_PANE_LIMIT_STORAGE_KEY,
   readStoredWarmRoomEnabled,
   writeStoredWarmRoomEnabled,
   readStoredWarmRoomConnectedPaneLimit,
@@ -46,7 +39,6 @@ import {
   loadLivePaneConfig
 } from "../src/features/live-pane/live-pane-config.js";
 import {
-  CLI_IMAGE_PREVIEW_LIMIT_STORAGE_KEY,
   readStoredCliImagePreviewLimit,
   writeStoredCliImagePreviewLimit,
   applyServerCliImagePreviewLimit
@@ -55,6 +47,7 @@ import type { UpdateUserSettingsInput, UserSettings } from "@space/contracts";
 import {
   syncFromServer,
   seedInitialLocalSettingsToServer,
+  STICKY_NOTES_CHANGED_EVENT,
   saveUserSettingDebounced,
   saveUserSettingImmediate
 } from "../src/features/user-settings/user-settings-manager.js";
@@ -358,7 +351,7 @@ describe("User settings client persistence & server sync", () => {
       };
 
       const result = await seedInitialLocalSettingsToServer(
-        { updateUserSettings: mockUpdateUserSettings as any },
+        { updateUserSettings: mockUpdateUserSettings as never },
         serverSettingsWithDefaults,
         localStorage
       );
@@ -390,11 +383,29 @@ describe("User settings client persistence & server sync", () => {
       syncFromServer({ workspaceQuickActions: [] }, localStorage, "user-test");
       expect(JSON.parse(localStorage.getItem("space:workspace-quick-actions:v1")!)).toEqual([]);
 
-      await seedInitialLocalSettingsToServer({ updateUserSettings: mockUpdateUserSettings as any }, {}, localStorage);
+      await seedInitialLocalSettingsToServer({ updateUserSettings: mockUpdateUserSettings as never }, {}, localStorage);
       expect(mockUpdateUserSettings).toHaveBeenCalledWith(expect.objectContaining({ workspaceQuickActions: [] }));
       mockUpdateUserSettings.mockClear();
-      await seedInitialLocalSettingsToServer({ updateUserSettings: mockUpdateUserSettings as any }, { workspaceQuickActions: ["help"] }, localStorage);
+      await seedInitialLocalSettingsToServer({ updateUserSettings: mockUpdateUserSettings as never }, { workspaceQuickActions: ["help"] }, localStorage);
       expect(mockUpdateUserSettings.mock.calls.some(([input]) => "workspaceQuickActions" in (input as object))).toBe(false);
+    });
+
+    it("pushes nothing from a stale browser into an account that already saved settings, and hands open sticky notes the account's list", async () => {
+      // A tab with CLI controls hidden, Hide sensitive on and an old sticky note, after the person changed all three elsewhere (operator 23/11).
+      localStorage.setItem("space.cliFloatsHidden", "true");
+      localStorage.setItem("space.sensitiveDataMasked", "true");
+      localStorage.setItem("space.sticky-notes.windows.v1", JSON.stringify([{ id: "old", text: "closed elsewhere", x: 0, y: 0 }]));
+      const saved: Partial<UserSettings> = { cliFloatsHidden: false, sensitiveDataMasked: false, stickyNotes: [], updatedAt: "2026-11-23T03:13:41.523Z" };
+      expect(await seedInitialLocalSettingsToServer({ updateUserSettings: mockUpdateUserSettings as never }, saved, localStorage)).toBeNull();
+      expect(mockUpdateUserSettings).not.toHaveBeenCalled();
+
+      const opened = vi.fn();
+      window.addEventListener(STICKY_NOTES_CHANGED_EVENT, opened);
+      syncFromServer(saved, localStorage, "user-test");
+      window.removeEventListener(STICKY_NOTES_CHANGED_EVENT, opened);
+      expect(localStorage.getItem("space.cliFloatsHidden")).toBe("false");
+      expect(localStorage.getItem("space.sensitiveDataMasked")).toBe("false");
+      expect((opened.mock.calls[0]?.[0] as CustomEvent).detail).toEqual([]);
     });
 
     it("does not overwrite server custom values during local seeding", async () => {
@@ -408,7 +419,7 @@ describe("User settings client persistence & server sync", () => {
       };
 
       await seedInitialLocalSettingsToServer(
-        { updateUserSettings: mockUpdateUserSettings as any },
+        { updateUserSettings: mockUpdateUserSettings as never },
         serverSettingsWithExistingCustom,
         localStorage
       );

@@ -12,7 +12,7 @@ export interface FilePermissionsModalProps {
   onSuccess: () => void;
 }
 
-export function FilePermissionsModal({ entry, mode, onClose, onSuccess }: FilePermissionsModalProps) {
+export function FilePermissionsModal({ entry, onClose, onSuccess }: FilePermissionsModalProps) {
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   // Parse initial mode bits (e.g. 0755)

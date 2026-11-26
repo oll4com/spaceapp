@@ -2,12 +2,10 @@ import type { UpdateUserSettingsInput, UserSettings } from "@space/contracts";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import {
   PANES_HIDDEN_STORAGE_KEY,
-  PANES_VISIBILITY_EVENT,
   writeHiddenPaneIds
 } from "../pane-visibility/use-panes-visibility.js";
 import {
   DOCKS_HIDDEN_STORAGE_KEY,
-  DOCKS_VISIBILITY_EVENT,
   writeDockOrder,
   writeHiddenDockIds
 } from "../docks/use-docks-visibility.js";
@@ -36,6 +34,7 @@ import {
 
 export const WIDGETS_STATE_KEY = "space.desktop-widgets.state.v1";
 export const WIDGETS_CHANGED_EVENT = "space:desktop-widgets:changed";
+export const STICKY_NOTES_CHANGED_EVENT = "space:sticky-notes:changed";
 
 export const ENVIRONMENT_PRESET_STORAGE_KEY = "space:environment-preset:v1";
 export const CUSTOM_DOCKS_HIDDEN_STORAGE_KEY = "space:custom-docks-hidden:v1";
@@ -55,7 +54,7 @@ export function syncFromServer(
   customStorage?: Storage,
   userId?: string
 ): { themeChanged: boolean } {
-  let storage: Storage | null = null;
+  let storage: Storage | null;
   try {
     storage = customStorage ?? (typeof window !== "undefined" ? getSpaceRuntime().platform.localStorage : null);
   } catch {
@@ -202,6 +201,8 @@ export function syncFromServer(
   }
   if (Array.isArray(settings.stickyNotes)) {
     storage.setItem("space.sticky-notes.windows.v1", JSON.stringify(settings.stickyNotes));
+    // The open windows were read from this browser's copy at mount: the account's list replaces them (a closed note no longer reopens).
+    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(STICKY_NOTES_CHANGED_EVENT, { detail: settings.stickyNotes }));
   }
   if (typeof settings.vibeMusicVolume === "number") {
     storage.setItem("space.vibeMusic.volume", String(settings.vibeMusicVolume));
@@ -269,17 +270,20 @@ export function syncFromServer(
 }
 
 export async function seedInitialLocalSettingsToServer(
-  api: { updateUserSettings: (input: UpdateUserSettingsInput) => Promise<any> },
+  api: { updateUserSettings: (input: UpdateUserSettingsInput) => Promise<UserSettings> },
   serverSettings: Partial<UserSettings>,
   customStorage?: Storage
 ): Promise<UserSettings | null> {
-  let storage: Storage | null = null;
+  let storage: Storage | null;
   try {
     storage = customStorage ?? (typeof window !== "undefined" ? getSpaceRuntime().platform.localStorage : null);
   } catch {
     storage = null;
   }
   if (!storage) return null;
+  // Only an account that never saved settings takes this browser's copy: on every load a stale tab pushed back toggles and sticky
+  // notes the person had changed on another device (CLI controls Off, Hide sensitive On after each Promote, operator 23/11).
+  if (serverSettings.updatedAt) return null;
 
   const patch: UpdateUserSettingsInput = {};
 
@@ -290,7 +294,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) patch.panesHidden = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
 
@@ -301,7 +305,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) patch.docksHidden = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
 
@@ -330,7 +334,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === "object") patch.desktopWidgets = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
 
@@ -341,7 +345,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) patch.stickyNotes = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
 
@@ -352,7 +356,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) patch.projectPresets = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
 
@@ -363,7 +367,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === "object") patch.roomExtraEmptySlots = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
 
@@ -396,7 +400,7 @@ export async function seedInitialLocalSettingsToServer(
   if (!serverSettings.osk) {
     const oskObj: Record<string, unknown> = {};
     const pos = storage.getItem("space.osk.position.v1");
-    if (pos) { try { oskObj.position = JSON.parse(pos); } catch {} }
+    if (pos) { try { oskObj.position = JSON.parse(pos); } catch { /* corrupt local copy: not seeded */ } }
     const scale = storage.getItem("space.osk.scale.v1");
     if (scale) oskObj.scale = Number(scale);
     const lang = storage.getItem("space.osk.lang.v1");
@@ -466,7 +470,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) patch.upperRailOrder = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
   if (!serverSettings.upperRailHidden || serverSettings.upperRailHidden.length === 0) {
@@ -475,7 +479,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) patch.upperRailHidden = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
   if (!serverSettings.lowerRailOrder || serverSettings.lowerRailOrder.length === 0) {
@@ -484,7 +488,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) patch.lowerRailOrder = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
   if (!serverSettings.lowerRailHidden || serverSettings.lowerRailHidden.length === 0) {
@@ -493,7 +497,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) patch.lowerRailHidden = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
   if (!serverSettings.createMenuOrder || serverSettings.createMenuOrder.length === 0) {
@@ -502,7 +506,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) patch.createMenuOrder = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
   // An empty pin list is a deliberate choice, so only a missing server value is backfilled.
@@ -512,7 +516,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) patch.workspaceQuickActions = parsed.filter((id): id is string => typeof id === "string").slice(0, 8);
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
 
@@ -527,7 +531,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) patch.customDocksHidden = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
   if (!serverSettings.customPanesHidden || serverSettings.customPanesHidden.length === 0) {
@@ -536,7 +540,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) patch.customPanesHidden = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
   if (!serverSettings.customCliDisabled || serverSettings.customCliDisabled.length === 0) {
@@ -545,7 +549,7 @@ export async function seedInitialLocalSettingsToServer(
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) patch.customCliDisabled = parsed;
-      } catch {}
+      } catch { /* corrupt local copy: not seeded */ }
     }
   }
 

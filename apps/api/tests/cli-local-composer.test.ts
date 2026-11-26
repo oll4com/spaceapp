@@ -7,8 +7,8 @@ const identity = { ownerUserId: "user:alice", roomId: "room:composer", paneId: "
 const input = () => ({ submissionId: randomUUID(), expectedSessionId: "cli_session:composer", text: "first line\nsecond\tline" });
 const attempt = () => ({ traceId: "trace:composer", assertCurrent: vi.fn(async () => undefined) });
 function fixture(repository = new InMemoryControlRepository()) {
-  const sendInput = vi.fn(async (_sessionId: string, _data: string, _trace: string, _key: string): Promise<unknown> => undefined);
-  const wait = vi.fn(async (_ms: number) => undefined);
+  const sendInput = vi.fn<(sessionId: string, data: string, trace: string, key: string) => Promise<unknown>>(async () => undefined);
+  const wait = vi.fn<(ms: number) => Promise<undefined>>(async () => undefined);
   const serialize = vi.fn(async <T>(_sessionId: string, work: () => Promise<T>) => work());
   const service = createCliLocalComposerService({ repository, sendInput, wait, serialize });
   return { repository, service, sendInput, wait, serialize };

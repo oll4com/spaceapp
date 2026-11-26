@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { mkdir, open, readFile, readdir, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
@@ -22,7 +24,9 @@ const chunkQuerySchema = z.object({
   total: z.coerce.number().int().min(1),
   name: z.string().min(1).max(255),
   type: z.string().max(255).optional(),
-  folder: z.string().max(255).optional()
+  folder: z.string().max(255).optional(),
+  /** The whole file's SHA-256 (a linked SpaceApp's push, plan step 5): checked before the file is filed; a mismatch files nothing. */
+  sha256: z.string().regex(/^[a-f0-9]{64}$/).optional()
 });
 
 const userSegment = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, "_");
@@ -78,6 +82,14 @@ export function registerAgentFileChunkRoute(app: FastifyInstance, deps: {
         try { await handle.write(body); await handle.sync(); } finally { await handle.close(); }
         const now = received + body.length;
         if (now < query.total) return { received: now };
+        if (query.sha256) {
+          const hash = createHash("sha256");
+          for await (const piece of createReadStream(partPath)) hash.update(piece as Buffer);
+          if (hash.digest("hex") !== query.sha256) {
+            await unlink(partPath).catch(() => undefined);
+            return sendApiError(reply, 422, "SHA256_MISMATCH", "The pieces do not add up to the file's SHA-256; nothing was filed, start the upload again.");
+          }
+        }
 
         const folder = query.folder?.trim() || undefined;
         let record: Awaited<ReturnType<typeof persistAgentFile>>;

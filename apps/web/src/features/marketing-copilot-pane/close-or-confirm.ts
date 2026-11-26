@@ -1,15 +1,27 @@
 import { SpaceApiError } from "../../api.js";
 import { uiLanguageNow, uiText } from "../ui-language/ui-language.js";
 
-/** A Marketing Copilot pane with approved posts still scheduled refuses to close (operator rule 9/11): the operator confirms, then forces it. */
+/**
+ * A pane the server refuses to close asks the operator, then forces it: a Marketing Copilot pane with approved posts still scheduled (operator rule
+ * 9/11), or a pane an unanswered Needs you item or browser handoff waits on (15/11 nous_msg:9f70dbbe; its requests move to Needs you, never resolve).
+ */
 export async function closeOrConfirm<T>(close: (force: boolean) => Promise<T>): Promise<T> {
   try {
     return await close(false);
   } catch (error) {
-    if (!(error instanceof SpaceApiError) || error.code !== "PANE_HAS_SCHEDULED_POSTS") throw error;
+    if (!(error instanceof SpaceApiError)) throw error;
+    const language = uiLanguageNow();
+    if (error.code === "PANE_WAITS_FOR_OPERATOR") {
+      const held = error.details as { needsYou?: unknown[]; handoff?: boolean };
+      const what = [...(held.needsYou?.length ? [uiText(language, "{count} unanswered Needs you items", { count: held.needsYou.length })] : []),
+        ...(held.handoff ? [uiText(language, "a browser handoff")] : [])].join(", ");
+      if (!window.confirm(uiText(language, "This pane waits for you: {what}. Close it anyway? Its requests stay in Needs you.", { what }))) throw error;
+      return close(true);
+    }
+    if (error.code !== "PANE_HAS_SCHEDULED_POSTS") throw error;
     const next = error.details as { scheduledPosts: number; nextPostTitle: string | null; nextChannel: string; nextScheduledAt: string };
     const vars = { count: next.scheduledPosts, title: next.nextPostTitle ?? next.nextChannel, channel: next.nextChannel, time: new Date(next.nextScheduledAt).toLocaleString() };
-    if (!window.confirm(uiText(uiLanguageNow(), "A Marketing Copilot pane still has {count} approved posts scheduled; the next, \"{title}\", goes to {channel} at {time}. Close it anyway?", vars))) throw error;
+    if (!window.confirm(uiText(language, "A Marketing Copilot pane still has {count} approved posts scheduled; the next, \"{title}\", goes to {channel} at {time}. Close it anyway?", vars))) throw error;
     return close(true);
   }
 }

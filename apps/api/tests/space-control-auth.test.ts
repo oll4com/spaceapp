@@ -116,7 +116,7 @@ describe("Space control authorization",()=>{
  it("pages SKILLS as metadata and leaves each skill's text to skills.read",async()=>{
   const {app,store}=await fixture();
   const skill=(n:number)=>({id:`skill:${n}`,displayName:`Skill ${n}`,triggerDescription:`Does ${n}`,body:"skill text ".repeat(1800)});
-  vi.spyOn(store,"listSkills").mockReturnValue([1,2,3].map(skill) as any);
+  vi.spyOn(store,"listSkills").mockReturnValue([1,2,3].map(skill) as never);
   const response=await app.inject({method:"POST",url:"/api/control/v1/inspect",headers:headers(),payload:{section:"SKILLS",offset:1,limit:1}});
   expect(response.statusCode).toBe(200);
   expect(response.json()).toMatchObject({registered:[{id:"skill:2",name:"Skill 2",description:"Does 2"}],registeredTotal:3,offset:1,limit:1});
@@ -144,7 +144,7 @@ describe("Space control authorization",()=>{
   const invoke=(method:string,params?:unknown)=>app.inject({method:"POST",url:"/api/control/v1/mcp",headers:headers(),payload:{jsonrpc:"2.0",id:1,method,params}});
   expect((await invoke("initialize")).json().result.serverInfo.name).toBe("space-control");
   const list=(await invoke("tools/list")).json().result.tools;
-  expect(list.map((t:any)=>t.name)).toEqual(Object.keys(controlToolSchemas));
+  expect(list.map((t:{name:string})=>t.name)).toEqual(Object.keys(controlToolSchemas));
   const rejected=(await invoke("tools/call",{name:"shell",arguments:{roomId:room.id,command:"anything"}})).json();expect(rejected.error).toBeDefined();
  });
  it("executes pane minimize and restore/unminimize via MCP tools/call end-to-end",async()=>{

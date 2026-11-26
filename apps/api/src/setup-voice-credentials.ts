@@ -47,6 +47,7 @@ export class SetupVoiceCredentials {
       return { source: "OWNER", apiKey: "apiKey" in record ? record.apiKey : "token" in record ? record.token : record.accessKeyId,
         ...(record.providerId === "amazon" ? { secretAccessKey: record.secretAccessKey, region: record.region, sessionToken: record.sessionToken } : {}) };
     } catch (error) {
+      // eslint-disable-next-line preserve-caught-error -- the cause stays out on purpose: it may describe the stored credential
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("The saved voice connection could not be read securely.");
     }
     const installed = await resolveLiveAudioCredentials(this.config, providerId);

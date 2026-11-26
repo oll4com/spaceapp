@@ -9,7 +9,23 @@ function cleanStyle(style: string): string {
   return style.split(";").map((declaration) => declaration.trim()).filter((declaration) => declaration && /^[a-z-]+\s*:/i.test(declaration) && !UNSAFE_STYLE.test(declaration)).join("; ");
 }
 
+// Gmail's Promotions annotations (schema.org JSON-LD in <head>) are data, not code: each block is parsed and written back as JSON with
+// every "<" escaped, so nothing in it can close the tag; a block that does not parse is dropped.
+const JSON_LD = /<script\b[^>]*\btype\s*=\s*["']?application\/ld\+json["']?[^>]*>([\s\S]*?)<\/script\s*>/gi;
+function jsonLdBlocks(html: string): string[] {
+  const head = /<head\b[^>]*>([\s\S]*?)<\/head\s*>/i.exec(html)?.[1] ?? "";
+  return [...head.matchAll(JSON_LD)].flatMap(([, body]) => {
+    try { return [`<script type="application/ld+json">${JSON.stringify(JSON.parse(body!)).replace(/</g, "\\u003c")}</script>`]; } catch { return []; }
+  });
+}
+
 export function sanitizeTemplateHtml(unsafeHtml: string): string {
+  const ld = jsonLdBlocks(unsafeHtml);
+  const clean = sanitizeHtmlBody(unsafeHtml);
+  return ld.length && /<\/head>/i.test(clean) ? clean.replace(/<\/head>/i, () => `${ld.join("")}</head>`) : clean;
+}
+
+function sanitizeHtmlBody(unsafeHtml: string): string {
   return sanitizeHtml(unsafeHtml, {
     allowedTags: ["a", "b", "blockquote", "br", "caption", "center", "div", "em", "font", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "li", "ol", "p", "pre", "s",
       "small", "span", "strong", "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "u", "ul", "html", "head", "body", "meta", "title"],

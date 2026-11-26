@@ -74,9 +74,12 @@ describe("Freelance Copilot send gate", () => {
     const contra = (await service.addLead(owner, target, { ...job, channel: "CONTRA", externalId: "c1", url: null, client: null, description: null, score: null, notes: null }, "AGENT")).lead;
     const c1 = (await service.createMessage(owner, target, { leadId: contra.id, kind: "PROPOSAL", body: proposal, bid: null, connects: null })).message;
     await service.beginSend(owner, target, c1.id);
+    // Operator 14/11: the cap counts applications; a follow-up still goes out, a second proposal waits.
     const c2 = (await service.createMessage(owner, target, { leadId: contra.id, kind: "FOLLOW_UP", body: proposal, bid: null, connects: null })).message;
-    await expect(service.beginSend(owner, target, c2.id)).rejects.toThrow(/FREELANCE_LIMIT: Contra allows 1/);
-    await expect(service.beginSend(owner, pane({ paused: true }), c2.id)).rejects.toThrow(/FREELANCE_PAUSED/);
+    expect((await service.beginSend(owner, target, c2.id)).status).toBe("SENDING");
+    const c3 = (await service.createMessage(owner, target, { leadId: contra.id, kind: "PROPOSAL", body: proposal, bid: null, connects: null })).message;
+    await expect(service.beginSend(owner, target, c3.id)).rejects.toThrow(/FREELANCE_LIMIT: Contra allows 1 proposal\(s\) and application\(s\)/);
+    await expect(service.beginSend(owner, pane({ paused: true }), c3.id)).rejects.toThrow(/FREELANCE_PAUSED/);
   });
 
   it("hands a ready client to the operator, stops the agent's own sends there, and learns from the outcome", async () => {
@@ -123,6 +126,33 @@ describe("Freelance Copilot send gate", () => {
     expect(await service.nextItem(owner, target, { waitMs: 0 })).toMatchObject({ kind: "FOLLOW_UP", lead: { id: lead.id } });
     expect(await service.nextItem(owner, target, { waitMs: 0 })).toEqual({ done: true, reason: "QUEUE_EMPTY" });
     expect(await service.waitForCode(owner, { pattern: "available", timeoutMs: 0 })).toMatchObject({ code: "available", subject: "New message from Acme" });
+  });
+
+  it("gives back a follow-up taken with nothing written after 30 minutes, never one with a draft in review, and the next round after a send (12/11)", async () => {
+    const { service, advance } = setup();
+    const target = pane();
+    const { lead } = await service.addLead(owner, target, { ...job, client: null, description: null, score: null, notes: null }, "AGENT");
+    const sent = (await service.createMessage(owner, target, { leadId: lead.id, kind: "PROPOSAL", body: proposal, bid: null, connects: null })).message;
+    await service.beginSend(owner, target, sent.id);
+    await service.finishSend(owner, target, { messageId: sent.id, url: "https://www.upwork.com/nx/proposals/3" });
+    advance(3 * 86_400_000 + 1000);
+    const take = async () => { await service.startRun(owner, target.id); return service.nextItem(owner, target, { waitMs: 0 }); };
+    // The Browser Host is down: the agent writes nothing, and the follow-up comes back instead of falling off the due list.
+    expect(await take()).toMatchObject({ kind: "FOLLOW_UP", lead: { id: lead.id } });
+    expect(await service.nextItem(owner, target, { waitMs: 0 })).toEqual({ done: true, reason: "QUEUE_EMPTY" });
+    advance(30 * 60_000 + 1000);
+    expect(await take()).toMatchObject({ kind: "FOLLOW_UP", lead: { id: lead.id } });
+    // A draft waiting for review holds it, however long the review takes.
+    const nudge = (await service.createMessage(owner, target, { leadId: lead.id, kind: "FOLLOW_UP", body: "One more idea for the catalog tools.", bid: null, connects: null })).message;
+    await service.requestReview(owner, target, { messageId: nudge.id });
+    advance(2 * 3_600_000);
+    expect(await service.nextItem(owner, target, { waitMs: 0 })).toEqual({ done: true, reason: "QUEUE_EMPTY" });
+    await service.decideReview(owner, target, nudge.id, { decision: "approve" });
+    expect(await take()).toMatchObject({ kind: "SEND", message: { id: nudge.id } });
+    await service.beginSend(owner, target, nudge.id);
+    await service.finishSend(owner, target, { messageId: nudge.id, url: "https://www.upwork.com/nx/proposals/3" });
+    advance(4 * 86_400_000 + 1000);
+    expect(await take()).toMatchObject({ kind: "FOLLOW_UP", lead: { id: lead.id } });
   });
 
   it("holds a follow-up approved for later until its lead's follow-up time: briefs first, the run ends meanwhile, SEND when due (13/11 Dino/Emma)", async () => {

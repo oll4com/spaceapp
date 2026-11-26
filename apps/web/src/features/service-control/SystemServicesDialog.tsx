@@ -254,7 +254,7 @@ export function SystemServicesDialog({
     }
   }
 
-  const units = snapshot?.units ?? [];
+  const units = useMemo(() => snapshot?.units ?? [], [snapshot?.units]);
 
   const filteredUnits = useMemo(() => {
     return units.filter((unit) => {

@@ -68,6 +68,9 @@ export * from "./nous.js";
 export * from "./nous-client.js";
 export * from "./nous-goals.js";
 export * from "./nous-pane-board.js";
+export * from "./nous-live.js";
+export * from "./unified-inbox.js";
+export * from "./inbox.js";
 export * from "./version.js";
 export * from "./observability.js";
 

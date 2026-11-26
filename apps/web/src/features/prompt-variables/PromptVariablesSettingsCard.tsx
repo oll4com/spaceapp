@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Hash, Settings, Wrench } from "../ui-theme/app-icons.js";
+import { Hash, Settings } from "../ui-theme/app-icons.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { usePromptVariables } from "./prompt-variables-store.js";
 import { PromptVariablesManagerModal } from "./PromptVariablesManagerModal.js";

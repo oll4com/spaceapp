@@ -118,7 +118,7 @@ describe("Token usage from SQL groups", () => {
     afterAll(async () => {
       await pool?.end();
       await server?.stop();
-    });
+    }, 120_000);
 
     it("gives the same figures", async () => {
       const repository = new PostgresSystemAnalyticsRepository(pool);

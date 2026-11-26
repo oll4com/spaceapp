@@ -183,7 +183,7 @@ describe("Settings > Mobile app routes", () => {
     expect((await app.inject({ method: "POST", url: "/api/mobile/instance", headers: person, payload: {} })).json()).toMatchObject({ configured: true });
   });
 
-  it("the password step-up takes the person's own SpaceApp password, marks only this web session and is refused to a phone or proof session", async () => {
+  it("the password step-up takes the person's own SpaceApp password, marks only this web session and is refused to another user or a proof session", async () => {
     // ADR-013's open item: an install without Google sign-in (or a Google ID token without auth_time) confirms with the password.
     const owned = new InMemorySpaceStore();
     owned.initializeOwnerSetup({ tokenHash: "a".repeat(64), expiresAt: "2099-01-01T00:00:00.000Z" });
@@ -198,7 +198,6 @@ describe("Settings > Mobile app routes", () => {
       expect((await confirm(web, "wrong")).json()).toMatchObject({ error: { code: "STEP_UP_FAILED" } });
       // Another user's session with the owner's password, a phone and a proof session get no mark.
       expect((await confirm(as(signSession({ id: "user:other", email: "other@example.test", role: "USER" }, secret)), "right horse battery")).statusCode).toBe(403);
-      expect((await confirm(as(signSession(owner, secret, Date.now(), { app: "nous" })), "right horse battery")).statusCode).toBe(403);
       expect((await confirm(proof, "right horse battery")).statusCode).toBe(403);
       expect((await local.inject({ method: "POST", url: "/api/mobile/instance", headers: web, payload: {} })).statusCode).toBe(401);
       expect((await confirm(web, "right horse battery")).json()).toMatchObject({ steppedUp: true });
@@ -207,6 +206,26 @@ describe("Settings > Mobile app routes", () => {
       const audit = (await owned.listAuditEvents()).filter((event) => event.action.startsWith("auth.step_up"));
       expect(audit.map((event) => event.action)).toContain("auth.step_up");
       expect(JSON.stringify(audit)).not.toContain("right horse battery");
+    } finally { await local.close(); }
+  });
+
+  it("the Nous app of an ADMIN takes the same password step-up on its own session; another app or a USER's Nous app does not", async () => {
+    // Plan zqVWdClsx_pA step 9 (Nous app 0.4.3, Cleo/Nik): Approve/Answer of a linked decision needs a step-up the app could never take.
+    const owned = new InMemorySpaceStore();
+    owned.initializeOwnerSetup({ tokenHash: "a".repeat(64), expiresAt: "2099-01-01T00:00:00.000Z" });
+    const owner = owned.claimOwnerSetup({ tokenHash: "a".repeat(64), email: "owner@example.test", passwordHash: await hashPassword("right horse battery"), now: new Date().toISOString() }).user;
+    const member = await owned.upsertUser({ id: "user:member", email: "member@example.test", role: "USER" });
+    const local = await createApp({ store: owned, config: getApiConfig({ SPACE_LOG_LEVEL: "silent", SPACE_CONNECTOR_KEY_FILE: keyFile }), auth: { sessionSecret: secret, devLogin: false, secureCookies: false } });
+    try {
+      const confirm = (headers: Record<string, string>, password: string) => local.inject({ method: "POST", url: "/api/auth/step-up/password", headers, payload: { password } });
+      expect((await confirm(as(signSession(owner, secret, Date.now(), { app: "spaceapp" })), "right horse battery")).json()).toMatchObject({ error: { code: "FORBIDDEN" } });
+      expect((await confirm(as(signSession(member, secret, Date.now(), { app: "nous" })), "right horse battery")).json()).toMatchObject({ error: { code: "FORBIDDEN" } });
+      const nous = as(signSession(owner, secret, Date.now(), { app: "nous" }));
+      expect((await confirm(nous, "wrong")).json()).toMatchObject({ error: { code: "STEP_UP_FAILED" } });
+      expect((await confirm(nous, "right horse battery")).json()).toMatchObject({ steppedUp: true });
+      const audit = (await owned.listAuditEvents()).filter((event) => event.action.startsWith("auth.step_up"));
+      expect(audit.map((event) => [event.action, event.metadata])).toEqual(expect.arrayContaining([
+        ["auth.step_up_failed", { purpose: "mobile", via: "password", app: "nous" }], ["auth.step_up", { purpose: "mobile", via: "password", app: "nous" }]]));
     } finally { await local.close(); }
   });
 
@@ -330,7 +349,15 @@ describe("Settings > Mobile app routes", () => {
         headers: cookies ? { cookie: start.cookies.filter((cookie) => cookie.value).map((cookie) => `${cookie.name}=${cookie.value}`).join("; ") } : {} });
       return { status: callback.statusCode, location: String(callback.headers.location ?? "") };
     }
-    for (const headers of [person, phone, proof, userPhone]) expect((await begin(headers)).statusCode).toBe(403);
+    for (const headers of [person, proof, userPhone, as(signSession({ id: "user:other", email: "other@example.test", role: "USER" }, secret, Date.now(), { app: "nous" }))]) {
+      expect((await begin(headers)).statusCode).toBe(403);
+    }
+    // The Nous app of an ADMIN too (operator 17/11: no password-only step-up in any Nous): its ticket goes back to its own redirect.
+    // Its own address: the start route allows 10 per 15 minutes per address, and the SpaceApp cases below use them.
+    const nousBegin = async () => (await app.inject({ method: "POST", url: "/api/auth/app/step-up/start", headers: phone, payload: { state }, remoteAddress: "203.0.113.77" })).json().url as string;
+    const nousTicket = await nousBegin();
+    expect(await browser(nousTicket, "google-other")).toEqual({ status: 302, location: `com.oll4.spaceapp.nous:/oauth2redirect?stepUp=failed&state=${state}` });
+    expect(await browser(await nousBegin(), "google-operator")).toEqual({ status: 302, location: `com.oll4.spaceapp.nous:/oauth2redirect?stepUp=done&state=${state}` });
     expect((await begin(spaceapp, { state: "short" })).statusCode).toBe(400);
     expect((await app.inject({ method: "GET", url: "/api/auth/google/start?stepUp=mobile&ticket=made-up&json=true" })).statusCode).toBe(403);
 
@@ -359,7 +386,7 @@ describe("Settings > Mobile app routes", () => {
     // The mark is that app session's only.
     expect((await pairing(otherPhone)).statusCode).toBe(403);
     await app.inject({ method: "DELETE", url: `/api/mobile/pairing/${offer.json().offerId}`, headers: spaceapp });
-    expect((await store.listAuditEvents()).filter((event) => event.action === "auth.step_up" && event.metadata?.via === "spaceapp-browser")).toHaveLength(1);
+    expect((await store.listAuditEvents()).filter((event) => event.action === "auth.step_up" && event.metadata?.via === "spaceapp-browser")).toHaveLength(2);
   });
 
   it("7/11 without auth_time (no Session age claims in Google's console): the step-up's own nonce and a fresh iat pass and pair; an older sign-in never", async () => {

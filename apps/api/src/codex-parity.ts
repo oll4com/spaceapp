@@ -264,6 +264,7 @@ function normalizeReasoning(value: unknown): CodexHistoryItem["reasoningEffort"]
 
 function safeText(value: unknown, maxLength: number): string {
   const text = typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
+  // eslint-disable-next-line no-control-regex -- control characters are what this strips
   return redactMemoryText(text).replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
@@ -394,6 +395,7 @@ function safeChatText(value: unknown, maxLength: number): string {
   const text = typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
   return redactMemoryText(text)
     .replace(/\r\n?/g, "\n")
+    // eslint-disable-next-line no-control-regex -- control characters other than newline and CR are what this strips
     .replace(/[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]/g, " ")
     .replace(/[ \t]+$/gm, "")
     .replace(/\n{3,}/g, "\n\n")
@@ -1089,7 +1091,7 @@ async function readCodexLbUsage(input: {
     };
   }
 
-  let credential = "";
+  let credential: string;
   try {
     credential = (await readFile(input.codexLbKeyFile, "utf8")).trim();
   } catch (error) {

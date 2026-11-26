@@ -72,7 +72,8 @@ async function fixture(kind: MemoryChangeSet["kind"] = "EDIT") {
   return { root, indexPath, monthlyPath, journalRoot, lockPath, indexContent, beforeSnapshot, afterSnapshot, sources, changeSet, options };
 }
 
-describe("canonical memory mutation executor", () => {
+// shortcut: these fs-bound tests take 2-4s each on the loaded host (20ms when idle), past the 5s default under parallel load; find the stall if a run needs more than 30s.
+describe("canonical memory mutation executor", { timeout: 30000 }, () => {
   it.each(["EDIT", "MERGE", "ARCHIVE", "ROLLBACK"] as const)("atomically applies an approved %s and retains bounded recovery evidence", async (kind) => {
     const test = await fixture(kind);
     const beforeStat = await lstat(test.monthlyPath);

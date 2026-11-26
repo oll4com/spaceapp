@@ -1,6 +1,6 @@
 ---
 name: job-applications
-description: "Deprecated alias of space-job-applications (renamed 2026-10-13: every Space tool starts with space). Load space-job-applications instead; use only inside a Job Copilot pane."
+description: "Deprecated alias of space-job-applications; load that instead."
 metadata:
   category: DOMAIN_POLICY
 ---

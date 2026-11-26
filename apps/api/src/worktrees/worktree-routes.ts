@@ -1,11 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import {
-  createWorktreeSchema,
-  mergeWorktreeSchema,
-  type CreateWorktreeInput,
-  type MergeWorktreeInput
-} from "@space/contracts";
+import { createWorktreeSchema } from "@space/contracts";
 import type { SpaceWorktree } from "@space/contracts";
 import { createStaleWhileRevalidateCache } from "../stale-while-revalidate.js";
 import { WORKTREES_ROOT, WorktreeError, WorktreeService } from "./worktree-service.js";
@@ -61,6 +56,7 @@ export function registerWorktreeRoutes(app: FastifyInstance, options: WorktreeRo
       return await mutation();
     } finally {
       itemCache.invalidate();
+      service.invalidateWorktreeListCache?.();
     }
   };
 
@@ -98,10 +94,11 @@ export function registerWorktreeRoutes(app: FastifyInstance, options: WorktreeRo
       requireDestructiveAccess(request);
       const query = z
         .object({
-          repoPath: z.string().min(1).default(SPACE_INSTALL_ROOT)
+          repoPath: z.string().min(1).default(SPACE_INSTALL_ROOT),
+          fresh: z.stringbool().optional() // DEV3D-014: coerce.boolean read "false" as true
         })
         .parse(request.query);
-      const data = await service.listWorktrees(query.repoPath);
+      const data = await service.listWorktrees(query.repoPath, { fresh: query.fresh });
       return { data };
     })
   );

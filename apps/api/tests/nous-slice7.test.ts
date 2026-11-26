@@ -56,6 +56,19 @@ describe("space_memory_recall on an entry from an earlier day", () => {
   });
 });
 
+describe("space_notes on a note from an earlier day (14/11: UpCloud's EUR 5.000 wait, Hetzner's credit told from older notes)", () => {
+  const read = async (updatedAt: string, args: Record<string, unknown>) => (await tools({ listNotes: async () => [{ key: "hetzner-credit", text: "Credit EUR 20.", updatedAt }] } as never)
+    .execute("space_notes", args, ctx)).result;
+
+  it("asks to re-check it on its real surface or give its date, by key and by search; today's note and the key list do not", async () => {
+    for (const args of [{ key: "hetzner-credit" }, { q: "hetzner credit" }]) {
+      expect(await read("2026-11-12T04:52:00.000Z", args)).toMatch(/^Each entry was true on its date/);
+      expect(await read(new Date().toISOString(), args)).not.toContain("check it on its real surface");
+    }
+    expect(await read("2026-11-12T04:52:00.000Z", {})).not.toContain("check it on its real surface");
+  });
+});
+
 // Slice 8 (13/11): errors that said nothing about the next step now name it.
 describe("unknown ids name the call that lists the real ones", () => {
   it("space_request_done with an unknown plan records the Done without it and names space_plans (14/11 ×3 \"No such plan\")", async () => {
@@ -80,7 +93,7 @@ describe("unknown ids name the call that lists the real ones", () => {
   it("space_resolve_notification with an unknown id names space_notifications", async () => {
     const nous = tools({ notifications: { resolve: async () => false, list: async () => [] } as never });
     const answer = await nous.execute("space_resolve_notification", { notification: "notification:9ba1c247c64a4f7a8e1d3f05" }, ctx);
-    expect(answer).toMatchObject({ ok: false, display: "No such notification" });
+    expect(answer).toMatchObject({ ok: false, refused: true, display: "No such notification" });
     expect(answer.result).toContain("space_notifications lists the open ones");
   });
 });

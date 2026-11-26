@@ -50,6 +50,9 @@ describe.skipIf(unavailable !== null)(`Pane reports on PostgreSQL${unavailable ?
     expect((await repository.latestPlans(owner)).map((report) => [report.planId, report.summary])).toEqual([["clipboard:ot6-jLKOWDNC", "step 3"]]);
     expect((await repository.listForPlans(owner, ["clipboard:ot6-jLKOWDNC", "clipboard:other00001"])).map((report) => report.summary)).toEqual(["step 3"]);
     expect(await repository.listForPlans(owner, [])).toEqual([]);
+    // The score's reviewed gate: every DONE/TURN_END by time, though andy's newest is a PROGRESS.
+    expect(await repository.finishedSince(owner, "2026-10-10T00:00:00.000Z")).toEqual([{ at: "2026-10-17T09:00:00.000Z", summary: "bob", next: null },
+      { at: "2026-10-17T10:00:00.000Z", summary: "turn ended", next: null }]);
     expect(await repository.prune("2026-10-10T00:00:00.000Z")).toBe(1);
     expect((await repository.list(owner, "pane:andy0001", 10)).map((report) => report.summary)).toEqual(["step 3", "turn ended"]);
   });

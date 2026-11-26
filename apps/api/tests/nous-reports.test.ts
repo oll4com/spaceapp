@@ -1,11 +1,11 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Appointment, TaskItem } from "@space/contracts";
 import type { JobApplicationRecord, JobApplyEventRecord } from "@space/db";
 import { buildJobReport, platformOf } from "../src/job-apply/report.js";
-import { hoursOf, parseCryptoTable, readCryptoReport, reasonsOf, startedOf, verdictOf } from "../src/nous/reports.js";
+import { cryptoProject, hoursOf, parseCryptoTable, readCryptoReport, reasonsOf, startedOf, verdictOf } from "../src/nous/reports.js";
 
 // Job applications and Crypto (operator 3/11 22:33 BKK, nous_msg:e734994004dd): only what the records say; replies per company named
 // as a whole word by the sender's domain, name or subject; stages derived from distinct test/interview records.
@@ -101,6 +101,21 @@ describe("job report", () => {
     expect(report.unmatched.map((entry) => entry.subject)).toEqual(["Acmelabs news"]);
   });
 
+  it("finds a name as a whole word without a RegExp per company (14/11: compiling 1,500 held the main thread 0.6-1.3 s at the first report after a start)", () => {
+    const rejection = (subject: string) => mail("REJECTION", subject, `Rejection email from no-reply@us.greenhouse-mail.io: ${subject}`);
+    const compiled = vi.spyOn(globalThis, "RegExp");
+    try {
+      const report = buildJobReport({ applications: [app("jobapp:zeta01", "Zeta Works"), app("jobapp:zeta02", "Zeta"), app("jobapp:kilo01", "Kilo Lima Kilo Lima")],
+        // Any case and any whitespace between a name's words; a name inside a longer word, beside a digit or after a letter outside the BMP
+        // is no name; the second place a name starts at counts when the first sits inside a word.
+        events: [rejection("Your application to ZETA \t\u00a0Works!"), rejection("Zetaworks1, Zeta2, \u{1d400}Zeta"), rejection("Xkilo Lima Kilo Lima Kilo Lima")],
+        tasks: [], appointments: [], timeZone: "Asia/Bangkok", now: new Date("2026-11-03T00:00:00.000Z") });
+      expect(compiled).not.toHaveBeenCalled();
+      expect(Object.fromEntries(report.companies.map((entry) => [entry.name, entry.outcome]))).toEqual({ "Kilo Lima Kilo Lima": "REJECTED", Zeta: "NO_REPLY", "Zeta Works": "REJECTED" });
+      expect(report.unmatched.map((entry) => entry.subject)).toEqual(["Zetaworks1, Zeta2, \u{1d400}Zeta"]);
+    } finally { compiled.mockRestore(); }
+  });
+
   it("counts one step mailed several times once, and a title's 'Remote' names no company", () => {
     // Stable 3/11: Snyk's invitation, calendar invite and appointment read "passed stage 2"; FINN's assessment "- Remote at Ewa Services" invited Remote.
     const steps = buildJobReport({ applications: [app("jobapp:snyk01", "Snyk"), app("jobapp:remot1", "Remote"), app("jobapp:finn01", "FINN")], events: [],
@@ -187,6 +202,23 @@ describe("crypto report", () => {
     writeFileSync(join(dir, "final-table.md"), table.replace("# Draft of the final table", "# Final table"));
     expect((await readCryptoReport(dir)).source).toMatchObject({ final: true, title: "Final table" });
     expect(await readCryptoReport(null)).toMatchObject({ source: null, rows: [] });
+  });
+
+  it("scores Crypto on PASS of PASS/FAIL only, and not at all once the final table has nothing pending (Nous 14/11)", () => {
+    const now = Date.parse("2026-11-14T03:00:00Z");
+    const parsed = parseCryptoTable(table.replace("| SKIP / χωρίς", "| Insufficient data / χωρίς"), (path) => path.endsWith("methods.md") ? registry.split("\n") : null);
+    const draft = { ...parsed, source: { path: "final-table-draft.md", final: false, modifiedAt: "2026-11-04T00:00:00.000Z", title: "Draft" } };
+    // F12 is INSUFFICIENT now: no result, so out of tried; B01 FAIL and D28 PASS stay, and the days run from B01's start.
+    expect(draft.verdicts.INSUFFICIENT).toBe(1);
+    expect(cryptoProject(draft, now)).toEqual({ name: "Crypto methods", succeeded: 1, tried: 2, what: "tested passed", since: "2026-10-29T00:00:00.000Z" });
+    // Final with a retest still pending: still running.
+    const final = { ...draft, source: { ...draft.source, final: true } };
+    expect(cryptoProject(final, now)?.tried).toBe(2);
+    // Final with nothing pending: finished, no row.
+    expect(cryptoProject({ ...final, verdicts: { ...final.verdicts, PENDING: 0 } }, now)).toBeNull();
+    // Only INSUFFICIENT results: nothing tested to a verdict, no row.
+    expect(cryptoProject({ ...draft, rows: draft.rows.filter((row) => row.verdict === "INSUFFICIENT") }, now)).toBeNull();
+    expect(cryptoProject(null, now)).toBeNull();
   });
 
   it("reads verdicts, hours and reasons as written", () => {

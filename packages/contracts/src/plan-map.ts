@@ -14,8 +14,8 @@ export const planWaitsOnSchema = z.object({
   until: z.string().datetime({ offset: true }).nullable().default(null)
 }).strict();
 export type PlanWaitsOn = z.infer<typeof planWaitsOnSchema>;
-/** The progress-update keys that change only the plan map: allowed on a managed plan too (its execution owns the rest). */
-export const PLAN_MAP_KEYS = ["dependsOn", "dueAt", "waitsOn", "parked"] as const;
+/** The progress-update keys that change only the plan map and the model it needs: allowed on a managed plan too (its execution owns the rest). */
+export const PLAN_MAP_KEYS = ["dependsOn", "dueAt", "waitsOn", "parked", "minimumModel", "minimumReasoning"] as const;
 
 /**
  * Parked plans (operator 13/11 nous_msg:4080b166, plan clipboard:7S_jA46vDkU9): why a plan is parked (open, or closed with work left)
@@ -59,6 +59,25 @@ export type PlanResumeCondition = PlanParked["conditions"][number];
 /** Parked now: a record that Space has not resumed. */
 export const planIsParked = <T extends { parked?: PlanParked | null }>(plan: T): plan is T & { parked: PlanParked } => Boolean(plan.parked && !plan.parked.resumedAt);
 
+/**
+ * What a plan reads as (operator 23/11, phone: a plan parked at 69% read "Done"). Parking closes a plan (COMPLETED), so COMPLETED alone
+ * is not done: a parked plan, or a closed one with work left, reads PARKED with its reason and the first open condition it waits on.
+ */
+export function planShownStatus(plan: {
+  status: string; progress: number; steps?: ReadonlyArray<{ status: string }>;
+  parked?: { reason: string; resumedAt?: string | null; conditions?: ReadonlyArray<{ what: string; state: string }> } | null;
+}): { status: string; reason: string | null; waitsOn: string | null } {
+  const parked = plan.parked && !plan.parked.resumedAt ? plan.parked : null;
+  const workLeft = plan.progress < 100 || Boolean(plan.steps?.some((step) => step.status !== "COMPLETED"));
+  if (!parked && !(plan.status === "COMPLETED" && workLeft)) return { status: plan.status, reason: null, waitsOn: null };
+  return { status: "PARKED", reason: parked?.reason ?? null, waitsOn: parked?.conditions?.find((condition) => condition.state !== "MET")?.what ?? null };
+}
+
+/** Operator 22/11 (50 plans closed at 100% with steps still PENDING/IN_PROGRESS/BLOCKED): a plan that closes takes its open steps with it. */
+export function closeOpenPlanSteps<S extends { status: string; progress: number; completedAt?: string | null }>(steps: S[], at = new Date().toISOString()): S[] {
+  return steps.map((step) => step.status === "COMPLETED" || step.status === "FAILED" ? step : { ...step, status: "COMPLETED", progress: 100, completedAt: at });
+}
+
 /** Why `planId` may not depend on `dependsOn` (itself, a plan that is not open, a loop); null when it may. */
 export function planDependencyProblem(planId: string | null, dependsOn: string[], plans: ReadonlyArray<{ id: string; dependsOn: string[] }>): string | null {
   if (planId && dependsOn.includes(planId)) return "A plan cannot depend on itself.";
@@ -78,6 +97,16 @@ export function planDependencyProblem(planId: string | null, dependsOn: string[]
   };
   const loop = walk(planId, []);
   return loop ? `The dependency would loop: ${loop.join(" → ")}.` : null;
+}
+/**
+ * `dependsOn` without the plans already completed, and why the rest may not be named (planDependencyProblem). A completed plan is a met
+ * dependency, as the plan map reads it, so it is dropped rather than refused (15/11 13:42Z: "Plan clipboard:vStwchpvnWec is not an open plan"
+ * three minutes after it was completed).
+ */
+export function checkPlanDependencies(planId: string | null, dependsOn: string[], plans: ReadonlyArray<{ id: string; dependsOn: string[]; done: boolean }>): { dependsOn: string[]; problem: string | null } {
+  const done = new Set(plans.filter((plan) => plan.done && plan.id !== planId).map((plan) => plan.id));
+  const open = dependsOn.filter((id) => !done.has(id));
+  return { dependsOn: open, problem: planDependencyProblem(planId, open, plans.filter((plan) => !plan.done)) };
 }
 // Re-parking a plan that is still parked keeps its clock (the Score's "Parked plans" age), so re-parking never resets it.
 export const keepParkedClock = (existing: PlanParked | null | undefined, next: PlanParked | null): PlanParked | null =>

@@ -102,7 +102,7 @@ export function YouTubePane(props: YouTubePaneProps) {
   const [url, setUrl] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saveState, setSaveState] = useState('');
+  const [, setSaveState] = useState('');
   const [reload, setReload] = useState(0);
   const latest = useRef<YouTubePlayback | null>(null);
   const localKey = useRef<string | null>(null);

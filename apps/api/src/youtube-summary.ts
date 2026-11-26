@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { YOUTUBE_SUMMARY_MODELS } from "@space/contracts";
+import { YOUTUBE_SUMMARY_MODELS, YOUTUBE_SUMMARY_PROMPT_CHARS } from "@space/contracts";
 import { SpaceConflictError, SpaceFeatureDisabledError } from "@space/runtime";
 import { gatewayRequestIdHeader } from "./gateway-request-id.js";
 import { createVideoEngine, type VideoEngineRun } from "./video/engine.js";
@@ -60,13 +60,15 @@ export async function youtubeCaptions(options: { workRoot: string; toolsDir: str
  * upgrade to streaming or chunked transcription if the operator needs long ones.
  * Full text reads the video's own captions first (exact and in seconds): Gemini answered word-for-word requests with no text (STOP) on
  * every video on 2026-10-21, so it only listens to videos without captions.
+ * A summary reads the captions as text too when they fit the gateway's prompt (plan clipboard:nsWKwUFhUFWA slice 7): a watched video costs
+ * about 100 tokens a second at low resolution, its captions about 3 a second; videos without captions, or longer ones, are still watched.
  */
 export async function youtubeVideoText(options: { gatewayUrl: string; keyFile: string | null; model?: string; videoId: string; kind: YouTubeTextKind;
   fetchImpl?: typeof fetch; captions?: (videoId: string) => Promise<string | null>; traceId?: string | null }): Promise<{ text: string; model: string }> {
-  if (options.kind === "transcript" && options.captions) {
-    const text = await options.captions(options.videoId).catch(() => null);
-    if (text) return { text, model: "YouTube captions" };
-  }
+  const captions = options.captions ? await options.captions(options.videoId).catch(() => null) : null;
+  if (captions && options.kind === "transcript") return { text: captions, model: "YouTube captions" };
+  const fromCaptions = captions ? `${PROMPTS.summary.replace("this YouTube video", "this YouTube video from its captions below")}\n\nCaptions:\n${captions}` : "";
+  const prompt = fromCaptions && fromCaptions.length <= YOUTUBE_SUMMARY_PROMPT_CHARS ? fromCaptions : PROMPTS[options.kind];
   const key = options.keyFile ? (await readFile(options.keyFile, "utf8").catch(() => "")).trim() : "";
   if (!key) throw new SpaceFeatureDisabledError("YOUTUBE_SUMMARY_UNAVAILABLE", "Video summaries need Space Gateway's key on this server (SPACE_GATEWAY_KEY_FILE).");
   const model = options.model ?? YOUTUBE_SUMMARY_MODELS[0].id;
@@ -75,7 +77,7 @@ export async function youtubeVideoText(options: { gatewayUrl: string; keyFile: s
     response = await (options.fetchImpl ?? fetch)(`${options.gatewayUrl}/gemini/v1/generate`, {
       method: "POST",
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json", ...gatewayRequestIdHeader(options.traceId) },
-      body: JSON.stringify({ model, prompt: PROMPTS[options.kind], videoUrl: `https://www.youtube.com/watch?v=${options.videoId}` }),
+      body: JSON.stringify({ model, prompt, ...(prompt === fromCaptions ? {} : { videoUrl: `https://www.youtube.com/watch?v=${options.videoId}` }) }),
       signal: AbortSignal.timeout(280_000)
     });
   } catch (error) {

@@ -196,6 +196,15 @@ describe("Nous pane board pieces", () => {
     }
   });
 
+  it("reads a CLI whose turn ended on an API error as idle, so the load push hands it work (21/11 Bruno/Iris)", () => {
+    const { snapshot, andy } = world();
+    const room = snapshot.rooms.find((entry) => entry.sample?.data.some((item) => item.id === andy.id))!;
+    room.sample = { ...room.sample!, activity: { ...room.sample!.activity, [andy.id]: "waiting" }, details: { ...room.sample!.details, [andy.id]: { status: "waiting", reason: "API error" } } } as never;
+    expect(boardPanes(snapshot, { showClosed: false }).find((entry) => entry.pane.id === andy.id)!.state).toBe("idle");
+    room.sample = { ...room.sample!, details: { ...room.sample!.details, [andy.id]: { status: "waiting", reason: "Usage limit" } } } as never;
+    expect(boardPanes(snapshot, { showClosed: false }).find((entry) => entry.pane.id === andy.id)!.state).toBe("waiting");
+  });
+
   it("keeps INFO notices (new mail, a learned rule) off the board: only what waits for the operator (operator request 2026-10-21)", () => {
     const { snapshot, andy } = world();
     const notice = (id: string, severity: string) => ({ id, paneId: andy.id, source: "MAIL_COPILOT", severity, title: id, status: "OPEN", payload: {} }) as unknown as SpaceNotification;

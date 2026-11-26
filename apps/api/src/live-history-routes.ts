@@ -19,7 +19,7 @@ export function verifiedLegacyVoiceTurns(owner: string, room: string, source: st
       const createdAtMs = Date.parse(item.timestamp); if (!Number.isFinite(createdAtMs)) continue;
       const id = createHash("sha256").update(`${index}:${line}`).digest("hex");
       result.push({ id: `legacy:${id}`, sessionId: "legacy-import", roomId: room, role: item.role, text: item.text.slice(0, 32000), timestamp: item.timestamp, createdAtMs, revision: 1 });
-    } catch {}
+    } catch { /* A line that is not JSON (blank or torn) is skipped like an unverified one. */ }
   }
   // Every verified legacy turn is imported (until 31/10 only the newest 200; the rest were lost on import).
   return result;

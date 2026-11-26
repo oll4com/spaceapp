@@ -143,7 +143,8 @@ describe("project sources", { timeout: 60000 }, () => {
 
   it("removes only the folder it created when a clone fails and keeps a pre-existing empty folder", async () => {
     unavailable = true;
-    await expect(open(gitUrl(join(parent, "failed")))).rejects.toMatchObject({ code: "GIT_FAILED" });
+    // git echoes the URL in its error: a "403" in it (or in the random port) must not read as an HTTP 403.
+    await expect(open({ source: { kind: "git-url", url: `${origin}/upstream-403.git` }, destination: join(parent, "failed") })).rejects.toMatchObject({ code: "GIT_FAILED" });
     await expect(lstat(join(parent, "failed"))).rejects.toMatchObject({ code: "ENOENT" });
     const empty = join(parent, "empty"); await mkdir(empty);
     await expect(open(gitUrl(empty))).rejects.toMatchObject({ code: "GIT_FAILED" });

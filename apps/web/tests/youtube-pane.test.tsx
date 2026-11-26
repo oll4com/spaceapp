@@ -577,8 +577,10 @@ describe("YouTubePane", () => {
     await screen.findByRole("img", { name: "YouTube 1 browser frame" });
     dispatchBrowserPaneActionEvent({ paneId: "pane:youtube-proof", action: "reload" });
     await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalled());
-    const heartbeat = intervals.mock.calls.filter(([, delay]) => delay === 15_000).at(-1)?.[0] as (() => void) | undefined;
-    expect(heartbeat).toBeTypeOf("function");
+    // The heartbeat starts in an effect after the lease commits, which can land after the input under load.
+    const heartbeatTimer = () => intervals.mock.calls.filter(([, delay]) => delay === 15_000).at(-1)?.[0] as (() => void) | undefined;
+    await waitFor(() => expect(heartbeatTimer()).toBeTypeOf("function"));
+    const heartbeat = heartbeatTimer();
     const start = Date.parse(lease.lease.acquiredAt);
     const now = vi.spyOn(Date, "now");
     try {

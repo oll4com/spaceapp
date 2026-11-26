@@ -520,6 +520,7 @@ export class PostgresTelegramPersistence implements TelegramPersistence, Telegra
     nextPartIndex: number;
     delivered: boolean;
     now: string;
+    messageId?: string;
   }): Promise<void> {
     await this.withTransaction(async (client) => {
       const result = await client.query(
@@ -530,11 +531,12 @@ export class PostgresTelegramPersistence implements TelegramPersistence, Telegra
               delivered_at = CASE WHEN $4 THEN $5 ELSE delivered_at END,
               locked_at = CASE WHEN $4 THEN NULL ELSE locked_at END,
               locked_by = CASE WHEN $4 THEN NULL ELSE locked_by END,
+              message_id = COALESCE($6, message_id),
               updated_at = $5
           WHERE delivery_id = $1 AND status = 'SENDING' AND locked_by = $2
           RETURNING integration_generation
         `,
-        [input.deliveryId, input.workerId, input.nextPartIndex, input.delivered, input.now]
+        [input.deliveryId, input.workerId, input.nextPartIndex, input.delivered, input.now, input.messageId ?? null]
       );
       if (!result.rowCount) {
         throw new TelegramIntegrationError("TELEGRAM_DELIVERY_LOCK_LOST", "Telegram delivery lock is no longer held.", 409);

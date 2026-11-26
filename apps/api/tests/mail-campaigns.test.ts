@@ -25,6 +25,15 @@ describe("template HTML and imports", () => {
     expect(html).toContain('<a href="https://example.invalid/?utm=1" target="_blank">Shop</a>');
     expect(html).toContain('<img src="https://example.invalid/p.jpg" width="300" />');
   });
+  it("keeps Gmail's JSON-LD in the head as escaped data and nothing else of a script", () => {
+    const html = sanitizeTemplateHtml(`<html><head><title>T</title><script type="application/ld+json">[{"@type":"PromotionCard","headline":"<b>-50%</b> $& x"}]</script>`
+      + `<script type="application/ld+json">{not json}</script><script>alert(2)</script></head><body><script type="application/ld+json">{"a":1}</script><p>Hi</p></body></html>`);
+    expect(html.match(/<script/g)).toHaveLength(1);
+    expect(html).toContain('<script type="application/ld+json">[{"@type":"PromotionCard","headline":"\\u003cb>-50%\\u003c/b> $& x"}]</script></head>');
+    expect(html).not.toMatch(/alert\(2\)|not json|"a":1/);
+    expect(sanitizeTemplateHtml(html)).toBe(html);
+    expect(sanitizeTemplateHtml('<p>no head</p><script type="application/ld+json">{"a":1}</script>')).toBe("<p>no head</p>");
+  });
   it("reads CSV with a header, quotes and semicolons, free text and refuses what is not an address", () => {
     expect(parseCsv('a;"b ""c""";d\r\n1;"line\nbreak";3\n')).toEqual([["a", "b \"c\"", "d"], ["1", "line\nbreak", "3"]]);
     const parsed = contactsFromCsv("Email;First name;Last name;City\nAlice@Shop.gr;Alice;A;Athens\nbad;X;Y;Z\nalice@shop.gr;dup;;\nbob@shop.gr;;;Patra\n");

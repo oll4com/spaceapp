@@ -1,6 +1,6 @@
 ---
 name: space-vault
-description: "Space Vault for agents: fill a site's login or one-time code from the operator's Vault without ever seeing it, save the logins you create or receive, and find and write server, VM, SSH, admin and API passwords and keys into the files they belong in, through the space_vault tools (opaque handles and ids; answers are a status and an audit id). Use when a task needs to sign in to a site in this pane's browser, or needs a password or key for a server, VM or service, or when a password reaches you (a mail), or to pay at a checkout with the operator's saved card. Works while the operator's agent access is on; no per-use approval."
+description: "Space Vault (space_vault tools): sign in to sites or fill one-time codes without seeing the secret, save logins, put server, SSH and API passwords or keys into files, pay with the saved card."
 metadata:
   category: DOMAIN_POLICY
 ---
@@ -20,7 +20,13 @@ one-time code or seed: Space types them into the page and tells you only the res
   `/security-merchant-portal-gui/login`): open that page, not the bare origin.
 - `space_vault_request_fill {handle, fields: ["USERNAME", "PASSWORD"], submit?, targetPaneId?}`: fill the login form open in
   the browser. Default browser: this pane's own, else the room's first browser pane; name another with `targetPaneId`.
-- `space_vault_request_totp_fill {handle, submit?, targetPaneId?}`: fill the one-time code field.
+- `space_vault_request_totp_fill {handle, submit?, targetPaneId?}`: fill the one-time code field from the item's authenticator key.
+  When `space_vault_list` shows `OTP` among an item's fields, a 2FA/authenticator code is yours: fill it, never ask the operator for it;
+  only if the fill fails raise a needs-you, with its reason in `checked`.
+- `space_vault_save_totp_from_qr {handle, targetPaneId?}`: a site's 2FA setup page shows a QR in your browser: Space reads it and sets
+  it as the item's authenticator key; you never see the key. Never snapshot, screenshot or read the setup page (the key is printed there);
+  after this call the page is fenced blind. Then confirm the enrolment with `space_vault_request_totp_fill`. `OTP_QR_NEEDS_HOST_RESTART`:
+  the Browser Host needs the operator's guarded restart; `QR_NOT_FOUND`: scroll the QR into the page and retry.
 - `space_vault_generate_fill {purpose, ...}`: Space generates a strong password and fills the new-password (and confirm)
   fields; the password goes straight into the Vault and you never see it. `CHANGE_PASSWORD` needs the item's `handle`.
   `NEW_ACCOUNT {label, username?}` is for a new account **and** for a password reset of an account the Vault has no item

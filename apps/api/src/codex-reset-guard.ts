@@ -1,22 +1,23 @@
-import { createHash } from "node:crypto";
-import type { GatewayAccount } from "@space/contracts";
+import { gatewayWeekResetCredits, type GatewayAccount, type GatewayResetGrant } from "@space/contracts";
 import { codexUsageWindows } from "@space/gateway";
 
 /**
- * When a Codex weekly reset credit may be spent (operator 2/11 15:38 BKK, brief 20261102-codex-reset-credits), for Nous's
- * space_codex_reset_redeem and Space's automatic redemption. A credit gives the account a fresh week, so it is spent only on an
- * account at its quota whose own reset is far: Nous's floor is 5% left (2/11 ntheogr's used-up week read 2%), the automatic one 1%.
+ * When a Codex or Claude reset credit is worth spending (brief 20261102-codex-reset-credits), as space_codex_reset_credits shows it.
+ * Only the operator spends one, with the Resources button (operator 14/11 «Τα reset τα κανω μονο εγω!!!»). A credit gives the account a
+ * fresh week, so it is worth it only on an account at its quota (a window under 5% left) whose own reset is far.
  */
 export const CODEX_RESET_MANUAL_LEFT = 5;
-export const CODEX_RESET_AUTO_LEFT = 1;
 /** A natural reset this near makes a credit a waste. */
 export const CODEX_RESET_NEAR_MS = 6 * 3_600_000;
 
 type Live = { left: number; resetAt: string | null };
 export interface CodexResetState {
   id: string;
+  provider: GatewayAccount["provider"];
   name: string;
+  /** Week resets: Claude's weekly and full grants only (a Fable reset never gives a week, dev@ 14/11). */
   credits: number;
+  grants: GatewayResetGrant[] | null;
   fiveHour: Live | null;
   week: Live | null;
   quotaExceeded: boolean;
@@ -28,7 +29,7 @@ const live = (window: GatewayAccount["primaryWindow"] | null, now: number): Live
 
 export function codexResetState(account: GatewayAccount, now: number): CodexResetState {
   const { fiveHour, weekly } = codexUsageWindows(account);
-  return { id: account.id, name: account.alias ?? account.label, credits: account.resetCreditsAvailable ?? 0,
+  return { id: account.id, provider: account.provider, name: account.alias ?? account.label, credits: gatewayWeekResetCredits(account), grants: account.resetCreditGrants ?? null,
     fiveHour: live(fiveHour, now), week: live(weekly, now), quotaExceeded: account.status === "QUOTA_EXCEEDED" };
 }
 
@@ -44,21 +45,10 @@ const leftText = (window: Live | null) => window ? `${Math.round(window.left)}% 
 
 /** Why a credit may not be spent now, or null when it may. */
 export function codexResetRefusal(state: CodexResetState, now: number, floor: number, time: (iso: string) => string): string | null {
-  if (state.credits < 1) return `${state.name} has no reset credit.`;
+  if (state.credits < 1) return `${state.name} has no week reset credit.`;
   const { blocked, backAt } = codexResetBlock(state, floor);
   if (!blocked) return `${state.name} is not used up (5-hour ${leftText(state.fiveHour)}, week ${leftText(state.week)}): a credit now would waste most of a week. `
     + `Spend one only when a window is under ${floor}% left.`;
   if (backAt !== null && backAt - now <= CODEX_RESET_NEAR_MS) return `${state.name} is back by itself ${time(new Date(backAt).toISOString())}, within 6 hours: a credit now would be wasted.`;
   return null;
-}
-
-/**
- * One key per account and week: upstream spends at most one credit for a key (redeem_request_id), so a repeat, a second caller or
- * an API restart never spends two. The reset time is rounded to the hour, as Codex's relative samples move it by seconds.
- */
-export function codexResetKey(accountId: string, weekResetAt: string | null): string {
-  const reset = Date.parse(weekResetAt ?? "");
-  const window = Number.isFinite(reset) ? new Date(Math.round(reset / 3_600_000) * 3_600_000).toISOString() : "no-week";
-  const hex = createHash("sha256").update(`codex-reset-credit:${accountId}:${window}`).digest("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${(8 | (parseInt(hex[16]!, 16) & 3)).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }

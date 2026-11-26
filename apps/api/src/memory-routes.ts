@@ -204,7 +204,7 @@ export function registerMemoryRoutes(app: FastifyInstance, options: {
       store.getLatestMemoryEmbeddingSmoke(),
       store.getMemoryVectorReadiness(config.memoryEmbeddingDimensions)
     ]);
-    let cacheEntry: MemoryEntry | null = null;
+    let cacheEntry: MemoryEntry | null;
     try {
       // A rate-limited or failing provider never costs the save: the row is kept without a vector and the backfill embeds it later.
       const embedding = isSemanticMemoryReady(latestEmbeddingSmoke, vectorReadiness)

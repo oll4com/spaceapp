@@ -20,6 +20,8 @@ describe.skipIf(unavailable !== null)(`Nous's panes are blue on disposable Postg
     expect(index).toBeGreaterThan(0);
     const client = await pool.connect();
     try { await applyPendingMigrations(client, migrations.slice(0, index)); } finally { client.release(); }
+    // The store reads rooms.nous_excluded, a later column than 0320.
+    await pool.query(migrations.find((item) => item.filename.startsWith("0353_room_nous_excluded"))!.sql);
     const store = new PostgresSpaceStore(pool);
     const room = await store.createRoom({ kind: "AGENT_PROOF", name: "AGENT_PROOF blue", initialPaneCount: 0 });
     const open = (requestId: string, count: number, categoryColor?: "blue") => store.createPanes(

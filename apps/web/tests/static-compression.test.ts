@@ -384,4 +384,18 @@ describe("Sentry web delivery", () => {
     expect(body).toContain("a".repeat(40));
     expect(body).not.toContain("AUTH_SECRET");
   });
+
+  it("stays up when a large cached asset disappears after a deploy (review of 0cfad7d2ae)", async () => {
+    const dist = await createDist();
+    const assetPath = path.join(dist, "assets", "big-abc123.js");
+    await writeFile(assetPath, "x".repeat(3 * 1024 * 1024)); // over the 2 MB inline bound, so the cache keeps only the path
+    const port = await startServer(dist);
+
+    expect((await request(port, "/assets/big-abc123.js", "identity")).status).toBe(200);
+    await rm(assetPath);
+    await request(port, "/assets/big-abc123.js", "identity").catch(() => undefined); // stream fails after the headers
+
+    expect((await request(port, "/", "identity")).status).toBe(200);
+    expect((await request(port, "/assets/big-abc123.js", "identity")).status).toBe(404);
+  });
 });

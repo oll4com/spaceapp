@@ -58,7 +58,27 @@ describe.skipIf(unavailable !== null)(`notifications repository on PostgreSQL${u
       expect(listed.map((record) => record.id)).toContain(onPane.id);
       expect(listed.every((record) => record.paneId === "pane:open")).toBe(true);
       expect(await store.list(owner, { ...query, paneId: "pane:open" })).toEqual([]);
-      await store.setStatus(owner, onPane.id, "RESOLVED");
+      // Speed slice 7: the pane board's read leaves out what no pane's line shows (no pane, INFO), in both stores.
+      const offPane = (await store.raise(raise(null, "room:a"))).notification;
+      const info = (await store.raise(raise("pane:open", "room:a", "INFO"))).notification;
+      const board = (await store.list(owner, { status: "WAITING", onPane: true, aboveInfo: true, limit: 200 })).map((record) => record.id);
+      expect(board).toContain(onPane.id);
+      expect(board).not.toContain(offPane.id);
+      expect(board).not.toContain(info.id);
+      expect((await store.list(owner, { status: "WAITING", limit: 200 })).map((record) => record.id)).toEqual(expect.arrayContaining([onPane.id, offPane.id, info.id]));
+      // Speed slice 14: a reader that keeps only the records holding a payload key reads only those (a null value is no value), in both stores.
+      const held = (await store.raise({ ...raise("pane:open", "room:a"), payload: { heldForNous: { until: "2026-11-14T00:00:00.000Z" }, heldUntil: null } })).notification;
+      expect((await store.list(owner, { status: "WAITING", payloadHas: "heldForNous", limit: 200 })).map((record) => record.id)).toEqual([held.id]);
+      expect(await store.list(owner, { status: "WAITING", payloadHas: "heldUntil", limit: 200 })).toEqual([]);
+      // Speed audit 21/11: excludeSource and since filter in SQL and in-memory identically.
+      const nousWaiting = (await store.raise({ ...raise("pane:open", "room:a"), source: "NOUS", kind: "NEEDS_YOU" })).notification;
+      const nonNous = (await store.list(owner, { status: "WAITING", aboveInfo: true, excludeSource: "NOUS", limit: 200 })).map((record) => record.id);
+      expect(nonNous).toContain(onPane.id);
+      expect(nonNous).not.toContain(nousWaiting.id);
+      expect(nonNous).not.toContain(info.id);
+      expect((await store.list(owner, { status: "WAITING", since: new Date(Date.now() + 60_000).toISOString(), limit: 200 }))).toEqual([]);
+      expect((await store.list(owner, { status: "WAITING", since: nousWaiting.createdAt, limit: 200 })).map((record) => record.id)).toContain(nousWaiting.id);
+      for (const record of [onPane, offPane, info, held, nousWaiting]) await store.setStatus(owner, record.id, "RESOLVED");
     }
     await pool.query("UPDATE space_notifications SET acked_at = now() - interval '31 days' WHERE id = $1", [notification.id]);
     await repository.prune(new Date(Date.now() - 30 * 86_400_000).toISOString());
@@ -155,6 +175,72 @@ describe.skipIf(unavailable !== null)(`notifications repository on PostgreSQL${u
     expect((await repository.pending(person)).total).toBe(pendingBefore);
     const listed = await repository.list(person, { status: "NEEDS_YOU", limit: 50 });
     expect(listed.map((item) => item.id).sort()).toEqual([open.id, notNow.id, designAsk.id, heldOver.id].sort());
+  }, 60_000);
+
+  it("operator 16/11 21:55 BKK: a needs-you card the operator opened (READ) still counts as pending, in both stores; a read notice or a closed pane's card does not", async () => {
+    const person = "user:notify-read";
+    await pool.query("INSERT INTO users(id, email, role) VALUES ($1, $2, 'OPERATOR')", [person, "read@space.local"]);
+    for (const store of [repository, new InMemorySpaceNotificationsRepository()]) {
+      const before = (await store.pending(person)).total;
+      const card = (await store.raise({ ...raise("pane:open", "room:a"), ownerUserId: person })).notification;
+      const read = [card, ...(await Promise.all([{ kind: "APPLICATION_FAILED" }, { severity: "INFO" as const }].map(async (extra) =>
+        (await store.raise({ ...raise("pane:open", "room:a"), ownerUserId: person, ...extra })).notification)))];
+      // The in-memory store knows no panes: only PostgreSQL leaves a closed pane's opened card out.
+      if (store === repository) read.push((await store.raise({ ...raise("pane:closed", "room:a"), ownerUserId: person })).notification);
+      for (const item of read) await store.setStatus(person, item.id, "READ");
+      const pending = await store.pending(person);
+      expect(pending.total).toBe(before + 1);
+      expect(pending.latest.map((item) => item.id)).toContain(card.id);
+      await store.setStatus(person, card.id, "ACKED");
+      expect((await store.pending(person)).total).toBe(before);
+    }
+  }, 60_000);
+
+  it("operator 17/11 14:04 BKK: Mark all read empties the count, opened needs-you cards included, until one is reopened or changes, in both stores", async () => {
+    const person = "user:notify-readall";
+    await pool.query("INSERT INTO users(id, email, role) VALUES ($1, $2, 'OPERATOR')", [person, "readall@space.local"]);
+    for (const store of [repository, new InMemorySpaceNotificationsRepository()]) {
+      const card = { ...raise("pane:open", "room:a"), ownerUserId: person, kind: "NEEDS_USER", dedupeKey: "job:needs:1", body: "Solve the CAPTCHA" };
+      const { notification } = await store.raise(card);
+      await store.setStatus(person, notification.id, "READ");
+      await store.raise({ ...raise("pane:open", "room:a"), ownerUserId: person, kind: "MAIL_RECEIVED" });
+      expect((await store.pending(person)).total).toBe(2);
+      // One card's Mark read (the row's check): only that card, read and stamped, never acknowledged.
+      expect(await store.readAll(person, notification.id)).toBe(1);
+      expect(await store.get(person, notification.id)).toMatchObject({ status: "READ", payload: { markedReadAt: expect.anything() } });
+      expect((await store.pending(person)).total).toBe(1);
+      expect(await store.readAll(person)).toBe(1);
+      expect((await store.pending(person)).total).toBe(0);
+      expect(await store.readAll(person)).toBe(0);
+      expect(await store.list(person, { status: "NEEDS_YOU", limit: 10 })).toHaveLength(1);
+      await store.raise(card);
+      expect((await store.pending(person)).total).toBe(0);
+      await store.raise({ ...card, body: "Solve the CAPTCHA again" });
+      expect((await store.pending(person)).total).toBe(1);
+      await store.readAll(person);
+      await store.raise({ ...card, body: "Solve the CAPTCHA again", reopen: true });
+      expect((await store.pending(person)).total).toBe(1);
+    }
+  }, 60_000);
+
+  it("records a producer's own Telegram send as delivered and finds the chat's messages of a notification or a decision (spec v2 §7, step 4b)", async () => {
+    await pool.query("UPDATE telegram_integrations SET connection_status = 'CONNECTED', is_enabled = true, enabled_at = now() - interval '1 minute', chat_id = '123', generation = 1 WHERE id = 'global'");
+    try {
+      const { notification: card } = await repository.raise({ ...raise(null, "room:a"), source: "NOUS", kind: "DECISION_OTHER", dedupeKey: "nous:decision:nous_decision:d1" });
+      const { notification: plain } = await repository.raise({ ...raise(null, "room:b"), title: "Plain card" });
+      expect(await repository.enqueueTelegram(card, { source: "Nous" }, undefined, "41")).toBe(true);
+      expect(await repository.enqueueTelegram(plain, { source: "Job" })).toBe(true);
+      expect(await repository.enqueueTelegram(plain, { source: "Job" }, "2026-11-15T10:00:00.000Z", "43")).toBe(true);
+      expect((await pool.query("SELECT status, message_id FROM telegram_notification_outbox WHERE source_key = $1", [`space-notification:${card.id}`])).rows).toEqual([{ status: "DELIVERED", message_id: "41" }]);
+      expect(await repository.telegramMessageIds(owner, ["nous_decision:d1"])).toEqual(["41"]);
+      expect(await repository.telegramMessageIds(owner, [plain.id])).toEqual(["43"]);
+      expect(await repository.telegramMessageIds("user:other", [plain.id, "nous_decision:d1"])).toEqual([]);
+      // A re-paired chat (a new generation) never gets an edit meant for the old one.
+      await pool.query("UPDATE telegram_integrations SET generation = 2 WHERE id = 'global'");
+      expect(await repository.telegramMessageIds(owner, [plain.id, "nous_decision:d1"])).toEqual([]);
+    } finally {
+      await pool.query("UPDATE telegram_integrations SET connection_status = 'DISCONNECTED', is_enabled = false, chat_id = NULL WHERE id = 'global'");
+    }
   }, 60_000);
 
   it("refreshes a card by its dedupe key, unread again only when it re-alerts (Nous's per-pane card)", async () => {

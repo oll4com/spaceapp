@@ -129,6 +129,26 @@ describe("Job Copilot salary research", () => {
     expect(salaryRangeFromJsonLd(await fixture("ashby-ramp-posting.html"))).toEqual({ currency: "USD", period: "YEAR", min: 211_400, max: 290_600 });
   });
 
+  it("RedStone 16/11: a range with its currency after it, per month, on a page with no JobPosting data, at the role's level", async () => {
+    expect(salaryRangeFromText("Senior 30,000–40,000 PLN/month B2B")).toEqual({ currency: "PLN", period: "MONTH", min: 30_000, max: 40_000 });
+    expect(salaryRangeFromText("Wynagrodzenie: 30 000 - 40 000 PLN net/month + VAT (B2B)")).toEqual({ currency: "PLN", period: "MONTH", min: 30_000, max: 40_000 });
+    const levels = "Mid 20,000–28,000 PLN/month B2B. Senior 30,000–40,000 PLN/month B2B.";
+    expect(salaryRangeFromText(levels)).toMatchObject({ min: 20_000 });
+    expect(salaryRangeFromText(levels, "senior")).toMatchObject({ min: 30_000, max: 40_000 });
+    const root = await mkdtemp(join(tmpdir(), "space-job-salary-"));
+    roots.push(root);
+    const posting = "https://redstone.example/careers/senior-backend";
+    const page = `<html><head><style>.a{}</style><script>var x = "USD 1 - 2";</script></head><body><h1>Senior Backend Engineer</h1>
+      <p>Mid 20,000&ndash;28,000 PLN/month B2B</p><p>Senior 30,000&ndash;40,000 PLN/month B2B</p></body></html>`;
+    const service = createSalaryResearch({ cacheFile: join(root, "cache.json"), now: () => new Date("2026-11-16T08:00:00Z"),
+      fetch: async (url) => url === posting ? { status: 200, text: page } : { status: 404, text: "" } });
+    const result = await service.research({ title: "Senior Backend Engineer", city: "Warsaw", country: "PL", currency: "EUR", postingUrl: posting }, 10);
+    expect(result.postingRange).toMatchObject({ currency: "PLN", period: "MONTH", min: 30_000, max: 40_000 });
+    // Never under the posting's minimum (was EUR 3,000 a month).
+    expect(result.recommended).toMatchObject({ currency: "PLN" });
+    expect(result.recommended!.yearly).toBeGreaterThanOrEqual(30_000 * 12);
+  });
+
   it("matches Paylab positions by their words and resolves countries by name or code", async () => {
     const positions = parsePaylabCategory(await fixture("paylab-gr-information-technology.html"));
     expect(positions.find((position) => position.slug === "software-engineer")).toEqual({ slug: "software-engineer", name: "Software Engineer", currency: "EUR", p10: 1619, p90: 4739 });

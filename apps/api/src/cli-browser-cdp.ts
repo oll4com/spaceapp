@@ -16,10 +16,11 @@ import { recordAudit } from "./request-audit.js";
 import { CHALLENGE_ATTEMPT_ACTION, pageAddress } from "./browser-challenge-attempt.js";
 import { browserProfilePathForIdentity, readBrowserAccountTabIdentities } from "./browser-sessions.js";
 import { ownBrowserPane, type BrowserControlActivity } from "./browser-control-activity.js";
+import { isOtherAgentsBrowser } from "./pane-guards.js";
 import { isT3AgentSessionId, t3AgentPrincipal } from "./t3code/agent-tokens.js";
 import { harnessAgentPrincipal, isHarnessAgentSessionId } from "./harness-agent-tokens.js";
 import { vaultFencedTargets } from "./vault/fence-hooks.js";
-import type { VaultProtection } from "./vault/protection.js";
+import { VAULT_FLOW_HELD, type VaultFlowBrowser, type VaultProtection } from "./vault/protection.js";
 
 // CLI sessions run in their own network namespaces, so the managed Chrome's
 // loopback DevTools port is reachable only from the API. This proxy pipes a
@@ -43,6 +44,8 @@ export const cliBrowserCdpCloseCodes = Object.freeze({
   BROWSER_HANDOFF_PENDING: 4425,
   // A Vault-protected browser (vault/protection.ts) has no automation endpoint.
   VAULT_PROTECTED: 4424,
+  // Another agent's Vault sign-in or authenticator step holds this browser (vaultFlowStep).
+  VAULT_FLOW_HELD: 4426,
   // The pane's active tab moved into another Google account's Chrome (or back); the client reconnects there.
   ACTIVE_TAB_MOVED: 4410,
   // Same profile, new Chrome/session or restored targets: rediscover them on the next connection.
@@ -108,7 +111,9 @@ export interface CliBrowserCdpProxyOptions {
   controlActivity?: Pick<BrowserControlActivity, "agentFor">;
   assertRuntimeEnabled?(runtimeId: string): Promise<void>;
   /** The Vault fence of the pane a connection lands in (vault/protection.ts); without it no fence is checked here. */
-  vaultProtection?: Pick<VaultProtection, "ownerOf" | "release">;
+  vaultProtection?: Pick<VaultProtection, "ownerOf" | "release"> & Partial<Pick<VaultProtection, "flowHold" | "endFlow">>;
+  /** The pane browser's tabs: a Vault flow hold whose tab closed ends here, as vaultFlowStep ends it for the route steps (DEV3D-065). */
+  vaultFlowBrowser?: Pick<VaultFlowBrowser, "listPages">;
   onConnected?(request: FastifyRequest, resolution: CliBrowserCdpResolution): Promise<void> | void;
   /** An agent's commands on a connection, at most every 30 s: the Browser Host sees none of them (CPU plan 5.1). */
   onActivity?(resolution: CliBrowserCdpResolution): void | Promise<unknown>;
@@ -576,10 +581,19 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
     if (pane.roomId !== claims.roomId || pane.isClosed || !options.isBrowserPane(pane)) {
       return { refused: "PANE_NOT_FOUND", reason: "Browser pane was not found in the CLI session room." };
     }
+    if (await isOtherAgentsBrowser(options.store, pane, claims.paneId)) {
+      return { refused: "PANE_NOT_FOUND", reason: "That browser is another running agent's own pane browser: start yours with space_browser_start without targetPaneId." };
+    }
     // The fence is checked on the pane the connection lands in: the route hook sees only the ids a request names, never the
     // room's default browser pane a plain CLI token drives (Vault review 2026-10-22).
     if (options.vaultProtection && await options.vaultProtection.ownerOf(pane.id) && !(await options.vaultProtection.release(pane.id))) {
       return { refused: "VAULT_PROTECTED", reason: "This browser holds a Vault fill: no automation until it shows the next page." };
+    }
+    const flow = options.vaultProtection?.flowHold?.(pane.id);
+    if (flow && flow.holder !== `cli:${claims.cliSessionId}`) {
+      const listed = await options.vaultFlowBrowser?.listPages?.(pane).catch(() => null);
+      if (!listed || listed.pages.some((page) => page.pageId === flow.tab) || !options.vaultProtection?.endFlow) return { refused: "VAULT_FLOW_HELD", reason: VAULT_FLOW_HELD };
+      options.vaultProtection.endFlow(pane.id);
     }
     const session = await options.store.getActivePaneBrowserSession(pane.id);
     if (!session || !session.isActive || session.status === "CLOSED" || session.status === "ERROR") {

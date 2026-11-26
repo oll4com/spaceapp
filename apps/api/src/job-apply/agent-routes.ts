@@ -10,7 +10,6 @@ import {
   jobApplicationUpdateSchema,
   jobApplyDiscoverRequestSchema,
   jobApplyEventInputSchema,
-  jobApplyMailboxConnected,
   jobApplyMailDeadlineSchema,
   jobApplyMailOrganizeSchema,
   jobApplyMemoryCreateSchema,
@@ -119,19 +118,8 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
     const bridge = await deps.requireBridge(request, reply);
     if (!bridge) return undefined;
     const ownerId = await owner(bridge.claims);
-    const [profile, cv, photo, settings] = await Promise.all([service.getProfile(ownerId), service.cvText(ownerId), service.photo(ownerId), paneSettings(bridge.claims.paneId)]);
-    const coverLetterPath = profile.coverLetterArtifactId ? await service.artifactPath(profile.coverLetterArtifactId) : null;
-    return {
-      candidate: profile.candidate,
-      qaBank: profile.qaBank,
-      cv: { artifactId: cv.artifactId, path: cv.path, chars: cv.text?.length ?? 0 },
-      coverLetter: { artifactId: profile.coverLetterArtifactId, path: coverLetterPath },
-      photo,
-      mailboxConnected: jobApplyMailboxConnected(profile),
-      google: profile.google,
-      googleAccounts: profile.googleAccounts,
-      settings: settings?.settings ?? null
-    };
+    const [{ profile, facts, profileHash }, settings] = await Promise.all([service.profileFacts(ownerId), paneSettings(bridge.claims.paneId)]);
+    return { ...facts, qaBank: profile.qaBank, settings: settings?.settings ?? null, profileHash };
   });
 
   // First-run setup by the copilot, from the operator's own files: allowed only while the profile is
@@ -298,7 +286,7 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
     const input = parseBody(jobApplyNextRequestSchema, request.body ?? {});
     const settings = await paneSettings(bridge.claims.paneId);
     const ownerId = await owner(bridge.claims);
-    const next = await service.nextJob(ownerId, bridge.claims.paneId, { waitMs: input.waitMs, metadata: settings });
+    const next = await service.nextJob(ownerId, bridge.claims.paneId, { waitMs: input.waitMs, metadata: settings, profileHash: input.profileHash });
     return {...next, signin: await siteSigninFor(deps.store, ownerId, next.application?.url)};
   });
 

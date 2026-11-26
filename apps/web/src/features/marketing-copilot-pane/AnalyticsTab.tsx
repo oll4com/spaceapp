@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { MARKETING_CHANNEL_LABELS, type MarketingMetric, type MarketingPost } from "@space/contracts";
 import { api } from "../../api.js";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
@@ -74,9 +74,13 @@ export function AnalyticsTab() {
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [data, setData] = useState<{ metrics: MarketingMetric[]; topPosts: MarketingPost[]; published: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Read the latest fallback text without re-fetching analytics when the UI language changes.
+  const onLoadError = useEffectEvent((caught: unknown) => {
+    setError(caught instanceof Error ? caught.message : t("Analytics could not be loaded."));
+  });
   useEffect(() => {
     let cancelled = false;
-    api.marketingAnalytics().then((response) => { if (!cancelled) setData(response); }, (caught: unknown) => { if (!cancelled) setError(caught instanceof Error ? caught.message : t("Analytics could not be loaded.")); });
+    api.marketingAnalytics().then((response) => { if (!cancelled) setData(response); }, (caught: unknown) => { if (!cancelled) onLoadError(caught); });
     return () => { cancelled = true; };
   }, []);
   if (error) return <p className="jc-message" role="alert">{error}</p>;

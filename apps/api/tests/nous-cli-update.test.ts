@@ -36,7 +36,19 @@ it("updates one CLI at once and answers its result, with no decision card", asyn
   await new Promise((resolve) => setTimeout(resolve, 5));
   expect(f.audits).toEqual(["cli:claude"]);
   expect((await f.tools.execute("space_cli_update", { detectOnly: true }, ctx)).result).toContain("Claude Code (cli:claude): 2.1.300, available 2.1.305 (update available)");
-  expect((await f.tools.execute("space_cli_update", { runtimeId: "notacli" }, ctx)).ok).toBe(false);
+  // W48 step 2: a malformed or unknown id is refused before update-all; cli:harness (DeepSeek Harness) is a managed update key since b77fa171da.
+  for (const runtimeId of ["notacli", "cli:", "cli:../claude", "cli:claude;rm", 42]) expect(await f.tools.execute("space_cli_update", { runtimeId }, ctx)).toMatchObject({ ok: false, refused: true });
+  expect(f.calls).toEqual([{ keys: ["claude"] }]);
+  await f.tools.execute("space_cli_update", { runtimeId: "cli:harness" }, ctx);
+  expect(f.calls.at(-1)).toEqual({ keys: ["harness"] });
+});
+
+it("holds a CLI whose update fails and rolled back while the others update; the run fails only when every CLI failed", async () => {
+  const kimi = { ...runtime("UPDATE_FAILED_ROLLED_BACK", "Kimi Code CLI update failed (Kimi Code stable release asset ids are invalid.).", "FAIL"), runtimeId: "cli:kimi" as const, displayName: "Kimi Code CLI" };
+  const partly = await fixture(async () => result([runtime("UPDATED", "Claude Code updated to 2.1.305."), kimi])).tools.execute("space_cli_update", {}, ctx);
+  expect(partly).toMatchObject({ ok: true, display: "Updated every managed CLI: held Kimi Code CLI" });
+  expect(partly.result).toContain("Kimi Code CLI UPDATE_FAILED_ROLLED_BACK");
+  expect(await fixture(async () => result([kimi])).tools.execute("space_cli_update", { runtimeId: "kimi" }, ctx)).toMatchObject({ ok: false, display: "Updated cli:kimi: FAIL" });
 });
 
 it("answers a long update at once and brings its end to the inbox; a held major names the reviewed change", async () => {

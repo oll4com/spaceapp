@@ -18,6 +18,9 @@ describe("task title boundaries", () => {
   it("strips prompt scaffolding and terminal control sequences", () => {
     expect(cleanTaskText('<environment_context>cwd secret location</environment_context>\x1b[31mFix menu\x1b[0m')).toBe("Fix menu");
     expect(cleanTaskText('<image name=[Image #1] path="/private/upload.png">pixels</image> Fix menu')).toBe("Fix menu");
+    // A handoff wrapper never reaches a pane title (Bob, 22/11: '<pasted_content id="cc70"> Goal …').
+    expect(cleanTaskText('<pasted_content id="cc70">Goal e803a663 fix titles</pasted_content>')).toBe("Goal e803a663 fix titles");
+    expect(shortTaskTitle('<pasted_content id="8a7e"> Handover from Max')).toBe("Handover from Max");
   });
   it("bounds titles by words and Unicode graphemes", () => {
     expect(shortTaskTitle("One two three four five six seven eight")).toBe("One two three four five six");

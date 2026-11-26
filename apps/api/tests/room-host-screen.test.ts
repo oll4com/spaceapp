@@ -224,6 +224,100 @@ describe("Room Agent host screen observer", () => {
   it("rejects oversized replay instead of guessing from a truncated ANSI stream", async () => {
     await expect(projectRoomTerminalScreen(["x".repeat(8 * 1024 * 1024 + 1)])).rejects.toThrow("projection limit");
   });
+
+  // Speed audit 21/11: observeRoomScreen checks managed.roomScreenSnapshot before flushing output or reading 256 transcript chunks.
+  it("serves a cached managed room screen without reading transcript chunks from the store", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Cache", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Codex", mode: "TERMINAL", terminalRuntimeId: "cli:codex" });
+    const session = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:codex", providerId: "codex", agentId: "codex", status: "RUNNING" });
+    store.appendPaneCliTranscriptChunkAtNextSequence({ sessionId: session.sessionId, paneId: pane.id, roomId: room.id, stream: "stdout", content: "\x1b[2J\x1b[1;1H❯ ready" });
+    const manager = new CliTerminalManager({ store, config: getApiConfig({ SPACE_ENABLE_CODEX_TURNS: "true" }), discoverRuntimes: vi.fn() });
+    const sessions = (manager as unknown as { sessions: Map<string, Record<string, unknown>> }).sessions;
+    sessions.set(session.sessionId, {
+      sessionId: session.sessionId, paneId: pane.id, roomId: room.id, runtimeId: "cli:codex", purpose: "NORMAL",
+      generationId: "gen-1", controlOutputRevision: 4, roomScreenCols: 100, roomScreenRows: 30, roomScreenGeometryKnown: true,
+      roomScreenSnapshot: null, hostOutputQueue: []
+    });
+    const listChunks = vi.spyOn(store, "listPaneCliTranscriptChunks");
+    const first = await manager.observeRoomScreen(session.sessionId);
+    expect(first.text).toContain("❯ ready");
+    expect(first.revision).toBe(4);
+    expect(listChunks).toHaveBeenCalledTimes(1);
+    listChunks.mockClear();
+    const second = await manager.observeRoomScreen(session.sessionId);
+    expect(second).toEqual(first);
+    expect(listChunks).not.toHaveBeenCalled();
+  });
+  it("keeps the revision taken before a host screen read, so output during the read is not hidden by the cache (DEV3D-011)", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Race", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Hermes", mode: "TERMINAL", terminalRuntimeId: "cli:hermes" });
+    const session = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:hermes", providerId: "hermes", agentId: "hermes", status: "RUNNING" });
+    const manager = new CliTerminalManager({ store, config: getApiConfig({}), discoverRuntimes: vi.fn() });
+    const sessions = (manager as unknown as { sessions: Map<string, Record<string, unknown>> }).sessions;
+    const managed: Record<string, unknown> = {
+      sessionId: session.sessionId, paneId: pane.id, roomId: room.id, runtimeId: "cli:hermes", purpose: "NORMAL",
+      identity: { ...identity, cliSessionId: session.sessionId, paneId: pane.id, roomId: room.id, runtimeId: "cli:hermes" },
+      generationId: "gen-1", controlOutputRevision: 4, roomScreenCols: 80, roomScreenRows: 10, roomScreenGeometryKnown: true,
+      roomScreenSnapshot: null, hostOutputQueue: []
+    };
+    sessions.set(session.sessionId, managed);
+    let screen = "working";
+    const host = {
+      attach: vi.fn(async () => {
+        const replay = [{ data: `\x1b[2J\x1b[1;1H${screen}` }];
+        managed.controlOutputRevision = 5; // the agent finishes while the screen is being read
+        screen = "❯ idle";
+        return { attachmentId: "observer", session: { generationId: "gen-1", nextOutputSequence: 9 }, replay };
+      }),
+      detach: vi.fn(async () => true)
+    };
+    (manager as unknown as { hostForRuntime: () => unknown }).hostForRuntime = () => host;
+    const first = await manager.observeRoomScreen(session.sessionId);
+    expect(first.text).toContain("working");
+    expect(first.revision).toBe(4);
+    const second = await manager.observeRoomScreen(session.sessionId);
+    expect(host.attach).toHaveBeenCalledTimes(2);
+    expect(second.text).toContain("❯ idle");
+  });
+
+  it("reads a managed host-replay session's undimmed screen directly from the host without querying DB transcript chunks", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "UndimmedHost", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Hermes", mode: "TERMINAL", terminalRuntimeId: "cli:hermes" });
+    const session = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:hermes", providerId: "hermes", agentId: "hermes", status: "RUNNING" });
+    store.appendPaneCliTranscriptChunkAtNextSequence({ sessionId: session.sessionId, paneId: pane.id, roomId: room.id, stream: "stdout", content: "\x1b[2J\x1b[1;1Hfallback" });
+    const manager = new CliTerminalManager({ store, config: getApiConfig({}), discoverRuntimes: vi.fn() });
+    const sessions = (manager as unknown as { sessions: Map<string, Record<string, unknown>> }).sessions;
+    sessions.set(session.sessionId, {
+      sessionId: session.sessionId, paneId: pane.id, roomId: room.id, runtimeId: "cli:hermes", purpose: "NORMAL",
+      identity: { ...identity, cliSessionId: session.sessionId, paneId: pane.id, roomId: room.id, runtimeId: "cli:hermes" },
+      generationId: "gen-u", controlOutputRevision: 2, roomScreenCols: 80, roomScreenRows: 10, roomScreenGeometryKnown: true,
+      roomScreenSnapshot: null, hostOutputQueue: []
+    });
+    const host = {
+      attach: vi.fn(async () => ({
+        attachmentId: "observer",
+        session: { generationId: "gen-u", nextOutputSequence: 3 },
+        replay: [{ data: "\x1b[2J\x1b[1;1H❯ \x1b[2mfaint hint\x1b[22m" }]
+      })),
+      detach: vi.fn(async () => true)
+    };
+    (manager as unknown as { hostForRuntime: () => unknown }).hostForRuntime = () => host;
+    const listChunks = vi.spyOn(store, "listPaneCliTranscriptChunks");
+    const screen = await manager.observeRoomScreenUndimmed(session.sessionId);
+    expect(screen).toContain("❯");
+    expect(screen).not.toContain("faint hint");
+    expect(host.attach).toHaveBeenCalledTimes(1);
+    expect(listChunks).not.toHaveBeenCalled();
+
+    // Falls back to DB transcript chunks if the host read fails.
+    host.attach.mockRejectedValueOnce(new Error("host down"));
+    const fallback = await manager.observeRoomScreenUndimmed(session.sessionId);
+    expect(fallback).toContain("fallback");
+    expect(listChunks).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Room screen projection without faint text", () => {

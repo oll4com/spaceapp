@@ -4,7 +4,8 @@ A lead or message with any of these gets no proposal or answer without the opera
 them as `scamSignals` and refuses to send on such a lead). Record the reason in the lead's notes and SKIP it, or
 report it with `space_freelance_note {needsUser: true}` when it is a client already talking to you.
 
-- Moving the conversation to Telegram, WhatsApp, WeChat, Skype or email before a contract.
+- Moving the conversation to Telegram, WhatsApp, WeChat, Skype or email before a contract (a bot or integration
+  for one of them is the job, not this signal).
 - Unpaid "test tasks", "trial work" or free samples.
 - Cheques, "buy the equipment and we reimburse you", gift cards, overpayments to refund.
 - Payment only in crypto, or outside the platform.

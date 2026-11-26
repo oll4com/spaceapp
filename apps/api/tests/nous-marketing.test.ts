@@ -128,7 +128,17 @@ describe("marketing scoring", () => {
       { ref: "none", started: 1, completed: 0, firstCli: 0, activeSecondDay: 0 }, { ref: "reddit", started: 1, completed: 1, firstCli: 1, activeSecondDay: 1 }]);
     expect(marketingFunnelByRef(installs.map((row) => ({ ...row, ref: null })))).toEqual([]);
     expect(marketingToolText(buildMarketingReport({ posts: [], metrics: [], mail: null, ga4Configured: false, trafficConfigured: false, site: null, installs, now: NOW }), {}))
-      .toContain("By channel (--ref): none started 1, completed 0, first CLI 0, second day 0; reddit started 1, completed 1, first CLI 1, second day 1.");
+      .toContain("By channel (utm_source / --ref): none started 1, completed 0, first CLI 0, second day 0; reddit started 1, completed 1, first CLI 1, second day 1.");
+    // Joined to the site: utm_source (any case) meets the same --ref; a source with no install yet still shows its views and interest.
+    const tagged = summarizeSiteVisits([{ p: "/", id: "w1", src: "Reddit", ev: "install_copy" }, { p: "/", id: "w2", src: "reddit" }, { p: "/install/", id: "w3", src: "x" }, { p: "/", id: "w4" }]
+      .map((visit) => JSON.stringify({ t: "2026-11-02T09:00:00Z", n: 1, ...visit })).join("\n"), "2026-11-01T00:00:00.000Z");
+    expect(marketingFunnelByRef(installs, tagged)).toEqual([
+      { ref: "reddit", views: 2, installIntent: 1, started: 1, completed: 1, firstCli: 1, activeSecondDay: 1 },
+      { ref: "none", views: 1, installIntent: 0, started: 1, completed: 0, firstCli: 0, activeSecondDay: 0 },
+      { ref: "x", views: 1, installIntent: 1, started: 0, completed: 0, firstCli: 0, activeSecondDay: 0 }]);
+    expect(marketingFunnelByRef([], tagged).map((row) => row.ref)).toEqual(["reddit", "none", "x"]);
+    expect(marketingToolText(buildMarketingReport({ posts: [], metrics: [], mail: null, ga4Configured: false, trafficConfigured: false, site: tagged, installs, now: NOW }), {}))
+      .toContain("By channel (utm_source / --ref): reddit views 2, interest 1, started 1,");
   });
 });
 

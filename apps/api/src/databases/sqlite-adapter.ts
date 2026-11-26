@@ -96,7 +96,7 @@ export class SqliteAdapter implements DatabaseAdapter {
         try {
           const parsed = JSON.parse(stdout);
           resolve(parsed as T);
-        } catch (e) {
+        } catch {
           reject(new Error(`Failed to parse worker output: ${stdout}`));
         }
       });

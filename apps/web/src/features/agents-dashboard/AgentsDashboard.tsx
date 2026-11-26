@@ -9,7 +9,7 @@ import type { PaneCompletionLifecycleState } from "../../pane-completion-lifecyc
 import { Bot, Boxes, Check, ChevronDown, CircleAlert, Folder, LayoutDashboard, Maximize2, Minimize2, RefreshCw, Search, X } from "../ui-theme/app-icons.js";
 import {
   agentStatuses, agentStatusLabels, compareAgentEntries, dashboardAge, dashboardElapsed, dashboardProject, isDashboardAgent,
-  markAgentsSeen, resolveAgentStatus, type AgentActivityDetail, type AgentDashboardSummary, type AgentSeenState, type AgentStatus,
+  markAgentsSeen, resolveAgentStatus, type AgentActivityDetail, type AgentDashboardSummary, type AgentSeenState, type AgentStatus, type AgentsDashboardPreset,
   type DashboardAgentsSnapshot
 } from "./dashboard-model.js";
 import "./agents-dashboard.css";
@@ -183,11 +183,13 @@ export interface AgentsDashboardProps {
   currentRoomId?: string | null;
   /** The pane the operator is working in; its finished work counts as seen. */
   selectedPaneId?: string | null;
+  /** A new object applies its filters as if chosen here (a Nous Live tile). */
+  preset?: AgentsDashboardPreset | null;
 }
 
 type Snapshot = { data: Pane[]; activity: Record<string, AgentStatus>; details: Record<string, AgentActivityDetail> };
 
-export function AgentsDashboard({ open = true, userId, rooms, completions, activePanes, onOpenPane, onClose, onSummaryChange, currentRoomId, selectedPaneId }: AgentsDashboardProps) {
+export function AgentsDashboard({ open = true, userId, rooms, completions, activePanes, onOpenPane, onClose, onSummaryChange, currentRoomId, selectedPaneId, preset }: AgentsDashboardProps) {
   const embedded = useWorkspaceSurface();
   const inFlight = useRef(false);
   const snapshots = useRef(new Map<string, Snapshot>());
@@ -243,6 +245,15 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
     element?.addEventListener("keydown", escape);
     return () => { element?.removeEventListener("keydown", escape); element?.close(); opener?.focus(); };
   }, [open, userId, currentRoomId]);
+  // After the open effect, so the tile's filter wins over the remembered one; saved like a choice made here.
+  useEffect(() => {
+    if (!preset) return;
+    setFilter(preset.filter);
+    writeStoredFilter(preset.filter, userId);
+    setRoomFilter(preset.roomFilter);
+    writeStoredRoomFilter(preset.roomFilter, userId);
+    if (preset.groupBy) { setGroupBy(preset.groupBy); writeStoredGroupBy(preset.groupBy, userId); }
+  }, [preset, userId]);
 
   useEffect(() => {
     let disposed = false;

@@ -122,6 +122,11 @@ describe("PostgresSpaceStore clipboard history", () => {
     const countCall = pool.calls.find((call) => call.sql.includes("SELECT count(*) AS count"));
     expect(countCall?.sql).toContain("is_completed = false");
     expect(countCall?.values).toEqual(["user:one"]);
+    // nous_msg:8076f33e: open items, and closed ones under 100%, parked now, or with a step neither completed nor dropped (FAILED, as the close guard reads it; operator 21/11, 22/11).
+    pool.calls.length = 0;
+    await store.listClipboardItems("user:one", { unfinished: true, page: 1, pageSize: 25 });
+    expect(pool.calls.find((call) => call.sql.includes("SELECT count(*) AS count"))?.sql)
+      .toContain("(is_completed = false OR progress_percentage < 100 OR (parked_json IS NOT NULL AND parked_json->>'resumedAt' IS NULL) OR jsonb_path_exists(COALESCE(steps_json, '[]'::jsonb), '$[*] ? (@.status != \"COMPLETED\" && @.status != \"FAILED\")'))");
   });
 
   it("filters plans by pane with a bound parameter", async () => {
@@ -132,7 +137,7 @@ describe("PostgresSpaceStore clipboard history", () => {
     expect(countCall?.sql).toContain("owner_user_id = $1");
     expect(countCall?.sql).toContain("pane_id = $3");
     expect(countCall?.values).toEqual(["user:one", "PLAN", "pane:bob1234"]);
-    await expect(store.listClipboardItems("user:one", { paneId: "pane'; DROP", page: 1, pageSize: 1 } as any)).rejects.toThrow();
+    await expect(store.listClipboardItems("user:one", { paneId: "pane'; DROP", page: 1, pageSize: 1 })).rejects.toThrow();
   });
 
   it("normalizes irregular plan steps and gracefully skips corrupt rows during listClipboardItems", async () => {
@@ -208,7 +213,7 @@ describe("PostgresSpaceStore plan map (operator request 2026-10-25)", () => {
     });
     const update = pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"));
     expect(update?.sql).toContain("depends_on = $11::jsonb");
-    expect(update?.values.slice(10)).toEqual(['["clipboard:free0001"]', "2026-10-30T09:00:00.000Z", '{"kind":"THIRD_PARTY","what":"the mail server","until":null}', null, null, null, null]);
+    expect(update?.values.slice(10)).toEqual(['["clipboard:free0001"]', "2026-10-30T09:00:00.000Z", '{"kind":"THIRD_PARTY","what":"the mail server","until":null}', null, null, null, null, null, null]);
     const reads = pool.calls.filter((call) => call.sql.includes("RETURNING") || call.sql.includes('steps_json AS "stepsJson"'));
     expect(reads.length).toBeGreaterThan(1);
     for (const call of reads) expect(call.sql).toContain('waits_on_json AS "waitsOn"');
@@ -240,7 +245,17 @@ describe("PostgresSpaceStore plan map (operator request 2026-10-25)", () => {
     await store.updateClipboardItemProgress("user:one", clipboardRow.id, { title: "New title", text: "New text." });
     const update = pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"));
     expect(update?.sql).toContain("text = COALESCE($15, text)");
-    expect(update?.values.slice(13)).toEqual(["New title", "New text.", createHash("sha256").update("New text.").digest("hex"), null]);
+    expect(update?.values.slice(13)).toEqual(["New title", "New text.", createHash("sha256").update("New text.").digest("hex"), null, null, null]);
+  });
+
+  it("re-sets a plan's minimum model as a map-only update a managed plan takes (token saving 20/11)", async () => {
+    const pool = new PlanPool(true);
+    const store = new PostgresSpaceStore(pool);
+    await store.updateClipboardItemProgress("user:one", clipboardRow.id, { minimumModel: "claude-sonnet-5-5", minimumReasoning: "high" });
+    const update = pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"));
+    expect(update?.sql).toContain("minimum_model = COALESCE($7, minimum_model)");
+    expect(update?.sql).not.toContain("last_progress_at = clock_timestamp()");
+    expect(update?.values.slice(6)).toEqual(["claude-sonnet-5-5", "high"]);
   });
 
   it("lets a managed plan take a map-only update and refuses a loop", async () => {
@@ -249,9 +264,26 @@ describe("PostgresSpaceStore plan map (operator request 2026-10-25)", () => {
     await expect(store.updateClipboardItemProgress("user:one", clipboardRow.id, { progressPercentage: 10 })).rejects.toThrow("Managed plan progress");
     await store.updateClipboardItemProgress("user:one", clipboardRow.id, { dueAt: "2026-10-30T09:00:00.000Z" });
     const update = pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"));
-    expect(update?.sql).toContain("SET depends_on = $3::jsonb, due_at = $4::timestamptz, waits_on_json = $5::jsonb, parked_json = $6::jsonb, last_used_at = clock_timestamp()");
+    expect(update?.sql).toContain("SET depends_on = $3::jsonb, due_at = $4::timestamptz, waits_on_json = $5::jsonb, parked_json = $6::jsonb,");
     expect(update?.sql).not.toContain("last_progress_at = clock_timestamp()");
     await expect(store.updateClipboardItemProgress("user:one", clipboardRow.id, { dependsOn: ["clipboard:other001"] })).rejects.toThrow("would loop");
+  });
+
+  it("drops a completed plan from dependsOn as met instead of refusing it as not open (15/11 13:42Z)", async () => {
+    class DonePool extends PlanPool {
+      override async query<T = unknown>(sql: string, values: unknown[] = []) {
+        const result = await super.query<T>(sql, values);
+        return sql.includes('depends_on AS "dependsOn" FROM clipboard_items') ? { rows: [...result.rows, { id: "clipboard:done0001", dependsOn: [], done: true }] as T[], rowCount: 4 } : result;
+      }
+    }
+    const pool = new DonePool();
+    const store = new PostgresSpaceStore(pool);
+    await store.updateClipboardItemProgress("user:one", clipboardRow.id, { dependsOn: ["clipboard:done0001", "clipboard:free0001"] });
+    const read = pool.calls.find((call) => call.sql.includes('depends_on AS "dependsOn" FROM clipboard_items'));
+    expect(read?.values).toEqual(["user:one", ["clipboard:done0001", "clipboard:free0001"]]);
+    const update = pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"));
+    expect(update?.values[2]).toBe('["clipboard:free0001"]');
+    await expect(store.updateClipboardItemProgress("user:one", clipboardRow.id, { dependsOn: ["clipboard:gone0001"] })).rejects.toThrow("is not an open plan");
   });
 
   // Alex/Kate 12/11: every read cut a step's notes/proof to 1,000 and every update wrote the cut steps back.

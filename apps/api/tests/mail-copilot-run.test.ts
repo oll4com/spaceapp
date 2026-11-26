@@ -25,16 +25,16 @@ afterEach(async () => {
 });
 
 const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64url");
-interface FakeMessage { id: string; threadId: string; from: string; subject: string; minutesAgo: number; labelIds: string[]; plain: string; files?: Array<{ id: string; filename: string; mimeType: string; data: string }> }
+interface FakeMessage { id: string; threadId: string; from: string; to?: string; subject: string; minutesAgo: number; labelIds: string[]; plain: string; files?: Array<{ id: string; filename: string; mimeType: string; data: string }> }
 
 /** The smallest Gmail an agent run needs: inbox threads, one thread, modify, send, drafts; records every write. */
-function fakeGmail(token: string, inbox: FakeMessage[]) {
+function fakeGmail(token: string, inbox: FakeMessage[], aliases: string[] = []) {
   const writes: Array<{ path: string; body: Record<string, unknown> | null }> = [];
   // Each draft's current message: Gmail gives an edited draft a new one.
   const draftMessages = new Map([["draft-1", "draft-msg-1"]]);
   const deletedDrafts: string[] = [];
   const full = (message: FakeMessage) => ({ id: message.id, threadId: message.threadId, labelIds: message.labelIds, internalDate: String(Date.now() - message.minutesAgo * 60_000), snippet: message.plain.slice(0, 80),
-    payload: { mimeType: "multipart/alternative", headers: [{ name: "From", value: message.from }, { name: "To", value: "Me <me@gmail.com>" }, { name: "Subject", value: message.subject }, { name: "Message-ID", value: `<${message.id}@mail.example>` },
+    payload: { mimeType: "multipart/alternative", headers: [{ name: "From", value: message.from }, { name: "To", value: message.to ?? "Me <me@gmail.com>" }, { name: "Subject", value: message.subject }, { name: "Message-ID", value: `<${message.id}@mail.example>` },
       { name: "Date", value: new Date(Date.now() - message.minutesAgo * 60_000).toUTCString() }], parts: [{ mimeType: "text/plain", body: { data: b64(message.plain) } }, { mimeType: "text/html", body: { data: b64(`<p>${message.plain}</p>`) } },
       ...(message.files ?? []).map((file) => ({ mimeType: file.mimeType, filename: file.filename, body: { attachmentId: file.id, size: Buffer.byteLength(file.data) } }))] } });
   const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -50,7 +50,7 @@ function fakeGmail(token: string, inbox: FakeMessage[]) {
     const thread = /^\/threads\/([^/]+)$/.exec(path);
     if (thread) return Response.json({ id: thread[1], messages: inbox.filter((message) => message.threadId === thread[1]).map(full) });
     if (/^\/threads\/[^/]+\/(modify|trash)$/.test(path)) return Response.json({ id: path.split("/")[2] });
-    if (path === "/settings/sendAs") return Response.json({ sendAs: [{ sendAsEmail: "me@gmail.com", isPrimary: true, isDefault: true }] });
+    if (path === "/settings/sendAs") return Response.json({ sendAs: [{ sendAsEmail: "me@gmail.com", isPrimary: true, isDefault: true }, ...aliases.map((sendAsEmail) => ({ sendAsEmail, verificationStatus: "accepted" }))] });
     if (path === "/messages/send") return Response.json({ id: `sent-${writes.length}`, threadId: (body as { threadId?: string }).threadId ?? "thread-new" });
     const part = /^\/messages\/([^/]+)\/attachments\/([^/]+)$/.exec(path);
     if (part) { const file = inbox.find((entry) => entry.id === part[1])?.files?.find((entry) => entry.id === part[2]); return file ? Response.json({ data: b64(file.data) }) : Response.json({ error: { message: "nope" } }, { status: 404 }); }
@@ -135,6 +135,24 @@ describe("mail copilot run loop", () => {
       expect(buildCliAgentBootstrapMarkdown({ paneMode: "MAIL_COPILOT" })).not.toContain(SINGLE_MAIL_HINT);
       expect(gmailWebNote("https://mail.google.com/mail/u/0/#inbox")).toMatch(/space_mail_review_request/);
       expect(gmailWebNote("https://accounts.google.com/signin")).toBe("");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("saves a draft with the agent's local files, the attachmentsFrom a tracked send needs (Moonstone letter 23/11)", async () => {
+    const { app, agent, gmail } = await fixture([]);
+    try {
+      const draft = { account: "me@gmail.com", to: ["owner@example.com"], subject: "Letter", text: "Exhibits attached.", threadId: "t1" };
+      const pdf = Buffer.from("%PDF-1.4 exhibit");
+      expect((await app.inject({ method: "POST", url: `${cli}/draft`, headers: agent, payload: { ...draft, files: [{ filename: "../x.pdf", mimeType: "application/pdf", data: pdf.toString("base64") }] } })).statusCode).toBe(422);
+      const saved = await app.inject({ method: "POST", url: `${cli}/draft`, headers: agent, payload: { ...draft, files: [{ filename: "Exhibit 1.pdf", mimeType: "application/pdf", data: pdf.toString("base64") }] } });
+      expect(saved.json()).toEqual({ draftId: "draft-1", messageId: "draft-msg-1" });
+      const writes = gmail.writes.filter((write) => write.path === "/drafts");
+      expect(writes).toHaveLength(1);
+      const mime = Buffer.from(String((writes[0]!.body!.message as { raw: string }).raw), "base64url").toString("utf8");
+      expect(mime).toContain('Content-Disposition: attachment; filename="Exhibit 1.pdf"');
+      expect(mime).toContain(pdf.toString("base64"));
     } finally {
       await app.close();
     }
@@ -258,6 +276,26 @@ describe("mail copilot run loop", () => {
     }
   });
 
+  it("refuses a draft under an attachment rule only when it claims an attachment it does not carry (mailrev:L4KcChb7M_P9, 15/11)", async () => {
+    // 15/11: mailmem:j6H55OdbjIyR (drafts claiming a screenshot they lack) refused a plain "Yes" to an Open Collective invitation.
+    const { app, agent, repository, store, pane } = await fixture([
+      { id: "m1", threadId: "t1", from: "Open Collective <events@opencollective.com>", subject: "Invitation: Open Collective call", minutesAgo: 30, labelIds: ["INBOX"], plain: "You are invited." }]);
+    try {
+      const owner = (await store.getRoom(pane.roomId)).ownerUserId!;
+      const rule = await repository.upsertMemory({ ownerUserId: owner, kind: "LESSON", key: null, text: "Ποτέ μην αφήνεις πρόχειρο απάντησης που λέει ότι έχει συνημμένο (screenshot, PNG, αρχείο) χωρίς να το έχει. Αν το αρχείο υπάρχει μόνο εκτός Gmail, μην αφήνεις ασυνόδευτο πρόχειρο στο νήμα.",
+        contactEmail: null, domain: null, accountEmail: null, tags: [], source: "USER", confidence: 1, pinned: false });
+      const review = (text: string) => app.inject({ method: "POST", url: `${cli}/review`, headers: agent, payload: {
+        draft: { account: "me@gmail.com", to: ["events@opencollective.com"], subject: "Re: Invitation: Open Collective call", text, threadId: "t1" },
+        summary: "Πρόχειρο απάντησης στο νήμα του Gmail" } });
+      const refused = await review("Hi, see the attached screenshot.");
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error.message).toContain(`Not raised: Mail Copilot memory ${rule.id} forbids it`);
+      expect((await review("Yes, see you then.")).statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("raises the review a memory's own exception requires, still refusing the question it forbids (Arize 13/11)", async () => {
     // 13/11 ~00:21 BKK, thread 1a1a6d8a2e7817ff: mailmem:IaqhrZdR-y8H refused the Arize startup review its EXCEPTION (mailmem:SLvZ9IZgCRc4) requires.
     const { app, agent, repository, store, pane } = await fixture([
@@ -279,6 +317,28 @@ describe("mail copilot run loop", () => {
       expect(await reviews.reviewRequiredBy(owner, review.json().reviewId)).toMatchObject({ id: rule.id });
       expect(await reviews.reviewRequiredBy(owner, "mailrev:unknown00001")).toBeNull();
       // Akamai 13/11: the review's card names that rule, so "May send" never holds it for Nous (isNousApproval).
+      expect((await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] }))[0]?.payload.operatorReads).toBe(rule.id);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("matches rule SLvZ9IZgCRc4 against draft body and reasoning when subject/summary omit funding words (Metavallon VC 21/11, mailrev:nH4I_tSo5hnu)", async () => {
+    const { app, agent, repository, store, pane, google } = await fixture([
+      { id: "m1", threadId: "t1", from: "George Kroustalakis <gkroust@metavallon.example>", subject: "Catching up on OLL4", minutesAgo: 30, labelIds: ["INBOX"], plain: "Great speaking with you." }]);
+    try {
+      const owner = (await store.getRoom(pane.roomId)).ownerUserId!;
+      const rule = await repository.upsertMemory({ ownerUserId: owner, kind: "LESSON", key: "funding-read-first",
+        text: "EXCEPTION (operator 12/11 23:06 BKK, mailmem:SLvZ9IZgCRc4): funding / startup program / credits / grant / investor mail always gets a DRAFT + space_mail_review_request so the operator reads it first.",
+        contactEmail: null, domain: null, accountEmail: null, tags: [], source: "USER", confidence: 1, pinned: false });
+      const review = await app.inject({ method: "POST", url: `${cli}/review`, headers: agent, payload: {
+        draft: { account: "me@gmail.com", to: ["gkroust@metavallon.example"], subject: "Re: Catching up on OLL4",
+          text: "Hi George, thank you for the call. We are raising a $500K pre-seed SAFE and enrolled in Anthropic's Claude for Startups program.", threadId: "t1" },
+        summary: "Follow-up to George Kroustalakis after the 11/11 call",
+        reasoning: "Funding mail stays draft + review (rule mailmem:SLvZ9IZgCRc4)." } });
+      expect(review.statusCode).toBe(200);
+      const reviews = createMailCopilotService({ google: () => google, repository });
+      expect(await reviews.reviewRequiredBy(owner, review.json().reviewId)).toMatchObject({ id: rule.id });
       expect((await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] }))[0]?.payload.operatorReads).toBe(rule.id);
     } finally {
       await app.close();
@@ -366,6 +426,27 @@ describe("mail copilot run loop", () => {
     }
   });
 
+  it("raises the review of a new application mail (no thread) although a rejection rule shares its words; a rejection reply still refused (Fluence 16/11)", async () => {
+    // 16/11 Fluence (jobapp:u_oEYfHfSnZ_): "To confirm I have read the posting" in a first application was refused by mailmem:HkyoywEn0sDc.
+    const { app, agent, repository, store, pane } = await fixture([
+      { id: "m2", threadId: "t2", from: "Talent <talent@other.example>", subject: "Your application", minutesAgo: 20, labelIds: ["INBOX"],
+        plain: "Thank you for applying. Unfortunately we will not move forward with your application." }]);
+    try {
+      const owner = (await store.getRoom(pane.roomId)).ownerUserId!;
+      await repository.upsertMemory({ ownerUserId: owner, kind: "LESSON", key: "recruiter rejections", contactEmail: null, domain: null, accountEmail: null, tags: [], source: "USER", confidence: 1, pinned: false,
+        text: "Never reply to recruiter or ATS mails that reject (\"we will not move forward\"), close or fill a role, say \"thanks for applying\" or confirm an application. No draft, no review request, no question. Archive them." });
+      const review = (to: string, subject: string, threadId?: string) => app.inject({ method: "POST", url: `${cli}/review`, headers: agent,
+        payload: { draft: { account: "me@gmail.com", to: [to], subject, text: "My CV is attached. To confirm I have read the posting carefully: pineapple.", ...(threadId ? { threadId } : {}) },
+          summary: "Send the application to confirm interest" } });
+      expect((await review("techjobs@fluence.example", "[llm alert] I am an LLM - Full-Stack Developer application - Nikolaos Theodoropoulos")).statusCode).toBe(200);
+      const refused = await review("talent@other.example", "Re: Your application", "t2");
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error.message).toContain("forbids it");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("answers a recruiter mail asking the candidate to write although a rejection rule shares its words; a rejection with advice and a plain receipt still refused (3/11)", async () => {
     // 3/11 Human Power BG via Manatal (thread 1a19f88ca18c4c1e): «Please send a message that you have applied to …» was refused by mailmem:HkyoywEn0sDc.
     const { app, agent, repository, store, pane } = await fixture([
@@ -428,6 +509,49 @@ describe("mail copilot run loop", () => {
     }
   });
 
+  it("answers a review drafted with only its thread from the corporate address the mail was written to, or refuses naming it (mailrev:3s0bBNyEo799, AWS case 01246620)", async () => {
+    const aws = (threadId: string, to: string) => ({ id: `m-${threadId}`, threadId, from: "AWS Activate <aws-activate@amazon.example>", to, subject: "AWS Activate Case: 01246620", minutesAgo: 60, labelIds: ["INBOX"], plain: "Credits do not transfer." });
+    const gmail = fakeGmail("token-me", [aws("t-alias", "ntheo@corp.example"), aws("t-none", "ntheo@other.example"),
+      { id: "r1", threadId: "t-alias", from: "Me <me@gmail.com>", to: "aws-activate@amazon.example", subject: "Re: AWS Activate Case: 01246620", minutesAgo: 30, labelIds: ["SENT"], plain: "An earlier answer." }], ["ntheo@corp.example"]);
+    const repository = new InMemoryMailCopilotRepository();
+    const service = createMailCopilotService({ google: () => google, gmailFetch: gmail.fetchImpl, repository });
+    const store = new InMemorySpaceStore();
+    const pane = store.createPane({ roomId: store.createRoom({ name: "Mail", initialPaneCount: 0 }).id, title: "Mail Copilot", mode: "MAIL_COPILOT", terminalRuntimeId: "cli:claude" });
+    const owner = "user:owner";
+    const approve = async (threadId: string) => {
+      const { reviewId } = await service.requestReview(owner, pane, { draft: { account: "me@gmail.com", to: ["aws-activate@amazon.example"], cc: [], bcc: [], subject: "Re: AWS Activate Case: 01246620", text: "Please move the credits. Ntheo, SpaceApp", threadId }, summary: "AWS case" });
+      return service.decideReview(owner, pane, { reviewId, decision: "approve" }, "nous");
+    };
+    expect(await approve("t-alias")).toMatchObject({ sent: { threadId: "t-alias" } });
+    const sends = () => gmail.writes.filter((write) => write.path === "/messages/send");
+    expect(Buffer.from(String(sends()[0]!.body!.raw), "base64url").toString("utf8")).toMatch(/^From: ntheo@corp\.example\r\n/);
+    await expect(approve("t-none")).rejects.toThrow("This thread was written to ntheo@other.example, which me@gmail.com cannot send as; sending from me@gmail.com would break the rule");
+    expect(sends()).toHaveLength(1);
+  });
+
+  it("answers a thread whose newest mail is our own corporate one from that address, never treating its third-party To as us (mailrev:7HMFUwuxnRSJ, NVIDIA 21/11)", async () => {
+    const ours = (id: string, threadId: string, from: string) => ({ id, threadId, from: `Ntheo <${from}>`, to: "NVIDIA Inception <inception@partner.example>", subject: "Inception application", minutesAgo: 30, labelIds: ["SENT"], plain: "Our application." });
+    const gmail = fakeGmail("token-me", [ours("o1", "t-ours", "ntheo@corp.example"),
+      { id: "a2", threadId: "t-unrouted", from: "AWS Activate <aws-activate@amazon.example>", to: "ntheo@other.example", subject: "Inception application", minutesAgo: 60, labelIds: ["INBOX"], plain: "Apply to Inception." },
+      ours("o2", "t-unrouted", "ntheo@other.example")], ["ntheo@corp.example"]);
+    const service = createMailCopilotService({ google: () => google, gmailFetch: gmail.fetchImpl, repository: new InMemoryMailCopilotRepository() });
+    const store = new InMemorySpaceStore();
+    const pane = store.createPane({ roomId: store.createRoom({ name: "Mail", initialPaneCount: 0 }).id, title: "Mail Copilot", mode: "MAIL_COPILOT", terminalRuntimeId: "cli:claude" });
+    const approve = async (threadId: string, inReplyToMessageId?: string) => {
+      const { reviewId } = await service.requestReview("user:owner", pane, { draft: { account: "me@gmail.com", to: ["inception@partner.example"], cc: [], bcc: [], subject: "Re: Inception application", text: "Following up. Ntheo", threadId, ...(inReplyToMessageId ? { inReplyToMessageId } : {}) }, summary: "Inception follow-up" });
+      return service.decideReview("user:owner", pane, { reviewId, decision: "approve" }, "nous");
+    };
+    const froms = () => gmail.writes.filter((write) => write.path === "/messages/send").map((write) => /^From: (.*)\r\n/m.exec(Buffer.from(String(write.body!.raw), "base64url").toString("utf8"))?.[1]);
+    await approve("t-ours");
+    await approve("t-ours", "o1");
+    expect(froms()).toEqual(["ntheo@corp.example", "ntheo@corp.example"]);
+    // No Send-as for our address: refused naming it, never the third party it wrote to.
+    const refused = approve("t-unrouted");
+    await expect(refused).rejects.toThrow("This thread was written from ntheo@other.example, which me@gmail.com cannot send as");
+    await expect(refused).rejects.not.toThrow("partner.example");
+    expect(froms()).toHaveLength(2);
+  });
+
   it("sends a review with the attachments of the Gmail draft it names, and refuses when they changed after the review (BlooMind 5/11)", async () => {
     // ntheogr thread 1a1a6dd84e85adcd: Job Copilot's round-10 draft to Tamara carried the CV; review_request could not, so only the operator could send it.
     const pdf = "%PDF-1.4\n1 0 obj <<>> endobj\ntrailer <<>>\n%%EOF\n";
@@ -475,7 +599,9 @@ describe("mail copilot run loop", () => {
   });
 
   it("answers a calendar invitation only once the operator approves it, and names the re-consent for an account without Google Calendar (12/11)", async () => {
-    const tool = vi.fn(async () => ({ status: "COMPLETED" as const, result: { account: "me@gmail.com", eventId: "g1", response: "accepted" } }));
+    const tool = vi.fn(async (_owner: string, _tool: string, args: Record<string, unknown>) => args.iCalUID === "crew@spaceapp.dev"
+      ? { status: "BLOCKED" as const, statusReason: "The invitation is not in this account's calendar." }
+      : { status: "COMPLETED" as const, result: { account: "me@gmail.com", eventId: "g1", response: "accepted" } });
     const repository = new InMemoryMailCopilotRepository();
     const service = createMailCopilotService({ google: () => ({ ...google, tool }), repository });
     const store = new InMemorySpaceStore();
@@ -484,16 +610,21 @@ describe("mail copilot run loop", () => {
     const rsvp = { account: "me@gmail.com", iCalUID: "abc@google.com", response: "accepted" as const, summary: "Yes to the Lexroom call", threadId: "t1" };
 
     const { reviewId } = await service.requestRsvp(owner, pane, rsvp);
-    expect(tool).not.toHaveBeenCalled();
+    // The ask only reads the event (15/11, decision f4996c2b); nothing is answered before the approval.
+    expect(tool.mock.calls).toEqual([[owner, "calendar.respond", { iCalUID: "abc@google.com", response: "accepted", account: "me@gmail.com", check: true }]]);
     expect((await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] }))[0]).toMatchObject({ threadId: "t1",
       message: 'Review: answer "Yes" to the invitation: Yes to the Lexroom call', payload: { reviewId, rsvp: { iCalUID: "abc@google.com", response: "accepted" } } });
     expect(await service.decideReview(owner, pane, { reviewId, decision: "approve" })).toEqual({ decision: "approve", sent: null });
-    expect(tool).toHaveBeenCalledWith(owner, "calendar.respond", { iCalUID: "abc@google.com", response: "accepted", account: "me@gmail.com" });
+    expect(tool).toHaveBeenLastCalledWith(owner, "calendar.respond", { iCalUID: "abc@google.com", response: "accepted", account: "me@gmail.com" });
     expect(await service.waitForReview(owner, { reviewId, waitMs: 0 })).toMatchObject({ decided: true, decision: "approve", answered: { eventId: "g1" } });
     // A rejected answer never reaches the calendar.
     const declined = await service.requestRsvp(owner, pane, { ...rsvp, response: "declined" });
     await service.decideReview(owner, pane, { reviewId: declined.reviewId, decision: "reject", note: "not now" });
-    expect(tool).toHaveBeenCalledTimes(1);
+    expect(tool.mock.calls.filter(([, , args]) => !args.check)).toHaveLength(1);
+    // An invitation in no connected calendar (crew@spaceapp.dev, 15/11) is refused before the ask: no review, no decision to fail after the yes.
+    const before = (await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).length;
+    await expect(service.requestRsvp(owner, pane, { ...rsvp, iCalUID: "crew@spaceapp.dev" })).rejects.toThrow("The invitation is not in this account's calendar. No review was raised");
+    expect(await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).toHaveLength(before);
     // A reject Nous's decision ran carries by "nous" (the decision ledger leaves it out); the operator's own carries none.
     const byNous = await service.requestRsvp(owner, pane, { ...rsvp, response: "declined" });
     await service.decideReview(owner, pane, { reviewId: byNous.reviewId, decision: "reject", note: "Duplicate" }, "nous");
@@ -627,10 +758,22 @@ describe("mail copilot run loop", () => {
     expect(await typed.newSession!(pane)).toBe(true);
   });
 
+  it("counts a session record with no host process as stopped, so the keep-alive starts it (20/11 Bob: allocated, never attached)", async () => {
+    const session = { sessionId: "cli_session:mail3", purpose: "NORMAL", isActive: true, status: "IDLE" };
+    let hostRuns = false;
+    const kickoff = createMailCopilotKickoff({ store: { getActivePaneCliSession: async () => session } as never, terminal: {} as never,
+      start: async () => undefined, hostRunning: async (checked) => checked.sessionId === session.sessionId && hostRuns });
+    const pane = { id: "pane:mail0001" } as Pane;
+    expect(await kickoff.cliRunning!(pane)).toBe(false);
+    hostRuns = true;
+    expect(await kickoff.cliRunning!(pane)).toBe(true);
+  });
+
   it("clears an idle Claude conversation before a new run's kickoff, never before a run's repeated kickoff (plan qH5emwVaV6yO step 9)", async () => {
     const typed: string[] = [];
     const terminal = { runSerializedTerminalMutation: async (_id: string, run: () => Promise<void>) => { await run(); },
-      observeRoomScreenUndimmed: async () => "────\n❯ \n────", sendInput: async (_id: string, data: string) => { typed.push(data); } };
+      observeRoomScreenUndimmed: async () => "────\n❯ \n────", sendInput: async (_id: string, data: string, _trace: string, _turn: null, key: string) => { typed.push(data); keys.push(key); } };
+    const keys: string[] = [];
     const session = { sessionId: "cli_session:mail1", runtimeId: "cli:claude", purpose: "NORMAL", isActive: true, status: "RUNNING" };
     const kickoff = createMailCopilotKickoff({ store: { getActivePaneCliSession: async () => session } as never, terminal: terminal as never });
     const pane = { id: "pane:mail0001" } as Pane;
@@ -640,6 +783,11 @@ describe("mail copilot run loop", () => {
     typed.length = 0;
     await kickoff.send(pane, { id: "mailrun:run00001", kickoffSentAt: "2026-11-06T05:00:00.000Z" } as MailCopilotRun);
     expect(typed.some((data) => data.includes("/clear"))).toBe(false);
+    // The host keeps an input key until the CLI exits: the keep-alive's re-kick of the same run types under its own key, never the first one's.
+    const prompts = keys.filter((key) => key.endsWith(":prompt") && !key.includes(":clear"));
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toMatch(/^mail-copilot:mailrun:run00001:kickoff:/);
+    expect(prompts[1]).not.toBe(prompts[0]);
   });
 
   it("asks what to do with a mail left to the operator, and stops asking once they handled the thread (plan clipboard:5AQvaoSR-IZa)", async () => {
@@ -653,7 +801,8 @@ describe("mail copilot run loop", () => {
       const item = (await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json().item;
       await app.inject({ method: "POST", url: `${cli}/report`, headers: agent, payload: { eventId: item.id, outcome: "needs_user", summary: "Only you can sign this form." } });
       const [asked] = await open();
-      expect(asked!.payload.ask).toEqual({ question: "What should Mail Copilot do with this mail?", options: ["I handled it", "Ignore it"], answer: { kind: "MAIL_FIX", account: "me@gmail.com", threadId: "t1" } });
+      // "I handled it" is a completion, never the default recommendation (70a0523a19, operator 16/11).
+      expect(asked!.payload.ask).toEqual({ question: "What should Mail Copilot do with this mail?", options: ["I handled it", "Ignore it"], recommended: "Ignore it", answer: { kind: "MAIL_FIX", account: "me@gmail.com", threadId: "t1" } });
       expect((await app.inject({ method: "POST", url: "/api/mail-copilot/threads/t1/modify", headers, payload: { account: "me@gmail.com", action: "archive", paneId: pane.id } })).statusCode).toBe(200);
       expect(await open()).toEqual([]);
     } finally {

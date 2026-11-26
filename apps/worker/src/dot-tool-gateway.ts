@@ -124,8 +124,6 @@ function summary(outcome: GatewayOutcome): string {
 }
 
 const nativeFences: Record<string, { fence: string; legacyToolId: string; type: string }> = {
-  "memory.search": { fence: "space-memory-actions", legacyToolId: "memory:search", type: "search" },
-  "memory.save": { fence: "space-memory-actions", legacyToolId: "memory:save", type: "save" },
   "clipboard.list": { fence: "space-clipboard-actions", legacyToolId: "clipboard:list", type: "list" },
   "clipboard.get": { fence: "space-clipboard-actions", legacyToolId: "clipboard:get", type: "get" },
   "clipboard.save": { fence: "space-clipboard-actions", legacyToolId: "clipboard:save", type: "save" },
@@ -145,7 +143,8 @@ const nativeFences: Record<string, { fence: string; legacyToolId: string; type: 
 export async function runNativeDotTool(context: DotToolCallContext, toolId: string, args: Record<string, unknown>): Promise<GatewayOutcome> {
   const native = nativeFences[toolId];
   if (!native) return { status: "BLOCKED", statusReason: "This native tool is not available." };
-  const { type: _ignored, ...rest } = args;
+  const rest = { ...args };
+  delete rest.type;
   const block = `\`\`\`${native.fence}\n${JSON.stringify({ version: 1, actions: [{ toolId: native.legacyToolId, action: { ...rest, type: native.type } }] })}\n\`\`\``;
   // The gateway call itself is the authorization to use exactly this tool.
   const turnInput = { ...context.turnInput, selectedToolIds: [...new Set([...(context.turnInput.selectedToolIds ?? []), native.legacyToolId])].slice(-50) };
@@ -274,7 +273,7 @@ export function dotGatewayDeveloperInstructions(developerContext: string | undef
   return [
     developerContext?.trim(),
     "Space tools: use space_search_tools to find tools, space_describe_tool to load a schema, and space_call_tool to run one.",
-    "Common ids: space.inspect (room state and content), space.execute (open/close/minimize/restore/rename/prompt panes, layouts, playback, configure models), space.pane_types, resource.panes.open, memory.search, memory.save, tasks.list, clipboard.list, computer.browser (your own browser), browser.navigate, goal.update, schedule.create, dot_memory.recall, dot_memory.remember, mail.search, calendar.list.",
+    "Common ids: space.inspect (room state and content), space.execute (open/close/minimize/restore/rename/prompt panes, layouts, playback, configure models), space.pane_types, resource.panes.open, tasks.list, clipboard.list, computer.browser (your own browser), browser.navigate, goal.update, schedule.create, dot_memory.recall, dot_memory.remember, mail.search, calendar.list.",
     "Prefer your own shell and file abilities for local work. Use Space tools for Space state. Installed MCP servers are reachable through space_dispatcher.",
     "Never claim an action happened unless its result says COMPLETED. PENDING means still running. APPROVAL_REQUIRED means the user must approve it in Space: say what you are waiting for and stop.",
     "Destructive operations need the user's explicit request and confirm=true. Ask before acting when the request is ambiguous.",

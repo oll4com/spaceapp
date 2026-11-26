@@ -19,7 +19,9 @@ import {
   monitoringCollectorDefaults,
   monitoringCollectorUrlAllowed,
   parseMonitoringCollectorNetwork,
-  type MonitoringCollectorConfig
+  type MonitoringCollectorConfig,
+  FREELANCE_EGRESS_ROUTES,
+  type FreelanceEgressProxies
 } from "@space/contracts";
 import { resolveCanonicalSpaceMemoryPaths } from "@space/runtime";
 import {
@@ -119,6 +121,8 @@ export interface SpaceApiConfig {
   memoryEmbeddingKeyFile: string | null;
   /** The Design pane's Space Gateway key (`space-admin-action design-key`): image models only, a daily cost cap. */
   designGatewayKeyFile: string;
+  /** Nous Live's Space Gateway key (`nous-live`, plan clipboard:f5TgJ4IIJF1m): only the four free Live pools (nous/space-provider.ts), held by the API alone. */
+  nousLiveGatewayKeyFile: string;
   /** The monitoring collector's scrape token for GET /api/metrics/scrape (root-provisioned; missing: the scrape is refused). */
   metricsTokenFile: string;
   /** The Monitoring Copilot's collector network and the host its empty addresses read as; unset (public installs): any private address, none set. */
@@ -237,6 +241,8 @@ export interface SpaceApiConfig {
   roomAgentAutopilotEnabled: boolean;
   harnessEnabled: boolean;
   harnessOrigin: string;
+  /** Each VPN route's SOCKS5 proxy for browser panes, from SPACE_VPN_SOCKS_PROXIES; none by default, so a route without one fails closed. */
+  vpnSocksProxies: FreelanceEgressProxies;
   /** VNC pane presets from SPACE_VNC_PRESETS (JSON array); none by default, so public installs list no operator hosts. */
   vncPresets: VncPreset[];
   trustedProxies: string[];
@@ -250,6 +256,19 @@ export interface SpaceApiConfig {
 function parseCsvList(raw: string | undefined): string[] {
   if (!raw) return [];
   return Array.from(new Set(raw.split(",").map((value) => value.trim()).filter(Boolean)));
+}
+
+/** SPACE_VPN_SOCKS_PROXIES="greece=host:port,nord=host:port": the route addresses live in the local env only (review 1.2.1). */
+function parseVpnSocksProxies(raw: string | undefined): FreelanceEgressProxies {
+  const proxies: FreelanceEgressProxies = {};
+  for (const pair of parseCsvList(raw)) {
+    const [route = "", proxy = ""] = pair.split("=").map((part) => part.trim());
+    if (route === "direct" || !(FREELANCE_EGRESS_ROUTES as readonly string[]).includes(route) || !/^[\w.-]+:\d{1,5}$/.test(proxy)) {
+      throw new Error(`SPACE_VPN_SOCKS_PROXIES: "${pair}" is not <vpn route>=<host>:<port>.`);
+    }
+    proxies[route as keyof FreelanceEgressProxies] = proxy;
+  }
+  return proxies;
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
@@ -372,6 +391,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     instance: valid.SPACE_INSTANCE,
     instanceJobs: Object.fromEntries(instanceBackgroundJobs.map((job) => [job, instanceBackgroundJobEnabled(
       { SPACE_INSTANCE: valid.SPACE_INSTANCE, SPACE_INSTANCE_ENABLED_JOBS: env.SPACE_INSTANCE_ENABLED_JOBS,
+        SPACE_INSTANCE_DISABLED_JOBS: env.SPACE_INSTANCE_DISABLED_JOBS,
         SPACE_PUBLIC_DISTRIBUTION: env.SPACE_PUBLIC_DISTRIBUTION }, job)])) as Record<InstanceBackgroundJob, boolean>,
     host: valid.SPACE_API_HOST,
     port: valid.SPACE_API_PORT,
@@ -454,6 +474,8 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     memoryEmbeddingBaseUrl: env.SPACE_MEMORY_EMBEDDING_BASE_URL || "https://api.openai.com/v1",
     memoryEmbeddingKeyFile: env.SPACE_MEMORY_EMBEDDING_KEY_FILE || null,
     designGatewayKeyFile: env.SPACE_DESIGN_GATEWAY_KEY_FILE || `${SPACE_INSTALL_ROOT}/secrets/space-design.key`,
+    // Beside Space's own Gateway key: dev reads stable's (its install root has no secrets of its own).
+    nousLiveGatewayKeyFile: env.SPACE_NOUS_LIVE_GATEWAY_KEY_FILE || join(dirname(env.SPACE_GATEWAY_KEY_FILE || env.SPACE_CODEX_LB_KEY_FILE || `${SPACE_INSTALL_ROOT}/secrets/x`), "space-nous-live.key"),
     metricsTokenFile: env.SPACE_METRICS_TOKEN_FILE || `${SPACE_INSTALL_ROOT}/secrets/space-metrics.token`,
     monitoringCollector: parseMonitoringCollector(env.SPACE_MONITORING_COLLECTOR_NETWORK, env.SPACE_MONITORING_COLLECTOR_HOST),
     loadHostSelector: parseLoadHostSelector(env.SPACE_LOAD_HOST_SELECTOR),
@@ -487,7 +509,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     awsAccessKeyId: env.AWS_ACCESS_KEY_ID || null,
     awsSecretAccessKey: env.AWS_SECRET_ACCESS_KEY || null,
     awsRegion: env.AWS_REGION || env.AWS_DEFAULT_REGION || "us-east-1",
-    localVoiceProviderUrl: env.SPACE_LOCAL_VOICE_PROVIDER_URL || "http://192.168.10.213:8765",
+    localVoiceProviderUrl: env.SPACE_LOCAL_VOICE_PROVIDER_URL || "http://127.0.0.1:8765", // a LAN provider is set in the local env only
     localVoiceProviderToken: env.SPACE_LOCAL_VOICE_PROVIDER_TOKEN || null,
     localSenseVoiceUrl: env.SPACE_LOCAL_SENSEVOICE_URL || "ws://127.0.0.1:54330",
     vercelVoiceKeyFile: env.SPACE_VERCEL_VOICE_KEY_FILE || env.SPACE_VERCEL_AI_GATEWAY_KEY_FILE || null,
@@ -561,6 +583,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     // No default upstream address (review F11): without SPACE_HARNESS_ORIGIN the harness stays off.
     harnessEnabled: env.SPACE_HARNESS_ENABLED === "true" && Boolean(env.SPACE_HARNESS_ORIGIN),
     harnessOrigin: env.SPACE_HARNESS_ORIGIN || "",
+    vpnSocksProxies: parseVpnSocksProxies(env.SPACE_VPN_SOCKS_PROXIES),
     vncPresets: env.SPACE_VNC_PRESETS?.trim() ? vncPresetSchema.array().max(32).parse(JSON.parse(env.SPACE_VNC_PRESETS)) : [],
     trustedProxies: (env.SPACE_TRUSTED_PROXIES ?? "").split(",").map((address) => address.trim()).filter(Boolean),
     optionalModules: parseOptionalModules(env.SPACE_OPTIONAL_MODULES, env.SPACE_PUBLIC_DISTRIBUTION === "true"),

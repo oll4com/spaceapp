@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { needsYouCardTexts, type SpaceNotification } from "@space/contracts";
 import { NousNeedsYou } from "../src/features/nous/NousNeedsYou.js";
@@ -221,6 +221,23 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
     expect(uiText("el", "A text nobody translated")).toBe("A text nobody translated");
   });
 
+  it("a language announced while the settings are on their way wins, and <html lang> follows it (plan clipboard:aE7U1J_gU9OV step 7)", async () => {
+    vi.resetModules();
+    (await import("../src/runtime/SpaceRuntime.js")).installSpaceRuntime((await import("../src/live/live-runtime.js")).liveRuntime);
+    let answer!: () => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { answer = () => resolve(Response.json({ uiLanguage: "en" })); })));
+    const fresh = await import("../src/features/ui-language/ui-language.js");
+    const { result } = renderHook(() => fresh.useUiLanguage());
+    await waitFor(() => expect(answer).toBeTypeOf("function"));
+    fresh.announceUiLanguage("el");
+    answer();
+    await waitFor(() => expect(result.current).toBe("el"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect([result.current, fresh.uiLanguageNow(), document.documentElement.lang]).toEqual(["el", "el", "el"]);
+    fresh.announceUiLanguage("en");
+    expect(document.documentElement.lang).toBe("en");
+  });
+
   it("the lines the server writes into a card read in Greek; the producer's own words stay", () => {
     const body = "• Pay the invoice (Recommended \"Approve\" by your rule [mem:1] \"Pay accountant\".) (Since your answer: the amount changed)\n\nSpace's account facts:\n• Vault: 1 login\n\nRecommended \"Approve\" by your last 6 answers.";
     expect(uiServerText("el", body)).toBe("• Pay the invoice (Προτείνεται «Έγκριση» από τον κανόνα σου [mem:1] «Pay accountant».) (Από την απάντησή σου: the amount changed)\n\nΣτοιχεία λογαριασμών του Space:\n• Vault: 1 login\n\nΠροτείνεται «Έγκριση» από τις τελευταίες 6 απαντήσεις σου.");
@@ -237,7 +254,7 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
         <NousDone requests={[done]} onOpenPlan={() => undefined} onAcknowledged={() => undefined} />
       </>);
       expect(await screen.findByRole("tab", { name: "Δραστηριότητα" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Εντάξει" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Το είδα" })).toBeTruthy();
       expect(screen.getByText("Ελέγχθηκε: Ελέγχθηκε στο dev με το νήμα Mercor.")).toBeTruthy();
     } finally { announceUiLanguage("en"); announceAgentLanguage("en"); }
   });

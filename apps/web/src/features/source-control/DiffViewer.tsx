@@ -11,7 +11,19 @@ export interface DiffViewerProps {
   busy?: boolean;
   statusEpochVersion?: string;
   activeHunkIndex?: number;
+  /** Turns line numbers into "add a review note" buttons; removed lines carry their old number. */
+  onLineNote?: (line: DiffNoteLine) => void;
+  /** Keys `old:<n>` / `new:<n>` of lines that already have a note. */
+  notedLines?: ReadonlySet<string>;
 }
+
+export interface DiffNoteLine {
+  removed: boolean;
+  line: number;
+  code: string;
+}
+
+export const diffNoteKey = (line: { removed: boolean; line: number }) => `${line.removed ? "old" : "new"}:${line.line}`;
 
 export interface WordToken {
   text: string;
@@ -213,11 +225,32 @@ export function DiffViewer({
   isRemote,
   busy,
   statusEpochVersion,
-  activeHunkIndex
+  activeHunkIndex,
+  onLineNote,
+  notedLines
 }: DiffViewerProps) {
   const parsedHunks = useMemo(() => {
     return diff.hunks.map((hunk, index) => parseHunkData(hunk, index));
   }, [diff.hunks]);
+
+  // A removed line notes its old number, every other line its number in the current file; one button per line.
+  const gutter = (num: number | undefined, removed: boolean, text: string, noteable: boolean, extraClass = "") => {
+    const className = `diff-gutter-num${extraClass}`;
+    if (num === undefined || !onLineNote || !noteable) return <span className={className}>{num ?? ""}</span>;
+    const line = { removed, line: num, code: text.slice(1) };
+    const noted = notedLines?.has(diffNoteKey(line)) ?? false;
+    return (
+      <button
+        type="button"
+        className={`${className} diff-gutter-note${noted ? " is-noted" : ""}`}
+        aria-label={`${noted ? "Edit the note" : "Add a note"} on ${removed ? "removed " : ""}line ${num}`}
+        title="Review note for the agent"
+        onClick={() => onLineNote(line)}
+      >
+        {num}
+      </button>
+    );
+  };
 
   return (
     <div className={`diff-viewer-shell mode-${viewMode}`} role="region" aria-label="Diff viewer">
@@ -284,9 +317,7 @@ export function DiffViewer({
                         }`}
                         role="cell"
                       >
-                        <span className="diff-gutter-num">
-                          {left ? left.lineNum : ""}
-                        </span>
+                        {gutter(left?.lineNum, true, left?.text ?? "", left?.type === "removed")}
                         <span className="diff-gutter-sign">
                           {left?.type === "removed" ? "-" : " "}
                         </span>
@@ -317,9 +348,7 @@ export function DiffViewer({
                         }`}
                         role="cell"
                       >
-                        <span className="diff-gutter-num">
-                          {right ? right.lineNum : ""}
-                        </span>
+                        {gutter(right?.lineNum, false, right?.text ?? "", true)}
                         <span className="diff-gutter-sign">
                           {right?.type === "added" ? "+" : " "}
                         </span>
@@ -356,12 +385,8 @@ export function DiffViewer({
                       key={rIdx}
                       role="row"
                     >
-                      <span className="diff-gutter-num gutter-old">
-                        {row.oldLine ?? ""}
-                      </span>
-                      <span className="diff-gutter-num gutter-new">
-                        {row.newLine ?? ""}
-                      </span>
+                      {gutter(row.oldLine, true, row.text, row.type === "removed", " gutter-old")}
+                      {gutter(row.newLine, false, row.text, true, " gutter-new")}
                       <span className="diff-gutter-sign">
                         {row.type === "added" ? "+" : row.type === "removed" ? "-" : " "}
                       </span>

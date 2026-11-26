@@ -74,9 +74,9 @@ describe("room activity pane totals", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       data: [
-        { roomId: firstRoom.id, runningCliCount: 1, paneCount: 3, runtimeIds: ["cli:codex"] },
-        { roomId: secondRoom.id, runningCliCount: 1, paneCount: 2, runtimeIds: ["cli:opencode"] },
-        { roomId: emptyRoom.id, runningCliCount: 0, paneCount: 0, runtimeIds: [] }
+        { roomId: firstRoom.id, runningCliCount: 1, paneCount: 3, runtimeIds: ["cli:codex"], paneModes: ["BROWSER", "CHAT", "TERMINAL"] },
+        { roomId: secondRoom.id, runningCliCount: 1, paneCount: 2, runtimeIds: ["cli:opencode"], paneModes: ["TERMINAL"] },
+        { roomId: emptyRoom.id, runningCliCount: 0, paneCount: 0, runtimeIds: [], paneModes: [] }
       ]
     });
     expect(response.json().sampledAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);

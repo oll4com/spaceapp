@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY, NEEDS_YOU_START_NOW, needsYouAnswerKind, type Pane, type Room, type RoomAgentEvent } from "@space/contracts";
 import { InMemoryNousPaneChecksRepository, InMemoryPaneReportsRepository } from "@space/db";
-import { createPaneReports, paneProgressSchema, paneReportLine, paneReportsText, planReportLine, questionSummary, reportSummary, screenSummary, tailSummary } from "../src/pane-reports.js";
+import { createPaneReports, endAlreadyReported, paneProgressSchema, paneReportLine, paneReportsText, planReportLine, questionBody, questionSummary, reportSummary, screenSummary, tailSummary } from "../src/pane-reports.js";
 import { createNousPaneWatch } from "../src/nous/pane-watch.js";
 import { openCodeDashboardActivity } from "../src/agents-dashboard.js";
 import { renderNousWorld } from "../src/nous/digest.js";
@@ -119,6 +119,20 @@ describe("pane reports", () => {
     // The agent's own options and target stay as given.
     await reports.report(bruno, andy, { status: "needs-you", summary: "Pick", needs: "Which one, see https://example.com/a?", options: ["A", "B"], recommended: "B", target: "browser" });
     expect(raise.mock.calls[0]![0]).toMatchObject({ link: { target: "browser" }, payload: { ask: { options: ["A", "B"], recommended: "B" } } });
+  });
+
+  it("17/11 (card 1e91952e): the pane's done report naming its ask closes the card only once the operator has seen it", async () => {
+    let card: { readAt: string | null; payload: Record<string, unknown>; link: Record<string, unknown> } | null = null;
+    const raise = vi.fn(async (input: { link: Record<string, unknown>; payload: Record<string, unknown> }) => { card = { ...input, readAt: null }; return input as never; });
+    const resolve = vi.fn(async () => 1);
+    const reports = createPaneReports({ repository: new InMemoryPaneReportsRepository(), now: () => now, store: { getRoom: async () => bruno, getPane: async () => andy } as never,
+      lastAnswer: async () => null, screen: async () => null, notifications: { raise: raise as never, resolve }, openCard: async () => card as never });
+    await reports.report(bruno, andy, { status: "needs-you", summary: "micro1 AI interview expires 13:22 BKK", needs: "micro1 interview: camera check, ID photo, selfie, start", checked: ["Vault: no login"] });
+    await reports.report(bruno, andy, { status: "done", summary: "micro1 interview prepared; camera check, ID photo, selfie and start are the operator's" });
+    expect(resolve).not.toHaveBeenCalled();
+    card!.readAt = new Date(now).toISOString();
+    await reports.report(bruno, andy, { status: "done", summary: "micro1 interview done: camera check, ID photo, selfie and start passed" });
+    expect(resolve).toHaveBeenCalledTimes(1);
   });
 
   it("goal 7365014c: the same pane and target asked again within 24 h refreshes the open card without a new alert; another target or a day later alerts", async () => {
@@ -322,6 +336,34 @@ describe("pane reports", () => {
     expect(questionSummary("Select a model\nopus\nsonnet", "Model picker")).toBe("Model picker");
   });
 
+  it("gives the operator a waiting pane's whole question: every option with its description, the recommended one marked (operator 21/11)", async () => {
+    const screen = ["☐ Approach", "Which fix should we ship?", "❯ 1. Fix at the root (Recommended)", "     Change the shared code once.",
+      "  2. Patch the caller", "     Smaller, repeated per caller.", "  3. Type something.", "─────────", "Enter to select · ↑/↓ to navigate · Esc to cancel"].join("\n");
+    const body = ["Which fix should we ship?", "1. Fix at the root (Recommended) — Change the shared code once.", "2. Patch the caller — Smaller, repeated per caller.", "3. Type something."].join("\n");
+    expect(questionBody(screen)).toBe(body);
+    expect(questionBody("Compiling\n> ")).toBeNull();
+    const { reports } = setup({}, { [andy.id]: screen });
+    const asked = (paneId: string) => finished(paneId, { kind: "QUESTION", severity: "ATTENTION", title: "Andy has a question for you" });
+    expect(await reports.questionText(asked(andy.id))).toBe(body);
+    // null only when provably none (not a terminal, nothing on screen); an unreadable screen throws so the sweep keeps the question.
+    expect(await reports.questionText(asked("pane:mail0001"))).toBeNull();
+    expect(await setup({}).reports.questionText(asked(andy.id))).toBeNull();
+    const broken = createPaneReports({ repository: new InMemoryPaneReportsRepository(), now: () => now, lastAnswer: async () => null,
+      store: { getRoom: async () => bruno, getPane: async () => andy } as never, screen: async () => { throw new Error("pane host down"); } });
+    await expect(broken.questionText(asked(andy.id))).rejects.toThrow("pane host down");
+  });
+
+  it("DEV3D-018: a menu's question wrapped in a narrow pane, asked in Greek or without a \"?\" is still the card's question", () => {
+    const menu = (...question: string[]) => ["● Read 20 lines.", "─────────", "☐ Target", ...question, "❯ 1. Dev", "     The dev instance.", "  2. Stable",
+      "─────────", "Chat about this", "Enter to select · ↑/↓ to navigate · Esc to cancel"].join("\n");
+    const options = ["1. Dev — The dev instance.", "2. Stable"];
+    expect(questionBody(menu("Which instance should the fix", "deploy to first?"))).toBe(["Which instance should the fix deploy to first?", ...options].join("\n"));
+    expect(questionBody(menu("Σε ποιο instance να πάει πρώτα;"))).toBe(["Σε ποιο instance να πάει πρώτα;", ...options].join("\n"));
+    expect(questionBody(menu("Pick the deploy target"))).toBe(["Pick the deploy target", ...options].join("\n"));
+    // A numbered list in a turn's output is no menu (no cursor on it), so an answered question stays gone.
+    expect(questionBody("Done:\n1. Fixed the parser\n2. Added a test\n> ")).toBeNull();
+  });
+
   it("gives a working pane a heartbeat from its running turn's newest text, else its screen, at most every 10 minutes and only with news", async () => {
     const repository = new InMemoryPaneReportsRepository();
     let clockMs = now;
@@ -418,5 +460,64 @@ describe("pane reports", () => {
     expect((await watch.list(owner)).map((check) => check.paneId)).toEqual([andy.id]);
     expect((await tools.execute("space_pane_reports", { room: "Bruno", pane: "Andy" }, { ...ctx, owner: "user:someone" })).ok).toBe(false);
     expect(paneReportsText("Bob", [], clock)).toBe("Bob has no reports yet (a CLI pane gets one at the end of every turn).");
+  });
+
+  it("goal 5acd171d: a turn end right after the pane's own done or failed report repeats it; a newer start, an old done or no own report does not", () => {
+    const at = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
+    const report = (status: string, minutes: number, source = "AGENT") => ({ status, source, at: at(minutes) }) as never;
+    expect(endAlreadyReported([report("TURN_END", 0, "AUTO"), report("DONE", 5)], now)).toBe(true);
+    expect(endAlreadyReported([report("FAILED", 13)], now)).toBe(true);
+    expect(endAlreadyReported([report("STARTED", 2), report("DONE", 20)], now)).toBe(false);
+    expect(endAlreadyReported([report("DONE", 31)], now)).toBe(false);
+    expect(endAlreadyReported([report("TURN_END", 0, "AUTO")], now)).toBe(false);
+    // DEV3D-009: new work given after the done ended a second turn since: its end is news, not the done repeated.
+    expect(endAlreadyReported([report("TURN_END", 0, "AUTO"), report("TURN_END", 4, "AUTO"), report("DONE", 5)], now)).toBe(false);
+  });
+
+  it("23/11 (lessons ×6 briefed to a third pane): a reused pane's DONE stays in finishedSince after its next task's report, unlike latest", async () => {
+    const repository = new InMemoryPaneReportsRepository();
+    const base = { roomId: bruno.id, paneId: andy.id, source: "AGENT" as const };
+    await repository.add(owner, { ...base, at: "2026-11-15T10:00:00.000Z", status: "DONE", summary: "too old" });
+    await repository.add(owner, { ...base, at: "2026-11-23T10:15:30.000Z", status: "DONE", summary: "Daily Nous errors lessons ×7: no code cause" });
+    await repository.add(owner, { ...base, at: "2026-11-23T10:15:59.000Z", status: "STARTED", summary: "Hygiene sweep" });
+    await repository.add("user:other", { ...base, at: "2026-11-23T10:16:00.000Z", status: "DONE", summary: "not yours" });
+    expect((await repository.latest(owner)).map((report) => report.summary)).toEqual(["Hygiene sweep"]);
+    expect(await repository.finishedSince(owner, "2026-11-16T11:00:00.000Z"))
+      .toEqual([{ at: "2026-11-23T10:15:30.000Z", summary: "Daily Nous errors lessons ×7: no code cause", next: null }]);
+  });
+
+  it("2026-11-25 REVIEW: refuses Start now? / needs-you on completed plans or gone tabs, and marks unverified Start now? cards recommendedDefault", async () => {
+    const raise = vi.fn(async (input: unknown) => input as never);
+    let live = false;
+    let done = true;
+    const reports = createPaneReports({
+      repository: new InMemoryPaneReportsRepository(), now: () => now,
+      store: { getRoom: async () => bruno, getPane: async () => andy } as never,
+      lastAnswer: async () => null, screen: async () => null,
+      notifications: { raise, resolve: vi.fn(async () => 1) },
+      planDone: async () => done,
+      pageLive: async () => live
+    });
+    // Completed plan: refused before storing or raising.
+    await expect(reports.report(bruno, andy, { status: "needs-you", summary: "Approve run", needs: "Open https://example.com/run", plan: "clipboard:DONEplan01", checked: ["git: checked"] }))
+      .rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("is already completed") });
+    expect(raise).not.toHaveBeenCalled();
+    done = false;
+    // Explicit tab: target not held by any live browser: refused before storing or raising.
+    await expect(reports.report(bruno, andy, { status: "needs-you", summary: "Solve captcha", needs: "Solve on tab", target: "tab:page-gone", checked: ["browser: opened"] }))
+      .rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("No browser holds tab:page-gone") });
+    expect(raise).not.toHaveBeenCalled();
+    // Unverified url: target (no live browser tab on that site): raises with recommendedDefault: true so "Go now" is not scored as a prediction miss.
+    await reports.report(bruno, andy, { status: "needs-you", summary: "Create account", needs: "Open https://signup.live.com to sign up", checked: ["browser: blocked"] });
+    expect(raise.mock.calls[0]![0]).toMatchObject({
+      payload: { recommendedDefault: true, ask: { question: NEEDS_YOU_START_NOW, options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_GO_NOW } }
+    });
+    // Verified live browser tab (pageLive === true): no recommendedDefault, so "Go now" stays a real scored prediction.
+    live = true;
+    await reports.report(bruno, andy, { status: "needs-you", summary: "Solve captcha", needs: "Solve on live tab", target: "tab:page-live", checked: ["browser: tab open"] });
+    expect((raise.mock.calls[1]![0] as { payload: Record<string, unknown> }).payload.recommendedDefault).toBeUndefined();
+    expect(raise.mock.calls[1]![0]).toMatchObject({
+      payload: { ask: { question: NEEDS_YOU_START_NOW, recommended: NEEDS_YOU_GO_NOW } }
+    });
   });
 });

@@ -3,14 +3,14 @@ import { controlActionSchema, controlResourceHints, controlResourceOperations, c
 /** Resource operations never run by voice: tests, deploy, logs and CLI access are not for native agents. */
 export const liveForbiddenResourceOperations: ReadonlySet<string> = new Set(dotForbiddenResourceOperations);
 /** Deletions and settings changes run only after the user confirmed them aloud (operator decision 2026-10-14). */
-export function liveActionNeedsConfirmation(action: any): boolean {
+export function liveActionNeedsConfirmation(action: { kind?: unknown; operation?: unknown } | null | undefined): boolean {
   const operation = String(action?.operation ?? "");
   if (action?.kind === "resource") return dotDestructiveResources.has(operation) || operation.startsWith("settings.");
   return action?.kind === "clipboard" && operation === "delete";
 }
 
 const controlActionKinds = controlActionSchema.options.map(option => {
-  const shape = option.shape as Record<string, any>;
+  const shape = option.shape as { operation?: { options?: string[] } };
   const operations: string[] | undefined = shape.operation?.options;
   return option.shape.kind.value !== "resource" && operations ? `${option.shape.kind.value} (${operations.join("|")})` : option.shape.kind.value;
 }).join("; ");
@@ -91,9 +91,10 @@ const parameterDescriptions: Record<string, string> = {
 };
 
 export function describeLiveTools(tools: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
-  const describeSchema = (schema: any, field?: string): any => {
+  type SchemaNode = { description?: string; enum?: unknown[]; type?: string; properties?: Record<string, unknown>; items?: unknown };
+  const describeSchema = (schema: unknown, field?: string): unknown => {
     if (!schema || typeof schema !== "object") return schema;
-    const copy = { ...schema };
+    const copy: SchemaNode = { ...schema };
     if (field && !copy.description?.trim()) {
       copy.description = parameterDescriptions[field] ??
         (copy.enum ? `Allowed ${field} values: ${copy.enum.join(", ")}.` : `${field.replace(/([a-z])([A-Z])/g, "$1 $2")} (${copy.type ?? "value"}) for this operation.`);

@@ -121,7 +121,7 @@ describe("Space control tick", () => {
   }, 30_000);
 
   it("filters by JSON status in SQL and selects only the mapped columns", async () => {
-    const query = vi.fn(async (_sql: string, _values: unknown[]) => ({ rows: [{ kind: "watch", actor_id: "a", record_key: "k", room_id: "r", version: 2, value: { status: "RUNNING" }, dot_id: null }] }));
+    const query = vi.fn(async () => ({ rows: [{ kind: "watch", actor_id: "a", record_key: "k", room_id: "r", version: 2, value: { status: "RUNNING" }, dot_id: null }] }));
     const repository = new PostgresControlRepository({ query } as never);
 
     await expect(repository.listActive("watch", ["PENDING", "RUNNING"])).resolves.toEqual([

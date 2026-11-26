@@ -1,6 +1,6 @@
 ---
 name: space-superpowers
-description: "Superpowers (obra/superpowers) software development methodology for coding agents: brainstorming a design, writing and executing implementation plans, test-driven development, systematic debugging, code review, verification before completion and subagent-driven development. Use for feature work, bug fixing and planned changes where one of these methods helps, and whenever the operator asks for Superpowers."
+description: "Superpowers method: brainstorm a design, write and execute plans, TDD, systematic debugging, code review, verification before completion. On request or when a method helps."
 metadata:
   category: WORKFLOW
 ---

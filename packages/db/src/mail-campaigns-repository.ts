@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { healthSendable, mailAddressDomain, mailSuppressed, type MailCampaign, type MailCampaignCheck, type MailCampaignEvent, type MailCampaignSend,
   type MailCampaignStats, type MailCampaignStatus, type MailContact, type MailContactHealthPatch, type MailContactInput, type MailHealth, type MailList,
   type MailListHealth, type MailSender, type MailSuppression, type MailSuppressionInput, type MailTemplate, type MailTemplateContent,
-  type MailTemplateVersion, type MailMadeBy } from "@space/contracts";
+  type MailTemplateVersion, type MailMadeBy, type MailOpenHit, type MailTrackedMessage } from "@space/contracts";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 import { rollbackKeepingError } from "./rollback.js";
 
@@ -22,7 +23,7 @@ export type MailListPatch = Partial<Pick<MailList, "name" | "description" | "con
 export interface MailContactFilter { listId?: string; health?: MailHealth[]; q?: string; limit?: number; offset?: number }
 export type MailCampaignCreateRecord = Omit<MailCampaign, "id" | "status" | "fingerprint" | "approval" | "audience" | "pauseReason" | "createdAt" | "updatedAt">;
 export type MailCampaignPatch = Partial<Pick<MailCampaign, "name" | "goal" | "templateId" | "templateVersion" | "senderId" | "listIds" | "schedule" | "pacing"
-  | "status" | "fingerprint" | "approval" | "audience" | "testSeeds" | "pauseReason">>;
+  | "status" | "fingerprint" | "approval" | "audience" | "testSeeds" | "track" | "pauseReason">>;
 export type MailSendPatch = Partial<Pick<MailCampaignSend, "status" | "skipReason" | "messageId" | "providerId" | "attempts" | "nextAttemptAt" | "sentAt" | "error"
   | "bounce" | "complainedAt" | "repliedAt" | "unsubscribedAt">>;
 export type MailCheckCreateRecord = Omit<MailCampaignCheck, "id" | "createdAt">;
@@ -111,6 +112,7 @@ export interface MailCampaignsRepository {
   /** SENDING rows untouched since `before` (a send whose answer was lost): UNKNOWN, never retried. Answers how many. */
   markStaleSending(before: string): Promise<number>;
   findSendByMessageId(owner: string, messageId: string): Promise<MailCampaignSend | null>;
+  getSend(owner: string, campaignId: string, contactId: string): Promise<MailCampaignSend | null>;
   listSends(owner: string, campaignId: string, filter: { status?: MailCampaignSend["status"][]; limit?: number }): Promise<MailCampaignSend[]>;
   campaignStats(owner: string, campaignId: string): Promise<MailCampaignStats>;
   /** Mail a sender sent since a time, across campaigns (its daily cap). */
@@ -126,8 +128,38 @@ export interface MailCampaignsRepository {
   addEvent(input: MailEventCreateRecord): Promise<MailCampaignEvent>;
   /** Newest first. */
   listEvents(owner: string, filter: { campaignId?: string; limit?: number }): Promise<MailCampaignEvent[]>;
+
+  /** Open tracking (migration 0357): a tracked mail's token, recipient, subject and its links' original URLs; a token stored before is kept as it was. */
+  trackMessage(input: MailTrackRecord): Promise<void>;
+  /**
+   * One open (pixel fetch) or click (`link`: the link's index); null (nothing stored) for a token no mail carries or a link it lacks.
+   * Answers the hit's id and, for a click, the link's URL.
+   */
+  recordOpen(token: string, hit: MailHitRecord): Promise<{ id: string; url: string | null } | null>;
+  /** Client, device, proxy, reverse DNS, ISP and geo of a stored hit, known only after it is stored. */
+  describeOpen(id: string, details: MailHitDetails): Promise<void>;
+  /** Every tracked mail of the owner (or of one campaign), newest first, each with every open and click. */
+  trackedMessages(owner: string, filter?: { campaignId?: string }): Promise<MailTrackedMessage[]>;
+  /** The web version of one sent campaign mail (migration 0412, class B, gzip in Postgres); a second save replaces it. */
+  saveWebCopy(input: { ownerUserId: string; campaignId: string; contactId: string; html: string }): Promise<void>;
+  webCopy(owner: string, campaignId: string, contactId: string): Promise<string | null>;
   dispose(): Promise<void>;
 }
+
+export interface MailTrackRecord { token: string; ownerUserId: string; recipient: string; recipientName: string; subject: string; links: string[]; campaignId?: string | null; contactId?: string | null }
+export interface MailHitRecord { kind: MailOpenHit["kind"]; at: string; ip: string | null; userAgent: string | null; link?: number }
+export type MailHitDetails = Pick<MailOpenHit, "client" | "device" | "proxy" | "rdns" | "isp" | "geo">;
+// Gmail's image proxy fetches the pixel 2-3 times within a second for one open (seen 22/11); fetches this close count as that one open.
+const SAME_OPEN_MS = 5_000;
+// Google's network without the image proxy's user agent (rate-limited-proxy, a 2015 Chrome UA, 3 s after sending) is Gmail scanning the mail on delivery, not a reader.
+const gmailScan = (hit: MailOpenHit) => /(^|\.)google(usercontent)?\.com$/i.test(hit.rdns ?? "") && !/GoogleImageProxy|ggpht\.com/i.test(hit.userAgent ?? "");
+/** The opens a reader made, oldest first: every hit stays stored; a delivery scan and the repeat fetches of one open are left out. */
+const readerOpens = (hits: MailOpenHit[]) => hits.filter((hit) => hit.kind === "OPEN" && !gmailScan(hit))
+  .filter((hit, index, all) => index === 0 || Date.parse(hit.at) - Date.parse(all[index - 1]!.at) >= SAME_OPEN_MS);
+const tracked = (message: Omit<MailTrackedMessage, "count" | "firstOpenedAt" | "lastOpenedAt" | "opens" | "clicks">, hits: MailOpenHit[]): MailTrackedMessage => {
+  const opens = readerOpens(hits);
+  return { ...message, count: opens.length, firstOpenedAt: opens[0]?.at ?? null, lastOpenedAt: opens.at(-1)?.at ?? null, opens, clicks: hits.filter((hit) => hit.kind === "CLICK") };
+};
 
 const emptyStats = (): MailCampaignStats => ({ byStatus: {}, bounced: { hard: 0, soft: 0 }, complained: 0, replied: 0, unsubscribed: 0 });
 /** Members classified the same way in both stores. */
@@ -360,6 +392,7 @@ export class InMemoryMailCampaignsRepository implements MailCampaignsRepository 
     for (const row of this.sends.values()) if (row.status === "SENDING" && row.updatedAt < before) { Object.assign(row, { status: "UNKNOWN", error: "The send's answer was lost; never retried.", updatedAt: this.now() }); marked++; }
     return marked;
   }
+  async getSend(owner: string, campaignId: string, contactId: string) { const row = this.sends.get(`${campaignId}|${contactId}`); return row?.ownerUserId === owner ? copy(row) : null; }
   async findSendByMessageId(owner: string, messageId: string) { const row = [...this.sends.values()].find((entry) => entry.ownerUserId === owner && entry.messageId === messageId); return row ? copy(row) : null; }
   async listSends(owner: string, campaignId: string, filter: { status?: MailCampaignSend["status"][]; limit?: number }) {
     return [...this.sends.values()].filter((row) => row.ownerUserId === owner && row.campaignId === campaignId && (!filter.status?.length || filter.status.includes(row.status)))
@@ -399,6 +432,34 @@ export class InMemoryMailCampaignsRepository implements MailCampaignsRepository 
     return this.events.filter((row) => row.ownerUserId === owner && (!filter.campaignId || row.campaignId === filter.campaignId))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(0, filter.limit ?? undefined).map(copy);
   }
+  private trackedMail = new Map<string, MailTrackRecord & { createdAt: string; hits: Array<MailOpenHit & { id: string }> }>();
+  private hitIds = 0;
+  async trackMessage(input: MailTrackRecord) {
+    if (this.trackedMail.has(input.token)) return;
+    this.trackedMail.set(input.token, { ...copy(input), createdAt: this.now(), hits: [] });
+  }
+  async recordOpen(token: string, hit: MailHitRecord) {
+    const row = this.trackedMail.get(token);
+    const url = hit.link === undefined ? null : row?.links[hit.link];
+    if (!row || url === undefined) return null;
+    const id = String(++this.hitIds);
+    row.hits.push({ id, kind: hit.kind, at: hit.at, ip: hit.ip, userAgent: hit.userAgent, url, client: null, device: null, proxy: null, rdns: null, isp: null, geo: null });
+    return { id, url };
+  }
+  async describeOpen(id: string, details: MailHitDetails) {
+    const hit = [...this.trackedMail.values()].flatMap((row) => row.hits).find((entry) => entry.id === id);
+    if (hit) Object.assign(hit, details);
+  }
+  async trackedMessages(owner: string, filter: { campaignId?: string } = {}) {
+    return [...this.trackedMail.values()].filter((row) => row.ownerUserId === owner && (!filter.campaignId || row.campaignId === filter.campaignId))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map((row) => tracked({ token: row.token, recipient: row.recipient, recipientName: row.recipientName, subject: row.subject, createdAt: row.createdAt, links: [...row.links],
+        campaignId: row.campaignId ?? null },
+        row.hits.map((entry) => { const hit: MailOpenHit & { id?: string } = { ...entry }; delete hit.id; return hit; }).sort((a, b) => a.at.localeCompare(b.at))));
+  }
+  private webCopies = new Map<string, { ownerUserId: string; html: string }>();
+  async saveWebCopy(input: { ownerUserId: string; campaignId: string; contactId: string; html: string }) { this.webCopies.set(`${input.campaignId}|${input.contactId}`, { ownerUserId: input.ownerUserId, html: input.html }); }
+  async webCopy(owner: string, campaignId: string, contactId: string) { const row = this.webCopies.get(`${campaignId}|${contactId}`); return row?.ownerUserId === owner ? row.html : null; }
   async dispose() {}
 }
 
@@ -414,8 +475,8 @@ const senderOf = (row: Row): MailSender => ({ id: row.id as string, ownerUserId:
 const templateOf = (row: Row): MailTemplate => ({ id: row.id as string, ownerUserId: row.owner_user_id as string, name: row.name as string, language: row.language as MailTemplate["language"],
   currentVersion: row.current_version as number, paneId: (row.pane_id as string | null) ?? null, archivedAt: iso(row.archived_at), createdAt: isoNow(row.created_at), updatedAt: isoNow(row.updated_at) });
 const versionOf = (row: Row): MailTemplateVersion => ({ templateId: row.template_id as string, version: row.version as number, subject: row.subject as string, preheader: row.preheader as string,
-  html: row.html as string, text: row.body_text as string, variables: row.variables as MailTemplateVersion["variables"], fingerprint: row.fingerprint as string,
-  madeBy: row.made_by as MailMadeBy, createdAt: isoNow(row.created_at) });
+  html: row.html as string, text: row.body_text as string, variables: row.variables as MailTemplateVersion["variables"],
+  attachments: (row.attachments as MailTemplateVersion["attachments"] | undefined) ?? [], fingerprint: row.fingerprint as string, madeBy: row.made_by as MailMadeBy, createdAt: isoNow(row.created_at) });
 const listOf = (row: Row): MailList => ({ id: row.id as string, ownerUserId: row.owner_user_id as string, name: row.name as string, description: row.description as string,
   source: row.source as MailList["source"], consentBasis: row.consent_basis as MailList["consentBasis"], archivedAt: iso(row.archived_at), createdAt: isoNow(row.created_at), updatedAt: isoNow(row.updated_at) });
 const contactOf = (row: Row): MailContact => ({ id: row.id as string, ownerUserId: row.owner_user_id as string, address: row.address as string, domain: row.domain as string, name: row.name as string,
@@ -427,7 +488,7 @@ const campaignOf = (row: Row): MailCampaign => ({ id: row.id as string, ownerUse
   goal: row.goal as string, templateId: row.template_id as string, templateVersion: row.template_version as number, senderId: row.sender_id as string, listIds: row.list_ids as string[],
   schedule: row.schedule as MailCampaign["schedule"], pacing: row.pacing as MailCampaign["pacing"], status: row.status as MailCampaignStatus, fingerprint: (row.fingerprint as string | null) ?? null,
   approval: (row.approval as MailCampaign["approval"]) ?? null, audience: (row.audience as MailCampaign["audience"]) ?? null, testSeeds: row.test_seeds as string[],
-  pauseReason: (row.pause_reason as string | null) ?? null, createdBy: row.created_by as string, createdAt: isoNow(row.created_at), updatedAt: isoNow(row.updated_at) });
+  track: Boolean(row.track), pauseReason: (row.pause_reason as string | null) ?? null, createdBy: row.created_by as string, createdAt: isoNow(row.created_at), updatedAt: isoNow(row.updated_at) });
 const sendOf = (row: Row): MailCampaignSend => ({ campaignId: row.campaign_id as string, contactId: row.contact_id as string, ownerUserId: row.owner_user_id as string, address: row.address as string,
   status: row.status as MailCampaignSend["status"], skipReason: (row.skip_reason as string | null) ?? null, messageId: (row.message_id as string | null) ?? null,
   providerId: (row.provider_id as string | null) ?? null, attempts: row.attempts as number, priority: (row.priority as number | undefined) ?? 0,
@@ -452,7 +513,7 @@ function assignments(patch: Record<string, unknown>, columns: Record<string, str
 }
 const SENDER_COLUMNS = { displayName: "display_name", replyTo: "reply_to", footerAddress: "footer_address", status: "status", warmup: "warmup", caps: "caps", bulk: "bulk", bulkNote: "bulk_note", config: "config" };
 const CAMPAIGN_COLUMNS = { name: "name", goal: "goal", templateId: "template_id", templateVersion: "template_version", senderId: "sender_id", listIds: "list_ids", schedule: "schedule",
-  pacing: "pacing", status: "status", fingerprint: "fingerprint", approval: "approval", audience: "audience", testSeeds: "test_seeds", pauseReason: "pause_reason" };
+  pacing: "pacing", status: "status", fingerprint: "fingerprint", approval: "approval", audience: "audience", testSeeds: "test_seeds", track: "track", pauseReason: "pause_reason" };
 const SEND_COLUMNS = { status: "status", skipReason: "skip_reason", messageId: "message_id", providerId: "provider_id", attempts: "attempts", nextAttemptAt: "next_attempt_at",
   sentAt: "sent_at", error: "error", bounce: "bounce", complainedAt: "complained_at", repliedAt: "replied_at", unsubscribedAt: "unsubscribed_at" };
 const JSON_COLUMNS = new Set(["config", "warmup", "caps", "schedule", "pacing", "approval", "audience", "test_seeds", "bounce"]);
@@ -492,9 +553,9 @@ export class PostgresMailCampaignsRepository implements MailCampaignsRepository 
     return this.transaction(async (query) => {
       const [template] = await query(`INSERT INTO mail_campaign_templates(id,owner_user_id,name,language,current_version,pane_id) VALUES($1,$2,$3,$4,1,$5) RETURNING *`,
         [newId("mtpl"), input.ownerUserId, input.name, input.language, input.paneId]);
-      const [version] = await query(`INSERT INTO mail_campaign_template_versions(template_id,version,subject,preheader,html,body_text,variables,fingerprint,made_by)
-        VALUES($1,1,$2,$3,$4,$5,$6::jsonb,$7,$8::jsonb) RETURNING *`, [template!.id, input.content.subject, input.content.preheader, input.content.html, input.content.text,
-        JSON.stringify(input.content.variables), input.fingerprint, JSON.stringify(input.madeBy)]);
+      const [version] = await query(`INSERT INTO mail_campaign_template_versions(template_id,version,subject,preheader,html,body_text,variables,attachments,fingerprint,made_by)
+        VALUES($1,1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9::jsonb) RETURNING *`, [template!.id, input.content.subject, input.content.preheader, input.content.html, input.content.text,
+        JSON.stringify(input.content.variables), JSON.stringify(input.content.attachments ?? []), input.fingerprint, JSON.stringify(input.madeBy)]);
       return { template: templateOf(template!), version: versionOf(version!) };
     });
   }
@@ -502,9 +563,9 @@ export class PostgresMailCampaignsRepository implements MailCampaignsRepository 
     return this.transaction(async (query) => {
       const [template] = await query("UPDATE mail_campaign_templates SET current_version=current_version+1, updated_at=now() WHERE owner_user_id=$1 AND id=$2 RETURNING *", [owner, id]);
       if (!template) return null;
-      const [version] = await query(`INSERT INTO mail_campaign_template_versions(template_id,version,subject,preheader,html,body_text,variables,fingerprint,made_by)
-        VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::jsonb) RETURNING *`, [id, template.current_version, input.content.subject, input.content.preheader, input.content.html, input.content.text,
-        JSON.stringify(input.content.variables), input.fingerprint, JSON.stringify(input.madeBy)]);
+      const [version] = await query(`INSERT INTO mail_campaign_template_versions(template_id,version,subject,preheader,html,body_text,variables,attachments,fingerprint,made_by)
+        VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10::jsonb) RETURNING *`, [id, template.current_version, input.content.subject, input.content.preheader, input.content.html, input.content.text,
+        JSON.stringify(input.content.variables), JSON.stringify(input.content.attachments ?? []), input.fingerprint, JSON.stringify(input.madeBy)]);
       return { template: templateOf(template), version: versionOf(version!) };
     });
   }
@@ -623,9 +684,9 @@ export class PostgresMailCampaignsRepository implements MailCampaignsRepository 
   }
 
   async createCampaign(input: MailCampaignCreateRecord) {
-    const [row] = await this.rows(`INSERT INTO mail_campaigns(id,owner_user_id,pane_id,name,goal,template_id,template_version,sender_id,list_ids,schedule,pacing,status,test_seeds,created_by)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],$10::jsonb,$11::jsonb,'DRAFT',$12::jsonb,$13) RETURNING *`, [newId("mcamp"), input.ownerUserId, input.paneId, input.name, input.goal,
-      input.templateId, input.templateVersion, input.senderId, input.listIds, JSON.stringify(input.schedule), JSON.stringify(input.pacing), JSON.stringify(input.testSeeds), input.createdBy]);
+    const [row] = await this.rows(`INSERT INTO mail_campaigns(id,owner_user_id,pane_id,name,goal,template_id,template_version,sender_id,list_ids,schedule,pacing,status,test_seeds,created_by,track)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],$10::jsonb,$11::jsonb,'DRAFT',$12::jsonb,$13,$14) RETURNING *`, [newId("mcamp"), input.ownerUserId, input.paneId, input.name, input.goal,
+      input.templateId, input.templateVersion, input.senderId, input.listIds, JSON.stringify(input.schedule), JSON.stringify(input.pacing), JSON.stringify(input.testSeeds), input.createdBy, input.track]);
     return campaignOf(row!);
   }
   async getCampaign(owner: string, id: string) { const [row] = await this.rows("SELECT * FROM mail_campaigns WHERE owner_user_id=$1 AND id=$2", [owner, id]); return row ? campaignOf(row) : null; }
@@ -672,6 +733,9 @@ export class PostgresMailCampaignsRepository implements MailCampaignsRepository 
   async markStaleSending(before: string) {
     return (await this.rows(`UPDATE mail_campaign_sends SET status='UNKNOWN', error='The send''s answer was lost; never retried.', updated_at=now() WHERE status='SENDING' AND updated_at < $1
       RETURNING contact_id`, [before])).length;
+  }
+  async getSend(owner: string, campaignId: string, contactId: string) {
+    const [row] = await this.rows("SELECT * FROM mail_campaign_sends WHERE owner_user_id=$1 AND campaign_id=$2 AND contact_id=$3", [owner, campaignId, contactId]); return row ? sendOf(row) : null;
   }
   async findSendByMessageId(owner: string, messageId: string) {
     const [row] = await this.rows("SELECT * FROM mail_campaign_sends WHERE message_id=$2 AND owner_user_id=$1", [owner, messageId]); return row ? sendOf(row) : null;
@@ -723,6 +787,38 @@ export class PostgresMailCampaignsRepository implements MailCampaignsRepository 
   async listEvents(owner: string, filter: { campaignId?: string; limit?: number }) {
     return (await this.rows(`SELECT * FROM mail_campaign_events WHERE owner_user_id=$1 AND ($2::text IS NULL OR campaign_id=$2) ORDER BY created_at DESC, id DESC LIMIT $3`,
       [owner, filter.campaignId ?? null, filter.limit ?? null])).map(eventOf);
+  }
+  async trackMessage(input: MailTrackRecord) {
+    await this.rows(`INSERT INTO mail_open_messages(token,owner_user_id,recipient,recipient_name,subject,links,campaign_id,contact_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+      ON CONFLICT (token) DO NOTHING`, [input.token, input.ownerUserId, input.recipient, input.recipientName, input.subject, JSON.stringify(input.links), input.campaignId ?? null, input.contactId ?? null]);
+  }
+  async recordOpen(token: string, hit: MailHitRecord) {
+    const link = hit.link ?? null;
+    const [row] = await this.rows(`INSERT INTO mail_open_hits(token,kind,opened_at,ip,user_agent,url)
+      SELECT token,$2,$3,$4,$5,links->>($6::int) FROM mail_open_messages WHERE token=$1 AND ($6::int IS NULL OR links->>($6::int) IS NOT NULL) RETURNING id, url`,
+      [token, hit.kind, hit.at, hit.ip, hit.userAgent, link]);
+    return row ? { id: String(row.id), url: (row.url as string | null) ?? null } : null;
+  }
+  async describeOpen(id: string, details: MailHitDetails) {
+    await this.rows("UPDATE mail_open_hits SET client=$2, device=$3, proxy=$4, rdns=$5, isp=$6, geo=$7 WHERE id=$1",
+      [id, details.client, details.device, details.proxy, details.rdns, details.isp, details.geo]);
+  }
+  async trackedMessages(owner: string, filter: { campaignId?: string } = {}) {
+    const rows = await this.rows(`SELECT m.token, m.recipient, m.recipient_name, m.subject, m.links, m.created_at, m.campaign_id,
+      COALESCE(json_agg(json_build_object('kind', h.kind, 'at', h.opened_at, 'ip', h.ip, 'userAgent', h.user_agent, 'url', h.url, 'client', h.client, 'device', h.device,
+        'proxy', h.proxy, 'rdns', h.rdns, 'isp', h.isp, 'geo', h.geo) ORDER BY h.opened_at, h.id) FILTER (WHERE h.id IS NOT NULL), '[]') AS hits
+      FROM mail_open_messages m LEFT JOIN mail_open_hits h ON h.token=m.token WHERE m.owner_user_id=$1
+      AND ($2::text IS NULL OR m.campaign_id=$2) GROUP BY m.token ORDER BY m.created_at DESC, m.token`, [owner, filter.campaignId ?? null]);
+    return rows.map((row) => tracked({ token: row.token as string, recipient: row.recipient as string, recipientName: row.recipient_name as string, subject: row.subject as string,
+      createdAt: isoNow(row.created_at), links: row.links as string[], campaignId: (row.campaign_id as string | null) ?? null }, (row.hits as MailOpenHit[]).map((hit) => ({ ...hit, at: isoNow(hit.at) }))));
+  }
+  async saveWebCopy(input: { ownerUserId: string; campaignId: string; contactId: string; html: string }) {
+    await this.rows(`INSERT INTO mail_campaign_web_copies(campaign_id,contact_id,owner_user_id,html_gzip) VALUES($1,$2,$3,$4)
+      ON CONFLICT (campaign_id, contact_id) DO UPDATE SET html_gzip=EXCLUDED.html_gzip, created_at=now()`, [input.campaignId, input.contactId, input.ownerUserId, gzipSync(input.html)]);
+  }
+  async webCopy(owner: string, campaignId: string, contactId: string) {
+    const [row] = await this.rows("SELECT html_gzip FROM mail_campaign_web_copies WHERE owner_user_id=$1 AND campaign_id=$2 AND contact_id=$3", [owner, campaignId, contactId]);
+    return row ? gunzipSync(row.html_gzip as Buffer).toString("utf8") : null;
   }
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }
 }

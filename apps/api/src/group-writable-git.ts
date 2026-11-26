@@ -1,4 +1,4 @@
-import { spawn } from "./safe-child-process.js";
+import { execInHelper, spawn } from "./safe-child-process.js";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
 /** Exit status the umask wrapper reports when the git binary is missing. */
@@ -14,4 +14,13 @@ export const GIT_NOT_FOUND_EXIT_CODE = 127;
 export function spawnGroupWritableGit(args: string[], env: NodeJS.ProcessEnv): ChildProcessWithoutNullStreams {
   if (process.platform === "win32") return spawn("git", args, { env });
   return spawn("/bin/sh", ["-c", 'umask 002 && exec git "$@"', "git", ...args], { env, detached: true });
+}
+
+/**
+ * The same command, buffered, through the exec helper (no fork of the API): its timeout kills the process group. Null
+ * when the helper cannot take it and the caller spawns.
+ */
+export function execGroupWritableGit(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number) {
+  if (process.platform === "win32") return null;
+  return execInHelper("/bin/sh", ["-c", 'umask 002 && exec git "$@"', "git", ...args], { env }, timeoutMs);
 }

@@ -5,7 +5,7 @@ import { findFileMentions, isAgentFileArtifact, type Artifact, type FileMention 
 import { api } from "../../api.js";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import { AgentFiles } from "../ui-theme/app-icons.js";
-import { agentFileName, fetchAllAgentFiles } from "../agent-files/agent-files-api.js";
+import { agentFileName, fetchAgentFilesHead, fetchAllAgentFiles } from "../agent-files/agent-files-api.js";
 import { AgentFileMentionContext, type AgentFileMentionLinks, type MarkdownNode } from "./agent-file-mention-context.js";
 import "./agent-file-links.css";
 
@@ -89,14 +89,16 @@ function currentAgentFileIndex(): AgentFileIndex {
   if (!indexLoading && Date.now() - indexCheckedAt >= INDEX_TTL_MS) {
     indexLoading = true;
     indexCheckedAt = Date.now();
-    fetchAllAgentFiles()
-      .then((artifacts) => {
-        const signature = artifacts.map((artifact) => artifact.id).join();
+    fetchAgentFilesHead()
+      .then(async (head) => {
+        // Newest first: a new file changes the first page and a delete changes the count, so an unchanged head skips the other pages.
+        const signature = `${head.pagination.totalItems}:${head.data.map((artifact) => artifact.id).join()}`;
         if (signature === indexSignature) return;
+        agentFileIndex = indexAgentFiles(await fetchAllAgentFiles(head));
         indexSignature = signature;
-        agentFileIndex = indexAgentFiles(artifacts);
         indexListeners.forEach((listener) => listener());
-      }, () => undefined)
+      })
+      .catch(() => undefined)
       .finally(() => { indexLoading = false; });
   }
   return agentFileIndex;

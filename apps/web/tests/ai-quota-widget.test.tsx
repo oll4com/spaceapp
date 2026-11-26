@@ -95,7 +95,7 @@ describe("AI Quota & Usage widget", () => {
     await waitFor(() => expect(within(hero).getByText("3")).toBeTruthy());
     expect(within(hero).getByText("/6")).toBeTruthy();
     expect(within(hero).getByText("accounts ready now")).toBeTruthy();
-    expect(within(hero).getByText("Next back: beta · Codex in 30m")).toBeTruthy();
+    expect(within(hero).getByText(/^Next back: beta · Codex in 30m · \d\d:\d\d$/)).toBeTruthy();
     expect(within(hero).getByText("1 back soon")).toBeTruthy();
     expect(within(hero).getByText("1 exhausted")).toBeTruthy();
 
@@ -122,7 +122,7 @@ describe("AI Quota & Usage widget", () => {
     localStorage.setItem("space.desktop-widgets.config.ai-quota", JSON.stringify({ alertsEnabled: true, alertProvider: "claude" }));
     mockSample([claudeAccount("dev", 0), claudeAccount("ops", 0)]);
     renderWidget();
-    expect(await screen.findByText(/All watched accounts are out of quota\. Next back: dev · Claude in 25m\./)).toBeTruthy();
+    expect(await screen.findByText(/All watched accounts are out of quota\. Next back: dev · Claude in 25m · \d\d:\d\d\./)).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
 
     mockSample([claudeAccount("dev", 100), claudeAccount("ops", 0)]);

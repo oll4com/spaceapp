@@ -8,14 +8,15 @@ import { controlExecuteSchema, controlLayoutSchema, controlOperationSchema, cont
   controlActionCatalog, controlInspectSectionCatalog, controlSecurityPolicy, controlUnavailableResources, controlVoicePreferencePatchSchema,
   resolvePaneByName, MAX_ROOMS, pickNextAvailableRoomName, roomLimitReached,
   type ControlAction, type ControlExecute, type ControlInspect, type ControlLayout, type ControlOperation, type ControlResult, type ControlTarget,
-  type ControlSchedule, type ControlWatch, type Pane, type Event } from "@space/contracts";
+  type Pane, type Event } from "@space/contracts";
 import type { ControlRecord, ControlRepository } from "@space/db";
 import { makeSpaceId, nowIso, SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/runtime";
 import type { RoomPaneController, RoomPaneObservation } from "./room-pane-control.js";
-import { isCliPane } from "./pane-guards.js";
+import { isCliPane, sameModelId } from "./pane-guards.js";
 import { CliTaskNotResumableError } from "./unified-cli-task-registry.js";
 import { type ControlActor, resolveControlSettingsAction, executeControlPluginAction, restoreControlSettingsSnapshot, executeControlAppearanceAction, ALLOWED_APPEARANCE_THEMES, controlPluginActionSchema, controlRollbackSchema } from "./space-control-settings.js";
 import type { DecisionsService } from "./decisions-service.js";
+import type { PluginsService } from "./plugins-service.js";
 import type { ControlCaptureParams } from "./space-control-capture.js";
 import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
@@ -23,7 +24,15 @@ import { SPACE_INSTALL_ROOT } from "@space/contracts";
 export type { ControlActor } from "./space-control-settings.js";
 export interface ControlClientCommand {id:string; actorId:string; roomId:string; action:ControlAction; expiresAt:number; clientId:string; createdAt?:number; result?:{ok:boolean;evidence:Record<string,unknown>}}
 function required<T>(value:T|undefined|null,message:string):T {if(value===undefined||value===null)throw new SpaceConflictError(message);return value;}
+/** A prompt send() held behind the pane's pending model change (space-control-pane-actions.ts): PENDING, never a delivered prompt. */
+const heldPrompt=(evidence:unknown):evidence is {status:"PENDING";detail:string}=>(evidence as {status?:string;submitted?:boolean}|null)?.status==="PENDING"&&(evidence as {submitted?:boolean}).submitted===false;
 function hash(value:unknown){return createHash("sha256").update(JSON.stringify(value)).digest("hex");}
+/** Fields only some ControlAction kinds carry, read across the whole union. */
+type ControlSpecFields = { confirm?: unknown; confirmed?: unknown; input?: Record<string, unknown>; approvalReason?: unknown; dryRun?: unknown; operation?: string; target?: unknown };
+/** What the tool health probes read from inspect sections; each section fills a different subset. */
+type InspectProbeResult = { data?: { runtimes?: unknown[]; uptimeSeconds?: number; installed?: { skills?: unknown[] }; plugins?: unknown[] }; accounts?: unknown; section?: unknown;
+  runtimes?: unknown[]; uptimeSeconds?: number; installed?: { skills?: unknown[] }; transcription?: unknown; plugins?: unknown[] };
+
 export function supportsControlRuntime(pane: Pane, phase: 1 | 2 = 2) {
   if (pane.mode !== "TERMINAL") return true;
   if (phase === 1) return pane.terminalRuntimeId === "cli:codex";
@@ -87,6 +96,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   closePane?(actor:ControlActor,pane:Pane,traceId:string):Promise<unknown>;
   /** pane start on a rail-tab CLI pane (copilots, Design, App Studio, Video): opens its session as its terminal does and starts the CLI. */
   startRailCli?(actor:ControlActor,pane:Pane,traceId:string):Promise<unknown>;
+  /** Relaunches the pane's Chrome when it stopped answering; a pane restart calls it (operator order 20/11). */
+  relaunchHungBrowser?(pane:Pane):Promise<unknown>;
   resolveActor?(id:string):Promise<ControlActor>;
   checkQuota?(pane:Pane):Promise<{allowed:boolean;reason:string;resetAt?:string}>;
   /** Why a prompt typed into this pane now would not start a turn (its CLI still works, its composer holds text); null when it would. */
@@ -98,7 +109,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   captureScreenshot?(actor:ControlActor,roomId:string,options?:ControlCaptureParams):Promise<Record<string,unknown>>;
   describePaneTypes?(roomId?:string):Promise<{types:Array<{typeId:string;label:string;kind:string;countsKey:string;available:boolean;reason?:string}>;roomCap:number|null}>;
   decisionsService?: DecisionsService;
-  pluginsService?: any;
+  pluginsService?: Pick<PluginsService, "getPlugins" | "connectPlugin" | "disconnectPlugin">;
 }) {
  const {store,controller}=options;
  // Watch, schedule and operation records are only written through this
@@ -380,6 +391,16 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   roomStateCache.set(roomId, { expires: Date.now() + 2500, data: result });
   return result;
  }
+ // Slice 24 (Nous space_send_to_pane ×2 15/11 01:40 read only "No panes match this selection."): name the filter and the panes open here.
+ async function noPanesMatch(roomId:string,target:ControlTarget){
+  const panes=await store.listPanes(roomId,true),label=(p:{id:string;paneName?:string|null;title:string})=>`${p.paneName??p.title} (${p.id})`;
+  const open=panes.filter(p=>!p.isClosed).map(label);
+  const shut=target.state==="ALL"||target.state==="CLOSED"?[]:panes.filter(p=>p.isClosed&&target.paneIds?.includes(p.id)).map(label);
+  const filter=[target.state==="RUNNING"||target.state==="STOPPED"?`state ${target.state}`:"",target.runtimeId?`runtime ${target.runtimeId}`:""].filter(Boolean).join(", ");
+  return new SpaceConflictError(`No panes match this selection${filter?` (${filter})`:""}.`
+   +`${shut.length?` ${shut.join(", ")} ${shut.length===1?"is":"are"} closed: reopen ${shut.length===1?"it":"them"} first (pane operation reopen), then try again.`:""}`
+   +` Open panes in this room: ${open.join(", ")||"none"}.`);
+ }
  async function select(roomId:string,target:ControlTarget){
   const panes=await store.listPanes(roomId,true);
   if(target.paneIds && target.paneIds.some(id=>!panes.some(p=>p.id===id)))throw new SpaceConflictError("A selected pane is not in this room.");
@@ -483,7 +504,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       try {
         const observation = await Promise.race([
           normalizedInput.section === "CONTENT" && normalizedInput.styled ? controller.inspect(pane, { styled: true }) : controller.inspect(pane),
-          new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Pane inspection timed out after 2500ms")), 2500))
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Pane inspection timed out after 2500ms")), 2500))
         ]);
         if (normalizedInput.section === "MODELS") { const { text, ...metadata } = observation; return { closed: pane.isClosed, paneName: pane.paneName ?? null, ...metadata }; }
         return { closed: pane.isClosed, paneName: pane.paneName ?? null, ...observation };
@@ -492,7 +513,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     }));
    }
    if (options.inspectExtra) {
-    const res = await (options.inspectExtra.length === 1 ? (options.inspectExtra as any)(normalizedInput) : options.inspectExtra(actor, normalizedInput));
+    const res = await (options.inspectExtra.length === 1 ? (options.inspectExtra as unknown as (input: ControlInspect) => Promise<unknown>)(normalizedInput) : options.inspectExtra(actor, normalizedInput));
     return {
      section: normalizedInput.section,
      data: res,
@@ -579,16 +600,16 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     (spec.kind === "resource" && ["tasks.delete", "links.delete", "files.delete", "media.delete", "settings.rollback"].includes(spec.operation));
   if (isDestructive) {
     const isConfirmed = Boolean(
-      (spec as any).confirm === true ||
-      (spec as any).confirmed === true ||
-      ((spec as any).input && typeof (spec as any).input === "object" && ((spec as any).input.confirm === true || (spec as any).input.confirmed === true)) ||
-      (spec as any).approvalReason
+      (spec as ControlSpecFields).confirm === true ||
+      (spec as ControlSpecFields).confirmed === true ||
+      ((spec as ControlSpecFields).input && typeof (spec as ControlSpecFields).input === "object" && ((spec as ControlSpecFields).input?.confirm === true || (spec as ControlSpecFields).input?.confirmed === true)) ||
+      (spec as ControlSpecFields).approvalReason
     );
     if (!isConfirmed) {
       if (spec.kind === "clipboard" && spec.operation === "delete") {
         throw new SpaceConflictError("Destructive clipboard delete requires explicit confirmation (confirm: true) or approvalReason.");
       }
-      throw new SpaceConflictError(`Destructive operation '${spec.kind === "resource" ? spec.operation : `${spec.kind}.${(spec as any).operation}`}' requires explicit confirmation (confirm: true) or approvalReason.`);
+      throw new SpaceConflictError(`Destructive operation '${spec.kind === "resource" ? spec.operation : `${spec.kind}.${(spec as ControlSpecFields).operation}`}' requires explicit confirmation (confirm: true) or approvalReason.`);
     }
   }
 
@@ -599,14 +620,14 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     if (spec.operation === "settings.voice") spec = { ...spec, input: controlVoicePreferencePatchSchema.parse(spec.input) };
     if (spec.operation === "ui.theme" || spec.operation === "ui.scale" || spec.operation === "settings.appearance") {
       const input = spec.input as Record<string, unknown>;
-      if (spec.operation === "ui.theme" && (typeof input.theme !== "string" || !ALLOWED_APPEARANCE_THEMES.includes(input.theme as any))) {
+      if (spec.operation === "ui.theme" && (typeof input.theme !== "string" || !(ALLOWED_APPEARANCE_THEMES as readonly string[]).includes(input.theme))) {
         throw new SpaceConflictError(`Theme must be one of: ${ALLOWED_APPEARANCE_THEMES.join(", ")}.`);
       }
       if (spec.operation === "ui.scale" && (typeof input.zoomLevel !== "number" || input.zoomLevel < 50 || input.zoomLevel > 200)) {
         throw new SpaceConflictError("UI scale must be between 50 and 200 percent.");
       }
       if (spec.operation === "settings.appearance") {
-        if (input.theme !== undefined && (typeof input.theme !== "string" || !ALLOWED_APPEARANCE_THEMES.includes(input.theme as any))) {
+        if (input.theme !== undefined && (typeof input.theme !== "string" || !(ALLOWED_APPEARANCE_THEMES as readonly string[]).includes(input.theme))) {
           throw new SpaceConflictError(`Theme must be one of: ${ALLOWED_APPEARANCE_THEMES.join(", ")}.`);
         }
         if (input.zoomLevel !== undefined && (typeof input.zoomLevel !== "number" || input.zoomLevel < 50 || input.zoomLevel > 200)) throw new SpaceConflictError("UI zoom must be between 50 and 200 percent.");
@@ -619,13 +640,13 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     }
   }
 
-  const isDryRun = Boolean(command.dryRun || (spec as any).dryRun);
+  const isDryRun = Boolean(command.dryRun || (spec as ControlSpecFields).dryRun);
   if (isDryRun) {
     // Never call a mutating adapter to simulate it. Resolve known targets first,
     // and report incomplete validation explicitly for adapters without preflight.
     if (spec.kind === "pane" || spec.kind === "configure" || spec.kind === "native_command") {
       const panes = await select(roomId, spec.target);
-      if (!panes.length) throw new SpaceConflictError("No panes match this selection.");
+      if (!panes.length) throw await noPanesMatch(roomId, spec.target);
       if (spec.kind !== "pane" || !RUNTIME_FREE_PANE_OPERATIONS.includes(spec.operation)) {
         for (const pane of panes) assertRuntime(pane);
       }
@@ -688,16 +709,16 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
           dryRun: true,
           simulated: true,
           kind: spec.kind,
-          operation: (spec as any).operation,
-          target: (spec as any).target,
-          input: (spec as any).input
+          operation: (spec as ControlSpecFields).operation,
+          target: (spec as ControlSpecFields).target,
+          input: (spec as ControlSpecFields).input
         },
         dryRun: true,
         simulated: true,
         kind: spec.kind,
-        operation: (spec as any).operation,
-        target: (spec as any).target,
-        input: (spec as any).input
+        operation: (spec as ControlSpecFields).operation,
+        target: (spec as ControlSpecFields).target,
+        input: (spec as ControlSpecFields).input
       }
       }];
     }
@@ -721,7 +742,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
           const outcome = direct as { status?: string; isError?: boolean; ok?: boolean } | null;
           if (!outcome?.isError && outcome?.ok !== false) return done(direct);
         }
-      } catch {}
+      } catch { /* Integration failed: the local plugin adapter below runs instead. */ }
     }
     const outcome = await executeControlPluginAction({
       actor,
@@ -741,7 +762,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
           const outcome = direct as { status?: string; isError?: boolean; ok?: boolean } | null;
           if (!outcome?.isError && outcome?.ok !== false) return done(direct);
         }
-      } catch {}
+      } catch { /* Integration failed: the local settings restore below runs instead. */ }
     }
     const outcome = await restoreControlSettingsSnapshot({
       actor,
@@ -764,7 +785,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
             return done(direct);
           }
         }
-      } catch {}
+      } catch { /* Integration failed: the local appearance adapter below runs instead. */ }
     }
     const outcome = await executeControlAppearanceAction({
       actor,
@@ -831,7 +852,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     let targetSnapshotId=spec.snapshotId;
     if(!targetSnapshotId||targetSnapshotId==="LATEST"){
       const latest=await repository.get("snapshot",actor.id,`latest_${roomId}`);
-      if(latest&&(latest.value as any)?.snapshotId)targetSnapshotId=(latest.value as any).snapshotId;
+      const latestId=(latest?.value as { snapshotId?: string } | null | undefined)?.snapshotId;
+      if(latest&&latestId)targetSnapshotId=latestId;
     }
     const snapshot=required(await repository.get("snapshot",actor.id,required(targetSnapshotId,"Snapshot ID is required.")),"Snapshot not found.");
     if(snapshot.roomId!==roomId)throw new SpaceConflictError("Snapshot belongs to another room.");
@@ -859,7 +881,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     let cursor=0,row=0;const placements:ControlLayout["placements"]=[];
     while(cursor<open.length){const count=Math.min(row+1,open.length-cursor);const width=Math.min(26,90/count);const start=(100-count*width)/2;
      for(let i=0;i<count;i++)placements.push({paneId:open[cursor++]!.id,x:start+i*width,y:row*28,width:width-1,height:27});row++;}
-    const treeCols = (typeof (before.room as any)?.paneLayoutColumns === "number" && (before.room as any).paneLayoutColumns >= 1 && (before.room as any).paneLayoutColumns <= 4 ? (before.room as any).paneLayoutColumns : 2) as 1|2|3|4;
+    const roomCols = (before.room as { paneLayoutColumns?: unknown } | undefined)?.paneLayoutColumns;
+    const treeCols = (typeof roomCols === "number" && roomCols >= 1 && roomCols <= 4 ? roomCols : 2) as 1|2|3|4;
     layout={mode:"CUSTOM",columns:treeCols,placements};
    }else layout=controlLayoutSchema.parse(required(spec.layout,"Layout is required."));
    if(layout.mode==="CUSTOM"&&(layout.placements.length!==open.length||layout.placements.some(p=>!open.some(o=>o.id===p.paneId))))throw new SpaceConflictError("Custom layout must place every open pane exactly once.");
@@ -875,18 +898,21 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   if(spec.kind==="cli"||spec.kind==="vpn"||spec.kind==="resource") {
    if ((spec.kind === "cli" || spec.kind === "vpn") && spec.runtimeId && !(cliToggleRuntimeIds as readonly string[]).includes(spec.runtimeId)) throw new SpaceConflictError("Runtime management targets supported CLIs only.");
    const result=await required(options.integration,"Runtime management is unavailable.")(actor,roomId,spec);
-   const outcome=result as {status?:string;isError?:boolean;ok?:boolean}|null;
+   const outcome=result as {status?:string;isError?:boolean;ok?:boolean;error?:unknown;detail?:unknown;reason?:unknown;message?:unknown;code?:unknown;noop?:unknown}|null;
    if(outcome?.isError || outcome?.ok===false || ["BLOCKED","APPROVAL_REQUIRED","FAILED","ERROR","PARTIAL"].includes(outcome?.status??"")) {
-    const errorMsg = (typeof (outcome as any)?.error === "string" && (outcome as any).error) ||
-                     (typeof (outcome as any)?.detail === "string" && (outcome as any).detail) ||
-                     (typeof (outcome as any)?.reason === "string" && (outcome as any).reason) ||
-                     "The protected adapter did not complete this control.";
+    const errorMsg = (typeof outcome?.error === "string" && outcome.error) ||
+                     (typeof outcome?.detail === "string" && outcome.detail) ||
+                     (typeof outcome?.reason === "string" && outcome.reason) ||
+                     // 15/11 04:41 (ops.logs FAILED with no cause): an MCP result says why in code and message.
+                     (typeof outcome?.message === "string" && `${typeof outcome.code === "string" ? `${outcome.code}: ` : ""}${outcome.message}`) ||
+                     // Daily Nous errors 20/11: the old generic text hid the MCP gate's SCHEMA_HASH_NOT_ALLOWLISTED (held since 16/11); name the status instead.
+                     `The protected adapter answered ${outcome?.status??(outcome?.isError?"isError":"ok: false")} with no reason; its result is in this receipt's evidence.`;
     return [{index,status:"FAILED",detail:errorMsg,error:errorMsg,evidence:{result}}];
    }
    if (["RUNNING", "PENDING", "QUEUED", "UNKNOWN", "CANCELLED"].includes(outcome?.status ?? "")) {
     return [{ index, status: outcome?.status === "CANCELLED" ? "CANCELLED" : "UNKNOWN", detail: "The adapter has not confirmed completion. Inspect its receipt before continuing; do not repeat the mutation.", evidence: { result, adapterStatus: outcome?.status } }];
    }
-   return done(result);
+   return done(result,typeof outcome?.noop==="string"?outcome.noop:undefined);
   }
   if(spec.kind==="watch"){
    const pId=spec.paneId??spec.target?.paneIds?.[0];
@@ -905,7 +931,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    return [{index,paneId:pId,status:"COMPLETED",detail:"Watch operation applied.",evidence:{result}}];
   }
   const panes=await select(roomId,spec.target);
-  if(!panes.length)throw new SpaceConflictError("No panes match this selection.");
+  if(!panes.length)throw await noPanesMatch(roomId,spec.target);
   const results:ControlResult[]=[];
   for(let offset=0;offset<panes.length;offset+=4){
    results.push(...await Promise.all(panes.slice(offset,offset+4).map(async original=>{
@@ -915,7 +941,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      if(spec.kind!=="pane" || !RUNTIME_FREE_PANE_OPERATIONS.includes(spec.operation))assertRuntime(pane);
      let evidence:unknown;
      if(spec.kind==="pane"&&["rename","minimize","maximize","restore","unminimize","color"].includes(spec.operation)){
-      evidence=await store.updatePane(pane.id,spec.operation==="color"?{categoryColor:(spec as any).color??null}:spec.operation==="rename"?{title:required(spec.text,"Pane title is required.")}:
+      evidence=await store.updatePane(pane.id,spec.operation==="color"?{categoryColor:spec.color??null}:spec.operation==="rename"?{title:required(spec.text,"Pane title is required.")}:
        spec.operation==="minimize"?{isMinimized:true,isMaximized:false}:spec.operation==="maximize"?{isMaximized:true,isMinimized:false}:{isMinimized:false,isMaximized:false},traceId);
      }else if(spec.kind==="pane"&&spec.operation==="focus")return {index,paneId,...await clientAction(actor,roomId,{...spec,target:{paneIds:[paneId],state:"ALL"}})};
      else if(spec.kind==="pane"&&spec.operation==="close"){
@@ -929,6 +955,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       const priorSession=pane.mode==="TERMINAL"?await lastCli(pane):null;
       let fresh=false;
       if(pane.isClosed)pane=await store.updatePane(pane.id,{isClosed:false,status:"IDLE"},traceId);
+      if(spec.operation==="restart")await options.relaunchHungBrowser?.(pane);
       // Only an explicit start starts a rail-tab CLI; opening such a pane never does (operator decision 2026-10-23).
       if(!["TERMINAL","CHAT"].includes(pane.mode))evidence=spec.operation==="start"&&isCliPane(pane)&&options.startRailCli?await options.startRailCli(actor,pane,traceId):pane;
       else if(pane.mode==="CHAT"&&["reopen","start"].includes(spec.operation))evidence=await controller.start(pane,traceId);
@@ -947,10 +974,16 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         fresh=true;return controller.start(pane,traceId);
        });
       if(pane.mode==="TERMINAL"){
-       const observed=await controller.inspect(pane,{fresh:true});
+       let observed=await controller.inspect(pane,{fresh:true});
+       // Slice 15 (Daily Nous errors, restart_pane UNKNOWN 8/11 Bob): a resumed CLI records its native task id a moment after it starts, so a
+       // pane that shows none yet is read again. Technical bound: 10 reads 500 ms apart (5 s) keep the receipt inside the tool call; past it, UNKNOWN says so.
+       for(let read=0;read<10&&spec.operation!=="start"&&!fresh&&priorSession?.codexThreadId&&!observed.nativeTaskRef;read++){
+        await new Promise(r=>setTimeout(r,500));
+        observed=await controller.inspect(pane,{fresh:true});
+       }
        // An explicit start is a new session (startCli); only reopen, restart and resume promise the prior native task (EXT-G-6, 2/11).
        if(spec.operation!=="start"&&!fresh&&priorSession?.codexThreadId&&observed.nativeTaskRef!==priorSession.codexThreadId)
-        return {index,paneId,status:"UNKNOWN" as const,detail:"The original native task has not been confirmed after resume.",evidence:{result:evidence}};
+        return {index,paneId,status:"UNKNOWN" as const,detail:`The original native task has not been confirmed after resume (expected ${priorSession.codexThreadId}, the pane shows ${observed.nativeTaskRef??"none yet"}).`,evidence:{result:evidence}};
        if(["EXITED","ERROR","UNKNOWN"].includes(observed.state))return {index,paneId,status:"UNKNOWN" as const,detail:"CLI readiness has not been confirmed.",evidence:{result:evidence}};
       }
       if(fresh)return {index,paneId,status:"COMPLETED" as const,detail:"Nothing to resume (the CLI never ran a command): a fresh CLI session started.",evidence:{result:evidence}};
@@ -997,7 +1030,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
        if(readyObserved.state!=="IDLE"&&readyObserved.state!=="WAITING_FOR_INPUT"){
         const session=pane.mode==="TERMINAL"?await lastCli(pane):null;
         if(!session||!session.isActive){
-         try{await controller.start(pane,traceId);}catch{}
+         try{await controller.start(pane,traceId);}catch{/* A failed start shows in the state the wait below observes. */}
         }
         const deadline=Date.now()+3500;
         let retryCount = 0;
@@ -1017,8 +1050,9 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
        }
        const submittedAt = nowIso();
        evidence=await options.send(pane,required(spec.text,"Prompt text is required."),traceId,sourceRequestId);
+       if(heldPrompt(evidence))return {index,paneId,status:"PENDING" as const,detail:String(evidence.detail),evidence:{result:evidence}};
        try {
-         const autoTaskRef = (evidence as any)?.turnId ?? null;
+         const autoTaskRef = (evidence as { turnId?: string } | null | undefined)?.turnId ?? null;
          const autoWatchId = makeSpaceId("control_watch");
          const autoWatch = controlWatchSchema.parse({
            id: autoWatchId,
@@ -1051,15 +1085,25 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
          });
          await writeValue("watch", actor.id, autoWatch.id, roomId, autoWatch, 0);
          if (evidence && typeof evidence === "object") {
-           (evidence as any).watchId = autoWatchId;
+           (evidence as { watchId?: string }).watchId = autoWatchId;
          }
-       } catch {}
+       } catch { /* The auto watch is best-effort: the prompt was already delivered. */ }
       }else{
        const when=spec.when;
+       // Daily Nous errors 16/11 10:52Z (Alex/Jack): the model the pane already runs is no change; nothing is typed, waited for or scheduled.
+       if(spec.kind==="configure"&&spec.modelId&&!spec.reasoningEffort&&!spec.nativeMode&&!spec.accountProfileId&&observed.modelId&&sameModelId(observed.modelId,spec.modelId))
+        return {index,paneId,status:"COMPLETED" as const,detail:`The pane already runs ${spec.modelId}; nothing changed.`,evidence:{modelId:observed.modelId}};
        if(observed.state==="UNKNOWN"&&!(spec.kind==="configure"&&spec.accountProfileId))throw new SpaceConflictError("Native state is unknown.");
        if(when==="AFTER_TURN"&&observed.state==="RUNNING"){
         const scheduled=await defer(actor,command,{...spec,target:{paneIds:[paneId],state:"OPEN"},when:"NOW"},sourceRequestId);
         return {index,paneId,status:"PENDING" as const,detail:"Change scheduled after the current native turn.",evidence:{scheduleId:scheduled.id}};
+       }
+       // 16/11 10:52Z Alex/Jack: an idle CLI whose composer holds text (or still shows its spinner) failed the model menu ("Send or clear the
+       // current CLI draft"); an after-turn model change waits for its next empty prompt like an after-turn prompt (the tick checks the same).
+       const notReady=when==="AFTER_TURN"&&spec.kind==="configure"&&spec.modelId!==undefined?await options.promptNotReady?.(pane):null;
+       if(notReady){
+        const scheduled=await defer(actor,command,{...spec,target:{paneIds:[paneId],state:"OPEN"},when:"NOW"},sourceRequestId);
+        return {index,paneId,status:"PENDING" as const,detail:`Model change scheduled for the pane's next empty prompt (${notReady}).`,evidence:{scheduleId:scheduled.id}};
        }
        const expectedSessionId=required(observed.sessionId,"Pane has no active session.");
        if(spec.kind==="configure")evidence=await controller.configure(pane,{type:"configure_pane",paneId,expectedSessionId,...spec},traceId);
@@ -1067,6 +1111,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
        else throw new SpaceConflictError("Unsupported pane control.");
       }
      }
+     if(heldPrompt(evidence))return {index,paneId,status:"PENDING" as const,detail:String(evidence.detail),evidence:{result:evidence}};
      if((evidence as {status?:string}|null)?.status==="UNKNOWN")return {index,paneId,status:"UNKNOWN" as const,detail:"The control was submitted but native execution is unconfirmed.",evidence:{result:evidence}};
      return {index,paneId,status:"COMPLETED" as const,detail:"Pane control applied.",evidence:{result:evidence}};
      }catch(error){const msg=message(error);return {index,paneId,status:"FAILED" as const,detail:msg,error:msg,evidence:{}};}
@@ -1127,10 +1172,10 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      const current=await operation(actor,command.roomId,key);if(current.cancelRequested)break;
       let results:ControlResult[] = [];
       let isHeldBySafety = false;
-      if (!readOnlyAudit && options.decisionsService && !command.dryRun && !(spec as any).dryRun) {
+      if (!readOnlyAudit && options.decisionsService && !command.dryRun && !(spec as ControlSpecFields).dryRun) {
         try {
           const guard = await options.decisionsService.evaluateDestructive(spec.kind, JSON.stringify(spec));
-          if (guard.isDestructive && !(command as any).userExplicitlyAuthorized) {
+          if (guard.isDestructive && !(command as { userExplicitlyAuthorized?: boolean }).userExplicitlyAuthorized) {
             isHeldBySafety = true;
             results = [{
               index,
@@ -1140,19 +1185,20 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
               evidence: { safetyGuard: guard }
             }];
           }
-        } catch {}
+        } catch { /* Safety guard unavailable: the action runs as it did before the guard. */ }
       }
       if (!isHeldBySafety) {
         try{results=await action(actor,command,spec,index,sourceRequestId);}catch(error){const msg=message(error);results=[{index,status:"FAILED",detail:msg,error:msg,evidence:{}}];}
       }
-      if (!readOnlyAudit && options.decisionsService && !command.dryRun && !(spec as any).dryRun) {
+      if (!readOnlyAudit && options.decisionsService && !command.dryRun && !(spec as ControlSpecFields).dryRun) {
         for (const r of results) {
           if (r.status === "COMPLETED") {
+            const ev = r.evidence as { output?: unknown; stdout?: unknown; result?: unknown } | undefined;
             const out = [
               r.detail,
-              (r.evidence as any)?.output,
-              (r.evidence as any)?.stdout,
-              (r.evidence as any)?.result ? JSON.stringify((r.evidence as any)?.result) : ""
+              ev?.output,
+              ev?.stdout,
+              ev?.result ? JSON.stringify(ev?.result) : ""
             ].filter(Boolean).join("\n");
             if (out.length > 20) {
               try {
@@ -1163,7 +1209,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
                   r.error = "SILENT_FAILURE_DETECTED";
                   r.evidence = { ...r.evidence, silentFailure: sf };
                 }
-              } catch {}
+              } catch { /* Detector unavailable: the result stays as reported. */ }
             }
           }
         }
@@ -1176,8 +1222,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
           roomId:command.roomId,
           requestId:command.requestId,
           kind:spec.kind,
-          operation:(spec as any).operation,
-          dryRun:Boolean(command.dryRun||(spec as any).dryRun),
+          operation:(spec as ControlSpecFields).operation,
+          dryRun:Boolean(command.dryRun||(spec as ControlSpecFields).dryRun),
           status:r.status,
           detail:r.detail,
           evidence:r.evidence as Record<string,unknown>
@@ -1321,7 +1367,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   if(op==="list")return (await repository.list("schedule",actor.id,roomId)).map(r=>r.value);
   if(op==="cancel"){
    const record=required(await repository.get("schedule",actor.id,required(id,"Schedule ID is required.")),"Schedule not found.");
-   if(record.roomId!==roomId)throw new SpaceConflictError("Schedule belongs to another room.");
+   // Slice 16 (Daily Nous errors ×5 in 7 d): the refusal names the schedule's room, so Nous runs the call there (tools.ts).
+   if(record.roomId!==roomId)throw new SpaceConflictError(`Schedule belongs to another room: ${record.roomId}.`);
    return withRoomLock(roomId,()=>updateRecord("schedule",actor.id,record.key,raw=>{
     const value=controlScheduleSchema.parse(raw);if(value.status==="SCHEDULED")value.status="CANCELLED";return value;
    }));
@@ -1369,10 +1416,11 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      if(!observed)return;
      const taskRef=observed.nativeTaskRef||observed.sessionId;
      const modelId=observed.modelId||pane.modelId;
-     if(taskRef!==nativeTask||modelId!==value.expectedModels[paneId])throw new SpaceConflictError("Scheduled native task or model changed.");
+     if(taskRef!==nativeTask||!sameModelId(modelId,value.expectedModels[paneId]))throw new SpaceConflictError("Scheduled native task or model changed.");
      if(observed.state==="RUNNING")return;
      if(value.command.actions.every(a=>(a.kind==="pane"&&a.operation==="prompt")||(a.kind==="configure"&&a.modelId!==undefined))&&await options.promptNotReady?.(pane))return;
-     if(observed.state==="UNKNOWN"||observed.state==="WAITING_FOR_INPUT")throw new SpaceConflictError("Native task is not confirmed ready for scheduled continuation.");
+     // 16/11 (Dino/Cody, 3 sends BLOCKED at an idle prompt): an unconfirmed state retries on the next tick instead of dropping the send.
+     if(observed.state==="UNKNOWN"||observed.state==="WAITING_FOR_INPUT")return;
      if(value.condition==="AT_TIME"){
       const quota=await options.checkQuota?.(pane);
       if(!quota?.allowed)throw new SpaceConflictError(quota?.reason??"Native quota evidence is unavailable; automatic continuation was withheld.");
@@ -1412,7 +1460,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    // Stable 2026-10-21/22: a prompt scheduled after a turn answers a control_schedule id, which Nous then read as a watch ("Watch not found").
    if((op==="status"||op==="get")&&params.id?.startsWith("control_schedule:")){
     const schedule=required(await repository.get("schedule",actor.id,params.id),"Schedule not found.");
-    if(schedule.roomId!==roomId)throw new SpaceConflictError("Schedule belongs to another room.");
+    if(schedule.roomId!==roomId)throw new SpaceConflictError(`Schedule belongs to another room: ${schedule.roomId}.`);
     return controlScheduleSchema.parse(schedule.value);
    }
    // 31/10: a request moved off a busy pane takes its after-turn text with it (Nous cancels the schedule by the id its send answered).
@@ -1525,10 +1573,10 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         nativeTaskRef: value.targetTaskRef ?? obs?.nativeTaskRef ?? null
       };
     };
-    const notifyQueued = async (roomId: string, watch: any) => {
+    const notifyQueued = async (roomId: string) => {
       try {
         await options.publish(roomId);
-      } catch {}
+      } catch { /* A failed publish only delays the room refresh; the watch is saved. */ }
     };
 
     const elapsed=Date.now()-Date.parse(value.createdAt);
@@ -1537,7 +1585,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      populatePaneDetails(undefined, undefined);
      value.auditTrail.push({timestamp:nowIso(),status:"FAILED",detail:value.reason,evidence:{elapsed,timeoutMs:value.timeoutMs}});
      await updateRecord("watch",record.actorId,record.key,()=>value);
-     await notifyQueued(saved.roomId, value);
+     await notifyQueued(saved.roomId);
      return;
     }
     let pane:Pane;
@@ -1546,7 +1594,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      populatePaneDetails(undefined, undefined);
      value.auditTrail.push({timestamp:nowIso(),status:"BLOCKED",detail:value.reason,evidence:{}});
      await updateRecord("watch",record.actorId,record.key,()=>value);
-     await notifyQueued(saved.roomId, value);
+     await notifyQueued(saved.roomId);
      return;
     }
     if(pane.isClosed){
@@ -1554,7 +1602,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      populatePaneDetails(pane, undefined);
      value.auditTrail.push({timestamp:nowIso(),status:"CANCELLED",detail:value.reason,evidence:{}});
      await updateRecord("watch",record.actorId,record.key,()=>value);
-     await notifyQueued(saved.roomId, value);
+     await notifyQueued(saved.roomId);
      return;
     }
     // Read before the lock; a pane that timed out, closed or vanished since is settled above, anything else waits for the next tick.
@@ -1585,7 +1633,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
        populatePaneDetails(pane, observed);
        value.auditTrail.push({timestamp:nowIso(),status:"CANCELLED",detail:value.reason,evidence:{relevantTask}});
        await updateRecord("watch",record.actorId,record.key,()=>value);
-       await notifyQueued(saved.roomId, value);
+       await notifyQueued(saved.roomId);
        return;
       }else if(["FAILED","ERROR"].includes(relevantTask.status)){
        taskFailed=true;failureDetail="Task failed with error status.";
@@ -1610,7 +1658,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
        populatePaneDetails(pane, observed);
        value.auditTrail.push({timestamp:nowIso(),status:"FAILED",detail:value.reason,evidence:{failureDetail,retriesCount:value.retriesCount,maxRetries:value.maxRetries}});
        await updateRecord("watch",record.actorId,record.key,()=>value);
-       await notifyQueued(saved.roomId, value);
+       await notifyQueued(saved.roomId);
        return;
       }
      }
@@ -1630,7 +1678,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
        populatePaneDetails(pane, observed);
        value.auditTrail.push({timestamp:nowIso(),status:"VERIFIED",detail:"Task completed successfully and verified.",evidence:{observedState:observed.state}});
        await updateRecord("watch",record.actorId,record.key,()=>value);
-       await notifyQueued(saved.roomId, value);
+       await notifyQueued(saved.roomId);
        return;
       }
      }
@@ -1655,7 +1703,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
        populatePaneDetails(pane, observed);
        value.auditTrail.push({timestamp:nowIso(),status:"FAILED",detail:value.reason,evidence:{retriesCount:value.retriesCount,maxRetries:value.maxRetries}});
        await updateRecord("watch",record.actorId,record.key,()=>value);
-       await notifyQueued(saved.roomId, value);
+       await notifyQueued(saved.roomId);
        return;
       }
      }else{
@@ -1663,7 +1711,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       populatePaneDetails(pane, observed);
       value.auditTrail.push({timestamp:nowIso(),status:"VERIFIED",detail:"Independent verification passed.",evidence:{observedState:observed.state}});
       await updateRecord("watch",record.actorId,record.key,()=>value);
-      await notifyQueued(saved.roomId, value);
+      await notifyQueued(saved.roomId);
       return;
      }
     }
@@ -1745,7 +1793,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       roomId: roomId ?? null,
       phase,
       nativeCliRuntimeIds: phase === 1 ? ["cli:codex"] : [...cliToggleRuntimeIds],
-      types: catalog.types.filter(t => t.mode !== "TERMINAL" || supportsRuntime({ mode: "TERMINAL", terminalRuntimeId: t.terminalRuntimeId } as any)),
+      types: catalog.types.filter(t => t.mode !== "TERMINAL" || supportsRuntime({ mode: "TERMINAL", terminalRuntimeId: t.terminalRuntimeId } as Pane)),
       unavailable: catalog.unavailable,
       tools: Object.entries(controlToolSchemas).map(([name, schema]) => ({
         name,
@@ -1768,8 +1816,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   async function testMcpTools(actor: ControlActor, targetRoomId?: string, params?: { tools?: string[]; fast?: boolean }) {
     let effectiveRoomId = targetRoomId;
     if (!effectiveRoomId) {
-      let roomList: any[] = [];
-      try { roomList = (await store.listRooms()) as any[]; } catch {}
+      let roomList: Awaited<ReturnType<SpaceStore["listRooms"]>> = [];
+      try { roomList = await store.listRooms(); } catch { /* No room list: the checks run without a room. */ }
       effectiveRoomId = roomList[0]?.id;
     }
 
@@ -1793,8 +1841,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         domain: "inspect",
         run: async () => {
           if (!effectiveRoomId) return { skipped: true, reason: "No active room" };
-          const res = (await inspect(actor, { roomId: effectiveRoomId, section: "STATE", offset: 0, limit: 25 })) as any;
-          return { totalOpenPanes: (res.panes ?? []).filter((pane: any) => !pane.isClosed).length, paneCap: res.room?.paneCap ?? 16 };
+          const res = (await inspect(actor, { roomId: effectiveRoomId, section: "STATE", offset: 0, limit: 25 })) as { panes?: { isClosed?: boolean }[]; room?: { paneCap?: number } };
+          return { totalOpenPanes: (res.panes ?? []).filter((pane) => !pane.isClosed).length, paneCap: res.room?.paneCap ?? 16 };
         }
       },
       {
@@ -1810,7 +1858,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         name: "space_inspect:QUOTA",
         domain: "inspect",
         run: async () => {
-          const res = (await inspect(actor, { section: "QUOTA", offset: 0, limit: 25 })) as any;
+          const res = (await inspect(actor, { section: "QUOTA", offset: 0, limit: 25 })) as InspectProbeResult;
           return { ok: Boolean(res.data || res.accounts || res.section) };
         }
       },
@@ -1818,7 +1866,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         name: "space_inspect:RUNTIMES",
         domain: "inspect",
         run: async () => {
-          const res = (await inspect(actor, { section: "RUNTIMES", offset: 0, limit: 25 })) as any;
+          const res = (await inspect(actor, { section: "RUNTIMES", offset: 0, limit: 25 })) as InspectProbeResult;
           return { count: (res.data?.runtimes || res.runtimes || []).length };
         }
       },
@@ -1826,7 +1874,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         name: "space_inspect:SYSTEM_HEALTH",
         domain: "inspect",
         run: async () => {
-          const res = (await inspect(actor, { section: "SYSTEM_HEALTH", offset: 0, limit: 25 })) as any;
+          const res = (await inspect(actor, { section: "SYSTEM_HEALTH", offset: 0, limit: 25 })) as InspectProbeResult;
           return { uptime: res.data?.uptimeSeconds ?? res.uptimeSeconds };
         }
       },
@@ -1834,7 +1882,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         name: "space_inspect:SKILLS",
         domain: "inspect",
         run: async () => {
-          const res = (await inspect(actor, { section: "SKILLS", offset: 0, limit: 25 })) as any;
+          const res = (await inspect(actor, { section: "SKILLS", offset: 0, limit: 25 })) as InspectProbeResult;
           return { count: (res.data?.installed?.skills || res.installed?.skills || []).length };
         }
       },
@@ -1842,7 +1890,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         name: "space_inspect:SETTINGS",
         domain: "inspect",
         run: async () => {
-          const res = (await inspect(actor, { section: "SETTINGS", offset: 0, limit: 25 })) as any;
+          const res = (await inspect(actor, { section: "SETTINGS", offset: 0, limit: 25 })) as InspectProbeResult;
           return { ok: Boolean(res.data || res.section) };
         }
       },
@@ -1850,7 +1898,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         name: "space_inspect:VOICE",
         domain: "inspect",
         run: async () => {
-          const res = (await inspect(actor, { section: "VOICE", offset: 0, limit: 25 })) as any;
+          const res = (await inspect(actor, { section: "VOICE", offset: 0, limit: 25 })) as InspectProbeResult;
           return { ok: Boolean(res.data || res.transcription) };
         }
       },
@@ -1858,7 +1906,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         name: "space_inspect:PLUGINS",
         domain: "inspect",
         run: async () => {
-          const res = (await inspect(actor, { section: "PLUGINS", offset: 0, limit: 25 })) as any;
+          const res = (await inspect(actor, { section: "PLUGINS", offset: 0, limit: 25 })) as InspectProbeResult;
           return { count: (res.data?.plugins || res.plugins || []).length };
         }
       },
@@ -1957,9 +2005,9 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         const latencyMs = Date.now() - pStart;
         const skipped = (details as { skipped?: boolean } | null)?.skipped === true;
         return { tool: p.name, domain: p.domain, status: skipped ? "WARN" as const : "PASS" as const, latencyMs, details };
-      } catch (err: any) {
+      } catch (err) {
         const latencyMs = Date.now() - pStart;
-        const errMsg = err?.message || String(err);
+        const errMsg = (err as Error)?.message || String(err);
         return { tool: p.name, domain: p.domain, status: "FAIL" as const, latencyMs, error: errMsg };
       }
     });
@@ -1991,7 +2039,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
           agentHandoffPrompt
         }) + "\n";
         appendFileSync(`${SPACE_INSTALL_ROOT}/var/live-voice-logs/debug-incidents.jsonl`, line);
-      } catch {}
+      } catch { /* The incident log is best-effort; the tool test result is still returned. */ }
     }
 
     return {
@@ -2060,11 +2108,11 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     };
   }
 
-  async function runDebug(actor: ControlActor, targetRoomId?: string, opName?: string, paneId?: string, query?: string) {
+  async function runDebug(actor: ControlActor, targetRoomId?: string, opName?: string, paneId?: string) {
     let effectiveRoomId = targetRoomId;
     if (!effectiveRoomId) {
-      let roomList: any[] = [];
-      try { roomList = (await store.listRooms()) as any[]; } catch {}
+      let roomList: Awaited<ReturnType<SpaceStore["listRooms"]>> = [];
+      try { roomList = await store.listRooms(); } catch { /* No room list: the checks run without a room. */ }
       effectiveRoomId = roomList[0]?.id;
     }
     const incidentId = `dbg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -2074,18 +2122,18 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     let probableCause = "No critical system errors detected.";
     let recommendedFix = "All system checks completed normally.";
 
-    let capacityInfo: any = null;
+    let capacityInfo: { openCount: number; cap: number } | null = null;
     if (effectiveRoomId) {
       try {
         const r = await store.getRoom(effectiveRoomId);
-        const openCount = (await store.listPanes(effectiveRoomId, true)).filter((p: any) => !p.isClosed).length;
+        const openCount = (await store.listPanes(effectiveRoomId, true)).filter((p) => !p.isClosed).length;
         capacityInfo = { openCount, cap: r.paneCap ?? 16 };
         if (openCount >= (r.paneCap ?? 16)) {
           issues.push(`Room has reached maximum capacity (${openCount}/${r.paneCap ?? 16} panes).`);
           probableCause = "Room capacity full. New panes cannot open without closing idle ones or increasing paneCap.";
           recommendedFix = "Close unused panes using space_close_panes(filter: 'unused') or increase room.paneCap.";
         }
-      } catch {}
+      } catch { /* Room unreadable: the report goes out without capacityInfo. */ }
     }
 
     const disabledRuntimes: string[] = [];
@@ -2094,13 +2142,13 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       for (const s of settings) {
         if (!s.enabled) disabledRuntimes.push(s.runtimeId);
       }
-    } catch {}
+    } catch { /* Runtime settings unreadable: no runtimes are listed as disabled. */ }
 
-    let recentIncidents: any[] = [];
+    let recentIncidents: unknown[] = [];
     try {
       const content = await fsPromises.readFile(`${SPACE_INSTALL_ROOT}/var/live-voice-logs/debug-incidents.jsonl`, "utf8");
       recentIncidents = content.trim().split("\n").filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean).slice(-5);
-    } catch {}
+    } catch { /* No incident log yet: the count stays 0. */ }
 
     const hasIssues = issues.length > 0;
     const agentHandoffPrompt = hasIssues

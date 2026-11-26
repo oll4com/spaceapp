@@ -13,7 +13,7 @@ import { createCsrfToken, defaultSessionRevocationStore, signSessionWithTtl } fr
 
 const secret = "synthetic-stage04-session-secret-only";
 const base = "/api/t3code/panes/pane:owned123/app/";
-const token = (id = "user:operator") => signSessionWithTtl({ id, role: "ADMIN", email: `${randomUUID()}@space.test` }, secret, 600);
+const token = (id = "user:operator", role = "ADMIN") => signSessionWithTtl({ id, role, email: `${randomUUID()}@space.test` }, secret, 600);
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
@@ -82,6 +82,8 @@ it("requires real sessions, fixed operator, existing pane and owned room before 
   const f = await fixture();
   expect((await f.app.inject({ url: base })).statusCode).toBe(401);
   expect((await f.app.inject({ url: base, headers: { cookie: `space_session=${token("user:foreign")}` } })).statusCode).toBe(403);
+  // Non-ADMIN sessions never reach T3, whose bridge grants providers:manage and the other admin scopes.
+  expect((await f.app.inject({ url: base, headers: { cookie: `space_session=${token("user:operator", "USER")}` } })).statusCode).toBe(403);
   f.foreignRoom(); expect((await f.app.inject({ url: base, headers: f.headers })).statusCode).toBe(403);
   f.deletePane(); expect((await f.app.inject({ url: base, headers: f.headers })).statusCode).toBe(404);
   expect(f.requests).toHaveLength(0);

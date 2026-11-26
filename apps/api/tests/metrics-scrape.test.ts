@@ -30,7 +30,7 @@ const scrape = (server: Awaited<ReturnType<typeof app>>, from: string, auth?: st
 
 describe("metrics scrape", () => {
   it("knows private-network addresses", () => {
-    for (const ip of ["10.20.0.210", "::ffff:10.20.0.210", "172.16.4.1", "172.31.255.255", "192.168.10.1"]) expect(isPrivateNetworkAddress(ip), ip).toBe(true);
+    for (const ip of ["10.20.0.210", "::ffff:10.20.0.210", "172.16.4.1", "172.31.255.255", "192.168.88.1"]) expect(isPrivateNetworkAddress(ip), ip).toBe(true);
     for (const ip of ["127.0.0.1", "192.0.2.10", "172.32.0.1", "8.8.8.8", "::1", undefined, "10.20.0"]) expect(isPrivateNetworkAddress(ip), String(ip)).toBe(false);
   });
 
@@ -123,6 +123,24 @@ describe("metrics scrape", () => {
     expect(still.statusCode).toBe(200);
     expect(still.body).toContain("space_server_load_level");
     await failing.close();
+  });
+
+  it("reads the queues and the host's swap together, not one after the other", async () => {
+    const server = Fastify({ trustProxy: true });
+    const dir = await mkdtemp(join(tmpdir(), "space-metrics-"));
+    roots.push(dir);
+    await writeFile(join(dir, "token"), `${token}\n`);
+    const started: string[] = [];
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    registerMetricsScrape(server, { tokenFile: join(dir, "token"), routeOptions: {}, render: () => "", meminfo: async () => "",
+      space: async () => { started.push("space"); await gate; return "space_gateway_up 1\n"; },
+      hostSwap: { read: async () => { started.push("host"); await gate; return { percent: null, host: "host", at: null, error: null }; } } });
+    const response = scrape(server, "10.20.0.210", `Bearer ${token}`);
+    await expect.poll(() => started).toEqual(["space", "host"]);
+    release();
+    expect((await response).body.endsWith("space_gateway_up 1\n")).toBe(true);
+    await server.close();
   });
 
   // OBS-001: the collector cannot reach public-host's loopback, so the API relays each worker's /metrics under the same token rule.

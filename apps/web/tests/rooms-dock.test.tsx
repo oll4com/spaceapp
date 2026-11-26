@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { roomActionFilter, roomRailVisibility } from "../src/features/rooms-dock/room-share-view.js";
 import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { useState } from "react";
@@ -21,7 +22,7 @@ vi.mock("../src/api.js", () => ({ api }));
 
 import { useAdminUsers } from "../src/features/rooms-dock/useAdminUsers.js";
 import { useRoomsDock, type RoomsDock } from "../src/features/rooms-dock/useRoomsDock.js";
-import { RoomsDockPanel, selectRoomEntries, type RoomsDockPanelProps } from "../src/features/rooms-dock/RoomsDockPanel.js";
+import { RoomsDockPanel, roomPaneTypeIcons, selectRoomEntries, type RoomsDockPanelProps } from "../src/features/rooms-dock/RoomsDockPanel.js";
 import { loadBoundedRoomCatalog, reorderRoomsById, sortRoomsByOrder } from "../src/features/rooms-dock/room-catalog.js";
 
 function room(id: string, order: number, extra: Partial<Room> = {}): Room {
@@ -140,6 +141,15 @@ describe("selectRoomEntries for multi-user accounts", () => {
   });
 });
 
+describe("roomPaneTypeIcons", () => {
+  it("shows each open pane type once: running CLIs first, terminals only through their CLI", () => {
+    const icons = roomPaneTypeIcons(["cli:claude", "cli:claude"], ["TERMINAL", "MAIL_COPILOT", "BROWSER", "MAIL_COPILOT", "JOB_APPLY"]);
+    expect(icons.map((icon) => icon.label)).toEqual(["Claude Code", "Mail Copilot", "Browser", "Job Copilot"]);
+    expect("iconSrc" in icons[0]!).toBe(true);
+    expect(icons.slice(1).every((icon) => "Icon" in icon)).toBe(true);
+  });
+});
+
 describe("RoomsDockPanel", () => {
   afterEach(() => cleanup());
 
@@ -156,7 +166,7 @@ describe("RoomsDockPanel", () => {
         adminUsers={{ adminUsersList: [], userEmailById: new Map(), adminUsersListWithLiveCounts: [] }}
         entries={entries}
         isRoomListFiltered={isRoomListFiltered}
-        catalog={{ rooms, setRooms, selectedRoomId, panes: [], roomRuntimes: {}, roomPaneLoadStates: {}, warmRoomIds: [], warmRoomEnabled: true, roomPaneCounts: { a: 3 }, roomCliRuntimeIds: {} }}
+        catalog={{ rooms, setRooms, selectedRoomId, panes: [], roomRuntimes: {}, roomPaneLoadStates: {}, warmRoomIds: [], warmRoomEnabled: true, roomPaneCounts: { a: 3 }, roomCliRuntimeIds: {}, roomPaneModes: { b: ["MAIL_COPILOT", "BROWSER", "JOB_APPLY", "BROWSER"] } }}
         access={{ auth: null, isAdminMode: false, runtimeKind: "demo" }}
         actions={{
           createRoom: vi.fn(async () => undefined), roomCreationPending: false, selectRoom: vi.fn(async () => undefined), requestRoomDelete: vi.fn(async () => undefined),
@@ -169,6 +179,12 @@ describe("RoomsDockPanel", () => {
       />
     );
   }
+
+  it("shows a room's open pane types once each, named on hover", () => {
+    render(<Panel listsEveryRoom />);
+    const icons = screen.getByLabelText("Open pane types: Mail Copilot, Browser, Job Copilot");
+    expect([...icons.querySelectorAll("[data-pane-mode]")].map((icon) => icon.getAttribute("title"))).toEqual(["Mail Copilot", "Browser", "Job Copilot"]);
+  });
 
   it("lists own rooms, filters by search and opens a room", { timeout: 30_000 }, () => {
     const selectRoom = vi.fn(async () => undefined);
@@ -212,6 +228,9 @@ describe("RoomsDockPanel", () => {
     expect(actions.filter(roomActionFilter(collaborate))).toHaveLength(actions.length);
     const rail = roomRailVisibility({ isVisible: (id: string) => id !== "music" }, view);
     expect(["create", "layout", "sticky", "music", "docks"].filter((id) => rail.isVisible(id))).toEqual(["docks"]);
+    // Pane cards keep their buttons in DOM; one rule hides them only while the shell marks a VIEW room.
+    const css = readFileSync("src/features/rooms-dock/room-share-view.css", "utf8");
+    expect(css.replace(/\/\*[^]*?\*\//g, "").trim()).toBe(".space-shell[data-view-only-room] .pane-card > header :is(.pane-actions, .pane-actions-fixed) {\n  display: none !important;\n}");
   });
 
   it("expands the project settings of a room", () => {

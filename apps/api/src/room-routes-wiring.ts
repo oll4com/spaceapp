@@ -1,6 +1,7 @@
-import { type AuthUser, type Room } from "@space/contracts";
+import { type AuthUser, PANE_HIBERNATED_REASON, type Room } from "@space/contracts";
 import { makeSpaceId, type SpaceStore, SpaceNotFoundError } from "@space/runtime";
 import type { FastifyInstance } from "fastify";
+import type { SpaceNotificationsRepository } from "@space/db";
 import { dirname, join } from "node:path";
 import { createDashboardCliProofController } from "./agents-dashboard-proof.js";
 import { createCliRenderAiController } from "./cli-render-ai-proof.js";
@@ -30,6 +31,8 @@ type RoomRoutesDeps = Pick<List, "readDashboardAgents" | "visibleCliRuntimeIds">
     inspectRoomCli: RenderAi["inspect"]; controlQuota: RenderAi["quota"]; controlSend: RenderAi["send"] & DashboardProof["send"];
     defaultRouteRateLimitOptions: List["routeOptions"] & Shares["routeOptions"] & Proof["routeOptions"] & Manage["routeOptions"];
     assertPaneMayClose?: Manage["assertPaneMayClose"];
+    nousNotice?: Manage["nousNotice"];
+    notifications: Pick<SpaceNotificationsRepository, "list">;
   };
 
 /** The room routes (moved verbatim from app.ts, ARCH-001 step 79): the room access check, the room list, room shares, the proof rooms with
@@ -73,7 +76,7 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRoutesDeps) {
   const browserAccountStore = new YouTubeAccountStore(join(dirname(config.browserEvidenceArtifactRoot), "browser-accounts"));
   registerRoomManagementRoutes(app, {
     config, store, browserSessionManager, cliTerminalManager, routeOptions: defaultRouteRateLimitOptions,
-    assertRoomAccess, cliRenderAi, youtubePlaybackStore, youtubeAccountStore, browserAccountStore, assertPaneMayClose: deps.assertPaneMayClose
+    assertRoomAccess, cliRenderAi, youtubePlaybackStore, youtubeAccountStore, browserAccountStore, assertPaneMayClose: deps.assertPaneMayClose, nousNotice: deps.nousNotice
   });
   // Abandoned Agent Proof rooms delete themselves through the same path as DELETE /api/rooms/:id (operator 2/11 10:04 BKK).
   const deleteDeps = { config, store, browserSessionManager, cliTerminalManager, cliRenderAi, youtubePlaybackStore, youtubeAccountStore, browserAccountStore, assertPaneMayClose: deps.assertPaneMayClose };
@@ -102,7 +105,8 @@ export function registerRoomRoutes(app: FastifyInstance, deps: RoomRoutesDeps) {
       const busy = await Promise.all([...pids].map(async ([sessionId, pid]) => (await runsBackgroundJob(pid)) ? sessionId : null));
       return new Set(busy.filter((sessionId): sessionId is string => sessionId !== null));
     },
-    interrupt: (sessionId, transcript) => cliTerminalManager.interrupt(sessionId, transcript),
+    waitsOnOperator: async (ownerUserId, paneId) => (await deps.notifications.list(ownerUserId, { status: "NEEDS_YOU", paneId, limit: 1 })).length > 0,
+    interrupt: (sessionId, transcript) => cliTerminalManager.interrupt(sessionId, transcript, transcript.traceId, PANE_HIBERNATED_REASON),
     makeTraceId: () => makeSpaceId("trace"),
     onError: (error, paneId) => app.log.warn({ err: error, paneId }, "Pane hibernate failed.")
   }).then((slept) => { if (slept.length) app.log.info({ event: "pane.hibernate", paneIds: slept }, "Idle CLI panes hibernated."); })

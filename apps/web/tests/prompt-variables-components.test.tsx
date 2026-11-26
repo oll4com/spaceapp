@@ -19,7 +19,7 @@ const mockVariables: PromptVariable[] = [
   {
     id: "pv_1",
     name: "pc_thai",
-    value: "Computer with IP 192.168.10.50 accessed via RT-BKK-01",
+    value: "Computer with IP 192.168.88.50 accessed via RT-BKK-01",
     description: "Bangkok terminal bridge",
     category: "Network"
   },
@@ -384,7 +384,7 @@ describe("PromptVariablesMenu editing safety", () => {
     );
     const value = screen.getByText(mockVariables[0]!.value);
     expect(value.getAttribute("data-sensitive-masked")).toBe("manual");
-    expect(value.closest("[title]")?.getAttribute("title") ?? "").not.toContain("192.168.10.50");
+    expect(value.closest("[title]")?.getAttribute("title") ?? "").not.toContain("192.168.88.50");
     expect(screen.getAllByRole("button", { name: "Insert" })[0]!.getAttribute("title")).toBe("Insert #pc_thai");
   });
 });

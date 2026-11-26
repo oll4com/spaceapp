@@ -395,7 +395,8 @@ describe("job copilot salary research (operator rule 2026-10-25)", () => {
   it("shows the agent the memories holding a question's words before anything is asked; afterMemory asks (queue item 34)", async () => {
     const { app, agent } = await fixture();
     try {
-      for (const [key, text] of [["open to being on an on call rotation", "Yes"], ["years with terraform", "0"], ["favourite colour", "blue"]]) {
+      for (const [key, text] of [["open to being on an on call rotation", "Yes"], ["years with terraform", "0"], ["favourite colour", "blue"],
+        ["z fellows: a risk you took and what you learned", "I left a salaried job to build SpaceApp, a workspace for AI agents. It is not proven yet."]]) {
         expect((await app.inject({ method: "POST", url: "/api/cli/job-apply/memory", headers: agent, payload: { kind: "ANSWER", key, text, source: "USER" } })).statusCode).toBe(200);
       }
       const started = await app.inject({ method: "POST", url: "/api/cli/job-apply/applications", headers: agent,
@@ -414,6 +415,9 @@ describe("job copilot salary research (operator rule 2026-10-25)", () => {
       expect(await parked()).toBe(1);
       // A question no memory holds a word of is asked at once.
       expect((await ask({ question: "Do you hold a Thai work permit?" })).json()).toMatchObject({ questionId: expect.stringMatching(/^jobq:/) });
+      // Cause row 15 (nous_msg:adc1046a): an essay answer that only shares "SpaceApp" with the question is no memory hit.
+      expect((await ask({ question: "Does SpaceApp have paying customers, several customers' data sharing one database?" })).json())
+        .toMatchObject({ questionId: expect.stringMatching(/^jobq:/) });
     } finally {
       await app.close();
     }
@@ -455,6 +459,26 @@ describe("job copilot salary research (operator rule 2026-10-25)", () => {
     }
   });
 
+  it("a salary rule forbids only a salary question, never another one sharing the role's words (Sur jobapp:80pB5y-0BPL-)", async () => {
+    const { app, agent } = await fixture();
+    try {
+      // jobmem:5LIIFGJWHYCL: its «do NOT ask the operator» and "Software Engineer" refused Sur's voice-recording link (16/11).
+      const rule = (await app.inject({ method: "POST", url: "/api/cli/job-apply/memory", headers: agent, payload: { kind: "LESSON", key: "salary-low-confidence",
+        text: "When space_job_salary_research returns low confidence, do NOT ask the operator: answer the higher of its recommended figure (also from a broader title such as Software Engineer) and the floor EUR 36,000 gross/year. Staff Platform Engineer: EUR 58,000.", source: "USER" } })).json().memory;
+      const started = await app.inject({ method: "POST", url: "/api/cli/job-apply/applications", headers: agent,
+        payload: { company: "Sur", role: "Staff Software Engineer", ats: "other", url: "https://apply.workable.com/sur/j/1" } });
+      const id = started.json().application.id as string;
+      const ask = (question: string) => app.inject({ method: "POST", url: `/api/cli/job-apply/applications/${id}/question`, headers: agent, payload: { question, afterMemory: true } });
+      const voice = await ask("Sur Staff Software Engineer: record a 2 sentence audio on speakpipe about why you fit the role and paste the link. What should I do?");
+      expect(voice.json()).toMatchObject({ questionId: expect.stringMatching(/^jobq:/) });
+      const salary = await ask("Staff Software Engineer: what is your expected annual salary?");
+      expect(salary.statusCode).toBe(409);
+      expect(salary.json().error.message).toContain(`Not raised: Job Copilot memory ${rule.id} forbids it`);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("answers the owner's percentage below the market and records why in the application's Activity", async () => {
     const pages: Record<string, string> = {
       "https://www.payscale.com/research/GR/Job=Senior_Software_Engineer/Salary": "payscale-gr-senior-software-engineer.html",
@@ -485,10 +509,10 @@ describe("job copilot salary research (operator rule 2026-10-25)", () => {
       expect(requested).toContain("https://boards-api.greenhouse.io/v1/boards/optasia/jobs/7012345?pay_transparency=true");
       expect(result.skipped).toContainEqual({ source: "posting", url: "https://boards-api.greenhouse.io/v1/boards/optasia/jobs/7012345?pay_transparency=true", reason: "no page for this query" });
 
-      const events = (await app.inject({ method: "GET", url: `/api/job-apply/events?applicationId=${encodeURIComponent(application.id)}&limit=20`, headers })).json().events as Array<{ type: string; message: string; payload: Record<string, any> }>;
+      const events = (await app.inject({ method: "GET", url: `/api/job-apply/events?applicationId=${encodeURIComponent(application.id)}&limit=20`, headers })).json().events as Array<{ type: string; message: string; payload: { salaryResearch: { market: { sources: Array<{ source: string }> } } } }>;
       const note = events.find((event) => event.type === "NOTE" && event.message.startsWith("Salary research"));
       expect(note?.message).toContain("answer EUR 31,000 a year / EUR 2,200 a month x14");
-      expect(note?.payload.salaryResearch.market.sources.map((row: { source: string }) => row.source)).toEqual(["payscale", "paylab"]);
+      expect(note?.payload.salaryResearch.market.sources.map((row) => row.source)).toEqual(["payscale", "paylab"]);
 
       // Queue 29/10 (Tide Bulgaria asked the operator): no figures and no rule asks; the operator's salary rule in memory answers instead.
       const sofia = async () => (await app.inject({ method: "POST", url: "/api/cli/job-apply/salary-research", headers: agent,

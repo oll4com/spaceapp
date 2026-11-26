@@ -8,13 +8,11 @@ import type {
 import { api } from "../../api.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import {
-  Activity,
   AlertTriangle,
   ArrowLeft,
   Boxes as Layers,
   CheckCircle2,
   ChevronRight,
-  Cpu,
   Database,
   ExternalLink,
   Minus,
@@ -151,42 +149,6 @@ function getEdgeGeometry(
     my: (y1 + y2) / 2,
   };
 }
-
-// MCP Control Subsystem Tools (Detailed Breakdown)
-interface McpVisualTool {
-  id: string;
-  name: string;
-  category: "Control" | "Inspection" | "Diagnostics" | "Space Ops" | "Infrastructure";
-  description: string;
-  riskLevel: string;
-  protocol: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-const mcpVisualTools: McpVisualTool[] = [
-  // Column 1: Control & Diagnostics (x = 830)
-  { id: "mcp-space-execute", name: "space_execute", category: "Control", riskLevel: "R1 - Guarded", protocol: "Fastify / JSON-RPC", description: "Apply atomic batches of controls (panes.open, pane close/prompt/color, layout mutation, clipboard).", x: 830, y: 110, w: 230, h: 64 },
-  { id: "mcp-space-operations", name: "space_operations", category: "Control", riskLevel: "R1 - Guarded", protocol: "Fastify / Temporal", description: "Inspect, monitor, or cancel durable asynchronous operations and long-running workflows.", x: 830, y: 185, w: 230, h: 64 },
-  { id: "mcp-space-schedules", name: "space_schedules", category: "Control", riskLevel: "R1 - Guarded", protocol: "Fastify / Temporal", description: "Create, inspect, or manage deferred, recurring cron, and one-shot scheduled tasks.", x: 830, y: 260, w: 230, h: 64 },
-  { id: "mcp-space-watches", name: "space_watches", category: "Control", riskLevel: "R0 - Low", protocol: "Fastify / WebSocket", description: "Durable task completion monitoring with automatic assistant re-engagement upon finish.", x: 830, y: 335, w: 230, h: 64 },
-  { id: "mcp-space-debug", name: "space_debug", category: "Diagnostics", riskLevel: "R1 - Guarded", protocol: "Fastify / Diagnostics", description: "Run comprehensive diagnostic checks on any operation or pane, generating incident reports.", x: 830, y: 410, w: 230, h: 64 },
-  { id: "mcp-space-test-tools", name: "space_test_mcp_tools", category: "Diagnostics", riskLevel: "R0 - Low", protocol: "Fastify / JSON-RPC", description: "One-by-one automated health and capability verification across all MCP tools and sections.", x: 830, y: 485, w: 230, h: 64 },
-  { id: "mcp-srv-space-status", name: "space_status", category: "Space Ops", riskLevel: "R0 - Low", protocol: "stdio (space-readonly)", description: "System readiness, systemd services health, resource telemetry, and port listeners inspection.", x: 830, y: 560, w: 230, h: 64 },
-  { id: "mcp-srv-space-logs", name: "space_logs", category: "Space Ops", riskLevel: "R0 - Low", protocol: "stdio (space-readonly)", description: "Targeted journalctl log retrieval across Space core services with line limit and filters.", x: 830, y: 635, w: 230, h: 64 },
-
-  // Column 2: Inspection & Discovery & Infrastructure (x = 1100)
-  { id: "mcp-space-inspect", name: "space_inspect", category: "Inspection", riskLevel: "R0 - Low", protocol: "Fastify / JSON-RPC", description: "Authoritative inspection across 20 domains (state, models, quota, runtimes, health, settings, metrics).", x: 1100, y: 110, w: 230, h: 64 },
-  { id: "mcp-space-capabilities", name: "space_capabilities", category: "Inspection", riskLevel: "R0 - Low", protocol: "Fastify / JSON-RPC", description: "Discover Space room controls, limits, model configurations, and runtime support.", x: 1100, y: 185, w: 230, h: 64 },
-  { id: "mcp-space-list-tools", name: "space_list_mcp_tools", category: "Inspection", riskLevel: "R0 - Low", protocol: "Fastify / JSON-RPC", description: "List all Space Control tools, categories, parameter schemas, and functions.", x: 1100, y: 260, w: 230, h: 64 },
-  { id: "mcp-space-describe-panes", name: "space_describe_pane_types", category: "Inspection", riskLevel: "R0 - Low", protocol: "Fastify / JSON-RPC", description: "List supported pane types (CLI, browser, demos, YouTube, files) with open keys and live availability.", x: 1100, y: 335, w: 230, h: 64 },
-  { id: "mcp-space-screenshot", name: "space_screenshot", category: "Diagnostics", riskLevel: "R0 - Low", protocol: "CDP / Vision Engine", description: "Full-screen viewport capture and deterministic Vision AI analysis of the Space App UI.", x: 1100, y: 410, w: 230, h: 64 },
-  { id: "mcp-srv-ui-proof", name: "space_authenticated_ui_proof", category: "Space Ops", riskLevel: "R1 - Guarded", protocol: "stdio (space-readonly)", description: "Deterministic Headless Chromium authenticated UI proof capture with DOM assertions.", x: 1100, y: 485, w: 230, h: 64 },
-  { id: "mcp-infra-transport", name: "JSON-RPC 2.0 Bridge", category: "Infrastructure", riskLevel: "Core Bridge", protocol: "JSON-RPC 2.0", description: "Bidirectional stdio and HTTP JSON-RPC 2.0 protocol serialization and dispatch engine.", x: 1100, y: 560, w: 230, h: 64 },
-  { id: "mcp-infra-policy", name: "Security Policy Guard", category: "Infrastructure", riskLevel: "Security Gate", protocol: "Internal Fastify Guard", description: "Risk-level based authorization, schema hash verification, and human-in-the-loop approval gate.", x: 1100, y: 635, w: 230, h: 64 },
-];
 
 export function SystemTopologyMap({ onInspectNode }: SystemTopologyMapProps) {
   const [snapshot, setSnapshot] = useState<SystemTopologySnapshot | null>(null);

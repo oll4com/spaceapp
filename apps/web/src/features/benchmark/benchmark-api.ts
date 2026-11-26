@@ -14,7 +14,9 @@ async function fetchCsrf(): Promise<string> {
       if (data.headerName) cachedCsrfHeader = data.headerName;
       return cachedCsrfToken || "";
     }
-  } catch {}
+  } catch {
+    // No token: the POST goes out without one and the 403 path refetches.
+  }
   return "";
 }
 
@@ -28,7 +30,9 @@ async function errorMessage(res: Response): Promise<string> {
   try {
     const payload = (await res.json()) as { error?: { message?: string } };
     if (payload.error?.message) return payload.error.message;
-  } catch {}
+  } catch {
+    // Not JSON: fall back to the HTTP status below.
+  }
   return `HTTP ${res.status}`;
 }
 

@@ -7,6 +7,7 @@ import { gatewayErrors } from "./errors.js";
 import { lanDecision, type LanAccess } from "./lan-access.js";
 import { trackKeyRequest } from "./policy.js";
 import { clientRequestId } from "./proxy-util.js";
+import { staleRead, type StaleRead } from "./stale-read.js";
 
 export interface GatewayRuntimeStatus {
   version: string;
@@ -161,6 +162,16 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
   // NGW_MODE=nous serves it only on the mTLS admin listener (nous/admin.ts).
   if (!options.tenancy) app.get("/__space-gateway/status", async () => status());
 
+  // Only keys that exist are kept, so presented garbage never grows the map.
+  const keyReads = new Map<string, StaleRead<GatewayApiKeyRecord | null>>();
+  async function findApiKey(keyHash: string) {
+    let read = keyReads.get(keyHash);
+    if (!read) keyReads.set(keyHash, read = staleRead(() => options.repository.findApiKeyByHash(keyHash), 0));
+    const key = await read.get().catch((error: unknown) => { keyReads.delete(keyHash); throw error; });
+    if (!key) keyReads.delete(keyHash);
+    return key;
+  }
+
   async function authenticate(request: FastifyRequest, reply: FastifyReply) {
     if (draining) return reply.code(503).header("connection", "close").header("retry-after", "1").send(gatewayErrors.draining());
     if (options.tenancy) return options.tenancy.authenticate(request, reply);
@@ -168,7 +179,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     if (!presented) return reply.code(401).send(gatewayErrors.missingApiKey());
     let key: GatewayApiKeyRecord | null;
     try {
-      key = await options.repository.findApiKeyByHash(hashGatewayApiKey(presented));
+      key = await findApiKey(hashGatewayApiKey(presented));
     } catch {
       return reply.code(503).send(gatewayErrors.unavailable());
     }

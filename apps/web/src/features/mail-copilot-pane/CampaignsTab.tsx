@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { MailCampaign, MailCampaignCheck, MailCampaignPreview, MailCampaignPreviewMail, MailCampaignSend, MailCampaignStats, MailContact, MailHealth, MailList, MailListHealth, MailSender, MailSendStatus,
-  MailSuppression, MailTemplate, MailTemplateVersion } from "@space/contracts";
+  MailAttachmentInfo, MailSuppression, MailTemplate, MailTemplateVersion, MailOpenHit, MailTrackedMessage } from "@space/contracts";
 import { api } from "../../api.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
@@ -14,8 +14,8 @@ import { useNousReviewing } from "../copilot-kit/nous-reviewing.js";
 // "May send to third parties" is on (operator 2/11 15:08 BKK): then a campaign in review reads "Nous reviewing" with no Approve.
 // Redesign 2/11 (operator: "bad UI; I want a preview of the whole email"): a mail opens as the rendered mail, as an inbox shows it.
 
-type View = "campaigns" | "lists" | "templates" | "senders";
-const VIEW_LABELS: Record<View, string> = { campaigns: "Campaigns", lists: "Lists", templates: "Templates", senders: "Senders" };
+type View = "campaigns" | "lists" | "templates" | "senders" | "opens";
+const VIEW_LABELS: Record<View, string> = { campaigns: "Campaigns", lists: "Lists", templates: "Templates", senders: "Senders", opens: "Opens" };
 const STATUS_LABELS: Record<MailCampaign["status"], string> = { DRAFT: "Draft", TESTING: "Testing", IN_REVIEW: "Waits for you", APPROVED: "Approved", SENDING: "Sending",
   PAUSED: "Paused", DONE: "Done", STOPPED: "Stopped" };
 const DAY_NAMES = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -60,6 +60,7 @@ export function CampaignsTab({ isVisible, target = null }: { isVisible: boolean;
       {view === "lists" ? <ListsView /> : null}
       {view === "templates" ? <TemplatesView /> : null}
       {view === "senders" ? <SendersView /> : null}
+      {view === "opens" ? <OpensView /> : null}
     </div>
   );
 }
@@ -330,7 +331,7 @@ function CampaignReader({ campaignId, expected, seen, onRead }: { campaignId: st
             <button type="button" className="mc-camp-button" disabled={!mail.next} onClick={() => mail.next && void open(mail.next)}>{t("Next")} <ChevronRight aria-hidden="true" /></button>
           </div>
           <MailPreview subject={mail.subject} preheader={mail.preheader} from={mail.from} to={mail.name ? `${mail.name} <${mail.to}>` : mail.to} replyTo={mail.replyTo}
-            html={mail.html} text={mail.text} frameTitle={t("HTML of the mail to {address}", { address: mail.to })} />
+            attachments={mail.attachments} html={mail.html} text={mail.text} frameTitle={t("HTML of the mail to {address}", { address: mail.to })} />
         </article>
       ) : null}
     </section>
@@ -338,8 +339,8 @@ function CampaignReader({ campaignId, expected, seen, onRead }: { campaignId: st
 }
 
 /** The whole mail as a recipient gets it: its line in the inbox, the header, then the rendered mail (or its plain text), and a full view. */
-function MailPreview({ subject, preheader, from, to, replyTo, html, text, frameTitle }: {
-  subject: string; preheader: string; from?: string; to?: string; replyTo?: string | null; html: string | null; text: string; frameTitle: string;
+function MailPreview({ subject, preheader, from, to, replyTo, attachments, html, text, frameTitle }: {
+  subject: string; preheader: string; from?: string; to?: string; replyTo?: string | null; attachments?: MailAttachmentInfo[]; html: string | null; text: string; frameTitle: string;
 }) {
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
@@ -363,6 +364,7 @@ function MailPreview({ subject, preheader, from, to, replyTo, html, text, frameT
             <div><dt>{t("From")}</dt><dd><strong>{sender.name || sender.address}</strong>{sender.name ? <span className="mc-camp-muted"> &lt;{sender.address}&gt;</span> : null}</dd></div>
             {to ? <div><dt>{t("To")}</dt><dd>{to}</dd></div> : null}
             {replyTo ? <div><dt>{t("Reply to")}</dt><dd>{replyTo}</dd></div> : null}
+            {attachments?.length ? <div><dt>{t("Attachments")}</dt><dd>{attachments.map((file) => `${file.filename} (${Math.ceil(file.bytes / 1024)} KB)`).join(", ")}</dd></div> : null}
           </dl>
         </div>
       ) : null}
@@ -539,6 +541,67 @@ function SendersView() {
         </li>
       ))}</ul>
       {senders.data && !senders.data.length ? <p className="mc-camp-empty">{t("No senders yet.")}</p> : null}
+    </section>
+  );
+}
+
+// Each open reads to the second, in Bangkok time (the operator's zone; stored UTC).
+const when = (iso: string | null) => iso ? new Date(iso).toLocaleString([], { dateStyle: "short", timeStyle: "medium", timeZone: "Asia/Bangkok" }) : "";
+/**
+ * Open tracking (operator 22/11): each tracked mail per recipient, with every open and click: when, IP, ISP and place, device and mail proxy.
+ * Grouped by campaign (plan clipboard:ES4AQEtVuDon step 2) with its totals; Mail Copilot's single tracked mails come last.
+ */
+function OpensView() {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  const opens = useLoad(() => api.mailOpens(), []);
+  const messages = opens.data?.messages ?? [];
+  const groups = [...(opens.data?.campaigns ?? []).map((campaign) => ({ key: campaign.id, campaign, messages: messages.filter((message) => message.campaignId === campaign.id) })),
+    { key: "single", campaign: null, messages: messages.filter((message) => !message.campaignId || !opens.data?.campaigns.some((campaign) => campaign.id === message.campaignId)) }]
+    .filter((group) => group.campaign || group.messages.length);
+  // A proxied hit (Gmail, Apple Mail Privacy, Outlook, Yahoo) carries the proxy's IP, never the reader's: shown only as the "via" line.
+  const where = (hit: MailOpenHit) => [hit.ip ?? t("no IP"), hit.rdns, [hit.isp, hit.geo].filter(Boolean).join(" · ")].filter(Boolean).join(" · ");
+  const hitLine = (hit: MailOpenHit) => {
+    const client = [hit.client, hit.device].filter(Boolean).join(" on ");
+    if (!hit.proxy) return <span className="mc-camp-muted"> · {[where(hit), client].filter(Boolean).join(" · ")}</span>;
+    return <>
+      <span className="mc-camp-muted"> · {[t("Reader IP: hidden by {proxy}", { proxy: hit.proxy }), client].filter(Boolean).join(" · ")}</span>
+      <div className="mc-camp-muted">{t("via {where}", { where: where(hit) })}</div>
+    </>;
+  };
+  return (
+    <section className="mc-camp-section" aria-label={t("Opens")}>
+      <div className="mc-camp-bar"><IconButton label={t("Refresh")} onClick={() => void opens.reload()}><RefreshCw aria-hidden="true" /></IconButton></div>
+      {opens.error ? <p className="mc-camp-alert" role="alert">{opens.error}</p> : null}
+      <p className="mc-camp-muted">{t("Times are Bangkok time. Gmail, Apple Mail Privacy and Outlook fetch through their own proxy, so the reader's IP is hidden there; mail apps that fetch directly show the reader's IP. Apple Mail may count an open nobody made, and blocked images count none.")}</p>
+      {groups.map((group) => (
+        <div key={group.key}>
+          {group.campaign ? (
+            <h4>{group.campaign.name} <span className="mc-camp-muted">· {t("{sent} sent · {opened} opened · {clicked} clicked · {bounced} bounced · {unsubscribed} unsubscribed", {
+              sent: group.campaign.stats.byStatus.SENT ?? 0, opened: group.messages.filter((message) => message.count).length,
+              clicked: group.messages.filter((message) => message.clicks.length).length, bounced: group.campaign.stats.bounced.hard + group.campaign.stats.bounced.soft,
+              unsubscribed: group.campaign.stats.unsubscribed })}</span></h4>
+          ) : groups.length > 1 ? <h4>{t("Single mails")}</h4> : null}
+          <ul className="mc-camp-cards">{group.messages.map((message: MailTrackedMessage) => (
+            <li key={message.token} className="mc-camp-card">
+              <span className="mc-camp-row-copy"><strong>{message.recipientName ? `${message.recipientName} <${message.recipient}>` : message.recipient}</strong>
+                <span className="mc-camp-muted">{message.subject} · {t("sent {time}", { time: when(message.createdAt) })}</span></span>
+              <span>{message.count ? t("Opened {count} times · first {first} · last {last}", { count: message.count, first: when(message.firstOpenedAt), last: when(message.lastOpenedAt) }) : t("Not opened yet")}
+                {message.links.length ? ` · ${t("{count} clicks", { count: message.clicks.length })}` : ""}</span>
+              {message.count || message.clicks.length ? (
+                <details className="mc-camp-fold">
+                  <summary><span className="mc-camp-fold-title">{t("Each open and click ({count})", { count: message.count + message.clicks.length })}</span></summary>
+                  <ul className="mc-camp-check-list">
+                    {message.opens.map((hit, index) => <li key={`o${index}`}>{t("Open #{n}", { n: index + 1 })} · {when(hit.at)}{hitLine(hit)}</li>)}
+                    {message.clicks.map((hit, index) => <li key={`c${index}`}>{t("Click #{n}", { n: index + 1 })} · {when(hit.at)} · {hit.url}{hitLine(hit)}</li>)}
+                  </ul>
+                </details>
+              ) : null}
+            </li>
+          ))}</ul>
+        </div>
+      ))}
+      {opens.data && !messages.length ? <p className="mc-camp-empty">{t("No tracked mail yet.")}</p> : null}
     </section>
   );
 }

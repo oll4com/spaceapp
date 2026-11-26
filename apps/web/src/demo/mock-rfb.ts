@@ -2,7 +2,8 @@
 export default class MockRFB extends EventTarget {
   viewOnly = false; scaleViewport = true; resizeSession = false; focusOnClick = true;
   private readonly frame: HTMLIFrameElement;
-  constructor(private readonly container: HTMLElement, _url: string, _options?: unknown) {
+  // noVNC passes (container, url, options): the mock needs only the container, so url and options are not declared.
+  constructor(private readonly container: HTMLElement) {
     super(); this.frame = document.createElement("iframe");
     this.frame.src = `${import.meta.env.BASE_URL}demo/media/vnc-preview.html`;
     this.frame.title = "Local desktop preview";

@@ -88,7 +88,11 @@ export class InMemoryNousGoalsRepository implements NousGoalsRepository {
     for (const goalId of goalIds) {
       const mine = this.events.filter((event) => event.ownerUserId === owner && event.goalId === goalId);
       const end = before === undefined ? mine.length : Math.max(0, mine.findIndex((event) => event.id === before));
-      out.push(...mine.slice(0, end).slice(-perGoal).reverse().map(({ ownerUserId: _owner, ...event }) => structuredClone(event)));
+      out.push(...mine.slice(0, end).slice(-perGoal).reverse().map((stored) => {
+        const event: NousGoalEvent & { ownerUserId?: string } = structuredClone(stored);
+        delete event.ownerUserId;
+        return event;
+      }));
     }
     return out;
   }

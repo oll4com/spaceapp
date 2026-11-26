@@ -26,13 +26,25 @@ const POLL_ACTIVE_MS = 400;
 const POLL_IDLE_MS = 4000;
 
 // OpenCode leads provider lists (clean-setup rule); the rest keep their order.
-const PROVIDERS: Array<{ id: string; name: string }> = [
+const BASE_PROVIDERS: Array<{ id: string; name: string }> = [
   { id: "opencode", name: "OpenCode" },
   { id: "codex", name: "Codex" },
   { id: "claude", name: "Claude" },
   { id: "antigravity", name: "Antigravity" },
   { id: "openrouter", name: "OpenRouter" },
-  { id: "github", name: "GitHub CLI" }
+  { id: "github", name: "GitHub CLI" },
+  { id: "space-gateway-claude", name: "Space Gateway Claude" },
+  { id: "space-gateway-nvidia", name: "Space Gateway Nvidia" },
+  { id: "space-gateway-groq", name: "Space Gateway Groq" },
+  { id: "space-gateway-mistral", name: "Space Gateway Mistral" },
+  { id: "space-gateway-adaption", name: "Space Gateway Adaption" },
+  { id: "space-gateway-amd", name: "Space Gateway AMD" },
+  { id: "space-gateway-ovh", name: "Space Gateway OVH" },
+  { id: "space-gateway-gemini", name: "Space Gateway Gemini" },
+  { id: "space-gateway-cloudflare", name: "Space Gateway Cloudflare" },
+  { id: "space-gateway-zai", name: "Space Gateway ZAI" },
+  { id: "space-gateway-inception", name: "Space Gateway Inception" },
+  { id: "space-gateway-freeai", name: "Space Gateway Free.ai" },
 ];
 
 const MODE_FALLBACK: Record<ArenaMode, { title: string; tests: string; timing: string }> = {
@@ -68,7 +80,12 @@ function shortLabel(name: string): string {
 function providerName(id: string): string {
   if (id === "baseline") return "reference";
   if (id === "jev") return "Jev";
-  return PROVIDERS.find((provider) => provider.id === id)?.name ?? id;
+  const known = BASE_PROVIDERS.find((provider) => provider.id === id);
+  if (known) return known.name;
+  if (id.startsWith("space-gateway-")) {
+    return `Space Gateway ${id.slice("space-gateway-".length).toUpperCase()}`;
+  }
+  return id;
 }
 
 function estimateMinutes(mode: ArenaMode, rounds: number, protocol: ArenaProtocol | null): number {
@@ -96,7 +113,7 @@ export function AsteroidsArenaBenchmark({ visible = true }: { visible?: boolean 
   const [catalogError, setCatalogError] = useState("");
   const [protocol, setProtocol] = useState<ArenaProtocol | null>(null);
   const [mode, setMode] = useState<ArenaMode>("championship");
-  const [enabled, setEnabled] = useState<Record<string, boolean>>(() => Object.fromEntries(PROVIDERS.map((provider) => [provider.id, true])));
+  const [enabled, setEnabled] = useState<Record<string, boolean>>(() => Object.fromEntries(BASE_PROVIDERS.map((provider) => [provider.id, true])));
   const [selected, setSelected] = useState<string[]>([]);
   const [includeBaseline, setIncludeBaseline] = useState(true);
   const [rounds, setRounds] = useState(3);
@@ -139,6 +156,15 @@ export function AsteroidsArenaBenchmark({ visible = true }: { visible?: boolean 
     void benchmarkGet<ArenaCatalog>("/api/asteroids/benchmark/models", 30_000)
       .then((loaded) => {
         setCatalog(loaded);
+        setEnabled((current) => {
+          const next = { ...current };
+          for (const model of loaded.models) {
+            if (next[model.providerId] === undefined) {
+              next[model.providerId] = true;
+            }
+          }
+          return next;
+        });
         setSelected((current) => {
           if (current.length > 0) return current;
           const ids = new Set(loaded.models.map((model) => model.id));
@@ -210,7 +236,7 @@ export function AsteroidsArenaBenchmark({ visible = true }: { visible?: boolean 
       if (document.visibilityState === "visible") {
         try {
           ingest(await benchmarkGet<LiveResponse>(`/api/asteroids/benchmark/live?after=${cursorRef.current}`, 10_000));
-        } catch {}
+        } catch { /* poll failed: retry on the next tick */ }
       }
       if (!stopped) timer = window.setTimeout(tick, liveRef.current?.status === "running" ? POLL_ACTIVE_MS : POLL_IDLE_MS);
     };
@@ -309,6 +335,26 @@ export function AsteroidsArenaBenchmark({ visible = true }: { visible?: boolean 
     }
     return groups;
   }, [catalog]);
+
+  const providers = useMemo(() => {
+    const known = new Map(BASE_PROVIDERS.map((p) => [p.id, p.name]));
+    const list: Array<{ id: string; name: string }> = [];
+    const seen = new Set<string>();
+    for (const p of BASE_PROVIDERS) {
+      if (grouped.has(p.id) || !catalog) {
+        list.push(p);
+        seen.add(p.id);
+      }
+    }
+    for (const pId of grouped.keys()) {
+      if (!seen.has(pId) && pId !== "baseline" && pId !== "jev") {
+        const name = known.get(pId) ?? pId.replace(/^space-gateway-/, "Space Gateway ").replace(/-/g, " ");
+        list.push({ id: pId, name });
+        seen.add(pId);
+      }
+    }
+    return list;
+  }, [catalog, grouped]);
 
   const roster = useMemo(() => {
     const ids = selected.filter((id) => modelsById.has(id) && enabled[modelsById.get(id)!.providerId] !== false);
@@ -528,7 +574,7 @@ export function AsteroidsArenaBenchmark({ visible = true }: { visible?: boolean 
       <div className="benchmark-game-settings arena-setup">
         <fieldset className="benchmark-provider-picker">
           <legend>Providers</legend>
-          {PROVIDERS.map((provider) => {
+          {providers.map((provider) => {
             const count = grouped.get(provider.id)?.length ?? 0;
             return (
               <SpaceToggle
@@ -560,7 +606,7 @@ export function AsteroidsArenaBenchmark({ visible = true }: { visible?: boolean 
             <button type="button" className="benchmark-quick-btn" disabled={running} onClick={() => setSelected([])}>Clear</button>
           </div>
           <div className="arena-model-groups">
-            {PROVIDERS.filter((provider) => enabled[provider.id] && (grouped.get(provider.id)?.length ?? 0) > 0).map((provider) => (
+            {providers.filter((provider) => enabled[provider.id] && (grouped.get(provider.id)?.length ?? 0) > 0).map((provider) => (
               <div key={provider.id} className="arena-model-group">
                 <span className="arena-model-group-name">{provider.name}</span>
                 <div className="benchmark-chips-wrap">

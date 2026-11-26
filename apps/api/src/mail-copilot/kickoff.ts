@@ -1,5 +1,5 @@
-import type { MailCopilotRun, Pane } from "@space/contracts";
-import { SpaceConflictError, type SpaceStore } from "@space/runtime";
+import type { MailCopilotRun, Pane, PaneCliSession } from "@space/contracts";
+import { makeSpaceId, SpaceConflictError, type SpaceStore } from "@space/runtime";
 import { clearIdleClaudeSession, submitCliPrompt } from "../cli-prompt-submit.js";
 import type { CliTerminalManager } from "../cli-terminal.js";
 import { idleWhy } from "../copilot-brief-watch.js";
@@ -28,7 +28,7 @@ export interface MailCopilotKickoff {
 
 /** The run's kickoff goes through the pane CLI input path Room Agent uses (typed line + Enter); tests replace `send`. */
 export function createMailCopilotKickoff(deps: { store: Pick<SpaceStore, "getActivePaneCliSession">; terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput" | "observeRoomScreenUndimmed">; send?: MailCopilotKickoff["send"];
-  inspect?(pane: Pane): Promise<RoomPaneObservation>; start?(pane: Pane): Promise<unknown> }): MailCopilotKickoff {
+  inspect?(pane: Pane): Promise<RoomPaneObservation>; start?(pane: Pane): Promise<unknown>; hostRunning?(session: PaneCliSession): Promise<boolean> }): MailCopilotKickoff {
   const lastKickoff = new Map<string, number>();
   const lastStart = new Map<string, number>();
   const kickedSession = new Map<string, string>();
@@ -39,7 +39,8 @@ export function createMailCopilotKickoff(deps: { store: Pick<SpaceStore, "getAct
   return {
     ready: async (pane) => Boolean(deps.send) || (Date.now() - (lastKickoff.get(pane.id) ?? 0) >= KICKOFF_GAP_MS && Boolean(await activeSession(pane))
       && (!deps.inspect || atEmptyPrompt(await deps.inspect(pane).catch(() => ({ state: "UNKNOWN" }) as unknown as RoomPaneObservation)))),
-    cliRunning: async (pane) => Boolean(deps.send) || Boolean(await activeSession(pane)),
+    // 20/11 Bob: a session record allocated for a terminal that never attached runs no process; it is started, not waited on.
+    cliRunning: async (pane) => { if (deps.send) return true; const session = await activeSession(pane); return Boolean(session) && (!deps.hostRunning || await deps.hostRunning(session!)); },
     ...(deps.start ? { startCli: async (pane: Pane) => {
       if (Date.now() - (lastStart.get(pane.id) ?? 0) < CLI_START_GAP_MS) return false;
       lastStart.set(pane.id, Date.now());
@@ -61,7 +62,8 @@ export function createMailCopilotKickoff(deps: { store: Pick<SpaceStore, "getAct
       await deps.terminal.runSerializedTerminalMutation(session.sessionId, async () => {
         // A new run starts on an empty conversation (plan qH5emwVaV6yO step 9): habits, memory and answers come from the server with each item.
         if (!run.kickoffSentAt) await clearIdleClaudeSession(deps.terminal, session, traceId, traceId);
-        await submitCliPrompt(deps.terminal, session.sessionId, KICKOFF(run.id), traceId, `${traceId}:kickoff`);
+        // The host keeps an input key until the CLI exits: the keep-alive's re-kick of a run under the first kick's key typed nothing.
+        await submitCliPrompt(deps.terminal, session.sessionId, KICKOFF(run.id), traceId, `${traceId}:${makeSpaceId("kickoff")}`, { paneId: session.paneId });
       });
     })
   };

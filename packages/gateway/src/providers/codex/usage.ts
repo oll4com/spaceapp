@@ -158,7 +158,7 @@ export async function consumeResetCredit(input: {
     throw new CodexUsageError(0, `Reset credit request failed: ${error instanceof Error ? error.message : "network error"}`);
   }
   const text = await response.text();
-  let payload: JsonObject = {};
+  let payload: JsonObject;
   try { payload = obj(JSON.parse(text)) ?? {}; } catch { payload = { error: { message: text.slice(0, 300) } }; }
   if (response.status >= 400) throw usageError(payload, response.status);
   const code = str(payload.code);

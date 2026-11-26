@@ -131,7 +131,9 @@ export async function resolveJevConfig(options: {
           source = file;
           break;
         }
-      } catch {}
+      } catch {
+        // missing or unreadable key file: try the next candidate
+      }
     }
   }
 

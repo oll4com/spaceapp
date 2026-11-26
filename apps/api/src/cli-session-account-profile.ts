@@ -3,6 +3,7 @@ import type { SpaceStore } from "@space/runtime";
 import { isCliAccountProfileRuntimeId } from "./cli-account-profile-runtimes.js";
 import { createGatewayCliAccounts } from "./gateway/gateway-cli-accounts.js";
 import type { GatewayAdminService } from "./gateway/gateway-service.js";
+import { linkAiServes } from "./instance-link/ai-lend.js";
 
 type PreviousAccount = Pick<PaneCliSession, "runtimeId" | "accountProfileId">;
 type AccountDependencies = {
@@ -13,7 +14,8 @@ type AccountDependencies = {
 /** Keep new-pane and resumed-session defaults on the same Gateway readiness hook. */
 export function createCliSessionAccounts(deps: AccountDependencies & { gateway: Pick<GatewayAdminService, "serves"> }) {
   const gatewayCliAccounts = createGatewayCliAccounts({
-    gateway: deps.gateway,
+    // Or a linked SpaceApp lends its Claude accounts over the link (instance-link/ai-lend.ts, plan clipboard:zqVWdClsx_pA step 6).
+    gateway: { serves: async (provider) => (await deps.gateway.serves(provider)) || linkAiServes(deps.store, provider) },
     profileExists: async (runtimeId, profileId) => isCliAccountProfileRuntimeId(runtimeId)
       && Boolean(await deps.store.getCliAccountProfile(runtimeId, profileId))
   });

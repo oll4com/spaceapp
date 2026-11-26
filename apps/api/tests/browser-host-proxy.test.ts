@@ -141,10 +141,9 @@ describe("Browser Host API proxy", () => {
         segments: { OPEN: 0, FINALIZED: 0, FAILED: 0, DISCARDED: 0 }
       }
     } satisfies BrowserHostHealth;
-    expect(browserHostReadiness(health, "a".repeat(40))).toBe("RUNNING");
-    expect(browserHostReadiness(health, "b".repeat(40))).toBe("RUNNING");
-    expect(browserHostReadiness({ ...health, status: { ...health.status, enabled: false } }, "a".repeat(40))).toBe("DISABLED");
-    expect(browserHostReadiness({ ...health, capacity: { ...health.capacity, maxLiveWorkloads: 3 } }, "a".repeat(40))).toBe("CAPACITY_MISMATCH");
-    expect(browserHostReadiness({ ...health, capacity: null }, "a".repeat(40))).toBe("CAPACITY_MISMATCH");
+    expect(browserHostReadiness(health)).toBe("RUNNING");
+    expect(browserHostReadiness({ ...health, status: { ...health.status, enabled: false } })).toBe("DISABLED");
+    expect(browserHostReadiness({ ...health, capacity: { ...health.capacity, maxLiveWorkloads: 3 } })).toBe("CAPACITY_MISMATCH");
+    expect(browserHostReadiness({ ...health, capacity: null })).toBe("CAPACITY_MISMATCH");
   });
 });

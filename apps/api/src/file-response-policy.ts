@@ -9,6 +9,7 @@ const sandboxedInlineTypes = new Set([
  * inline under the sandbox. A declared type must never grant app privileges. */
 export function applyFileResponsePolicy(reply: FastifyReply, mimeType: string, filename: string, download = false): void {
   const disposition = !download && sandboxedInlineTypes.has(mimeType.toLowerCase()) ? "inline" : "attachment";
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point
   const safeName = filename.replace(/[\x00-\x1f\x7f"\\]/g, "_");
   reply
     .type(mimeType)

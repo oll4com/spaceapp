@@ -120,6 +120,16 @@ describe("OTLP span exporter", () => {
     expect(unreachable.stats()).toEqual({ exported: 0, dropped: 0, failed: 1 });
   });
 
+  it("still sends after a flush that found the queue empty", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = exporter(fetchImpl);
+    await created.flush();
+    created.record(span());
+    await created.flush();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(created.stats().exported).toBe(1);
+  });
+
   it("ignores spans whose ids are not W3C trace and span ids", async () => {
     const fetchImpl = vi.fn(async () => ({ ok: true }));
     const created = exporter(fetchImpl);

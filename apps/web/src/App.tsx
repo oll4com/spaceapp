@@ -4,7 +4,7 @@ import { OPEN_SETTINGS_SECTION_EVENT } from "./features/settings/settings-sectio
 import type { DotSettingsRequest } from "./features/agent-pane/DotsSettingsCard.js";
 import { PANE_TOOLBAR_ACTION_ORDER_STORAGE_KEY_PREFIX, PANE_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY_PREFIX, PaneCard, SHARED_CODEX_TOOLBAR_HIDDEN_STORAGE_KEY, SHARED_CODEX_TOOLBAR_ORDER_STORAGE_KEY, dispatchAgentPaneAction, dispatchTerminalPaneAction, displayPaneTitle } from "./features/pane-card/PaneCard.js";
 export { formatTerminalSessionDebugInfo, formatTerminalSessionClipboardText } from "./features/pane-card/PaneCard.js";
-import { MovePaneDialog } from "./features/pane-dialogs/PaneDialogs.js";
+import { LazyAgentSettingsDock, LazyAsteroidsGate, LazyCliRuntimeRestartAllDialog, LazyHealthDock, LazyLinksPanel, LazyLoginScreen, LazyMovePaneDialog, LazyOwnerSetupScreen, LazyQuickLinksPopover, LazyRoomsDockPanel, LazyServerRestartDialog, LazyStickyNoteLayer, LazyStickyNoteWindow } from "./features/lazy-views.js";
 import { isTransientUpstreamErrorMessage, isTransientUpstreamRuntimeError, parseStreamEvent, streamEventTypes } from "./app-shell-utils.js";
 import {
   MAX_PANE_COLUMN_SPAN,
@@ -23,7 +23,6 @@ import {
 } from "./features/pane-grid/pane-grid-layout.js";
 export { roomToolbarNeedsSecondRow, paneHeaderNeedsSecondRow, resolvePaneGridPlacements, calculatePaneGridBaseRows } from "./features/pane-grid/pane-grid-layout.js";
 export type { PaneColumnAnchor, PaneColumnAnchorMap } from "./features/pane-grid/pane-grid-layout.js";
-import { LoginScreen } from "./features/auth/LoginScreen.js";
 import { InviteAcceptScreen, readInviteToken } from "./features/auth/InviteAcceptScreen.js";
 // Evaluated at its old position so the stylesheet order is unchanged; the Settings dock renders it.
 import "./features/voice-input/VoiceSettingsCard.js";
@@ -45,7 +44,6 @@ import {
   useRailVisibility
 } from "./features/ui-theme/use-rail-visibility.js";
 import { bindSpaceMediaVolume } from './space-audio.js';
-import { AsteroidsGate } from "./features/asteroids/AsteroidsGate.js";
 import { canPlayAsteroids } from "./features/asteroids/eligibility.js";
 import { createWorktree } from "./features/worktrees/worktree-client.js";
 import { RecoverableSurface } from "./features/SurfaceErrorBoundary.js";
@@ -80,6 +78,7 @@ import {
 } from "./features/ui-theme/app-icons.js";
 import { SensitiveDataMask } from "./features/sensitive-data/SensitiveDataMask.js";
 import { SpaceToggle } from "./features/ui-controls/SpaceToggle.js";
+import { useClipImageInput } from "./features/ui-controls/useClipImageInput.js";
 import { lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode, type RefObject } from "react";
 import type {
   Artifact,
@@ -137,7 +136,7 @@ import {
   pendingPaneCompletionEventId,
   type PaneCompletionLifecycleState
 } from "./pane-completion-lifecycle.js";
-import { type AgentDashboardSummary } from "./features/agents-dashboard/dashboard-model.js";
+import { AGENTS_DASHBOARD_OPEN_EVENT, type AgentDashboardSummary, type AgentsDashboardPreset } from "./features/agents-dashboard/dashboard-model.js";
 import {
   PANE_RUN_LIFECYCLE_EVENT,
   type PaneRunLifecycleDetail
@@ -165,7 +164,6 @@ import {
   dispatchAgentPaneAttachmentsEvent
 } from "./features/agent-pane/events.js";
 import { AuthenticationBootstrap } from "./features/auth/AuthenticationBootstrap.js";
-import { OwnerSetupScreen } from "./features/auth/OwnerSetupScreen.js";
 import {
   BROWSER_PANE_ACTION_EVENT,
   dispatchBrowserPaneActionEvent,
@@ -179,7 +177,6 @@ import { resolveCopilotLaunch } from "./features/copilot-kit/copilot-runtimes.js
 import { rememberNewPaneAccount } from "./features/cli-accounts/cli-account-memory.js";
 import { forwardCopilotStreamEvents } from "./features/copilot-kit/copilot-stream.js";
 import { forwardNousPaneBoardEvents, useNousFocus } from "./features/nous-focus/NousFocus.js";
-import { HealthDock } from "./features/health/HealthDock.js";
 import {
   AppDiagnosticsGlobalIndicators,
   useDiagnosticsState
@@ -194,7 +191,7 @@ import { SettingsDisclosure, SettingsSections } from "./features/settings/Settin
 import { useRoomAgentAttention } from "./features/room-agent/use-room-agent-attention.js";
 import { dispatchNotificationStreamEvent, useNotificationBootstrap } from "./features/notifications/useNotifications.js";
 import { pushNotificationsEnabled, setPushNotifications } from "./features/notifications/desktop-notifications.js";
-import { useNotificationStore, type NotificationNavigator } from "./features/notifications/notification-store.js";
+import { notificationsBadge, useNotificationStore, type NotificationNavigator } from "./features/notifications/notification-store.js";
 import { NotificationToastHost } from "./features/notifications/NotificationToastHost.js";
 import { useDocksVisibility } from "./features/docks/use-docks-visibility.js";
 import { useDockConfirm } from "./features/dock-kit/DockKit.js";
@@ -223,7 +220,6 @@ import {
   StreamingOverlayProvider
 } from "./features/streaming/StreamingOverlay.js";
 import { reorderPanesByTarget, setPaneDragData, type PaneDropPosition } from "./features/pane-drag/pane-drag.js";
-import { LinksPanel, QuickLinksPopover } from "./features/user-links/UserLinks.js";
 import {
   RoomThemeMenu
 } from "./features/room-theme/RoomThemeMenu.js";
@@ -245,14 +241,14 @@ import {
   type UiBackground,
   type UiTheme
 } from "./ui-theme.js";
-import { RoomsDockPanel, selectRoomEntries } from "./features/rooms-dock/RoomsDockPanel.js";
+import { selectRoomEntries } from "./features/rooms-dock/room-entries.js";
 import { useRoomsDock } from "./features/rooms-dock/useRoomsDock.js";
 import { useAdminUsers } from "./features/rooms-dock/useAdminUsers.js";
 import { ensureProjectFolder, loadBoundedRoomCatalog, sortRoomsByOrder } from "./features/rooms-dock/room-catalog.js";
+import { isRoomNotFoundError, PANE_NOT_FOUND_EVENT } from "./pane-not-found.js";
 import { useAppView } from "./features/help/useAppView.js";
 import { MemoryWorkspaceErrorBoundary } from "./features/memory-workspace/MemoryWorkspaceErrorBoundary.js";
 import { useManageController } from "./features/server-actions/useManageController.js";
-import { CliRuntimeRestartAllDialog, ServerRestartDialog } from "./features/server-actions/RestartDialogs.js";
 import { CliLauncherMenu } from "./features/cli-launcher/CliLauncherMenu.js";
 import { PaneLayoutMenu } from "./features/pane-layout/PaneLayoutMenu.js";
 import { useRootRemSize } from "./features/pane-layout/use-root-rem-size.js";
@@ -266,7 +262,7 @@ import { paneRuntimeBlockedReason, roomPaneLimit } from "./pane-runtime-availabi
 import type { OnScreenKeyboardInput } from "./features/osk-keyboard/OnScreenKeyboard.js";
 import { routePaneKeyboardInput } from "./features/osk-keyboard/pane-keyboard-input.js";
 import { useVibeMusicMount } from "./features/vibe-music/vibe-music-session.js";
-import { StickyNoteLayer, StickyNoteWindow, useStickyNoteWindows } from "./features/clipboard-dock/StickyNoteWindow.js";
+import { useStickyNoteWindows } from "./features/clipboard-dock/sticky-note-windows.js";
 import { usePaneOpener } from "./features/pane-card/pane-opener.js";
 import { useYouTubeFloatRequest } from "./features/pane-card/use-youtube-float-request.js";
 import {
@@ -328,17 +324,19 @@ import { useSnipTool } from "./features/snip-tool/useSnipTool.js";
 import { useToolbarPopovers } from "./features/room-toolbar/useToolbarPopovers.js";
 import { buildRoomToolbarActions } from "./features/room-toolbar/room-toolbar-actions.js";
 import { CollapsedRoomRail, type WorkspaceNavigationBinding } from "./features/room-toolbar/CollapsedRoomRail.js";
-import { roomActionFilter, roomRailVisibility } from "./features/rooms-dock/room-share-view.js";
+import { isViewOnlyRoom, roomActionFilter, roomRailVisibility } from "./features/rooms-dock/room-share-view.js";
 import { RoomTitleBar } from "./features/room-toolbar/RoomTitleBar.js";
 import { useRoomRename } from "./features/room-toolbar/useRoomRename.js";
 import { useMinimizedPaneBar } from "./features/pane-float/useMinimizedPaneBar.js";
 import { MinimizedPaneBar } from "./features/pane-float/MinimizedPaneBar.js";
 import { paneTitleForMode } from "./features/pane-float/pane-mode-labels.js";
-import { AgentSettingsDock, settingsCardLoadingFallback, type AgentSettingsCards } from "./features/settings/AgentSettingsDock.js";
+import type { AgentSettingsCards } from "./features/settings/AgentSettingsDock.js";
+import { settingsCardLoadingFallback } from "./features/settings/settings-card-loading.js";
 import { RoomToolbarActions } from "./features/room-toolbar/RoomToolbarActions.js";
 import { scheduleT3BundlePrefetch } from "./features/t3code-pane/t3code-prefetch.js";
 import { useGatewayCompressionToggle } from "./features/space-gateway/useGatewayCompressionToggle.js";
 import { scheduleSetupOverviewProbe, scheduleStartupBackground } from "./startup-background.js";
+import { leaveNousFullscreen } from "./features/nous/nous-ui-state.js";
 
 const ROOM_PRESENTATION_FAILURE_TIMEOUT_MS = 8_000;
 
@@ -799,11 +797,6 @@ function dispatchBrowserPaneAction(paneId: string, action: BrowserPaneAction) {
   dispatchBrowserPaneActionEvent({ paneId, action });
 }
 
-function isRoomNotFoundError(error: unknown, roomId: string): boolean {
-  if (!(error instanceof Error)) return false;
-  return error.message.includes("NOT_FOUND") && error.message.includes(`Room ${roomId} was not found`);
-}
-
 function applyServerUserSettings(
   storage: Storage,
   settings: UserSettings,
@@ -959,6 +952,7 @@ export function App() {
   const [roomPaneCounts, setRoomPaneCounts] = useState<Record<string, number>>({});
   const [roomCliActivityCounts, setRoomCliActivityCounts] = useState<Record<string, number>>({});
   const [roomCliRuntimeIds, setRoomCliRuntimeIds] = useState<Record<string, string[]>>({});
+  const [roomPaneModes, setRoomPaneModes] = useState<Record<string, Pane["mode"][]>>({});
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => readStoredSessionString(SELECTED_ROOM_ID_STORAGE_KEY));
   const [dotSettingsRequest, setDotSettingsRequest] = useState<DotSettingsRequest | null>(null);
   const [roomRuntimes, setRoomRuntimes] = useState<Record<string, RoomRuntimeSnapshot>>({});
@@ -1015,7 +1009,7 @@ export function App() {
   const [cliRuntimeSettings, setCliRuntimeSettings] = useState<CliRuntimeSettingsResponse | null>(null);
   const anyCliEnabled = cliRuntimeSettings?.settings.some((setting) => setting.enabled) ?? true;
   const isHarnessEnabled = cliRuntimeSettings?.harness?.enabled ?? true;
-  const [restoredDock] = useState(() => readDockSession(runtime.platform.sessionStorage, Object.keys(sideSurfaceMeta)));
+  const [restoredDock] = useState(() => readDockSession([runtime.platform.sessionStorage, runtime.platform.localStorage], Object.keys(sideSurfaceMeta)));
   const { hiddenDockIds, isDockHidden } = useDocksVisibility();
   const { hiddenPaneIds, isPaneHidden } = usePanesVisibility();
   const { hiddenWidgetIds, isWidgetHidden } = useWidgetsVisibility();
@@ -1098,6 +1092,12 @@ export function App() {
   const [restoreAllPending, setRestoreAllPending] = useState(false);
   const [minimizeAllPending, setMinimizeAllPending] = useState(false);
   const [isAgentsDashboardOpen, setIsAgentsDashboardOpen] = useState(false);
+  const [agentsDashboardPreset, setAgentsDashboardPreset] = useState<AgentsDashboardPreset | null>(null);
+  useEffect(() => {
+    const open = (event: Event) => { setAgentsDashboardPreset((event as CustomEvent<AgentsDashboardPreset>).detail); setIsAgentsDashboardOpen(true); };
+    window.addEventListener(AGENTS_DASHBOARD_OPEN_EVENT, open);
+    return () => window.removeEventListener(AGENTS_DASHBOARD_OPEN_EVENT, open);
+  }, []);
   const [agentsDashboardSummary, setAgentsDashboardSummary] = useState<AgentDashboardSummary | null>(null);
   const [isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen] = useState(false);
   // Space Gateway as a full-screen page over the workspace, like the memory workspace (ADMIN).
@@ -1204,6 +1204,7 @@ export function App() {
   const appMountedRef = useRef(true);
   const roomPaneLoadStatesRef = useRef(roomPaneLoadStates);
   const clipImageInputRef = useRef<HTMLInputElement | null>(null);
+  const clipImageInput = useClipImageInput(clipImageInputRef, handleClipImageSelection);
   const pendingClipImageTargetRef = useRef<ClipImageTarget | null>(null);
   const isCapturingScreenRef = useRef(false);
   const cliPaneCreationPendingRef = useRef(false);
@@ -1254,6 +1255,11 @@ export function App() {
       if (!appMountedRef.current) return;
       const nextRooms = sortRoomsByOrder(roomCatalog);
       setRooms((current) => reuseVersionedItems(current, nextRooms, (room) => room.updatedAt));
+      // A warm room deleted elsewhere kept its hidden panes mounted and polling; the selected one is handled below.
+      const liveRoomIds = new Set(nextRooms.map((room) => room.id));
+      for (const roomId of Object.keys(roomRuntimesRef.current)) {
+        if (!liveRoomIds.has(roomId) && roomId !== selectedRoomIdRef.current) removeRoomRuntime(roomId);
+      }
       const missingRoomId = selectedRoomIdRef.current;
       if (!missingRoomId || nextRooms.some((room) => room.id === missingRoomId)) return;
 
@@ -1265,6 +1271,27 @@ export function App() {
     });
 
   useSpaceClipboardCapture(Boolean(auth?.isAuthenticated));
+
+  // A pane the server 404s leaves the client: a vanished room goes with the catalog refresh, else its room's panes reload.
+  useEffect(() => {
+    const handlePaneNotFound = (event: Event) => {
+      const { paneId } = (event as CustomEvent<{ paneId: string }>).detail;
+      const roomId = panesRef.current.some((pane) => pane.id === paneId)
+        ? selectedRoomIdRef.current
+        : Object.values(roomRuntimesRef.current).find((runtime) => runtime.panes.some((pane) => pane.id === paneId))?.roomId ?? null;
+      void requestRoomCatalogRefreshRef.current()
+        .then(() => {
+          if (roomId && (roomId === selectedRoomIdRef.current || roomRuntimesRef.current[roomId])) {
+            return requestRoomRefreshRef.current(roomId, "panes", "pane-not-found");
+          }
+        })
+        .catch(() => {
+          // The next 404 or room event retries; the last snapshot stays usable meanwhile.
+        });
+    };
+    window.addEventListener(PANE_NOT_FOUND_EVENT, handlePaneNotFound);
+    return () => window.removeEventListener(PANE_NOT_FOUND_EVENT, handlePaneNotFound);
+  }, []);
 
   useEffect(() => {
     appMountedRef.current = true;
@@ -2028,7 +2055,10 @@ export function App() {
         phase: "ERROR",
         durationMs: durationMs()
       });
-      throw error;
+      // 14/11: a room deleted elsewhere rejected past fire-and-forget callers; the catalog refresh moves the client off it.
+      if (!isRoomNotFoundError(error, roomId)) throw error;
+      console.warn(`Room ${roomId} is gone; refreshing the room list.`);
+      void requestRoomCatalogRefreshRef.current().catch(() => undefined);
     } finally {
       roomRuntimeHydrationIdsRef.current.delete(roomId);
     }
@@ -4110,7 +4140,7 @@ export function App() {
       appendRoomEvent(event, !replaying || !baselineReplay);
       if (/^(PANE_|TASK_|ROOM_AGENT_|MISSION_|MODEL_)/.test(event.type)) window.dispatchEvent(new CustomEvent("space-live-context-invalidated", { detail: { roomId: activeRoom.id } }));
       if (event.type === "PANE_UPDATED" && event.payload.roomPaneLayoutChanged === true) {
-        void requestRoomCatalogRefreshRef.current();
+        void requestRoomCatalogRefreshRef.current().catch(() => undefined);
       }
       // A replayed alert is history: every room switch or reconnect replays the room's last 50 events, which brought a
       // dismissed alert back again and again. Its URGENT notification stays in the Notifications dock.
@@ -4245,14 +4275,15 @@ export function App() {
     // Copilot activity (copilot-kit/copilot-stream.ts) and the Nous pane board's updates (nous-focus) reach the page as window events.
     // A browser handoff reaches the operator as its notification: the needs-you flow (nous-focus) brings them to the pane and takes control.
     const stopWindowStreams = [forwardCopilotStreamEvents(source), forwardNousPaneBoardEvents(source)];
-    // Notifications travel as ids only; the store reads the owner's records and delivers the new ones.
+    // Notifications and inbox Threads travel as ids only; the store reads the owner's records and delivers the new ones.
     const handleNotification = (message: MessageEvent<string>) => {
       const event = parseStreamEvent(message.data);
-      if (!event || (event.type !== "NOTIFICATION_CREATED" && event.type !== "NOTIFICATION_UPDATED") || replaying) return;
+      if (!event || (event.type !== "NOTIFICATION_CREATED" && event.type !== "NOTIFICATION_UPDATED" && event.type !== "INBOX_UPDATED") || replaying) return;
       dispatchNotificationStreamEvent(event.payload);
     };
     source.addEventListener("NOTIFICATION_CREATED", handleNotification as EventListener);
     source.addEventListener("NOTIFICATION_UPDATED", handleNotification as EventListener);
+    source.addEventListener("INBOX_UPDATED", handleNotification as EventListener);
     return () => {
       source.removeEventListener("replay-start", handleReplayStart);
       source.removeEventListener("replay-complete", handleReplayComplete);
@@ -4261,6 +4292,7 @@ export function App() {
       for (const stop of stopWindowStreams) stop();
       source.removeEventListener("NOTIFICATION_CREATED", handleNotification as EventListener);
       source.removeEventListener("NOTIFICATION_UPDATED", handleNotification as EventListener);
+      source.removeEventListener("INBOX_UPDATED", handleNotification as EventListener);
       source.close();
     };
   }, [activeTerminalPanesBootstrapped, auth?.isAuthenticated]);
@@ -4305,6 +4337,7 @@ export function App() {
               (activity as typeof activity & { runtimeIds?: string[] }).runtimeIds ?? []
             ])
           ));
+          setRoomPaneModes(Object.fromEntries(payload.data.map((activity) => [activity.roomId, activity.paneModes ?? []])));
         })
         .catch(() => undefined);
     };
@@ -4585,6 +4618,7 @@ export function App() {
             (activity as typeof activity & { runtimeIds?: string[] }).runtimeIds ?? []
           ])
         ));
+        setRoomPaneModes(Object.fromEntries(payload.data.map((activity) => [activity.roomId, activity.paneModes ?? []])));
       } catch {
         // Keep the last successful sample through temporary API failures.
       } finally {
@@ -4851,7 +4885,7 @@ export function App() {
         role: auth?.user?.role,
         hasUser: Boolean(auth?.user),
         shellMode,
-        docks: { ...sideSurfaces, hiddenDockIds, roomAgentAttention: roomAgentAttention.total, notificationAttention: notificationStore.pending.total },
+        docks: { ...sideSurfaces, hiddenDockIds, roomAgentAttention: roomAgentAttention.total, notificationAttention: notificationsBadge(notificationStore) },
         visibility: { isWidgetHidden, isPaneHidden },
         popovers: toolbarPopovers,
         preferences: userPreferences,
@@ -5456,6 +5490,7 @@ export function App() {
   const paneCardOnMove = useStableCallback(openMovePaneDialog);
   const paneCardOnPaneUpdated = useStableCallback(handlePaneUpdated);
   const paneCardOnOpenExisting = useStableCallback(async (pane: Pane) => {
+    leaveNousFullscreen();
     await selectRoom(pane.roomId);
     if (pane.isMinimized) {
       await restorePane(pane);
@@ -5732,14 +5767,14 @@ export function App() {
 
   const { entries: filteredRoomEntries, isRoomListFiltered } = selectRoomEntries({
     rooms, selectedRoomId, panes, roomRuntimes, completions: paneCompletionLifecycle.panes, roomCliActivityCounts,
-    isAdminMode, userId: auth?.user?.id, dock: roomsDock, userEmailById: adminUsers.userEmailById, notificationRooms: notificationStore.pending.byRoom, listsEveryRoom: auth?.user?.role === "USER" });
+    isAdminMode, userId: auth?.user?.id, dock: roomsDock, userEmailById: adminUsers.userEmailById, notificationRooms: notificationStore.inbox?.byRoom ?? notificationStore.pending.byRoom, listsEveryRoom: auth?.user?.role === "USER" });
   const roomsSurfaceContent = (
-    <RoomsDockPanel
+    <LazyRoomsDockPanel
       dock={roomsDock}
       adminUsers={adminUsers}
       entries={filteredRoomEntries}
       isRoomListFiltered={isRoomListFiltered}
-      catalog={{ rooms, setRooms, selectedRoomId, panes, roomRuntimes, roomPaneLoadStates, warmRoomIds, warmRoomEnabled, roomPaneCounts, roomCliRuntimeIds }}
+      catalog={{ rooms, setRooms, selectedRoomId, panes, roomRuntimes, roomPaneLoadStates, warmRoomIds, warmRoomEnabled, roomPaneCounts, roomCliRuntimeIds, roomPaneModes }}
       access={{ auth, isAdminMode, runtimeKind }}
       actions={{
         createRoom, roomCreationPending, selectRoom, requestRoomDelete, requestTestRoomsDelete, deletePendingRoomId, setSelectedPaneId, addFilesPane, addRootAdminPane,
@@ -5823,7 +5858,7 @@ export function App() {
         onOpenPane={roomAgentOnOpenPane}
       />
     ) : surface === "settings" ? (
-      <AgentSettingsDock
+      <LazyAgentSettingsDock
         cards={agentSettingsCards}
         roomId={selectedRoomId}
         dotSettingsRequest={dotSettingsRequest}
@@ -5911,14 +5946,14 @@ export function App() {
         onInsert={insertTaskItem}
       />
     ) : surface === "vault" ? <LazyVaultDock /> : surface === "links" ? (
-      <LinksPanel onOpen={link => {
+      <LazyLinksPanel onOpen={link => {
         if (onNavigate && link.openMode !== "NEW_TAB" && !isYouTubeUrl(link.url)) {
           setWorkspaceUserLink(link);
           onNavigate("link-preview");
         } else openUserLink(link);
       }} />
     ) : (
-      <HealthDock
+      <LazyHealthDock
         readiness={readiness}
         mcp={mcp}
         latestSmoke={latestMcpSmoke}
@@ -5991,11 +6026,7 @@ export function App() {
   }
 
   if (!auth.isAuthenticated && (setupStatus.setupRequired || auth.isSetupRequired)) {
-    return (
-      <AppIconProvider pack={modernIconPack}>
-        <OwnerSetupScreen expiresAt={setupStatus.expiresAt} onClaim={handleOwnerClaim} />
-      </AppIconProvider>
-    );
+    return <AppIconProvider pack={modernIconPack}><RecoverableSurface fallback={null}><LazyOwnerSetupScreen expiresAt={setupStatus.expiresAt} onClaim={handleOwnerClaim} /></RecoverableSurface></AppIconProvider>;
   }
 
   const inviteToken = auth.isAuthenticated ? null : readInviteToken(window.location);
@@ -6013,16 +6044,7 @@ export function App() {
   }
 
   if (!auth.isAuthenticated) {
-    return (
-      <AppIconProvider pack={modernIconPack}>
-        <LoginScreen
-          auth={auth}
-          colorMode={uiTheme !== "classic" ? modernColorMode : null}
-          modern={uiTheme !== "classic"}
-          onLogin={handleLogin}
-        />
-      </AppIconProvider>
-    );
+    return <AppIconProvider pack={modernIconPack}><RecoverableSurface fallback={null}><LazyLoginScreen auth={auth} colorMode={uiTheme !== "classic" ? modernColorMode : null} modern={uiTheme !== "classic"} onLogin={handleLogin} /></RecoverableSurface></AppIconProvider>;
   }
 
   if (isOskKeyboardOpen || workspaceKeyboardHost) oskKeyboardMountedRef.current = true;
@@ -6079,8 +6101,9 @@ export function App() {
     </RecoverableSurface>
   ) : null;
 
-  const stickyNoteLayer = shellMode === "mobile" ? null : (
-    <StickyNoteLayer
+  // No open note: the sticky note chunk is never fetched.
+  const stickyNoteLayer = shellMode === "mobile" || stickyWindows.length === 0 ? null : (
+    <RecoverableSurface fallback={null}><LazyStickyNoteLayer
       windows={stickyWindows}
       onClose={closeStickyWindow}
       onUpdateText={(id, text) => updateStickyWindow(id, { text })}
@@ -6088,7 +6111,7 @@ export function App() {
       onUpdatePosition={(id, x, y) => updateStickyWindow(id, { x, y })}
       onUpdateItemId={(id, itemId) => updateStickyWindow(id, { itemId })}
       onBringToFront={bringStickyWindowToFront}
-    />
+    /></RecoverableSurface>
   );
 
   const isHeaderDockActive = !isRoomToolbarHidden;
@@ -6846,7 +6869,7 @@ export function App() {
     } else if (id === "quick-links") {
       content = renderSideSurfaceContent("links", onBack, onNavigate);
     } else if (id === "sticky-note") {
-      content = <StickyNoteWindow key={workspaceStickyItem?.id ?? "new"} id="workspace-sticky-note"
+      content = <LazyStickyNoteWindow key={workspaceStickyItem?.id ?? "new"} id="workspace-sticky-note"
         initialText={workspaceStickyItem?.text} itemId={workspaceStickyItem?.id}
         onClose={() => { setWorkspaceStickyItem(null); onBack(); }} />;
     } else if (id === "clip-tool" || id === "snip-tool") {
@@ -6961,6 +6984,7 @@ export function App() {
       data-color-mode={uiTheme !== "classic" ? modernColorMode : undefined}
       data-icon-pack={modernIconPack}
       data-room-id={activeRoom?.id}
+      data-view-only-room={isViewOnlyRoom(presentationRoom) ? "true" : undefined}
       data-shell-mode={shellMode}
       data-interface-mode={isAdminMode ? "admin" : "user"}
       data-warm-room-cache-enabled={String(warmRoomEnabled)}
@@ -7008,18 +7032,7 @@ export function App() {
         {runtimeKind === "demo" ? <DemoVersionMeta /> : <AppVersionMeta />}
       </header> : null}
 
-      <input
-        ref={clipImageInputRef}
-        type="file"
-        name="clip-tool-image"
-        accept="image/png,image/jpeg,image/webp"
-        hidden
-        onChange={(event) => {
-          const file = event.currentTarget.files?.[0] ?? null;
-          event.currentTarget.value = "";
-          handleClipImageSelection(file);
-        }}
-      />
+      {clipImageInput}
       <AppNoticeBanners
         notices={notices}
         actionError={error}
@@ -7110,9 +7123,9 @@ export function App() {
         </RecoverableSurface>
       ) : null}
 
-      {manage.serverRestart.isOpen ? <ServerRestartDialog controller={manage.serverRestart} /> : null}
+      {manage.serverRestart.isOpen ? <RecoverableSurface fallback={null}><LazyServerRestartDialog controller={manage.serverRestart} /></RecoverableSurface> : null}
 
-      {manage.cliRuntimeRestartAll.isOpen ? <CliRuntimeRestartAllDialog controller={manage.cliRuntimeRestartAll} /> : null}
+      {manage.cliRuntimeRestartAll.isOpen ? <RecoverableSurface fallback={null}><LazyCliRuntimeRestartAllDialog controller={manage.cliRuntimeRestartAll} /></RecoverableSurface> : null}
       {gatewayCompression.dialog}
 
       {auth.user?.role === "ADMIN" && (isRoomToolbarHidden || isMemoryWorkspaceOpen || isSpaceGatewayOpen || systemAnalyticsTab || !presentationRoom) ? renderToolbarMetrics(true) : null}
@@ -7121,7 +7134,7 @@ export function App() {
           <LazyAgentsDashboard key={auth.user.id} userId={auth.user.id} open={isAgentsDashboardOpen} rooms={rooms} completions={paneCompletionLifecycle.panes}
             activePanes={panes} onSummaryChange={setAgentsDashboardSummary}
             onOpenPane={paneCardOnOpenExisting} onClose={() => setIsAgentsDashboardOpen(false)}
-            currentRoomId={activeRoom?.id ?? selectedRoomId ?? null} selectedPaneId={selectedPaneId} />
+            currentRoomId={activeRoom?.id ?? selectedRoomId ?? null} selectedPaneId={selectedPaneId} preset={agentsDashboardPreset} />
         </RecoverableSurface>
       ) : null}
       {auth.user && <SystemHealth key={auth.user.id} userId={auth.user.id} allowChanges={shellMode !== "desktop" || isAdminMode}
@@ -7381,24 +7394,26 @@ export function App() {
             {canPlayAsteroids({ selectedRoomId, displayedRoomId, preparingRoomId,
               loaded: Boolean(selectedRoomId && roomPaneLoadStates[selectedRoomId] === "loaded"),
               category: selectedRoomId ? activeCategoryColorByRoom[selectedRoomId] ?? null : null, panes }) ? (
-                <AsteroidsGate key={selectedRoomId} />
+                <RecoverableSurface fallback={null}><LazyAsteroidsGate key={selectedRoomId} /></RecoverableSurface>
               ) : null}
           </div>
           {shellMode === "mobile" ? <MobilePaneSwitcher panes={sortPanesForGrid(visiblePanes)} activePaneId={activePane?.id} onSelect={selectMobilePane} /> : null}
         </section>
         {paneMoveDialog ? (
-          <MovePaneDialog
-            paneTitle={displayPaneTitle(paneMoveDialog.pane)}
-            targetRooms={rooms.filter((room) => room.id !== paneMoveDialog.pane.roomId)}
-            targetRoomId={paneMoveDialog.targetRoomId}
-            pending={paneMoveDialog.pending}
-            error={paneMoveDialog.error}
-            onTargetRoomChange={(targetRoomId) =>
-              setPaneMoveDialog((current) => (current ? { ...current, targetRoomId, error: null } : current))
-            }
-            onClose={closeMovePaneDialog}
-            onConfirm={() => void submitPaneMove()}
-          />
+          <RecoverableSurface fallback={null}>
+            <LazyMovePaneDialog
+              paneTitle={displayPaneTitle(paneMoveDialog.pane)}
+              targetRooms={rooms.filter((room) => room.id !== paneMoveDialog.pane.roomId)}
+              targetRoomId={paneMoveDialog.targetRoomId}
+              pending={paneMoveDialog.pending}
+              error={paneMoveDialog.error}
+              onTargetRoomChange={(targetRoomId) =>
+                setPaneMoveDialog((current) => (current ? { ...current, targetRoomId, error: null } : current))
+              }
+              onClose={closeMovePaneDialog}
+              onConfirm={() => void submitPaneMove()}
+            />
+          </RecoverableSurface>
         ) : null}
 
       </section>
@@ -7419,7 +7434,7 @@ export function App() {
         </RecoverableSurface>
       </div> : null}
       </div>
-      <QuickLinksPopover open={isQuickLinksOpen} triggerRef={quickLinksButtonRef} onClose={() => setIsQuickLinksOpen(false)} onOpen={openUserLink} onManage={manageLinks} />
+      {isQuickLinksOpen ? <RecoverableSurface fallback={null}><LazyQuickLinksPopover open={isQuickLinksOpen} triggerRef={quickLinksButtonRef} onClose={() => setIsQuickLinksOpen(false)} onOpen={openUserLink} onManage={manageLinks} /></RecoverableSurface> : null}
       {activeUserLink && !workspaceNavigationDetail ? (
         <RecoverableSurface fallback={<div role="status">Loading dashboard…</div>}>
           <LazyEmbeddedDashboardDialog link={activeUserLink} onClose={() => setActiveUserLink(null)} />

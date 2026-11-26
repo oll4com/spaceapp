@@ -24,6 +24,9 @@ const pathKey = (url: string | null) => {
   try { const parsed = new URL(url ?? ""); return parsed.protocol.startsWith("http") ? `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}` : null; } catch { return null; }
 };
 const siteOf = (url: string | null) => { try { return url && /^https?:/.test(url) ? siteSigninDomain(url) : null; } catch { return null; } };
+/** Whether a text names a site by its first label ("shopify" for shopify.com), 3 letters or more. */
+const namesSite = (text: string, site: string) => { const label = site.split(".")[0]!;
+  return label.length >= 3 && new RegExp(`(?:^|[^\\p{L}\\p{N}])${label.replace(/[^a-z0-9-]/gi, "")}(?![\\p{L}\\p{N}])`, "iu").test(text); };
 
 export function pickBrowserPage(browsers: readonly LiveBrowser[], ask: BrowserPageAsk, roomBrowserPaneIds: readonly string[] = []): NeedsYouBrowserPage | null {
   const rank = (browser: LiveBrowser) => (browser.driverPaneId === ask.paneId ? 0 : 2) + (browser.roomId === ask.roomId ? 0 : 1);
@@ -61,7 +64,7 @@ export function pickBrowserPage(browsers: readonly LiveBrowser[], ask: BrowserPa
   const key = pathKey(url);
   const site = siteOf(url);
   const named = new Set(near.flatMap((browser) => browser.pages.map((page) => siteOf(page.url)).filter((entry): entry is string => Boolean(entry)))
-    .filter((entry) => entry.split(".")[0]!.length >= 3 && new RegExp(`(?:^|[^\\p{L}\\p{N}])${entry.split(".")[0]!.replace(/[^a-z0-9-]/gi, "")}(?![\\p{L}\\p{N}])`, "iu").test(ask.text)));
+    .filter((entry) => namesSite(ask.text, entry)));
   const found = (key ? first((page) => pathKey(page) === key) : null) ?? (site ? first((page) => siteOf(page) === site, near) : null)
     ?? (named.size ? first((page) => named.has(siteOf(page) ?? ""), near) : null);
   if (found) return found;
@@ -127,6 +130,21 @@ export function createNeedsYouBrowserPages(deps: PageDeps) {
       deps.log?.(error);
       return input;
     }
+  };
+}
+
+/**
+ * 16/11 REVIEW (nous_msg:33444df3: a Shopify SMS code card on Dino/Bob while no Shopify tab was open anywhere): whether a one-time code card's page
+ * is open: the target's tab in any browser, else a tab at the target's site, or at a site the card's words name, in a browser near the pane
+ * (its own, its room's, the one it drives).
+ */
+export function createCodePageOpen(deps: PageDeps) {
+  return async (owner: string, pane: { id: string; roomId: string }, target: string | undefined, text: string): Promise<boolean> => {
+    const browsers = await liveBrowsers(deps, owner);
+    if (target?.startsWith("tab:")) return browsers.some((browser) => browser.pages.some((page) => page.pageId === target.slice(4)));
+    const site = target?.startsWith("url:") ? siteOf(target.slice(4)) : null;
+    return browsers.some((browser) => (browser.paneId === pane.id || browser.roomId === pane.roomId || browser.driverPaneId === pane.id)
+      && browser.pages.some((page) => { const at = siteOf(page.url); return Boolean(at && (site ? at === site : namesSite(text, at))); }));
   };
 }
 

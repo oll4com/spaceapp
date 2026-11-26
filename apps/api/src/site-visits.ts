@@ -41,6 +41,7 @@ export function summarizeSiteVisits(log: string, since: string, updatedAt: strin
     return [...groups].map(([name, list]) => ({ key: name, views: list.length, medianSeconds: seconds ? median(list.filter(Number.isFinite)) : null }))
       .sort((a, b) => b.views - a.views || a.key.localeCompare(b.key));
   };
+  const intends = (visit: Visit) => visit.p.startsWith("/install") || (visit.ev?.split(",") ?? []).includes("install_copy");
   const visible = (visit: Visit) => (typeof visit.act === "number" ? Math.round(visit.act / 1000) : undefined);
 
   // Homepage sections, in the order visitors met them (their mean position in each view's own order).
@@ -56,7 +57,7 @@ export function summarizeSiteVisits(log: string, since: string, updatedAt: strin
 
   return {
     updatedAt, since, views: views.length, internal: all.length - views.length,
-    installIntent: views.filter((visit) => visit.p.startsWith("/install") || (visit.ev?.split(",") ?? []).includes("install_copy")).length,
+    installIntent: views.filter(intends).length,
     sections: [...sections].sort(([, a], [, b]) => mean(a.positions) - mean(b.positions))
       .map(([id, value]) => ({ id, reached: value.seconds.length, medianSeconds: median(value.seconds), exits: value.exits, clicks: value.clicks })),
     pages: grouped((visit) => [visit.p], visible).map((row) => {
@@ -64,7 +65,9 @@ export function summarizeSiteVisits(log: string, since: string, updatedAt: strin
       return { ...row, medianDepth: median(list.flatMap((visit) => (typeof visit.sc === "number" ? [visit.sc] : []))), leftSite: list.filter((visit) => !visit.out?.startsWith("in:")).length };
     }),
     referrers: grouped((visit) => [visit.r]),
-    sources: grouped((visit) => [visit.src]),
+    // Lowercased as the launcher lowercases --ref (normalizeInstallRef), so a source meets its own installs in the report's funnelByRef.
+    sources: grouped((visit) => [visit.src?.toLowerCase()])
+      .map((row) => ({ ...row, installIntent: views.filter((visit) => visit.src?.toLowerCase() === row.key && intends(visit)).length })),
     countries: grouped((visit) => [visit.c]),
     screens: grouped((visit) => [visit.w]),
     next: grouped((visit) => [visit.fp ? `${visit.fp} → ${visit.p}` : undefined]),

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { fromMarkdown } from "mdast-util-from-markdown";
-import type { Content, Heading, RootContent } from "mdast";
+import type { Content, Heading, Node, RootContent } from "mdast";
 import type {
   MemoryGraphEdge,
   MemoryGraphCacheRecord,
@@ -182,8 +182,62 @@ function isMemoryBlockHeading(node: RootContent): node is Heading {
   return node.depth === 3 && timestampFromHeading(textFromNode(node)).createdAt !== null;
 }
 
+const MARKDOWN_CHUNK_CHARS = 256 * 1024;
+const chunkBoundaryPattern = /^(?:#{1,6}(?:[ \t\r\n]|$)|<!--.*-->)/;
+const fenceOpenPattern = /^( {0,3})(`{3,}(?=[^`]*$)|~{3,})/;
+const fenceClosePattern = /^ {0,3}(`{3,}|~{3,})[ \t]*\r?\n?$/;
+
+function shiftPositions(node: Node, offset: number, line: number): void {
+  if (node.position) {
+    node.position.start = { ...node.position.start, line: node.position.start.line + line, offset: (node.position.start.offset ?? 0) + offset };
+    node.position.end = { ...node.position.end, line: node.position.end.line + line, offset: (node.position.end.offset ?? 0) + offset };
+  }
+  if ("children" in node && Array.isArray(node.children)) for (const child of node.children as Node[]) shiftPositions(child, offset, line);
+}
+
+/**
+ * The top-level blocks of a memory file, the same as `fromMarkdown(content).children`, parsed a chunk at a time: one parse of the
+ * 8.6 MB November file peaked at ~850 MB and the maintenance worker (768 MB heap) died (2026-11-22). A chunk ends only before a
+ * column-0 heading or one-line `<!-- -->` comment outside any fence, where a new top-level block always starts; anything this
+ * scanner cannot place for sure (other html, a fence left by a less indented line, link reference definitions) parses the rest whole.
+ */
+export function parseTopLevelMarkdown(content: string, chunkChars = MARKDOWN_CHUNK_CHARS): RootContent[] {
+  if (content.length <= chunkChars || /^ {0,3}\[(?:[^\]\\]|\\.)+\]:/m.test(content)) return fromMarkdown(content).children;
+  const blocks: RootContent[] = [];
+  let chunkStart = 0;
+  let chunkLine = 0;
+  const flush = (end: number, line: number) => {
+    for (const node of fromMarkdown(content.slice(chunkStart, end)).children) {
+      shiftPositions(node, chunkStart, chunkLine);
+      blocks.push(node);
+    }
+    chunkStart = end;
+    chunkLine = line;
+  };
+  let fence: { char: string; length: number; indent: number } | null = null;
+  scan: for (let lineStart = 0, line = 0; lineStart < content.length; line += 1) {
+    const newline = content.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? content.length : newline + 1;
+    const text = content.slice(lineStart, lineEnd);
+    const indent = /^ */.exec(text)![0].length;
+    if (fence) {
+      const close = fenceClosePattern.exec(text);
+      if (close && close[1]![0] === fence.char && close[1]!.length >= fence.length) fence = null;
+      else if (text.trim() && indent < fence.indent) break scan; // a list item's fence may have ended here, or not
+    } else {
+      if (lineStart - chunkStart >= chunkChars && chunkBoundaryPattern.test(text)) flush(lineStart, line);
+      const open = fenceOpenPattern.exec(text);
+      if (open) fence = { char: open[2]![0]!, length: open[2]!.length, indent: open[1]!.length };
+      else if (/^ {0,3}</.test(text) && !/^ {0,3}<!--.*-->/.test(text)) break scan; // multi-line html ends where only the parser knows
+    }
+    lineStart = lineEnd;
+  }
+  flush(content.length, 0);
+  return blocks;
+}
+
 function parseMonthlySource(source: MemoryGraphSource): { records: MemoryGraphRecord[]; sections: Array<{ id: string; label: string }>; issues: MemoryGraphIssue[] } {
-  const tree = fromMarkdown(source.content);
+  const tree = { children: parseTopLevelMarkdown(source.content) };
   const identity = memorySourceIdentityPath(source.path);
   const records: MemoryGraphRecord[] = [];
   const sections: Array<{ id: string; label: string }> = [];
@@ -320,7 +374,8 @@ export function buildMemoryGraphSnapshot(input: {
   sources: MemoryGraphSource[];
   generatedAt: string;
   cacheRecords?: MemoryGraphCacheRecord[];
-  previousSnapshot?: MemoryGraphSnapshot | null;
+  /** Only its layout is reused, so callers may pass just nodes and edges. */
+  previousSnapshot?: Pick<MemoryGraphSnapshot, "nodes" | "edges"> | null;
 }): MemoryGraphSnapshot {
   const includedSources = input.sources.filter((source) => !source.path.split(/[\\/]/).includes("_archive"));
   const records: MemoryGraphRecord[] = [];

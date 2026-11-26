@@ -159,7 +159,7 @@ export function registerAppDiagnosticsCaptureRoutes(app: FastifyInstance, option
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "App diagnostics segments require the ADMIN role.");
     }
     const params = parseQuery(appDiagnosticsSegmentParamsSchema, request.params);
-    const opened = await appDiagnosticsService.openSegment(params.segmentId, request.user.id);
+    const opened = await appDiagnosticsService.openSegment(params.segmentId);
     reply.header("Cache-Control", "private, no-store");
     reply.type(opened.segment.mimeType);
     return reply.send(createReadStream(opened.path));

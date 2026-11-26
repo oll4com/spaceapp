@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ codex: vi.fn(), agy: vi.fn(), claude: vi.fn(), apiProviders: vi.fn(), tokenUsage: vi.fn() }));
+const mocks = vi.hoisted(() => ({ codex: vi.fn(), agy: vi.fn(), claude: vi.fn(), apiProviders: vi.fn(), tokenUsage: vi.fn(), credits: vi.fn(), redeem: vi.fn() }));
 vi.mock("../src/api.js", () => ({
   api: {
     toolbarUsageAccounts: mocks.codex,
@@ -9,6 +9,9 @@ vi.mock("../src/api.js", () => ({
     toolbarClaudeUsageAccounts: mocks.claude,
     toolbarApiProviderAccounts: mocks.apiProviders,
     nousTokenUsage: mocks.tokenUsage,
+    toolbarResetCredits: mocks.credits,
+    redeemToolbarResetCredit: mocks.redeem,
+    gatewayAnthropicBilling: async () => null,
   },
 }));
 
@@ -64,7 +67,7 @@ describe("Nous Quotas view (operator 2026-10-29, plan clipboard:4pyungpPsrfD)", 
     expect([...view.querySelectorAll(".aiq-provider strong")].map((node) => node.textContent)).toEqual(["Codex", "Antigravity", "Claude"]);
     const codex = view.querySelector<HTMLElement>('[data-provider="codex"]')!;
     // Per provider only (operator 6/11): each window's next reset, no count, name or e-mail of an account.
-    expect(within(codex).getByText("resets in 30m")).toBeTruthy();
+    expect(within(codex).getByText(/^resets in 30m · \d\d:\d\d$/)).toBeTruthy();
     expect(view.textContent).not.toMatch(/ready|Next back|Every account|example\.test|beta|accounts?\b/);
     expect(view.querySelector(".aiq-ring")).toBeNull();
     expect(within(view).getByText("API providers · 2/2 connected · $45.97")).toBeTruthy();
@@ -80,6 +83,28 @@ describe("Nous Quotas view (operator 2026-10-29, plan clipboard:4pyungpPsrfD)", 
 
     fireEvent.click(within(view).getByRole("button", { name: "Refresh quotas now" }));
     await waitFor(() => expect(mocks.codex).toHaveBeenCalledTimes(2));
+  });
+
+  // Operator 14/11 (nous_msg:b25f1b9e): an ADMIN sees Resources' Accounts & quotas here, every card, reset time and Resets button.
+  it("gives an ADMIN Resources' account cards with their reset times and the Codex and Claude reset buttons", async () => {
+    const claudeId = `gw_account:${"c".repeat(32)}`;
+    mocks.claude.mockResolvedValue(page([
+      { id: "crew", label: "crew", email: "crew@example.test", plan: "Team · Max 5x", status: "CONNECTED", fiveHourRemainingPercent: 100, fiveHourResetAt: null,
+        weeklyRemainingPercent: 0, weeklyResetAt: at(4 * 24 * 60), weeklyScope: null, sampledAt, gatewayAccountId: claudeId, resetCredits: 1 },
+    ], "space-claude-profiles"));
+    mocks.credits.mockResolvedValue({ data: [{ accountId: "codex-b", availableCreditCount: 2 }, { accountId: claudeId, availableCreditCount: 1 }],
+      source: "space-gateway", isStale: false, error: null, checkedAt: sampledAt });
+    mocks.redeem.mockImplementation(async (accountId: string) => ({ accountId, outcome: "RESET", completedAt: sampledAt }));
+    render(<NousQuotas active isAdmin />);
+    const view = await screen.findByRole("region", { name: "Quotas" });
+    expect(await within(view).findByText("alpha@example.test")).toBeTruthy();
+    // A reset more than a day away names its date and time.
+    expect([...view.querySelectorAll(".account-quota-cell small")].some((node) => /^resets \w{3} \d{1,2} \w{3} \d{2}:\d{2}$/.test(node.textContent ?? ""))).toBe(true);
+    fireEvent.click(await within(view).findByRole("button", { name: "Resets 2" }));
+    await waitFor(() => expect(mocks.redeem).toHaveBeenCalledWith("codex-b", expect.any(String)));
+    fireEvent.click(await within(view).findByRole("button", { name: "Resets 1" }));
+    await waitFor(() => expect(mocks.redeem).toHaveBeenCalledWith(claudeId, expect.any(String)));
+    expect(within(view).getByRole("region", { name: "Token usage" })).toBeTruthy();
   });
 
   it("leaves out API providers with nothing left to spend and lists Space Gateway's key pools (operator 6/11 21:49 BKK, nous_msg:71a41c2e)", async () => {

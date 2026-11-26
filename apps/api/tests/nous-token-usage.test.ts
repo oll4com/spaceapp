@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryGatewayRepository, type GatewayRequestLogInsert } from "@space/db";
-import { keyCategory, renderTokenUsage, tokenUsageBreakdown, tokenUsageWorldLines, type TokenUsageSources } from "../src/nous/token-usage.js";
+import { cachedTokenUsage, keyCategory, renderTokenUsage, tokenUsageBreakdown, tokenUsageWorldLines, type TokenUsageSources } from "../src/nous/token-usage.js";
 
 // Operator 5/11 17:26 BKK (plan clipboard:qH5emwVaV6yO): token usage by process and provider, days in the owner's zone, from Space Gateway's logs only.
 const log = (requestedAt: string, project: string | null, provider: GatewayRequestLogInsert["provider"], accountId: string | null, inputTokens: number, outputTokens: number,
@@ -132,5 +132,22 @@ describe("token usage by process and provider", () => {
       ["group:cli", null, 2, [["Claude Code (outside panes)", 2]]],
       ["group:internal", null, 1, [["Space internal", 1]]]]);
     expect(renderTokenUsage(day)).toContain("  - without pane tag: 50");
+  });
+
+  it("serves the world the last answer while it reads the next one (public-host lag 14/11), and a first read is still waited for", async () => {
+    let clock = 0;
+    let reads = 0;
+    const read = async () => ({ reads: ++reads }) as unknown as Awaited<ReturnType<Parameters<typeof cachedTokenUsage>[0]>>;
+    const world = cachedTokenUsage(read, 300_000, () => clock, true);
+    expect(await world("owner", "day")).toEqual({ reads: 1 });
+    clock = 301_000;
+    expect(await world("owner", "day")).toEqual({ reads: 1 });
+    expect(reads).toBe(2);
+    expect(await world("owner", "day")).toEqual({ reads: 2 });
+    // The route's cache keeps waiting for a fresh read once its entry is old.
+    const route = cachedTokenUsage(read, 60_000, () => clock);
+    expect(await route("owner", "day")).toEqual({ reads: 3 });
+    clock += 61_000;
+    expect(await route("owner", "day")).toEqual({ reads: 4 });
   });
 });

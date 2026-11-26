@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
-import { NEEDS_YOU_CHECKED_HEADER, NEEDS_YOU_FIXED_WORDS, needsYouCardTexts, type NeedsYouTranslation, type SpaceNotification, type UiLanguage } from "@space/contracts";
+import { NEEDS_YOU_CHECKED_HEADER, NEEDS_YOU_FIXED_WORDS, needsYouCardTexts, type NeedsYouMailTranslation, type NeedsYouTranslation, type SpaceNotification, type UiLanguage } from "@space/contracts";
 import { gatewayRequestIdHeader } from "../gateway-request-id.js";
-import { codexServiceRoot, GATEWAY_CLAUDE_MODEL } from "../room-agent-model-resolver.js";
+import { codexServiceRoot } from "../room-agent-model-resolver.js";
+import { createGatewayFallback, FREE_POOLS } from "../gateway-fallback.js";
 
 /**
  * Translates strings into the operator's language, same order; null when no translator is set up; throws (no card text) when the answer is unusable.
@@ -10,12 +11,19 @@ import { codexServiceRoot, GATEWAY_CLAUDE_MODEL } from "../room-agent-model-reso
 export type CardTranslate = (texts: string[], language: UiLanguage, traceId?: string) => Promise<string[] | null>;
 
 const NAMES: Record<UiLanguage, string> = { en: "English", el: "Greek" };
+/** Technical bound: the translations kept in memory (about 2 MB); a text dropped from them is only asked again. */
+const CACHED = 5_000;
+
 /**
  * Operator 1/11 23:09 BKK «needs you να ειναι στην γλώσσα που εχω ορισει … και επεξηγηματικα»: agents, copilots and Space write cards in English,
- * so a card's text is translated once when it is raised, on the cheapest Codex model through Space Gateway (the API's own key; ~3 s), else Claude.
+ * so a card's text is translated once when it is raised through Space Gateway (the API's own key): the free pools first, then the cheapest Codex
+ * model, so translations leave the Codex week to the operator's panes (plan clipboard:nsWKwUFhUFWA slice 7). A text translated before (the same
+ * title, an Approve/Decline pair, a step) comes from a least-recently-used memory and is not asked again.
  */
 export function createCardTranslator(options: { baseUrl: string | null; keyFile: string | null; model?: string; fetchImpl?: typeof fetch }): CardTranslate {
-  const request = options.fetchImpl ?? fetch;
+  const askGateway = createGatewayFallback(options.fetchImpl);
+  const cache = new Map<string, string>();
+  const cacheKey = (language: UiLanguage, text: string) => `${language}\n${text}`;
   return async (texts, language, traceId) => {
     const key = options.keyFile ? (await readFile(options.keyFile, "utf8").catch(() => "")).trim() : "";
     if (!options.baseUrl || !key) return null;
@@ -28,22 +36,8 @@ export function createCardTranslator(options: { baseUrl: string | null; keyFile:
         + "Keep ids (pane:…, qm:207, mailrev:…, clipboard:…), URLs, e-mail addresses, file paths, commands, code, numbers, hashes, product and people's names, "
         + "and a mail's subject or a list's name in quotes exactly as they are. Translate labels such as \"Template:\" or \"Sender:\". "
         + "Keep line breaks, bullets and numbering. Answer with only a JSON object with the same keys.";
-      const codex = await request(`${root}/v1/chat/completions`, {
-        method: "POST", signal: AbortSignal.timeout(30_000), headers,
-        body: JSON.stringify({ model: options.model ?? "gpt-5.6-luna", store: false, messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(asked) }] })
-      }).catch(() => null);
-      let content: unknown;
-      if (codex?.ok) content = ((await codex.json()) as { choices?: Array<{ message?: { content?: unknown } }> }).choices?.[0]?.message?.content;
-      else {
-        // Claude's subscription route next (never the API-key route; the pace cap applies): with every Codex week spent (5-11/11) every card stayed English.
-        const claude = await request(`${root}/v1/messages`, {
-          method: "POST", signal: AbortSignal.timeout(30_000), headers: { ...headers, "anthropic-version": "2023-06-01" },
-          // max_tokens is required by the Messages API; a card's texts are far below it.
-          body: JSON.stringify({ model: GATEWAY_CLAUDE_MODEL, max_tokens: 16_384, system, messages: [{ role: "user", content: JSON.stringify(asked) }] })
-        }).catch(() => null);
-        if (!claude?.ok) throw new Error(`The card translator answered HTTP ${codex?.status ?? "unreachable"} (Codex) and ${claude?.status ?? "unreachable"} (Claude).`);
-        content = ((await claude.json()) as { content?: Array<{ type?: string; text?: string }> }).content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("");
-      }
+      const { content } = await askGateway({ root, headers, pools: [...FREE_POOLS, { path: "/v1", model: options.model ?? "gpt-5.6-luna" }], timeoutMs: 30_000,
+        body: { messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(asked) }] } });
       const text = typeof content === "string" ? content.replace(/^```(?:json)?\s*|\s*```$/g, "") : "";
       // A reply with words around its object is still that object.
       for (const candidate of [text, text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)]) {
@@ -54,7 +48,13 @@ export function createCardTranslator(options: { baseUrl: string | null; keyFile:
       }
       throw new Error(`The card translator's answer was not a JSON object (${text.length} characters).`);
     };
-    const places = texts.flatMap((text, index) => text.trim() ? [index] : []);
+    const known = (text: string) => {
+      const hit = cache.get(cacheKey(language, text));
+      if (hit !== undefined) { cache.delete(cacheKey(language, text)); cache.set(cacheKey(language, text), hit); }
+      return hit;
+    };
+    const places = texts.flatMap((text, index) => text.trim() && known(text) === undefined ? [index] : []);
+    if (!places.length) return texts.map((text) => text.trim() ? cache.get(cacheKey(language, text))! : text);
     const asked = Object.fromEntries(places.map((place, key) => [String(key), texts[place]!]));
     const answer = await ask(asked);
     // A number or yes/no kept as written is its text; a key the model left out is asked once more alone, so one value never throws the card away.
@@ -63,7 +63,9 @@ export function createCardTranslator(options: { baseUrl: string | null; keyFile:
     if (missing.length) Object.assign(answer, await ask(Object.fromEntries(missing.map((key) => [key, asked[key]!]))));
     const still = missing.filter((key) => value(key) === null);
     if (still.length) throw new Error(`The card translator left out texts ${still.join(", ")} of ${Object.keys(asked).length}, twice.`);
-    return texts.map((text, index) => text.trim() ? value(String(places.indexOf(index)))! : text);
+    for (const [index, place] of places.entries()) cache.set(cacheKey(language, texts[place]!), value(String(index))!);
+    while (cache.size > CACHED) cache.delete(cache.keys().next().value!);
+    return texts.map((text, index) => !text.trim() ? text : places.includes(index) ? value(String(places.indexOf(index)))! : cache.get(cacheKey(language, text))!);
   };
 }
 
@@ -74,8 +76,35 @@ export function createCardTranslator(options: { baseUrl: string | null; keyFile:
  */
 export const CARD_TRANSLATOR_VERSION = 3;
 
-/** Nothing to translate into Greek when no string has a Latin word (Nous writes Greek already). */
-const needsTranslation = (texts: string[], language: UiLanguage) => language !== "en" && texts.some((text) => /[A-Za-z]{3,}/.test(text));
+const ENGLISH_WORDS = new Set("the and to of a an in is are be you your for on with this that it we our i my me as at by from have has will can not or please if do".split(" "));
+/**
+ * Whether a text reads in a language other than English or Greek (operator 21/11 nous_msg:e9b4df3e: a French mail on a card stayed French): mostly
+ * another script (Cyrillic, CJK, Thai…), or Latin words of which under 1 in 10 is a common English word (English prose runs about 1 in 3).
+ * shortcut: a word list, not a language detector; upgrade to the model's own verdict if real cards are misjudged.
+ */
+export function foreignLanguage(text: string): boolean {
+  const plain = text.replace(/https?:\/\/\S+|\S+@\S+|\b[a-z_]+:[\w-]{4,}/gi, " ");
+  const letters = plain.match(/\p{L}/gu)?.length ?? 0;
+  const latin = plain.match(/\p{Script=Latin}/gu)?.length ?? 0;
+  const greek = plain.match(/\p{Script=Greek}/gu)?.length ?? 0;
+  if (letters - latin - greek > letters * 0.3) return true;
+  if (latin <= greek) return false;
+  const words = plain.toLowerCase().match(/\p{Script=Latin}+/gu) ?? [];
+  return words.length >= 3 && words.filter((word) => ENGLISH_WORDS.has(word)).length < words.length * 0.1;
+}
+
+/** Into Greek, a card with any Latin word (Nous writes Greek already); into English, one with a text in a third language. */
+const needsTranslation = (texts: string[], language: UiLanguage) => language === "en" ? texts.some(foreignLanguage) : texts.some((text) => /[A-Za-z]{3,}/.test(text));
+
+/**
+ * The mail a card names, translated when it reads in neither Greek nor English (the original kept beside it); null when no translator is set up.
+ * Throws when the model fails, so the card stays as it is and its mail shows in its own language.
+ */
+export async function translateMail(translate: CardTranslate, mail: NeedsYouMailTranslation["original"], language: UiLanguage, traceId?: string): Promise<NeedsYouMailTranslation | null> {
+  if (!foreignLanguage(`${mail.subject}\n${mail.text}`)) return { language, original: mail };
+  const out = await translate([mail.subject, mail.text], language, traceId);
+  return out ? { language, original: mail, subject: out[0]!, text: out[1]! } : null;
+}
 
 /** A card's translation into `language`, null when it needs none or the model failed. */
 export async function translateCard(translate: CardTranslate, record: Pick<SpaceNotification, "title" | "body" | "payload"> & { id?: string }, language: UiLanguage): Promise<NeedsYouTranslation | null> {

@@ -60,7 +60,7 @@ async function evaluateActiveTab<T>({ config, pane, session }: TabOptions, expre
     const { frameTree } = await client.send<{ frameTree: { frame: { id: string } } }>("Page.getFrameTree", {}, sessionId);
     const { executionContextId } = await client.send<{ executionContextId: number }>("Page.createIsolatedWorld", { frameId: frameTree.frame.id, worldName: "space-page-readout" }, sessionId);
     const reply = await client.send<{ exceptionDetails?: unknown; result?: { value?: T } }>("Runtime.evaluate",
-      { expression, contextId: executionContextId, returnByValue: true, silent: true }, sessionId);
+      { expression, contextId: executionContextId, returnByValue: true, awaitPromise: true, silent: true }, sessionId);
     const value = reply.result?.value;
     if (reply.exceptionDetails || !value) throw new SpaceConflictError("The page changed while it was read; read it again.");
     return value;
@@ -92,21 +92,28 @@ export async function pageHasTypedText(options: TabOptions, connect: Connect = C
 // A real bot check: reCAPTCHA, hCaptcha and Turnstile (Go now's own selectors), or a puzzle (Arkose/FunCaptcha, GeeTest, AWS WAF).
 const CAPTCHA_WIDGET = [...BROWSER_REVEAL_TARGETS.filter(([kind]) => ["recaptcha", "hcaptcha", "turnstile"].includes(kind)).map(([, selector]) => selector),
   'iframe[src*="arkoselabs"], iframe[src*="funcaptcha"], [class*="geetest_"], awswaf-captcha'].join(", ");
-const CHALLENGE_SCRIPT = `(() => ({ host: location.hostname, text: document.body ? document.body.innerText : "", widget: Boolean(document.querySelector(${JSON.stringify(CAPTCHA_WIDGET)})) }))()`;
-/** The active tab's visible text and whether a bot check widget shows: only classified here (mailCodeHandoff), never returned to an agent. */
+// The URL without its fragment, like readPageMetadata: a fragment can carry a page's state or tokens.
+const CHALLENGE_SCRIPT = `(() => ({ host: location.hostname, url: location.origin + location.pathname + location.search, text: document.body ? document.body.innerText : "", widget: Boolean(document.querySelector(${JSON.stringify(CAPTCHA_WIDGET)})) }))()`;
+/** The active tab's address, visible text and whether a bot check widget shows: only classified here (mailCodeHandoff), never returned to an agent. */
 export function pageChallenge(options: TabOptions, connect: Connect = CdpClient.connect) {
-  return evaluateActiveTab<{ host: string; text: string; widget: boolean }>(options, CHALLENGE_SCRIPT, connect);
+  return evaluateActiveTab<{ host: string; url?: string; text: string; widget: boolean }>(options, CHALLENGE_SCRIPT, connect);
 }
 
 // Accent-folded, lower case (Greek pages write «Κωδικός επαλήθευσης» with and without accents).
 const CODE_WORDS = /verification code|security code|confirmation code|one[- ]time (?:code|password|passcode)|\botp\b|enter (?:the|your|a|this) (?:\d[- ]digit )?code|code (?:we |was |has been )?sent|sent (?:you )?a (?:\d[- ]digit )?code|check your (?:e-?mail|inbox)|κωδικ\S* (?:επαληθευσης|επιβεβαιωσης|μιας χρησης)|(?:εισαγετε|πληκτρολογηστε) (?:τον )?κωδικ|ελεγξτε (?:το |τα |την )?(?:e-?mail|εισερχομενα|αλληλογραφια)/;
-const MAIL_WORDS = /e-?mail|inbox|mailbox|ηλεκτρονικ\S* ταχυδρομ|εισερχομενα|αλληλογραφια/;
 const PHONE_WORDS = /\bsms\b|text message|phone|mobile|authenticator|authentication app|whatsapp|κινητ|τηλεφων|γραπτ\S* μηνυμα/;
+// A code sent to or read from the mailbox, not a mail word anywhere (19/11 Braintrust: the sign-in form's "Email" label under an authenticator dialog).
+const MAIL_ROUTE = /\b(?:sent|send|sending|emailed|mailed)\b[^.\n]{0,40}(?:e-?mail|inbox|mailbox)|check your (?:e-?mail|inbox)|e-?mail (?:me )?(?:a |the )?(?:code|link)|(?:code|link) (?:by|via|to your) e-?mail|σταλ\S*[^.\n]{0,40}(?:e-?mail|ηλεκτρονικ\S* ταχυδρομ|εισερχομενα)|ελεγξτε (?:το |τα |την )?(?:e-?mail|εισερχομενα|αλληλογραφια)/;
 const fold = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-/** A page or text asking for a one-time code that a mailbox gets: code wording that names e-mail, or names no phone or app. */
+/** A page or text asking for a one-time code that a mailbox gets: code wording that names no phone or app, or names one and a mail route too. */
 export function mailCodeAsk(text: string): boolean {
   const folded = fold(text);
-  return CODE_WORDS.test(folded) && (MAIL_WORDS.test(folded) || !PHONE_WORDS.test(folded));
+  return CODE_WORDS.test(folded) && (!PHONE_WORDS.test(folded) || MAIL_ROUTE.test(folded));
+}
+/** A page asking for the code of an authenticator app with no mail route: the card says so plainly (19/11 Braintrust). */
+export function authenticatorCodeAsk(text: string): boolean {
+  const folded = fold(text);
+  return CODE_WORDS.test(folded) && /authenticator|authentication app/.test(folded) && !MAIL_ROUTE.test(folded);
 }
 /** The agent says it read the mailbox already (the way past the mail-code gate when no code came). */
 const MAIL_READ = /\bspace_mail_(?:search|read)\b|\b(?:read|searched|checked)\b[^.\n]{0,20}\b(?:mail(?:box)?|inbox|e-?mails?|gmail)\b|διαβασα[^.\n]{0,20}(?:mail|αλληλογραφ)/;
@@ -125,4 +132,70 @@ export function mailCodeHandoff(page: { host: string; text: string; widget: bool
   const from = (page?.host ?? host ?? "").replace(/^www\./, "").split(".").slice(-2).join(".");
   return `Not handed over: the page asks for a code sent by e-mail, not a bot check. Read the code from the mailbox (space_mail_search${from ? ` from:${from}` : ""}) `
     + "and type it in. Request the handoff again only if no code arrived, saying so (\"read the mailbox: …\").";
+}
+
+/** A tap focuses its field this soon after its touchEnd is acked (Chrome's tap gesture follows the ack). */
+const TAP_FOCUS_WAIT_MS = 250;
+// Waits out the tap (Chrome focuses after the touch is acked) and answers whether a text field holds the focus: null when the focus is
+// in a frame it cannot see into. Only that answer leaves the page, never a value.
+const FOCUS_SCRIPT = `new Promise((resolve) => {
+  const known = () => {
+    let el = document.activeElement;
+    while (el && (el.shadowRoot?.activeElement || el.tagName === 'IFRAME' || el.tagName === 'FRAME')) {
+      if (el.shadowRoot?.activeElement) { el = el.shadowRoot.activeElement; continue; }
+      const inner = (() => { try { return el.contentDocument; } catch { return null; } })();
+      if (!inner) return null;
+      el = inner.activeElement;
+    }
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    if (el.disabled || el.readOnly) return false;
+    if (el.tagName === 'TEXTAREA') return true;
+    return el.tagName === 'INPUT' && !/^(?:hidden|submit|button|reset|image|checkbox|radio|range|color|file)$/i.test(el.type || '');
+  };
+  const done = () => { document.removeEventListener('focusin', early, true); resolve({ editable: known() }); };
+  const early = () => { if (known()) { clearTimeout(timer); done(); } };
+  const timer = setTimeout(done, ${TAP_FOCUS_WAIT_MS});
+  document.addEventListener('focusin', early, true);
+})`;
+/** Whether the active tab's focused element takes typing (teleport: the phone opens its keyboard like a phone browser), never its value. */
+export async function pageFocusEditable(options: TabOptions, connect: Connect = CdpClient.connect): Promise<boolean | null> {
+  return (await evaluateActiveTab<{ editable: boolean | null }>(options, FOCUS_SCRIPT, connect)).editable;
+}
+
+// Plan clipboard:nsWKwUFhUFWA slice 5: the visible form controls instead of a whole-page snapshot or text. A control that could hold a
+// password, code, card or other secret reports only whether it is filled; hidden inputs are skipped. Click points are viewport CSS pixels.
+export const FORMS_SCRIPT = `(() => {
+  const clean = (text) => String(text || '').replace(/\\s+/g, ' ').trim();
+  const shown = (el) => { const box = el.getBoundingClientRect(); const style = getComputedStyle(el); return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none'; };
+  const byIds = (ids) => clean((ids || '').split(/\\s+/).map((id) => document.getElementById(id)?.innerText || '').join(' '));
+  const label = (el) => clean([...(el.labels || [])].map((l) => l.innerText).join(' ')) || el.getAttribute('aria-label') || byIds(el.getAttribute('aria-labelledby')) || el.placeholder || el.title || '';
+  const secret = /password|passcode|one-time-code|\\botp\\b|token|secret|\\bpin\\b|cvv|cvc|\\bcc-|card|\\bssn\\b|security code|verification code/i;
+  const point = (el) => { const box = el.getBoundingClientRect(); return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) }; };
+  const controls = [...document.querySelectorAll('input,textarea,select,[contenteditable]:not([contenteditable=false]),[role=combobox],[role=checkbox],[role=radio],button,[role=button]')]
+    .filter((el) => !(el.tagName === 'INPUT' && el.type === 'hidden') && shown(el));
+  return { host: location.host, path: location.pathname, title: document.title, controls: controls.map((el) => {
+    const type = el.tagName === 'INPUT' ? (el.type || 'text') : el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || el.tagName === 'BUTTON' ? el.tagName.toLowerCase() : el.isContentEditable ? 'contenteditable' : el.getAttribute('role');
+    const row = { type, label: clean(label(el)), name: el.getAttribute('name') || el.id || '', ...point(el) };
+    if (el.required || el.getAttribute('aria-required') === 'true') row.required = true;
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') row.disabled = true;
+    if (type === 'button' || type === 'submit' || type === 'reset') { row.text = clean(el.innerText || el.value); return row; }
+    if (type === 'checkbox' || type === 'radio') { row.checked = el.tagName === 'INPUT' ? el.checked : el.getAttribute('aria-checked') === 'true'; if (el.value && el.value !== 'on') row.value = clean(el.value); return row; }
+    // DEV3D-070: a card expiry or other secret dropdown says only whether it is filled, like a secret text field.
+    if (type === 'select' && secret.test([type, el.autocomplete, row.name, row.label].join(' '))) { row.filled = [...el.selectedOptions].some((o) => o.value !== ''); return row; }
+    if (type === 'select') { row.options = [...el.options].map((o) => clean(o.text)); row.selected = [...el.selectedOptions].map((o) => clean(o.text)); return row; }
+    if (type === 'file') { row.files = [...(el.files || [])].map((f) => f.name); return row; }
+    const value = el.isContentEditable ? el.innerText : 'value' in el ? el.value : el.getAttribute('aria-valuetext') || el.innerText;
+    if (secret.test([type, el.autocomplete, row.name, row.label].join(' '))) row.filled = clean(value) !== '';
+    else row.value = clean(value);
+    return row;
+  }) };
+})()`;
+type FormControl = { type: string; label: string; name: string; x: number; y: number; value?: string; [key: string]: unknown };
+/** The active tab's visible form controls: label, name, type, required, value or state and a click point. Secret-like fields: filled only. */
+export async function pageForms(options: TabOptions, connect: Connect = CdpClient.connect) {
+  // shortcut: the top document only (evaluateActiveTab); a form inside an iframe or a shadow root needs browser_snapshot until one is read here.
+  const page = await evaluateActiveTab<{ host: string; path: string; title: string; controls: FormControl[] }>(options, FORMS_SCRIPT, connect);
+  return { host: page.host, path: maskReadoutPath(page.path), title: maskReadoutText(page.title), controls: page.controls,
+    note: "Visible controls of the top document; x/y are viewport CSS pixels. Password, code, card and token fields show only filled: true/false. A form inside an iframe is not listed: use browser_snapshot there." };
 }

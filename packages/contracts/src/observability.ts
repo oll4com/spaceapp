@@ -211,15 +211,24 @@ export const traceLookupResponseSchema = z.object({
     startedAt: z.string().min(1).max(64),
     endedAt: z.string().max(64).nullable()
   })).max(500).default([]),
-  // Space Gateway request log rows whose id is this trace (a Space caller's x-request-id, OBS-006); codes and times, never error text.
+  // Space Gateway request log rows whose id is this trace (a Space caller's x-request-id, OBS-006), or, with cliSessionId, a traced CLI
+  // session's own calls (its pane tag within the session's span); codes and times, never error text.
   gatewayRequests: z.array(z.object({
     provider: z.string().min(1).max(40),
     model: z.string().min(1).max(160),
     status: z.string().min(1).max(40),
     errorCode: traceIdentifierSchema.default(null),
     latencyMs: z.number().int().nonnegative().nullable(),
-    requestedAt: z.string().min(1).max(64)
-  })).max(500).default([]),
+    requestedAt: z.string().min(1).max(64),
+    cliSessionId: z.string().min(1).max(240).nullable().default(null)
+  })).max(1000).default([]),
+  // Workflow-task faults from the Temporal history of the trace's workflows (EXT-G-5): the latest cause enum and the count, never the message.
+  workflowTaskFaults: z.array(z.object({
+    workflowId: z.string().min(1).max(240),
+    cause: z.string().min(1).max(80),
+    failures: z.number().int().positive(),
+    lastAt: z.string().min(1).max(64)
+  })).max(1000).default([]),
   logQueries: z.object({ api: z.string(), worker: z.string(), cliHost: z.string(), browserHost: z.string() })
 });
 export type TraceLookupResponse = z.infer<typeof traceLookupResponseSchema>;

@@ -415,7 +415,7 @@ export function CliLauncherMenu({
             setCliOrder(nextOrder);
             try {
               window.localStorage.setItem(CLI_LAUNCHER_ORDER_KEY, JSON.stringify(nextOrder));
-            } catch {}
+            } catch { /* storage unavailable: order kept for this session */ }
           }
         }
         dragOverRuntimeIdRef.current = null;

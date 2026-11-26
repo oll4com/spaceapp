@@ -42,6 +42,17 @@ export const NOUS_TURN_MAX_BODY_BYTES = 640 * 1024;
 const MAX_PROMPT_CHARS = NOUS_PROMPT_MAX_CHARS;
 const MAX_SYSTEM_CHARS = NOUS_SYSTEM_MAX_CHARS;
 const MAX_TIMEOUT_MS = 20 * 60_000;
+/**
+ * Daily Nous errors 15/11 (02:23Z TIMEOUT: answered at 02:10Z, a leftover child kept the CLI open to the 20-minute stop): once the result
+ * record is in, the process gets this long to exit (the launcher's quota check still writes stderr after it), then is stopped and the answer kept.
+ */
+export const NOUS_ANSWERED_EXIT_MS = 15_000;
+/**
+ * Daily Nous errors 23/11 (07:29-07:49Z TIMEOUT, nous_turn:2ea87f2c, 0 tools, no tokens): CLI requests stopped reaching Space Gateway
+ * and the turn waited 20 minutes for its first reply. A streamed Claude turn with no reply started (message_start) by then fails as
+ * unavailable, which the route failover takes to the next route. Tool runs come after the first reply, so they never meet it.
+ */
+export const NOUS_FIRST_REPLY_MS = 5 * 60_000;
 const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,159}$/;
 const EFFORT_PATTERN = /^(?:none|minimal|low|medium|high|xhigh|max)$/;
 const CLAUDE_PROFILE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -93,19 +104,26 @@ export async function runNousTurn(input: NousTurnInput, signal: AbortSignal, onE
         ...((!input.provider || input.provider === "claude") && input.claudeProfile && input.claudeProfile !== "main" ? { SPACE_CLAUDE_ACCOUNT_PROFILE: input.claudeProfile } : {})
       }
     });
-    const reader = createNousTurnReader(input.stream, onEvent);
+    const firstReply = input.stream && (input.provider ?? "claude") === "claude" ? setTimeout(() => {
+      stop();
+      finish(new Error(`Claude sent no reply within ${NOUS_FIRST_REPLY_MS / 60_000} minutes of the start: the route was unavailable.`));
+    }, NOUS_FIRST_REPLY_MS) : undefined;
+    const reader = createNousTurnReader(input.stream, (event) => { clearTimeout(firstReply); onEvent?.(event); });
     let stderr = "";
     let settled = false;
     const finish = (error: Error | null, result?: NousTurnResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
+      clearTimeout(lingering);
+      clearTimeout(firstReply);
       signal.removeEventListener("abort", onAbort);
       if (error) reject(error);
       else resolve(result!);
     };
     const stop = () => { try { child.kill("SIGTERM"); } catch { /* already gone */ } };
     const onAbort = () => { stop(); finish(new Error("The turn was stopped.")); };
+    let lingering: ReturnType<typeof setTimeout> | undefined;
     const deadline = setTimeout(() => { stop(); finish(new Error(`No answer within ${Math.round(input.timeoutMs / 60_000)} minutes.`)); }, input.timeoutMs);
     signal.addEventListener("abort", onAbort, { once: true });
     child.stdout.setEncoding("utf8");
@@ -113,6 +131,10 @@ export async function runNousTurn(input: NousTurnInput, signal: AbortSignal, onE
     child.stdout.on("data", (chunk: string) => {
       const error = reader.push(chunk);
       if (error) { stop(); finish(new Error(error)); }
+      else if (!lingering && reader.answered()) lingering = setTimeout(() => {
+        stop();
+        try { finish(null, reader.finish(0, stderr)); } catch (failure) { finish(failure as Error); }
+      }, NOUS_ANSWERED_EXIT_MS);
     });
     child.stderr.on("data", (chunk: string) => { if (stderr.length < 8_192) stderr += chunk.slice(0, 8_192 - stderr.length); });
     child.on("error", (error) => finish(error));

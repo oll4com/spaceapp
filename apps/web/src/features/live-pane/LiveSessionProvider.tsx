@@ -86,7 +86,7 @@ export function LiveSessionProvider({ ownerId, roomId, roomName = "", children }
         lastBroadcast.current = signature;
         window.dispatchEvent(new CustomEvent("space-live-pane-status", { detail: { rail: true, roomId: state.roomId, status: state.status, muted: state.muted } }));
       }
-      (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = state.handle ? { handle: state.handle, source: "coordinator", roomId: state.roomId } : null;
+      window.__SPACE_ACTIVE_LIVE_SESSION__ = state.handle ? { handle: state.handle, source: "coordinator", roomId: state.roomId } : null;
     }
   }));
   useEffect(() => {
@@ -105,7 +105,7 @@ export function LiveSessionProvider({ ownerId, roomId, roomName = "", children }
       window.removeEventListener("space-live-session-stop", stop);
       window.removeEventListener("space-live-context-invalidated", invalidate);
       coordinator.dispose();
-      if ((window as any).__SPACE_ACTIVE_LIVE_SESSION__?.source === "coordinator") (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
+      if (window.__SPACE_ACTIVE_LIVE_SESSION__?.source === "coordinator") window.__SPACE_ACTIVE_LIVE_SESSION__ = null;
     };
   }, [coordinator]);
   useEffect(() => { coordinator.setOwner(ownerId); coordinator.setRoom(roomId, roomName); }, [coordinator, ownerId, roomId, roomName]);

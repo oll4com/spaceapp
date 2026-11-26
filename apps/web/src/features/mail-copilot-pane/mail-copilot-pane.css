@@ -420,6 +420,8 @@
 .mc-camp-full-title { display: grid; flex: 1 1 auto; gap: 8px; min-width: 0; }
 .mc-camp-full .mc-camp-paper { flex: 1 1 auto; height: auto; min-height: 0; border-radius: 0 0 14px 14px; }
 .mc-camp-full .mc-camp-paper-text { overflow: auto; }
+/* A notification's mail read in place (MailThreadDialog): the campaign full view's frame, the thread's messages scrolling inside. */
+.mc-mail-view-body { display: grid; flex: 1 1 auto; align-content: start; gap: 10px; min-height: 0; padding: 12px; overflow: auto; }
 
 /* Lists: a health bar per list. */
 .mc-camp-health { display: grid; gap: 6px; min-width: 0; font-size: 12px; }

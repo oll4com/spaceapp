@@ -65,7 +65,9 @@ beforeAll(async () => {
     logStream: new Writable({ write(chunk, _encoding, callback) { apiLog.push(String(chunk)); callback(); } }),
     store,
     codexTurnStarter: new TemporalCodexAppServerTurnStarter({ address: "unused", namespace: "default", taskQueue: "space-test", clientFactory }),
-    auth: { sessionSecret: "fault-injection-session-secret-123", devLogin: true, secureCookies: false }
+    auth: { sessionSecret: "fault-injection-session-secret-123", devLogin: true, secureCookies: false },
+    // Temporal's history is faked: the lookup must ask for the trace's own workflow ids.
+    workflowTaskFaults: async (ids) => ids.map((workflowId) => ({ workflowId, cause: "WORKFLOW_TASK_FAILED_CAUSE_UNHANDLED_COMMAND", failures: 2, lastAt: "2026-11-22T05:00:00.000Z" }))
   });
   const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: "space@space.local", password: "space-dev" } });
   cookie = `space_session=${login.cookies.find((entry) => entry.name === "space_session")?.value}`;
@@ -171,6 +173,7 @@ describe("observability fault injection", () => {
     expect(trace.causalError).toMatchObject({ code, category, source: "event:TURN_FAILED", workflowId: start.options.workflowId });
     expect(trace.events.map((event) => event.type).sort()).toEqual(["TURN_FAILED", "TURN_STARTED"]);
     expect(trace.workflows).toEqual([expect.objectContaining({ workflowId: start.options.workflowId, status: "FAILED" })]);
+    expect(trace.workflowTaskFaults).toEqual([expect.objectContaining({ workflowId: start.options.workflowId, cause: "WORKFLOW_TASK_FAILED_CAUSE_UNHANDLED_COMMAND", failures: 2 })]);
     expect(trace.auditEvents.map((audit) => audit.action)).toContain("turn.queue");
     expect(trace.logQueries.worker).toContain(traceId);
 
@@ -201,6 +204,12 @@ describe("observability fault injection", () => {
     const logged = apiLog.join("");
     expect(logged).toContain("14 UNAVAILABLE");
     expect(logged).not.toContain(secrets[1]);
+    // OBS-006: the request log and the error log of this one request carry the server-minted id it answered with.
+    const lines = logged.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { reqId?: string; msg?: string; level?: number });
+    const failureLines = lines.filter((line) => JSON.stringify(line).includes("14 UNAVAILABLE"));
+    expect(failureLines.length).toBeGreaterThan(0);
+    expect(failureLines.every((line) => line.reqId === traceId)).toBe(true);
+    expect(lines.filter((line) => line.reqId === traceId).map((line) => line.msg)).toContain("request completed");
   }, 60_000);
 
   it("rejects trace lookups from non-administrators and malformed ids", async () => {

@@ -132,6 +132,28 @@ it("lets a prompt into a CLI whose composer showed earlier in this attachment, a
   await expect(waitFor(terminal, managed, true)).resolves.toBeUndefined();
 });
 
+// Stable 14/11 10:24 UTC: an attach replayed a Gemini pane chunk by chunk and every chunk re-scanned the whole 16 kB (2.55 s block).
+it("scans only the newest output for a composer during a long replay, and still finds one split across chunks", () => {
+  const { terminal, managed } = manager("cli:gemini", "", 2000);
+  Object.assign(managed, { controlOutputRevision: 0 });
+  const internals = terminal as unknown as Record<string, unknown> & { emitHostOutput(managed: unknown, event: unknown, data: string): void };
+  internals.broadcast = () => undefined;
+  internals.bufferHostOutput = () => undefined;
+  const output = (data: string) => internals.emitHostOutput(managed, { type: "output", stream: "stdout" }, data);
+  const scanned: number[] = [];
+  const replace = String.prototype.replace;
+  vi.spyOn(String.prototype, "replace").mockImplementation(function (this: string, ...args: unknown[]) {
+    scanned.push(this.length);
+    return (replace as (...a: unknown[]) => string).apply(this, args);
+  });
+  for (let i = 0; i < 300; i++) output(`\u001b[2K\u001b[1G⠋ Thinking… (${i}s) esc to cancel\r\n`);
+  expect(Math.max(...scanned)).toBeLessThan(1200);
+  output("\u001b[2m? for \u001b[22m");
+  output("\u001b[2mshortcuts\u001b[22m");
+  vi.restoreAllMocks();
+  expect((managed as { composerSeen?: boolean }).composerSeen).toBe(true);
+});
+
 it("refuses a prompt when the composer never opens, but an answer or key does not wait for it", async () => {
   const { terminal, managed } = manager("cli:grok", "Do you trust the contents of this directory?", 60);
   await expect(waitFor(terminal, managed, true)).rejects.toThrow("no input was sent");
@@ -188,6 +210,8 @@ it("sends an interrupt key to a busy Codex that never showed its ready composer"
 
 it("lets an idle Claude session read as idle when its room screen cannot tell (R9-9)", () => {
   expect(claudeRoomState("UNKNOWN", { busy: false, status: "idle" })).toBe("IDLE");
+  // 16/11 Dino/Cody: "✻ Brewed for 22s · 1 shell still running" is a finished turn at the prompt.
+  expect(claudeRoomState("UNKNOWN", { busy: false, status: "shell" })).toBe("IDLE");
   expect(claudeRoomState("RUNNING", { busy: false, status: "idle" })).toBe("IDLE");
   expect(claudeRoomState("IDLE", { busy: true, status: "busy" })).toBe("RUNNING");
   // A question or a status Claude does not call idle keeps what the screen says.

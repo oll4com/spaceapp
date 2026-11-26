@@ -6,9 +6,9 @@ const actor = { id: "user:operator" } as never;
 function fixture(store: Record<string, unknown> = {}) {
   const controlQuota = vi.fn(async () => ({ quota: "native" }));
   const { inspectControlSection } = createSpaceControlInspectSections({
-    store: { getPane: async (id: string) => ({ id, roomId: id === "pane:here" ? "room:one" : "room:other" }), upsertUser: async () => ({ id: "user:operator" }), ...store } as never,
+    store: { getPane: async (id: string) => ({ id, roomId: id === "pane:here" ? "room:one" : "room:other" }), ...store } as never,
     config: {} as never,
-    controlUser: async () => undefined,
+    controlUser: async () => ({ id: "user:operator" }),
     controlQuota: controlQuota as never,
     antigravityUsageProvider: async () => ({ data: [{ id: "agy:one" }] }) as never,
     toolbarUsageProvider: async () => ({ data: [{ id: "codex:one" }] }) as never,
@@ -41,17 +41,26 @@ describe("Space Control inspect sections", () => {
     expect(await inspect({ section: "MEDIA" })).toEqual([{ id: "artifact:upload", kind: "IMAGE", mimeType: "image/png", createdAt: "t2" }]);
   });
 
+  it("lists the control user's own links and tasks without writing the user row", async () => {
+    const listUserLinks = vi.fn(async () => ({ items: [{ id: "link:one" }], total: 1 }));
+    const listTaskItems = vi.fn(async () => ({ items: [], total: 0 }));
+    const { inspect } = fixture({ listUserLinks, listTaskItems });
+    expect(await inspect({ section: "LINKS", offset: 25 })).toEqual({ items: [{ id: "link:one" }], total: 1, page: 2, pageSize: 25 });
+    expect(listUserLinks).toHaveBeenCalledWith("user:operator", { page: 2, pageSize: 25, isQuick: undefined });
+    await inspect({ section: "TASKS", query: "deploy" });
+    expect(listTaskItems).toHaveBeenCalledWith("user:operator", { page: 1, pageSize: 25, q: "deploy" });
+  });
+
   it("summarizes settings without provider keys, survives failing reads, and answers unsupported sections", async () => {
     const { inspect } = fixture({
       listCliRuntimeSettings: async () => { throw new Error("down"); },
-      getProviderSettings: async () => ({ defaultProviderId: "openai", providers: [{ id: "openai", name: "OpenAI", enabled: true, hasKey: true, apiKey: "sk-secret", models: [] }] }),
+      getProviderSettings: async () => ({ defaultProviderId: "openai", titleGenerationModelId: null, titleGenerationReasoningEffort: "low", updatedAt: "t" }),
       listAgentToolAssignments: async () => [],
       getRoom: async () => ({ paneLayoutColumns: 3 })
     });
     const settings = await inspect({ section: "SETTINGS" }) as Record<string, unknown>;
-    expect(settings).toMatchObject({ cli: [], providers: { defaultProviderId: "openai", providers: [{ id: "openai", name: "OpenAI", enabled: true, configured: true, models: [] }] },
+    expect(settings).toMatchObject({ cli: [], providers: { defaultProviderId: "openai" },
       taskTitles: { enabled: true }, appearance: { layoutColumns: 3, layoutMode: "GRID" } });
-    expect(JSON.stringify(settings)).not.toContain("sk-secret");
     expect(await inspect({ section: "STATE" })).toEqual({ supported: false, section: "STATE" });
   });
 });

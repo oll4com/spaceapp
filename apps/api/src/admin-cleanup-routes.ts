@@ -69,7 +69,7 @@ export function registerAdminCleanupRoutes(app: FastifyInstance, options: {
     let failedCount = 0;
     let estimatedReclaimedBytes = 0;
     for (const session of before.sessions.filter((candidate) => candidate.cleanupEligible)) {
-      let paneOpen = true;
+      let paneOpen: boolean;
       try {
         paneOpen = !(await store.getPane(session.paneId)).isClosed;
       } catch (error) {

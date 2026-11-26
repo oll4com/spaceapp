@@ -8,7 +8,7 @@ import { createApp } from "../src/app.js";
 import { getApiConfig } from "../src/config.js";
 import { buildMime, parseParticipants, parsePayload } from "../src/mail-copilot/gmail-mime.js";
 import { sanitizeMailHtml } from "../src/mail-copilot/html-sanitizer.js";
-import { agentThread, createMailCopilotService, type MailCopilotGoogleAccess } from "../src/mail-copilot/service.js";
+import { agentThread, createMailCopilotService, withoutRepeatedQuote, type MailCopilotGoogleAccess } from "../src/mail-copilot/service.js";
 import { InMemoryMailCopilotRepository } from "@space/db";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -317,9 +317,29 @@ describe("mail copilot mailbox", () => {
     expect(raw).toContain("Subject: =?UTF-8?B?");
     expect(raw).toContain("References: <0@x> <1@x>");
     expect(raw).toMatch(/^From: me@gmail\.com\r\nTo: a@b\.c\r\n/);
+    // 23/11 hygiene: a long reply's body was one base64 line past RFC 5322's 998 characters; it wraps at 76 like attachments and campaigns.
+    const long = "Καλημέρα, ".repeat(200);
+    const wrapped = Buffer.from(buildMime({ from: "me@gmail.com", to: ["a@b.c"], subject: "s", text: long }), "base64url").toString("utf8");
+    expect(wrapped.split("\r\n").every((line) => line.length <= 76)).toBe(true);
+    expect(Buffer.from(/text\/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n([A-Za-z0-9+/=\r\n]+)/.exec(wrapped)![1]!, "base64").toString("utf8")).toBe(long);
     const sanitized = sanitizeMailHtml('<p onclick="x()">Hi</p><a href="javascript:alert(1)">bad</a><img src="cid:abc">', { loadImages: true, cidUrl: () => null });
     expect(sanitized.html).toBe("<p>Hi</p><a target=\"_blank\" rel=\"noopener noreferrer nofollow\">bad</a><img alt=\"\" />");
     expect(sanitized.blockedImages).toBe(false);
+  });
+
+  it("slice 5: a reply's quote of earlier thread messages is left out only when those messages hold all of it", () => {
+    const first = "Hi Nikos,\nCould you send the invoice for October?\nThanks,\nMaria";
+    const second = "Hi Maria,\nAttached.\n\nOn Fri, 21 Nov 2026 at 10:00, Maria Papa <\nmaria@example.com> wrote:\n\n> Hi Nikos,\n> Could you send the invoice for\n> October?\n> Thanks,\n> Maria\n";
+    const third = "Got it, thanks.\n\nOn Fri, 21 Nov 2026 at 11:00, Nikos wrote:\n> Hi Maria,\n> Attached.\n>\n> On Fri, 21 Nov 2026 at 10:00, Maria Papa <maria@example.com> wrote:\n>> Hi Nikos,\n>> Could you send the invoice for October?\n>> Thanks,\n>> Maria";
+    const messages = agentThread({ messages: [first, second, third].map((text) => ({ text, html: null }) as never) }).messages.map((message) => message.text);
+    expect(messages[0]).toBe(first);
+    expect(messages[1]).toMatch(/^Hi Maria,\nAttached\.\n\n\[Quoted text of the earlier messages above left out: \d+ characters\.\]$/);
+    expect(messages[2]).toMatch(/^Got it, thanks\.\n\n\[Quoted text/);
+    // An inline answer inside the quote, or a quote of a message this thread does not hold, stays whole.
+    const inline = "On Fri, Maria wrote:\n> Could you send the invoice for October?\nYes, by Monday.\n> Thanks,";
+    expect(withoutRepeatedQuote(`See below.\n${inline}`, "Could you send the invoice for October? Thanks,")).toBe(`See below.\n${inline}`);
+    expect(withoutRepeatedQuote(second, "")).toBe(second);
+    expect(withoutRepeatedQuote("> only a quote", "only a quote")).toBe("> only a quote");
   });
 
   it("13/11 Daisycon: the agent gets the HTML's links its text part leaves out, never the HTML", () => {
@@ -387,6 +407,15 @@ describe("mail copilot attachments", () => {
     expect(await service.threadSend(owner, "me@gmail.com", "t4", ask)).toBe("SENT");
     expect(await service.threadSend(owner, "me@gmail.com", "t5", ask)).toBe("SENT");
     expect(await service.threadSend(owner, "me@gmail.com", "t6", ask)).toBeNull();
+    // Speed audit 14/11: one reader of every account since an earlier time answers each thread and review ask with no further read.
+    const reader = await service.sendsReader(owner, null, "2026-11-01T00:00:00.000Z");
+    const reads = [vi.spyOn(repository, "listEvents"), vi.spyOn(repository, "listActions")];
+    expect(["t1", "t2", "t3", "t4", "t5", "t6"].map((threadId) => reader.threadSend("Me@Gmail.com", threadId, ask))).toEqual(["SENT", "BOUNCED", null, "SENT", "SENT", null]);
+    expect(reader.threadSend("me@gmail.com", "t1", "2026-11-05T11:00:00.000Z")).toBeNull();
+    expect(reader.threadSend("other@gmail.com", "t1", ask)).toBeNull();
+    expect(reader.decided("mailrev:abcdef", ask)?.payload.sent).toEqual({ messageId: "1a1b1a72", threadId: "t4" });
+    expect(reader.decided("mailrev:abcdef", "2026-11-05T11:00:00.000Z")).toBeUndefined();
+    for (const read of reads) expect(read).not.toHaveBeenCalled();
     expect(gmailFetch).not.toHaveBeenCalled();
   });
 
@@ -407,6 +436,16 @@ describe("mail copilot attachments", () => {
     expect(await service.sentTo(owner, "me@gmail.com", ["them@x.com"], approved)).toMatchObject({ state: "BOUNCED", threadId: "t-gmail" });
     expect(await service.sentTo(owner, null, ["b2b@vodafone.gr"], "2026-11-05T11:00:00.000Z")).toBeNull();
     expect(await service.sentTo(owner, "other@gmail.com", ["b2b@vodafone.gr"], approved)).toBeNull();
+    // Speed audit 14/11 (the Score asks once per approved decision): one reader since an earlier time answers each ask as sentTo does, with no further read.
+    const { sentTo: reader } = await service.sendsReader(owner, null, "2026-11-01T00:00:00.000Z");
+    const reads = [vi.spyOn(repository, "listEvents"), vi.spyOn(repository, "listActions")];
+    expect(reader(["b2b@vodafone.gr"], approved)).toMatchObject({ state: "SENT", threadId: "t-new" });
+    expect(reader(["them@x.com"], approved)).toMatchObject({ state: "BOUNCED", threadId: "t-gmail" });
+    expect(reader(["b2b@vodafone.gr"], "2026-11-05T11:00:00.000Z")).toBeNull();
+    // Strictly after, as the store's `since`: the send of 10:00:00.000 is not after an ask of that millisecond.
+    expect(reader(["b2b@vodafone.gr"], "2026-11-05T10:00:00.000Z")).toBeNull();
+    expect(reader(["b2b@vodafone.gr"], "2026-11-05T09:59:59.999Z")).toMatchObject({ state: "SENT" });
+    for (const read of reads) expect(read).not.toHaveBeenCalled();
   });
 
   it("sentTo, the 6/11 audit's cases: the recipient's domain counts, a shared provider's does not, a bounce counts only for an address we sent to", async () => {
@@ -469,5 +508,25 @@ describe("mail copilot attachments", () => {
       repository: new InMemoryMailCopilotRepository() });
     expect(await service.thread("user:owner", null, "me@gmail.com", "m2")).toMatchObject({ threadId: "t1", subject: "Case update" });
     await expect(service.thread("user:owner", null, "me@gmail.com", "x9")).rejects.toThrow("me@gmail.com: Gmail no longer has that message or thread.");
+  });
+});
+
+describe("tracked send (operator 22/11: who opened it)", () => {
+  it("sends one mail per To address with that recipient's own tracked HTML, refuses Cc, and sends nothing when tracking is off", async () => {
+    const me = fakeGmail("token-me", []);
+    const track = vi.fn(async (_owner: string, input: { recipient: string; recipientName: string; from?: string }) => `<p>for ${input.recipient} (${input.recipientName})</p>`);
+    const google = () => googleAccess([{ email: "me@gmail.com", capabilities: full, token: "token-me" }]);
+    const service = createMailCopilotService({ google, gmailFetch: me.fetchImpl, repository: new InMemoryMailCopilotRepository(), track });
+    const input = { account: "me@gmail.com", to: ["a@x.gr", "b@x.gr"], cc: [], bcc: [], subject: "[TEST] tracking", text: "Hi", track: { names: { "a@x.gr": "Label A" } } };
+    await service.send("user:owner", null, input as never);
+    const raws = me.writes.filter((write) => write.path === "/messages/send").map((write) => Buffer.from((write.body as { raw: string }).raw, "base64url").toString("utf8"));
+    expect(raws.map((raw) => /\r\nTo: ([^\r]+)\r\n/.exec(raw)?.[1])).toEqual(["a@x.gr", "b@x.gr"]);
+    expect(track.mock.calls.map(([, call]) => [call.recipient, call.recipientName, call.from])).toEqual([["a@x.gr", "Label A", "me@gmail.com"], ["b@x.gr", "", "me@gmail.com"]]); // From picks the relay
+    const html = (raw: string) => Buffer.from(/text\/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n([A-Za-z0-9+/=\r\n]+)/.exec(raw)![1]!, "base64").toString("utf8");
+    expect(html(raws[0]!)).toBe("<p>for a@x.gr (Label A)</p>");
+    await expect(service.send("user:owner", null, { ...input, cc: ["c@x.gr"] } as never)).rejects.toThrow("A tracked mail goes to each To address alone");
+    const off = createMailCopilotService({ google, gmailFetch: me.fetchImpl, repository: new InMemoryMailCopilotRepository(), track: () => null });
+    await expect(off.send("user:owner", null, input as never)).rejects.toThrow("nothing was sent");
+    expect(me.writes.filter((write) => write.path === "/messages/send")).toHaveLength(2);
   });
 });

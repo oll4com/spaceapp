@@ -49,7 +49,7 @@ function FileChips({ chips, fold }: { chips: Chip[]; fold: boolean }) {
         const known = links?.artifact(chip.href);
         const name = chip.name ?? (known && agentFileName(known)) ?? chip.label.split("/").filter(Boolean).at(-1) ?? chip.label;
         return (
-          <button key={chip.href} type="button" className="ny-file" title={`${title}: ${chip.label}`} data-file-ref={chip.label} data-sensitive-masked="manual"
+          <button key={chip.href} type="button" className="ny-file" title={`${title}: ${chip.label}`} data-file-ref={chip.label}
             onClick={(event) => { event.stopPropagation(); links?.openHref(chip.href); }}>
             <AgentFiles aria-hidden="true" /><span>{name}</span>{chip.folder ? <small>{chip.folder}</small> : null}
           </button>

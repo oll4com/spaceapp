@@ -208,7 +208,7 @@ interface SymbolAnalysis {
 
 const emptyAnalysis = (): SymbolAnalysis => ({ scores: new Map(), calls: new Map(), bareNames: new Map(), bodyLineCounts: new Map() });
 
-const CONTEXT_DELIMS = /[\s,;:.()[\]{}"'，、；：。．！？（）【】「」『』《》〈〉·…—　]+/u;
+const CONTEXT_DELIMS = /[\s,;:.()[\]{}"'，、；：。．！？（）【】「」『』《》〈〉·…—\u3000]+/u;
 const CJK = /[\u3000-\u9FFF\uAC00-\uD7AF\uFF00-\uFFEF]/u;
 
 function symbolInContext(name: string, words: Set<string>, context: string, hasCjk: boolean): boolean {

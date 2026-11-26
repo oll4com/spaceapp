@@ -1,7 +1,9 @@
 import { z } from "zod";
-import { artifactIdsIn, heldUnderAllowance, NEEDS_YOU_GO_NOW, needsYouMail, needsYouTargetSchema, needsYouTimingNow, NOTIFICATION_SOURCE_LABELS, type NeedsYouAsk, type NotificationListQuery, type NotificationRaiseInput, type Pane, type Room, type SpaceNotification } from "@space/contracts";
+import { artifactIdsIn, heldUnderAllowance, NEEDS_YOU_COMPLETION_OPTION, NEEDS_YOU_GO_NOW, needsYouMail, needsYouTargetSchema, needsYouTimingNow, NOTIFICATION_SOURCE_LABELS, type NeedsYouAsk, type NotificationListQuery, type NotificationRaiseInput, type Pane, type Room, type SpaceNotification } from "@space/contracts";
 import { isBrowserPane } from "../pane-guards.js";
 import { heldForNousNote } from "./copilot-questions.js";
+import type { MemoryEntryLite } from "./operator-facts.js";
+import { inSlices } from "./retrieval.js";
 
 /**
  * space_notify_operator (operator request 2026-10-17, plan clipboard:8FfXWclYUfOH): what only the operator's hands can do
@@ -13,6 +15,8 @@ export const NOUS_PANE_NOTICE_PREFIX = "nous:pane:";
 export const NOUS_GENERAL_NOTICE_KEY = "nous:general";
 /** A plan's Needs you item, one per plan, with no pane (plan-needs-you.ts; operator 13/11 nous_msg:2e24947d). */
 export const NOUS_PLAN_NOTICE_PREFIX = "nous:plan:";
+/** A closed pane's asks no plan carries (plan-needs-you.ts `carry`, 15/11 nous_msg:9f70dbbe); contracts `needsYou` lists it without a pane. */
+export const CLOSED_PANE_NOTICE_PREFIX = "nous:closed-pane:";
 const nousKey = (key: string | null) => Boolean(key?.startsWith(NOUS_PANE_NOTICE_PREFIX) || key?.startsWith(NOUS_PLAN_NOTICE_PREFIX) || key === NOUS_GENERAL_NOTICE_KEY);
 
 /** Needs you as questions (plan clipboard:5AQvaoSR-IZa): the card asks its first item's question; the operator's answer comes back to Nous. */
@@ -43,7 +47,9 @@ const askFields = {
  */
 export const NOUS_ASK_LAST_RULE = "Ask last (operator goal ee5a573e, 2026-10-27): find it yourself first (Space Memory and operator facts, your own answers and notes, "
   + "pane reports and files, Vault, mail, DB, git, web, Live history) and list in `checked` (1-8 items) each source you consulted and what it showed; "
-  + "ask the operator only for their hands, taste, money or a third party's approval.";
+  // 23/11 REVIEW (1 of 54 asks refused for missing checked): the refusal shows the value's form, so the retry carries it.
+  + "ask the operator only for their hands, taste, money or a third party's approval. "
+  + "Example: \"checked\": [\"Space Memory: no entry on X\", \"mail: no reply from Y since 27/10\"].";
 /** 14/11 (prediction misses x10 of 7 d, Dana's rule 6, Space Memory b78789c1): 7 predicted a plain yes and got the operator's own value or
  * scope (5), a plan id they had written an hour before (B1/B2 12/11) or a company fact Space Memory held (Turso 12/11). */
 export const NOUS_PREDICT_FROM_WORDS = "Predict from the operator's own words first: a value, scope or combination they wrote on this subject (chat or a card answer) is the answer, "
@@ -134,6 +140,10 @@ export interface NousPaneNoticesDeps {
   carry?(owner: string, paneId: string): Promise<number>;
   /** A plan's open pane (its room and pane), for a plan's card raised with no pane: Go takes the operator there (operator 13/11 15:37 BKK). */
   planPane?(owner: string, planId: string): Promise<{ roomId: string; paneId: string } | null>;
+  /** 16/11 REVIEW: whether a code card's page is open near its pane (needs-you-browser-page.ts `createCodePageOpen`). */
+  codePageOpen?(owner: string, pane: Pane, target: string | undefined, text: string): Promise<boolean>;
+  /** 16/11 REVIEW: when the pane last reported (its newest pane report), null with none. */
+  paneReportAt?(owner: string, paneId: string): Promise<string | null>;
 }
 
 /**
@@ -149,6 +159,17 @@ const CARD_STOP_WORDS = new Set(["the", "and", "for", "with", "you", "your", "th
 export function cardStems(text: string): Set<string> {
   return new Set((foldText(text).match(/[\p{L}\p{N}]+(?:[.,]\p{N}+)*/gu) ?? []).filter((word) => word.length >= 3 && !CARD_STOP_WORDS.has(word))
     .map((word) => /\p{N}/u.test(word) ? word : word.slice(0, 5)));
+}
+export interface CardMemoryEntry { id: string; title: string; body: string; rule: boolean; stems: Set<string> }
+const cardMemoryKept = new WeakMap<MemoryEntryLite, CardMemoryEntry>();
+/**
+ * R65's memory for cards: each entry with its stems, kept by the entry (memoryEntries hands an unchanged block's entry back), so a memory save stems
+ * its new entry only: stemming all 4,468 held the API's main thread 554 ms on every save (stable 14/11). The first build runs in slices.
+ */
+export async function cardMemoryEntries(entries: MemoryEntryLite[]): Promise<CardMemoryEntry[]> {
+  await inSlices(entries, (entry) => cardMemoryKept.has(entry) || cardMemoryKept.set(entry, { id: entry.id, title: entry.title, body: entry.body,
+    rule: entry.tags.some((tag) => /^operator-rules?$/i.test(tag)), stems: cardStems(`${entry.title} ${entry.body}`) }));
+  return entries.map((entry) => cardMemoryKept.get(entry)!);
 }
 /** R65: how many of a card question's stems a text holds, and their share of the question's. */
 export function sharedStems(question: Set<string>, text: Set<string>): { shared: number; share: number } {
@@ -196,7 +217,7 @@ export function ledgerRecommendation(item: { text: string; question?: string; op
   const shape = questionShape(item.question);
   const same = rows.filter((row) => row.source === "NEEDS_YOU:NOUS" && questionShape(row.title) === shape).sort((left, right) => right.at.localeCompare(left.at));
   const last = same.slice(0, 2).map((row) => row.answer.split(": ")[0]!.trim());
-  if (last.length === 2 && last[0] === last[1] && item.options.includes(last[0]!)) return { option: last[0]!, answers: 2 };
+  if (last.length === 2 && last[0] === last[1] && item.options.includes(last[0]!) && !NEEDS_YOU_COMPLETION_OPTION.test(last[0]!)) return { option: last[0]!, answers: 2 };
   return baseRateRecommendation(same.map((row) => ({ source: "NEEDS_YOU:NOUS", kind: "NOUS:QUESTION", answer: row.answer })), { source: "NOUS", kind: "QUESTION", options: item.options });
 }
 
@@ -209,10 +230,14 @@ export function baseRateRecommendation(rows: Array<{ source: string; kind: strin
   const answers = rows.filter((row) => row.source === `NEEDS_YOU:${card.source}` && row.kind === `${card.source}:${card.kind}`)
     .map((row) => row.answer.split(": ")[0]!.trim()).filter((answer) => card.options.includes(answer));
   // 2/11 rule 4 (operator: a .gr domain flag said «Recommended "I handled it" by your last 6 answers»): a Mail Copilot flag learns from 2 answers.
-  if (answers.length < (card.source === "MAIL_COPILOT" && card.kind === "NEEDS_USER" ? 2 : 5)) return null;
+  const mailFlag = card.source === "MAIL_COPILOT" && card.kind === "NEEDS_USER";
+  if (answers.length < (mailFlag ? 2 : 5)) return null;
   const counts = new Map<string, number>();
   for (const answer of answers) counts.set(answer, (counts.get(answer) ?? 0) + 1);
   const [option, count] = [...counts].sort((left, right) => right[1] - left[1])[0]!;
+  // Operator 16/11 21:55 BKK («δεν ειπα ποτε done»): a completion ("Done", "Signed in") is never predicted, the operator says it; the mail flag's
+  // "I handled it" stays, since it routes the flag to Nous rather than closing anything (2/11 rule 4).
+  if (!mailFlag && NEEDS_YOU_COMPLETION_OPTION.test(option)) return null;
   return count / answers.length >= 0.8 ? { option, answers: answers.length } : null;
 }
 
@@ -247,29 +272,85 @@ export function ruleRecommendation(item: { question?: string; options?: string[]
 }
 
 /** A match of `pattern` in `text` that no negation ("never delete", "not paid") just before it turns around. */
-const affirms = (text: string, pattern: RegExp) => [...text.matchAll(new RegExp(pattern.source, "giu"))]
-  .some((match) => !/(?:^|[^\p{L}])(?:never|not|no|don't|do not|avoid|without|μην|ποτέ|όχι)\s+(?:\S+\s+)?$/iu.test(text.slice(Math.max(0, match.index - 20), match.index)));
+// Folded first (slice 28): the Greek words below are unaccented and memory text is often typed without accents.
+const affirms = (raw: string, pattern: RegExp) => { const text = foldText(raw); return [...text.matchAll(new RegExp(pattern.source, "giu"))]
+  .some((match) => !/(?:^|[^\p{L}])(?:never|not|no|don't|do not|avoid|without|μην|μη|δεν|ποτε|οχι|χωρις)\s+(?:\S+\s+)?$/iu.test(text.slice(Math.max(0, match.index - 20), match.index))); };
 /**
  * 1056 (13/11 REVIEW: Vault→keep and Pavago→skip were answered against the recommendation): the operator's principle rules, which name no option
  * so `ruleRecommendation` misses them: what marks a saved rule as the principle, and a recommended pick (with its card's text) against it.
- * shortcut: three principles in English wording; add one here when a REVIEW finds another principle a card went against.
+ * shortcut: six principles in English wording (keep over delete and the agent sends also in Greek); add one here when a REVIEW finds another principle a card went against.
  */
-const PRINCIPLES: Array<{ name: string; rule: RegExp; against: (pick: string, context: string) => boolean }> = [
+const PRINCIPLES: Array<{ name: string; rule: RegExp; greek?: RegExp; against: (pick: string, context: string) => boolean }> = [
+  // Slice 28 (decision 3ca0aa75, 15/11: «ελευθερώσει ~19 GB» predicted yes, answered «δώσε δίσκο»): the operator's rules are Greek
+  // («Δεν σβήνεται τίποτα» 1734fb8c, «Σβήνεις …;: Κράτησέ τες» 613a0486), so both sides also read folded Greek.
   { name: "keep over delete", rule: /\bkeep\b[^.\n]*\b(?:over|instead of|rather than|before|not)\b[^.\n]*\b(?:delet|remov|discard)/i,
-    against: (pick) => affirms(pick, /\b(?:delet(?:e|ing)|remov(?:e|ing)|discard(?:ing)?|purg(?:e|ing)|eras(?:e|ing)|wip(?:e|ing))\b/) },
+    greek: /(?:^|[^\p{L}])(?:δεν|μην|μη|ποτε|τιποτα)\s+(?:\S+\s+)?(?:σβην|σβησ|διαγραφ|διαγραψ)|(?:σβην|σβησ|διαγραφ|διαγραψ)[^\n;]*;[^\n]*κρατ/u,
+    against: (pick) => affirms(pick, /\b(?:delet(?:e|ing)|remov(?:e|ing)|discard(?:ing)?|purg(?:e|ing)|eras(?:e|ing)|wip(?:e|ing))\b|(?<!\p{L})(?:σβησ|σβην|διαγραφ|διαγραψ|ελευθερωσ|καθαρισ)/u) },
   { name: "a free option first", rule: /\bfree\b[^.\n]*\b(?:first|over|before|instead of|rather than)\b|\bfree (?:solution|option|tier|alternative)s?\b/i,
     against: (pick, context) => affirms(pick, /\b(?:paid|pay(?:ing)?|buy(?:ing)?|purchas(?:e|ing)|subscri(?:be|bing|ption)|premium|upgrad(?:e|ing))\b|[$€£]\s?\d/)
       && affirms(context, /\bfree\b|\bopen[- ]source\b|\bself[- ]host/) },
   { name: "the operator reads funding mail before it is sent", rule: /\bfunding\b[^\n]*\b(?:mail|e-?mail)s?\b[^\n]*\bbefore\b[^\n]*\bsen[dt]\b/i,
     against: (pick, context) => /\b(?:funding|grant|investor|fundrais\w*|accelerator)s?\b/i.test(`${pick}\n${context}`) && affirms(pick, /\bsend(?:ing)?\b/)
       && !/\b(?:review|read|draft|approv\w*|show)\b/i.test(pick) },
+  // 983 (6/11 REVIEW: Eight Sleep send answered against the recommendation; «κανε το εσυ … αυτα πρεπει να τα κανεις εσυ» 3/11): a send the
+  // operator hands back. Only words that name the operator in either voice ("myself", "manually", "from your Gmail"): "send it yourself" or
+  // «στείλ' το εσύ» reads both ways (the operator to the agent, or Nous to the operator), so it is not a pick here.
+  { name: "the agent sends what the operator said to send", rule: /\b(?:do it yourself|send (?:it|them) yourself|the agent sends?)\b/i,
+    greek: /(?<!\p{L})(?:κανε|στειλε) (?:το|τα|τη|την) εσυ(?!\p{L})|πρεπει να τα κανεις εσυ/u,
+    against: (pick, context) => /\b(?:send|sent|mail|e-?mail|reply|forward)\b|(?<!\p{L})(?:στειλ|στελν|αποστολ|απαντησ)/iu.test(foldText(`${pick}\n${context}`))
+      && affirms(pick, /\b(?:send|reply|submit|forward)\w*\b[^.\n]*\b(?:myself|manually|by hand|from your (?:own )?(?:gmail|mailbox|inbox|account))\b|\boperator sends?\b|(?<!\p{L})(?:στειλ|στελν)\p{L}* (?:\S+ )?(?:εγω|μονος μου)(?!\p{L})/u) },
+  // 23/11 REVIEW (ledger 1762: «Μεταφορά σε τράπεζα, με ρητή επιφύλαξη» predicted, «Απόρριψη των κρατήσεων, επιμονή στα 12.000» answered; rule
+  // space_memory:763c4398): a third party's disputed money claim, where a pick that takes the partial sum or a compromise goes against the rule.
+  { name: "reject disputed deductions and insist on the full amount", rule: /\b(?:reject|refuse)\w*\b[^.\n]*\bdeductions?\b|\binsist\w* on the full\b/i,
+    greek: /(?<!\p{L})απορριψ\p{L}* (?:\S+ )?κρατησ/u,
+    against: (pick, context) => /\b(?:deposit|refund|deduction|reimburse\w*|withh[eo]ld|settlement)s?\b|(?<!\p{L})(?:εγγυησ|επιστροφ|κρατησ)|[$€£฿]\s?\d|\d\s?(?:thb|eur|usd)\b/iu.test(foldText(`${pick}\n${context}`))
+      && affirms(pick, /\b(?:accept\w*|compromise|settle|split|partial|transfer)\b|(?<!\p{L})(?:δεχ|αποδεχ|αποδοχ|συμβιβασ|μεταφορ|μοιρασ)/u)
+      && !affirms(pick, /\b(?:reject|refuse|insist)\w*|(?<!\p{L})(?:απορριψ|απορρι|επιμον)/u) },
+  // 23/11 REVIEW (ledger 1813, Kate's Village Global card: «Θα σου πω το μηνιαίο ποσό» recommended, «Γράψε: pre-revenue, founder-funded, δεν
+  // δίνω αριθμό» answered; rule space_memory:763c4398): a third party's form asking for his business figures gets the status, never a number.
+  { name: "state the status without a figure on a third party's form", rule: /\bpre-revenue\b|\bwithout (?:a|any) (?:figure|number)\b/i,
+    greek: /(?<!\p{L})δεν δινω (?:\S+ )?(?:αριθμ|νουμερ|ποσ)/u,
+    against: (pick, context) => /\b(?:burn|runway|revenue|mrr|arr)\b|(?<!\p{L})(?:εσοδ|τζιρ)/iu.test(foldText(`${pick}\n${context}`))
+      && affirms(pick, /\b(?:i'?ll|i will|let me)\s+(?:\S+\s+)?(?:give|tell|send|share)\b[^.\n]*\b(?:amount|figure|number|burn|runway)\b|(?<!\p{L})θα (?:σου )?(?:πω|δωσω|στειλω)(?!\p{L})/u) },
 ];
+/** Whether a pick goes against any principle at all, read before the saved rules are (a card raise must not wait on the memory read). */
+export const principleAgainst = (pick: string, context: string) => PRINCIPLES.some((principle) => principle.against(pick, context));
+const follows = (principle: (typeof PRINCIPLES)[number], text: string) => principle.rule.test(text) || Boolean(principle.greek?.test(foldText(text)));
 /** 1056: the saved principle rules a recommended pick contradicts (the card's or decision's text is `context`). */
 export function principleConflicts(pick: string, context: string, rules: Array<{ id: string; title: string; body: string }>): Array<{ principle: string; rule: { id: string; title: string } }> {
   return PRINCIPLES.flatMap((principle) => {
-    const rule = principle.against(pick, context) ? rules.find((entry) => principle.rule.test(`${entry.title}\n${entry.body}`)) : undefined;
+    const rule = principle.against(pick, context) ? rules.find((entry) => follows(principle, `${entry.title}\n${entry.body}`)) : undefined;
     return rule ? [{ principle: principle.name, rule: { id: rule.id, title: rule.title } }] : [];
   });
+}
+/**
+ * 23/11 REVIEW (Village Global): a card another producer raised (an agent, a copilot) never passed Nous's principle hold, so its own pick stood
+ * against the operator's rule. The one option that follows the principle its pick goes against (and goes against none), else null.
+ */
+export function principlePick(pick: string, context: string, options: string[], rules: Array<{ id: string; title: string; body: string }>): { option: string; principle: string; rule: { id: string; title: string } } | null {
+  for (const hit of principleConflicts(pick, context, rules)) {
+    const principle = PRINCIPLES.find((entry) => entry.name === hit.principle)!;
+    const follow = options.filter((option) => follows(principle, option) && !principleConflicts(option, context, rules).length);
+    if (follow.length === 1) return { option: follow[0]!, ...hit };
+  }
+  return null;
+}
+
+const CANNOT_WORK = /\b(?:cannot|can't|can not|won't work|doesn't work|does not work|not possible|impossible)\b|(?<!\p{L})(?:δεν (?:γινεται|δουλευει|λειτουργει|μπορει|περναει)|αδυνατ)/u;
+/**
+ * 1155 (18/11 REVIEW: 4 Azure/Microsoft account cards answered against the recommendation): the saved operator rules that say a step cannot
+ * work and name a name the card names (a capitalised word not opening its sentence: Azure, Microsoft, example.invalid's Olla).
+ * shortcut: names only, so a rule about "the account" with no name is missed; add subject words when a REVIEW finds such a miss.
+ */
+// Space's own nouns name no third party (25/11 example.invalid and Gshopper mail-review approves: "Mail Copilot" tied 17 unrelated rules, the hold led to ruleDiffers and an operator card).
+const SPACE_WORDS = /^(?:space|nous|vault|operator|mail|copilots?|marketing|freelance|job|design|security|monitoring|studio|reviews?|campaigns?|memory|gateway|agents?|files?|plans?|panes?|rooms?|approve)$/;
+export function cannotWorkRules(card: string, rules: Array<{ id: string; title: string; body: string }>): Array<{ id: string; title: string }> {
+  const names = new Set(card.split(/[.!?:;\n]+/).flatMap((sentence) => sentence.trim().split(/[\s,()«»"]+/).slice(1))
+    .filter((word) => /^\p{Lu}\p{L}{2,}/u.test(word)).map((word) => foldText(word).replace(/[^\p{L}\d]+$/u, "")).filter((name) => !SPACE_WORDS.test(name)));
+  return names.size ? rules.filter((rule) => {
+    const text = foldText(`${rule.title}\n${rule.body}`);
+    return CANNOT_WORK.test(text) && [...names].some((name) => new RegExp(`(?<![\\p{L}\\d])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\d])`, "u").test(text));
+  }).map((rule) => ({ id: rule.id, title: rule.title })) : [];
 }
 
 type GateNoted = NotifyOperatorArgs["items"][number] & { answersSource?: string };
@@ -294,16 +375,37 @@ const EXTRA_SAME = [/^(?:failed|απέτυχε)/i, /^(?:need (?:links|help)|χρ
 // The Greek words end on a lookahead: \b sees no word edge after a Greek letter, so «Έγινε» was never held.
 const STATUS_OPTION = /^(?:(?:done|installed|finished|completed|ready|signed in)\b|(?:έγινε|έτοιμο|ολοκληρώθηκε)(?!\p{L}))/iu;
 // 14/11 REVIEW (Dana's rule 4: Mercor interview, npm security key, Space Link, Braintrust identity video asked with no link, «δωσε μου λινκ»).
+const MID_FLOW = /captcha|puzzle|\bsms\b|verification code|passcode|2fa|\bmfa\b|\botp\b|security key|selfie|identity (?:video|check|verification)/i;
 const HANDS_WORK = /sign[- ]?in|log[- ]?in|captcha|password|passcode|2fa|\bmfa\b|\botp\b|verification code|\bsms\b|handoff|billing|install|interview|security key|passkey|selfie|identity (?:video|check|verification)|\bpersona\b|link spaceapp|συνέντευξ|ταυτοποίησ/i;
 /** 13/11 (an office ERP invoices card held for its link): work in a tool with no web address, named instead of the link. */
 const OFFLINE_TOOL = /\bERP\b|\bdesktop (?:app|application|program|software|client)\b|\boffline\b|\bPOS\b|cash register|ταμειακ|\bprinter\b|εκτυπωτ/i;
 export const NOUS_HANDS_RULE = "A card for the operator's hands opens the exact page: its https link or `target` (the tab), and no steps (operator rule 13/11 nous_msg:83c0acb8: "
   + "focus only when needed, at the one step only they can do); work in an offline tool (a desktop ERP) names that tool instead of the link.";
+type LinkedItem = Pick<NotifyOperatorArgs["items"][number], "text"> & Partial<Pick<NotifyOperatorArgs["items"][number], "question" | "steps" | "target" | "code">>;
 /** The hands items of a card that open no page: no https link, no `target`, no offline tool named. */
-export function handsItemsMissingLink(items: NotifyOperatorArgs["items"]): NotifyOperatorArgs["items"] {
+export function handsItemsMissingLink<T extends LinkedItem>(items: T[]): T[] {
   // `steps` still counts as where the link is: signinCard (focus-need.ts) refuses the steps themselves.
   return items.filter((item) => { const words = [item.text, item.question ?? "", ...(item.steps ?? [])].join("\n");
     return !item.code && HANDS_WORK.test(`${item.text} ${item.question ?? ""}`) && !item.target && !/https:\/\/\S+/.test(words) && !OFFLINE_TOOL.test(words); });
+}
+// 14/11 (operator correction 824bd787 «Δώσε μου λινκ να κάνω accept»): asking them to act on a site or a pane opens it too.
+const ACT_ON = /\b(?:open|go to|visit|check|look at|review|accept|approve|confirm|click|press|test|try)\b|(?<!\p{L})(?:άνοιξε|δες|μπες|έλεγξε|αποδέξου|έγκρινε|πάτα)(?!\p{L})/iu;
+const ON_SITE = /\b(?:site|website|web ?page|page|dashboard|portal|console|url)\b|σελίδα|ιστότοπ|ιστοσελίδ/iu;
+const ON_PANE = /\b(?:pane|tab)\b/i;
+export const NOUS_ACT_LINK_RULE = "It asks the operator to act on a site or a pane, so the card opens it: give the item its `target` (url:https://… for the page, "
+  + "tab:<id> for a browser pane's tab) or put the page's https link in its text; for a pane, raise the card on that pane (`pane`).";
+/** The items asking the operator to act on a site (or a pane, when the card is on none) that open nothing: no https link, no `target`, no offline tool. */
+export function actItemsMissingLink<T extends LinkedItem>(items: T[], onPane: boolean): T[] {
+  return items.filter((item) => { const said = `${item.text} ${item.question ?? ""}`; const words = [said, ...(item.steps ?? [])].join("\n");
+    return !item.code && !item.target && !/https:\/\/\S+/.test(words) && !OFFLINE_TOOL.test(words) && ACT_ON.test(said) && (ON_SITE.test(said) || (!onPane && ON_PANE.test(said))); });
+}
+// Nous errors 24/11 (b25510ce «Press «Συγχρονισμός του Vault» on the spaceapp-hz row» → «ανοιξε το … μεσω browser … δεν χρειαζεσαι εμενα», 931c907c
+// «σου ειπα εσυ να κανεις την συνδεση»): pressing a control on a page is an agent's job in a browser pane; paying, sending, buying stay the operator's.
+const PRESS = /\b(?:press|click|tap|toggle)\b|(?<!\p{L})(?:πάτα|πάτησε|πατήστε|πατησε|πατα)(?!\p{L})/iu;
+const OPERATOR_CLICK = /\b(?:pay|send|buy|subscribe|checkout|purchase|order|bot|robot|human|accept|agree|consent|sign)\w*|πληρ|αγορ|στείλ|στειλ|αποδοχ|συναίν/iu;
+function agentClickItems<T extends LinkedItem>(items: T[]): T[] {
+  return items.filter((item) => { const said = `${item.text} ${item.question ?? ""}`;
+    return !item.code && PRESS.test(said) && !HANDS_WORK.test(said) && !OPERATOR_CLICK.test(said); });
 }
 const live = (item: SpaceNotification) => item.status === "OPEN" || item.status === "READ";
 // 13/11 Cartesia card: a pane agent's own needs-you card (`agentNeedsYouKey` in pane-reports.ts) joins Nous's duplicate check, so one ask is one card.
@@ -410,6 +512,29 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
       const codes = args.items.filter((item) => item.code);
       if (codes.length && (!pane || codes.length > 1 || codes.some((item) => item.options?.length))) return { ok: false, refused: true, display: "A code item goes to its pane",
         result: "A one-time code item (`code: true`) is typed into its pane's prompt: one a card, on a pane, with a question and no options. Nothing raised." };
+      // 16/11 REVIEW (nous_msg:33444df3: a Shopify SMS code card on Dino/Bob said a code was sent; no Shopify tab was open, nothing showed it sent): a code
+      // card goes while its page is open and the pane reported in the last 15 minutes (a browser pane makes no reports). Cannot tell: it goes.
+      const code = codes[0];
+      if (code && pane) {
+        const open = await deps.codePageOpen?.(owner, pane, code.target, `${code.text}\n${code.question ?? ""}`).catch(() => null);
+        const reportAt = deps.paneReportAt && !isBrowserPane(pane) ? await deps.paneReportAt(owner, pane.id).catch(() => undefined) : undefined;
+        const age = reportAt ? now() - Date.parse(reportAt) : 0;
+        const why = open === false ? "no tab at its site is open" : reportAt === null ? `${where} has made no report`
+          : age >= 15 * 60_000 ? `${where}'s newest report is ${Math.floor(age / 60_000)} min old` : null;
+        if (why) return { ok: false, refused: true, display: "Reopen the page and request the code first", result: `A one-time code card goes only while its page `
+          + `waits for the code, and ${why}. Have the pane reopen the page, request the code there and report what the site showed, then raise the card with `
+          + "that tab as `target`. Nothing raised." };
+      }
+      // 21/11 REVIEW (5 hands cards answered against the recommendation: SMS window closed, AWS puzzle not open, Braintrust browser closed): a hands
+      // card goes while its page is live: a tab target some browser holds; an address target, for a step mid-flow, a tab at its site near the pane
+      // (opening the address afresh lands at the start, not at the step). Cannot tell: it goes.
+      const stale = pane && deps.codePageOpen ? args.items.find((item) => !item.code && HANDS_WORK.test(`${item.text} ${item.question ?? ""}`)
+        && (item.target?.startsWith("tab:") || (item.target?.startsWith("url:") && MID_FLOW.test(`${item.text} ${item.question ?? ""}`)))) : undefined;
+      if (stale && pane && await deps.codePageOpen!(owner, pane, stale.target, `${stale.text}\n${stale.question ?? ""}`).catch(() => null) === false) {
+        return { ok: false, refused: true, display: "Bring the page back to that step first", result: `"${stale.text.slice(0, 120)}": no browser holds its page `
+          + `(${stale.target}). Have the pane reopen the page at the step only the operator can do and report what it shows, then raise the card with that tab `
+          + "as `target`. Nothing raised." };
+      }
       // R20-asks-2 (operator rule cc31fdd2, 13/11 nous_msg:83c0acb8): a hands item opens its page (link or target), no steps; one asked with options also offers
       // "Failed" and "Need links/steps" (7 of 36 cards on 30/10 were answered against a «Done/Installed» recommendation).
       // R23-3 (31/10, operator «Θέλω να τα δω όλα αυτά»: icon and video options asked by id): Needs you shows every artifact a card names,
@@ -421,6 +546,12 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
       }
       const bare = handsItemsMissingLink(args.items);
       if (bare.length) return { ok: false, refused: true, display: "A hands card needs its link", result: `"${bare[0]!.text.slice(0, 120)}": ${NOUS_HANDS_RULE} Nothing raised.` };
+      const unlinked = actItemsMissingLink(args.items, Boolean(pane));
+      if (unlinked.length) return { ok: false, refused: true, display: "A card needs its link", result: `"${unlinked[0]!.text.slice(0, 120)}": ${NOUS_ACT_LINK_RULE} Nothing raised.` };
+      const clicks = agentClickItems(args.items);
+      if (clicks.length) return { ok: false, refused: true, display: "An agent presses it", result: `"${clicks[0]!.text.slice(0, 120)}": pressing a control on a page `
+        + "is an agent's work: have a browser pane open the page and press it (space_browser, or a pane with the browser), then read what the page shows. "
+        + "A card goes to the operator only for what their hands alone can do there (sign-in, a code, a payment, a send). Nothing raised." };
       const extras = ["Failed", "Need links/steps"];
       const hands = (item: NotifyOperatorArgs["items"][number]) => HANDS_WORK.test(`${item.text} ${item.question ?? ""}`);
       // Operator 13/11 15:37 BKK («δεν καταλαβαίνω καν τι αφορά»): a plan's card shows no item as a bare free-text box: it asks with its options, is hands work,
@@ -447,12 +578,11 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
         return { ...item, options: [...item.options, ...(greek ? EXTRAS_EL : extras).filter((_, index) => !item.options!.some((option) => EXTRA_SAME[index]!.test(option)))].slice(0, 6) };
       }) };
       // R21-3 (REVIEW 1/11: cards predicted 30 of 57 against decisions 80 %; 31/10 NVIDIA → "Need links/steps", Lendable → «Βάλε agent να το κανει»):
-      // a hands item never recommends a status ("Done", "Installed") unless the operator's base rate for that question's shape says so.
+      // a hands item never recommends a status ("Done", "Installed"); since 16/11 21:55 BKK not even by the base rate.
       const doneGuess = args.items.find((item) => item.question && item.options?.length && item.recommended && STATUS_OPTION.test(item.recommended.trim())
-        && HANDS_WORK.test(`${item.text} ${item.question}`) && baseRateRecommendation(ledger.filter((row) => row.source === "NEEDS_YOU:NOUS" && questionShape(row.title) === questionShape(item.question!))
-          .map((row) => ({ source: "NEEDS_YOU:NOUS", kind: "NOUS:QUESTION", answer: row.answer })), { source: "NOUS", kind: "QUESTION", options: item.options })?.option !== item.recommended);
+        && HANDS_WORK.test(`${item.text} ${item.question}`));
       if (doneGuess) return { ok: false, refused: true, display: `"${doneGuess.recommended}" is no recommendation for a hands card`, result: `"${(doneGuess.question ?? doneGuess.text).slice(0, 120)}": `
-        + `"${doneGuess.recommended}" is recommended only when the operator's answers to this question say so (5 or more, 80 %); hands cards recommending a status were wrong `
+        + `"${doneGuess.recommended}" is never recommended on a hands card: only the operator says it is done (16/11); hands cards recommending a status were wrong `
         + "most (REVIEW 1/11: 30 of 57). Recommend what they will pick (\"Need links/steps\", or what they will do), or have an agent do it. Nothing raised." };
       // R60 (1/11 X Premium card recommended "Failed", answered "Updated the card"): the fallback a card offers is never its prediction.
       const fallback = args.items.find((item) => item.recommended && /^(?:failed|απέτυχε)$/i.test(item.recommended.trim()));
@@ -460,7 +590,8 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
         + `"${fallback.recommended}" is the fallback the card offers, never a prediction: recommend what the operator will do, or "Need links/steps". Nothing raised.` };
       // R12-11: a card question with options names the one Nous expects the operator to pick (hands-only items without options need none).
       const unpredicted = args.items.find((item) => item.options?.length && !(item.recommended && item.options.includes(item.recommended)));
-      if (unpredicted) return { ok: false, display: "Asked without a recommended option", result: `"${(unpredicted.question ?? unpredicted.text).slice(0, 120)}" has options and no recommended one: ${NOUS_PREDICTION_RULE} Nothing raised.` };
+      // Daily Nous errors 14/11 (9/11 03:03): the answer names the field to add, like the fallback refusal above.
+      if (unpredicted) return { ok: false, refused: true, display: "Asked without a recommended option", result: `"${(unpredicted.question ?? unpredicted.text).slice(0, 120)}" has options and no recommended one: ${NOUS_PREDICTION_RULE} Nothing raised.` };
       // R16-8 (19:11 BKK: the MOBILE BUZZ refund reached the operator twice, the Mail card 6123bb27 released by card 1a969a7e's ref): a held
       // copilot card an item names stays held and is answered through this card; it resolves when this card is answered or resolved.
       const held = new Map<string, SpaceNotification>();
@@ -542,7 +673,8 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
         for (let before: string | undefined; ;) {
           const page = await deps.notifications.list(owner, { status: "ALL", source, limit: 200, ...(before ? { before } : {}) });
           const fresh = page.filter((item) => Date.parse(item.createdAt) >= since);
-          out.push(...fresh.filter((item) => !live(item) && (agentAsk(item) || (item.source === "NOUS" && nousKey(item.dedupeKey)))));
+          // 17/11 (card 1e91952e resolved unread by its pane's done): a card closed with no read and no answer never reached the operator, so it asks nothing.
+          out.push(...fresh.filter((item) => !live(item) && (item.readAt || item.payload.answer) && (agentAsk(item) || (item.source === "NOUS" && nousKey(item.dedupeKey)))));
           if (page.length < 200 || fresh.length < page.length) break;
           before = page.at(-1)!.createdAt;
         }
@@ -554,10 +686,13 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
     async summary(owner: string, names: { room(id: string | null): string | null; pane(id: string | null): string | null }): Promise<string> {
       const cards = await openCards(owner);
       if (!cards.length) return "";
-      return ["## Your cards to the operator (space_notify_operator: one per pane; resolve with space_resolve_notification when done)",
+      // Inbox upgrade step 3 (plan clipboard:LkwKdOOh2mXK: a Huawei CAPTCHA card stayed after its work moved to the audio solver): each card's age,
+      // and its cause ending (work moved elsewhere or ended) resolves it, not only the operator's hands.
+      return ["## Your cards to the operator (space_notify_operator: one per pane; resolve with space_resolve_notification when done, or when its work "
+        + "moved elsewhere or ended: a card whose cause is gone is a stale card)",
         ...cards.map((card) => {
           const items = Array.isArray(card.payload.items) ? card.payload.items.length : card.body.split("\n").length;
-          return `- [${card.id}] ${card.title} · ${names.pane(card.paneId) ?? (typeof card.payload.planId === "string" ? `plan ${card.payload.planId}` : "no pane")} in ${names.room(card.roomId) ?? "a room"} · ${items} item${items === 1 ? "" : "s"}${card.status === "READ" ? " · read" : ""}`;
+          return `- [${card.id}] ${card.title} · ${names.pane(card.paneId) ?? (typeof card.payload.planId === "string" ? `plan ${card.payload.planId}` : "no pane")} in ${names.room(card.roomId) ?? "a room"} · ${items} item${items === 1 ? "" : "s"} · since ${card.createdAt.slice(11, 16)} UTC${card.status === "READ" ? " · read" : ""}`;
         })].join("\n");
     },
 
@@ -568,7 +703,8 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
         const paneId = card.dedupeKey?.startsWith(NOUS_PANE_NOTICE_PREFIX) ? card.dedupeKey.slice(NOUS_PANE_NOTICE_PREFIX.length) : null;
         if (!paneId || openPaneIds.has(paneId)) continue;
         // Its asks move to the plan the pane worked on first (operator 13/11 nous_msg:2e24947d), as on PANE_CLOSED (browser-handoff.ts).
-        await deps.carry?.(owner, paneId).catch(() => 0);
+        // A failed move keeps the card (operator 15/11 nous_msg:9f70dbbe: an ask never leaves Needs you unanswered).
+        if (await Promise.resolve(deps.carry?.(owner, paneId)).then(() => false, () => true)) continue;
         resolved += await deps.notifications.resolve(owner, card.dedupeKey!, "its pane is gone");
       }
       return resolved;

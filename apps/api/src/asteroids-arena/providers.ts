@@ -6,7 +6,7 @@ import { requestOpenRouterDoctrine } from "../openrouter-benchmark-models.js";
 import { generateNativeOpenCodeTitle, resolveNativeOpenCodeRuntime } from "../task-title-opencode.js";
 import type { SensorSnapshot } from "./protocol.js";
 import { MANEUVERS } from "./protocol.js";
-import { SPACE_INSTALL_ROOT } from "@space/contracts";
+import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
 
 /**
  * Model adapters for the Asteroids Agent Arena. Every model is reached through
@@ -47,10 +47,31 @@ export const CLAUDE_ACCOUNT_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /** Run setting: pick the signed-in Claude account with the most quota left at each decision. */
 export const CLAUDE_ACCOUNT_AUTO = "auto";
 
-export type ArenaProviderId = "codex" | "claude" | "antigravity" | "openrouter" | "opencode" | "github" | "jev" | "baseline";
+export type ArenaProviderId =
+  | "codex"
+  | "claude"
+  | "antigravity"
+  | "openrouter"
+  | "opencode"
+  | "github"
+  | "jev"
+  | "baseline"
+  | "space-gateway-claude"
+  | "space-gateway-nvidia"
+  | "space-gateway-groq"
+  | "space-gateway-mistral"
+  | "space-gateway-adaption"
+  | "space-gateway-amd"
+  | "space-gateway-ovh"
+  | "space-gateway-gemini"
+  | "space-gateway-cloudflare"
+  | "space-gateway-zai"
+  | "space-gateway-inception"
+  | "space-gateway-freeai"
+  | (string & {});
 
 /** Requests in flight per provider (the Codex pool queues badly above 4, free tiers rate-limit sooner). */
-export const PROVIDER_CONCURRENCY: Record<ArenaProviderId, number> = {
+export const PROVIDER_CONCURRENCY: Record<string, number> = {
   codex: 4,
   claude: 4,
   antigravity: 2,
@@ -58,7 +79,19 @@ export const PROVIDER_CONCURRENCY: Record<ArenaProviderId, number> = {
   opencode: 2,
   github: 2,
   jev: 4,
-  baseline: 64
+  baseline: 64,
+  "space-gateway-claude": 2,
+  "space-gateway-nvidia": 2,
+  "space-gateway-groq": 2,
+  "space-gateway-mistral": 2,
+  "space-gateway-adaption": 2,
+  "space-gateway-amd": 2,
+  "space-gateway-ovh": 2,
+  "space-gateway-gemini": 2,
+  "space-gateway-cloudflare": 2,
+  "space-gateway-zai": 2,
+  "space-gateway-inception": 2,
+  "space-gateway-freeai": 2,
 };
 
 export function providerForModel(modelId: string): ArenaProviderId {
@@ -69,11 +102,15 @@ export function providerForModel(modelId: string): ArenaProviderId {
   if (modelId.startsWith("antigravity/")) return "antigravity";
   if (modelId.startsWith("github/")) return "github";
   if (modelId.startsWith("openrouter/")) return "openrouter";
+  if (modelId.startsWith("space-gateway-")) {
+    const slash = modelId.indexOf("/");
+    return slash > 0 ? (modelId.slice(0, slash) as ArenaProviderId) : (modelId as ArenaProviderId);
+  }
   return "opencode";
 }
 
 /** How the provider is reached, shown on the methodology panel. */
-export const PROVIDER_PATHS: Record<ArenaProviderId, string> = {
+export const PROVIDER_PATHS: Record<string, string> = {
   codex: "Space Gateway chat completions, reasoning effort low",
   claude: "Claude Code headless (agent-chat), effort low",
   antigravity: "Antigravity CLI headless (agent-chat)",
@@ -81,7 +118,19 @@ export const PROVIDER_PATHS: Record<ArenaProviderId, string> = {
   opencode: "OpenCode native runtime",
   github: "GitHub Copilot CLI headless (agent-chat)",
   jev: "Jev decisions API (structured choices)",
-  baseline: "Scripted reference policy (no model)"
+  baseline: "Scripted reference policy (no model)",
+  "space-gateway-claude": "Claude Code headless (agent-chat) on Claude Max, effort low",
+  "space-gateway-nvidia": "Space Gateway Nvidia pool (/pools/nvidia/v1)",
+  "space-gateway-groq": "Space Gateway Groq pool (/pools/groq/v1)",
+  "space-gateway-mistral": "Space Gateway Mistral pool (/pools/mistral/v1)",
+  "space-gateway-adaption": "Space Gateway Adaption pool (/pools/adaption/v1)",
+  "space-gateway-amd": "Space Gateway AMD pool (/pools/amd/v1)",
+  "space-gateway-ovh": "Space Gateway OVH pool (/pools/ovh/v1)",
+  "space-gateway-gemini": "Space Gateway Gemini pool (/pools/gemini/v1)",
+  "space-gateway-cloudflare": "Space Gateway Cloudflare pool (/pools/cloudflare/v1)",
+  "space-gateway-zai": "Space Gateway ZAI pool (/pools/zai/v1)",
+  "space-gateway-inception": "Space Gateway Inception pool (/pools/inception/v1)",
+  "space-gateway-freeai": "Space Gateway Free.ai pool (/pools/freeai/v1)",
 };
 
 export type ProviderFailureKind = "error" | "quota" | "timeout";
@@ -171,13 +220,13 @@ const limiters = new Map<ArenaProviderId, Limiter>();
 function limiter(provider: ArenaProviderId): Limiter {
   let existing = limiters.get(provider);
   if (!existing) {
-    existing = new Limiter(PROVIDER_CONCURRENCY[provider]);
+    existing = new Limiter(PROVIDER_CONCURRENCY[provider] ?? 2);
     limiters.set(provider, existing);
   }
   return existing;
 }
 
-function abortReason(_signal: AbortSignal): ProviderFailure {
+function abortReason(): ProviderFailure {
   return new ProviderFailure("timeout", "The decision deadline passed.");
 }
 
@@ -201,7 +250,7 @@ async function requestCodex(request: TextRequest): Promise<AgentReply> {
       })
     });
   } catch (error) {
-    if (request.signal.aborted) throw abortReason(request.signal);
+    if (request.signal.aborted) throw abortReason();
     throw new ProviderFailure("error", `Space Gateway unreachable: ${(error as Error).message}`.slice(0, 160));
   }
   if (!response.ok) {
@@ -224,26 +273,107 @@ async function requestOpenRouter(request: TextRequest): Promise<AgentReply> {
     title: "Space Asteroids Agent Arena",
     signal: request.signal
   });
-  if (request.signal.aborted) throw abortReason(request.signal);
+  if (request.signal.aborted) throw abortReason();
   if (typeof text !== "string") throw new ProviderFailure("error", "OpenRouter returned no answer (provider error or rate limit).");
   return { text };
 }
 
-async function requestOpenCode(request: TextRequest): Promise<AgentReply> {
-  const command = await resolveNativeOpenCodeRuntime();
-  if (!command) throw new ProviderFailure("error", "Verified OpenCode runtime not found.");
-  const modelId = request.modelId.startsWith("opencode/") ? request.modelId.slice("opencode/".length) : request.modelId;
+const FREE_POOLS_KEY_FILE = `${SPACE_AGENT_HOME}/.config/space-gateway/free-pools.key`;
+
+async function getSpaceGatewayPoolKey(): Promise<string | null> {
   try {
-    const text = await generateNativeOpenCodeTitle({ command, modelId, system: request.system, prompt: request.user, signal: request.signal });
-    return { text };
-  } catch (error) {
-    if (request.signal.aborted) throw abortReason(request.signal);
-    throw new ProviderFailure("error", `OpenCode failed: ${(error as Error).message}`.slice(0, 160));
+    const key = (await readFile(FREE_POOLS_KEY_FILE, "utf8")).trim();
+    if (key) return key;
+  } catch {
+    // Fallback to internal gateway key
   }
+  return getCodexApiKey();
+}
+
+async function requestSpaceGatewayPool(request: TextRequest): Promise<AgentReply> {
+  const slash = request.modelId.indexOf("/");
+  const providerId = slash > 0 ? request.modelId.slice(0, slash) : request.modelId;
+  const poolSlug = providerId.slice("space-gateway-".length);
+  const bareModel = slash > 0 ? request.modelId.slice(slash + 1) : request.modelId;
+  const apiKey = await getSpaceGatewayPoolKey();
+  if (!apiKey) throw new ProviderFailure("error", "Space Gateway key is not configured.");
+
+  let response: Response;
+  try {
+    response = await fetch(`${CODEX_LB_BASE_URL}/pools/${poolSlug}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        ...gatewayRequestIdHeader(request.traceId),
+      },
+      signal: request.signal,
+      body: JSON.stringify({
+        model: bareModel,
+        messages: [
+          { role: "system", content: request.system },
+          { role: "user", content: request.user },
+        ],
+        temperature: 0.2,
+        max_tokens: request.maxTokens ?? 900,
+      }),
+    });
+  } catch (error) {
+    if (request.signal.aborted) throw abortReason();
+    throw new ProviderFailure("error", `Space Gateway unreachable: ${(error as Error).message}`.slice(0, 160));
+  }
+  if (!response.ok) {
+    throw new ProviderFailure(response.status === 429 ? "quota" : "error", `Space Gateway ${poolSlug} HTTP ${response.status}`);
+  }
+  const payload = (await response.json()) as {
+    choices?: Array<{ message?: { content?: unknown; reasoning_content?: unknown } }>;
+    usage?: { total_tokens?: unknown };
+  };
+  const msg = payload.choices?.[0]?.message;
+  const text =
+    typeof msg?.content === "string" && msg.content.trim()
+      ? msg.content
+      : typeof msg?.reasoning_content === "string" && msg.reasoning_content.trim()
+        ? msg.reasoning_content
+        : null;
+  if (!text) throw new ProviderFailure("error", `Space Gateway ${poolSlug} returned no text.`);
+  const tokens = Number(payload.usage?.total_tokens);
+  return { text, ...(Number.isFinite(tokens) ? { tokens } : {}) };
+}
+
+async function requestOpenCode(request: TextRequest): Promise<AgentReply> {
+  const rawModelId = request.modelId;
+  if (rawModelId.startsWith("space-gateway-")) {
+    return requestSpaceGatewayPool(request);
+  }
+  const isPlainOpenCode = rawModelId.startsWith("opencode/") && !rawModelId.slice("opencode/".length).includes("/") && !rawModelId.includes("@");
+  if (isPlainOpenCode) {
+    const command = await resolveNativeOpenCodeRuntime();
+    if (command) {
+      const modelId = rawModelId.slice("opencode/".length);
+      try {
+        const text = await generateNativeOpenCodeTitle({ command, modelId, system: request.system, prompt: request.user, signal: request.signal });
+        return { text };
+      } catch {
+        if (request.signal.aborted) throw abortReason();
+      }
+    }
+  }
+  const snapshot: SensorSnapshot =
+    "snapshot" in request && typeof request.snapshot === "object" && request.snapshot !== null
+      ? (request.snapshot as SensorSnapshot)
+      : ({ contacts: [], pickups: [] } as unknown as SensorSnapshot);
+  return requestAgentChat({
+    modelId: rawModelId,
+    system: request.system,
+    user: request.user,
+    signal: request.signal,
+    snapshot
+  });
 }
 
 interface AgentChatTarget {
-  runtimeId: "cli:claude" | "cli:gemini" | "cli:copilot";
+  runtimeId: "cli:claude" | "cli:gemini" | "cli:copilot" | "cli:opencode";
   wrapper: string;
   env: Record<string, string>;
 }
@@ -264,11 +394,18 @@ function agentChatTarget(request: AgentRequest): AgentChatTarget {
     if (!/^[A-Za-z0-9._-]{1,120}$/.test(model)) throw new ProviderFailure("error", "Unsupported Antigravity model id.");
     return { runtimeId: "cli:gemini", wrapper: "gemini-vscode-parity", env: { SPACE_AGENT_CHAT_MODEL: model } };
   }
-  const model = request.modelId.slice("github/".length);
+  if (provider === "github") {
+    const model = request.modelId.slice("github/".length);
+    return {
+      runtimeId: "cli:copilot",
+      wrapper: "copilot-vscode-parity",
+      env: model && model !== "auto" && /^[A-Za-z0-9._-]{1,120}$/.test(model) ? { SPACE_AGENT_CHAT_MODEL: model } : {}
+    };
+  }
   return {
-    runtimeId: "cli:copilot",
-    wrapper: "copilot-vscode-parity",
-    env: model && model !== "auto" && /^[A-Za-z0-9._-]{1,120}$/.test(model) ? { SPACE_AGENT_CHAT_MODEL: model } : {}
+    runtimeId: "cli:opencode",
+    wrapper: "opencode-vscode-parity",
+    env: { SPACE_AGENT_CHAT_MODEL: request.modelId }
   };
 }
 
@@ -289,7 +426,7 @@ function requestAgentChat(request: AgentRequest): Promise<AgentReply> {
     : ["/usr/bin/sudo", ["-n", BROKER, "exec", target.runtimeId, "agent-chat"]];
   return mkdir(AGENT_CHAT_WORKSPACE, { recursive: true, mode: 0o755 }).catch(() => undefined).then(() => new Promise<AgentReply>((resolve, reject) => {
     if (request.signal.aborted) {
-      reject(abortReason(request.signal));
+      reject(abortReason());
       return;
     }
     const child = spawn(command, args, {
@@ -311,13 +448,13 @@ function requestAgentChat(request: AgentRequest): Promise<AgentReply> {
     const onAbort = () => {
       try {
         child.kill("SIGTERM");
-      } catch {}
+      } catch { /* child already exited */ }
       setTimeout(() => {
         try {
           child.kill("SIGKILL");
-        } catch {}
+        } catch { /* child already exited */ }
       }, 3000).unref();
-      finish(abortReason(request.signal));
+      finish(abortReason());
     };
     request.signal.addEventListener("abort", onAbort, { once: true });
     child.stdout.setEncoding("utf8");
@@ -377,7 +514,7 @@ async function requestJev(request: AgentRequest): Promise<AgentReply> {
     },
     { signal: request.signal, timeoutMs: 20_000 }
   );
-  if (request.signal.aborted) throw abortReason(request.signal);
+  if (request.signal.aborted) throw abortReason();
   if (!result.available) throw new ProviderFailure("error", result.reason);
   const answers = (result.answers ?? {}) as Record<string, { choice?: unknown; noul?: unknown }>;
   const yes = (key: string) => typeof answers[key]?.noul === "number" && (answers[key]!.noul as number) >= 0.5;
@@ -414,7 +551,13 @@ export const requestAgentReply: AgentRequester = (request) => {
         return requestAgentChat(request);
       case "jev":
         return requestJev(request);
+      // nous_msg:0dfab66c: the API-credit key is spent and Claude Max serves only real Claude Code, so this pool's model plays as the Claude CLI player.
+      case "space-gateway-claude":
+        return requestAgentChat({ ...request, modelId: `claude/${request.modelId.slice(request.modelId.indexOf("/") + 1)}` });
       default:
+        if (typeof provider === "string" && provider.startsWith("space-gateway-")) {
+          return requestOpenCode(request);
+        }
         return Promise.reject(new ProviderFailure("error", "The scripted baseline is not a model."));
     }
   };
@@ -438,6 +581,9 @@ export const requestModelText = (request: TextRequest): Promise<AgentReply> => {
       case "opencode":
         return requestOpenCode(request);
       default:
+        if (typeof provider === "string" && provider.startsWith("space-gateway-")) {
+          return requestOpenCode(request);
+        }
         return Promise.reject(new ProviderFailure("error", `${request.modelId} is not a text model of the gateway, OpenRouter or OpenCode.`));
     }
   };

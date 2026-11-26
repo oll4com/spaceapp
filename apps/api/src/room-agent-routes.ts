@@ -197,6 +197,7 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
     if (!request.user || request.user.role !== "ADMIN" || request.user.automationScope) throw new SpaceConflictError("Only an authenticated operator may answer a pane.");
     const params = parseQuery(z.object({ id: z.string().min(1), eventId: z.string().min(1).max(200) }), request.params);
     const input = parseBody(z.object({
+      // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
       answer: z.string().max(2000).regex(/^[^\x00-\x08\x0b-\x1f\x7f]*$/).optional(),
       submit: z.boolean().default(true),
       decline: z.boolean().default(false)

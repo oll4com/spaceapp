@@ -57,6 +57,20 @@ describe("userSettingsSchema & updateUserSettingsInputSchema", () => {
     expect(nousSettingsSchema.safeParse({ lowSpend: { loadTargets: { LOW: -1 } } }).success).toBe(false);
   });
 
+  it("keeps the Media tab's YouTube chips: unset until saved, the whole list replaced, http(s) links only (nous_msg:e90fdeaf)", () => {
+    const before = nousSettingsSchema.parse({});
+    expect(before.mediaPresets).toBeUndefined();
+    const jazz = { label: "Jazz", url: "https://www.youtube.com/watch?v=4xDzrJKXOOY" };
+    const saved = mergeNousSettings(before, nousSettingsInputSchema.parse({ mediaPresets: [jazz] }));
+    expect(saved.mediaPresets).toEqual([jazz]);
+    expect(mergeNousSettings(saved, nousSettingsInputSchema.parse({ enabled: true })).mediaPresets).toEqual([jazz]);
+    expect(mergeNousSettings(saved, nousSettingsInputSchema.parse({ mediaPresets: [] })).mediaPresets).toEqual([]);
+    for (const url of ["javascript:alert(1)", "file:///etc/passwd", "ftp://x.example/a", "not a url"]) {
+      expect(nousSettingsInputSchema.safeParse({ mediaPresets: [{ label: "x", url }] }).success, url).toBe(false);
+    }
+    expect(nousSettingsInputSchema.safeParse({ mediaPresets: [{ label: " ", url: jazz.url }] }).success).toBe(false);
+  });
+
   it("keeps legacy dock tabs on, saves explicit choices and never accepts a Conversation switch", () => {
     expect(nousSettingsSchema.parse({})).not.toHaveProperty("dockTabs");
     expect(nousSettingsInputSchema.parse({ maxTurnsPerHour: 5 })).not.toHaveProperty("dockTabs");
@@ -106,6 +120,9 @@ describe("userSettingsSchema & updateUserSettingsInputSchema", () => {
     expect(defaultUserSettings.roomsRailHidden).toBe(false);
     expect(defaultUserSettings.worktreeDefaultEnabled).toBe(true);
     expect(defaultUserSettings.uiZoom).toBe(100);
+    // A new SpaceApp shows CLI controls and leaves sensitive data visible (operator 23/11).
+    expect(defaultUserSettings.cliFloatsHidden).toBe(false);
+    expect(defaultUserSettings.sensitiveDataMasked).toBe(false);
     expect(defaultUserSettings.upperRailOrder).toBeUndefined();
     expect(defaultUserSettings.upperRailHidden).toBeUndefined();
     expect(defaultUserSettings.lowerRailOrder).toBeUndefined();
@@ -228,7 +245,7 @@ describe("userSettingsSchema & updateUserSettingsInputSchema", () => {
       id: "pv_thai",
       name: "pc_thai",
       label: "Thai Office PC",
-      value: "Computer with IP 192.168.10.50 accessed via router RT-01",
+      value: "Computer with IP 192.168.88.50 accessed via router RT-01",
       description: "Main development workstation in Thailand",
       category: "Network"
     };

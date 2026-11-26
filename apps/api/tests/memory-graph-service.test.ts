@@ -76,6 +76,26 @@ describe("memory graph service", () => {
     await expect(readFile(join(root, "graph", "snapshot.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("parses the persisted snapshot once per file and again only after it is replaced", async () => {
+    const root = await mkdtemp(join(tmpdir(), "space-memory-api-parsed-once-"));
+    const indexPath = join(root, "gemini_history.md");
+    const monthlyPath = join(root, "gemini_history_2026-07.md");
+    await writeFile(indexPath, "# History\n\n## Current month\n", "utf8");
+    await writeFile(monthlyPath, "# July\n\n## 2026-07-13 08:00 EEST - Durable fact\n\n- body\n", "utf8");
+    const service = createMemoryGraphService({ rootDir: join(root, "graph"), indexPath, monthlyPath });
+    await service.getSnapshot();
+
+    const first = await service.getCachedSnapshot();
+    expect(first).not.toBeNull();
+    expect(await service.getCachedSnapshot()).toBe(first);
+    expect((await service.getSnapshot()).snapshot).toBe(first);
+
+    await createMemoryGraphSnapshotStore({ rootDir: join(root, "graph") }).write({ ...first!, generatedAt: "2026-07-13T11:00:00.000Z" });
+    const replaced = await service.getCachedSnapshot();
+    expect(replaced).not.toBe(first);
+    expect(replaced?.generatedAt).toBe("2026-07-13T11:00:00.000Z");
+  });
+
   it("atomically rebuilds a legacy snapshot whose nodes have no persisted positions", async () => {
     const root = await mkdtemp(join(tmpdir(), "space-memory-api-legacy-layout-"));
     const indexPath = join(root, "gemini_history.md");

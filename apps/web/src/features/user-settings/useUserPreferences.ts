@@ -98,7 +98,7 @@ function readStoredDefaultWorktreeEnabled(): boolean {
   try {
     const stored = localStorage.getItem(DEFAULT_WORKTREE_ENABLED_STORAGE_KEY);
     if (stored !== null) return stored === "true";
-  } catch {}
+  } catch { /* storage blocked: the default applies */ }
   return true; // Default true
 }
 
@@ -135,7 +135,7 @@ function readStoredProjectPresets(): ProjectPreset[] {
         return filtered.length > 0 ? filtered : DEFAULT_PROJECT_PRESETS;
       }
     }
-  } catch {}
+  } catch { /* storage blocked or corrupt: the default presets apply */ }
   return DEFAULT_PROJECT_PRESETS;
 }
 
@@ -204,7 +204,7 @@ export function useUserPreferences({ isAuthenticated, restoredDesktopOpen, uiThe
       const next = { ...prev, [roomId]: nextVal };
       try {
         runtime.platform.localStorage.setItem(ROOM_EXTRA_EMPTY_SLOTS_STORAGE_KEY, JSON.stringify(next));
-      } catch {}
+      } catch { /* storage blocked: kept for this session only */ }
       if (isAuthenticated) {
         saveUserSettingDebounced("roomExtraEmptySlots", next);
       }
@@ -311,14 +311,14 @@ export function useUserPreferences({ isAuthenticated, restoredDesktopOpen, uiThe
     try {
       const stored = localStorage.getItem(`space.room.${roomId}.isolatedWorktree`);
       if (stored !== null) return stored === "true";
-    } catch {}
+    } catch { /* storage blocked: the default applies */ }
     return defaultWorktreeEnabled;
   }
 
   function setRoomWorktreeEnabled(roomId: string, enabled: boolean) {
     try {
       localStorage.setItem(`space.room.${roomId}.isolatedWorktree`, String(enabled));
-    } catch {}
+    } catch { /* storage blocked: kept for this session only */ }
     setRoomWorktreeOverrides((prev) => {
       const next = { ...prev, [roomId]: enabled };
       if (isAuthenticated) {
@@ -336,7 +336,7 @@ export function useUserPreferences({ isAuthenticated, restoredDesktopOpen, uiThe
       const next = [...prev, { label, path: project.path }];
       try {
         localStorage.setItem(PROJECT_PRESETS_STORAGE_KEY, JSON.stringify(next));
-      } catch {}
+      } catch { /* storage blocked: kept for this session only */ }
       if (isAuthenticated) {
         saveUserSettingDebounced("projectPresets", next);
       }
@@ -350,7 +350,7 @@ export function useUserPreferences({ isAuthenticated, restoredDesktopOpen, uiThe
       const next = [...prev, { label: name, path: projectPath }];
       try {
         localStorage.setItem(PROJECT_PRESETS_STORAGE_KEY, JSON.stringify(next));
-      } catch {}
+      } catch { /* storage blocked: kept for this session only */ }
       if (isAuthenticated) {
         saveUserSettingDebounced("projectPresets", next);
       }
@@ -417,7 +417,7 @@ export function useUserPreferences({ isAuthenticated, restoredDesktopOpen, uiThe
     setDefaultWorktreeEnabled(enabled);
     try {
       localStorage.setItem(DEFAULT_WORKTREE_ENABLED_STORAGE_KEY, String(enabled));
-    } catch {}
+    } catch { /* storage blocked: kept for this session only */ }
     if (isAuthenticated) {
       saveUserSettingDebounced("worktreeDefaultEnabled", enabled);
     }

@@ -145,10 +145,8 @@ describe("TaskDock", () => {
     const yourRow = screen.getByText("Verify fallback").closest("article")!;
     expect(yourRow.className).toContain("is-you");
     expect(within(yourRow).getByTitle("Added by you").textContent).toBe("You → Model Task");
-    // "Hide sensitive data" and masked captures hide the task's own text, never the time or who added it (Nous 2026-10-23).
-    expect(yourRow.querySelector(".task-row-title")?.getAttribute("data-sensitive-masked")).toBe("manual");
-    expect(yourRow.querySelector(".dock-kit-task-details")?.getAttribute("data-sensitive-masked")).toBe("manual");
-    expect(within(yourRow).getByTitle("Added by you").closest("[data-sensitive-masked]")).toBeNull();
+    // "Hide sensitive data" blurs only private values, never a task's own words (plan clipboard:1NF6u6gcCwtj step 14, superseding Nous 2026-10-23).
+    expect(yourRow.querySelector("[data-sensitive-masked]")).toBeNull();
 
     fireEvent.click(within(screen.getByRole("group", { name: "Who added the task" })).getByRole("button", { name: "Agents" }));
     await waitFor(() => expect(mocks.taskItems).toHaveBeenLastCalledWith({ source: "AGENT", page: 1, pageSize: 100 }));

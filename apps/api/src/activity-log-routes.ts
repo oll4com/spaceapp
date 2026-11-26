@@ -14,7 +14,7 @@ export function registerActivityLogRoutes(app: FastifyInstance, options: {
   routeOptions: Pick<RouteShorthandOptions, "config">;
 }) {
   const { store, activityLogService, routeOptions: defaultRouteRateLimitOptions } = options;
-  app.get("/api/activity-log", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.get("/api/activity-log", defaultRouteRateLimitOptions, async (request) => {
     const query = parseQuery(listActivityLogEventsQuerySchema, request.query);
     return activityLogService.listEvents(query);
   });

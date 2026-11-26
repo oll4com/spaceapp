@@ -68,16 +68,17 @@ describe("Space Dots tool catalog", () => {
 
   it("exposes native tool schemas without the internal discriminator", () => {
     const catalog = buildDotToolCatalog(context());
-    const search = catalog.find((entry) => entry.id === "memory.search")!;
-    expect(search.inputSchema.required).toEqual(["q"]);
-    expect(Object.keys(search.inputSchema.properties as object)).not.toContain("type");
+    const get = catalog.find((entry) => entry.id === "clipboard.get")!;
+    expect(Object.keys(get.inputSchema.properties as object)).not.toContain("type");
+    // Chat Dots keep their own memory only; the shared Space Memory is not in their catalog.
+    expect(catalog.some((entry) => entry.id.startsWith("memory."))).toBe(false);
     expect(catalog.find((entry) => entry.id === "clipboard.save_plan")?.inputSchema.required).toEqual(expect.arrayContaining(["text", "minimumModel"]));
   });
 
   it("searches available tools by id and description, hiding unavailable ones by default", () => {
     const catalog = buildDotToolCatalog(context());
     expect(searchDotTools(catalog, { query: "memory" }).map((entry) => entry.id)).toEqual(["dot_memory.forget", "dot_memory.recall", "dot_memory.remember",
-      "dot_memory.update", "memory.save", "memory.search"]);
+      "dot_memory.update"]);
     expect(searchDotTools(catalog, { source: "SPACE_MEMORY" }).every((entry) => entry.id.startsWith("dot_memory."))).toBe(true);
     expect(searchDotTools(catalog, { query: "deploy" })).toEqual([]);
     expect(searchDotTools(catalog, { query: "deploy", includeUnavailable: true }).map((entry) => entry.id)).toContain("resource.ops.deploy");

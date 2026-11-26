@@ -71,7 +71,7 @@ export function registerDesign(app: FastifyInstance, deps: DesignWiring): Design
     if (!session) throw new SpaceConflictError("Open the designer's terminal first: the pane has no running CLI session.");
     const traceId = `design:${makeSpaceId("kickoff")}`;
     await terminal.runSerializedTerminalMutation(session.sessionId, async () => {
-      await submitCliPrompt(terminal, session.sessionId, DESIGN_KICKOFF, traceId, `${traceId}:kickoff`);
+      await submitCliPrompt(terminal, session.sessionId, DESIGN_KICKOFF, traceId, `${traceId}:kickoff`, { paneId: session.paneId });
     });
   });
   const openPane = deps.invoke && deps.inspect ? async (owner: string, roomId: string): Promise<Pane | null> => {

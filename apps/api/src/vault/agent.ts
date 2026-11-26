@@ -6,18 +6,19 @@ import {
   newVaultHandle, sealToVaultPublicKey, vaultAgentAuditRequestSchema, vaultAgentAuditResultSchema, vaultAgentCardFillRequestSchema, vaultAgentEmptyRequestSchema, vaultAgentFillRequestSchema, canonicalVaultOrigin, isVaultCardRole,
   vaultAgentGenerateRequestSchema, vaultAgentListRequestSchema, vaultDirtiedBySchema, vaultAgentListResultSchema, vaultAgentResultSchema, vaultAgentSaveRequestSchema, vaultAgentSaveSite, vaultAgentStatusResultSchema, vaultLoginPageProblem, vaultOriginCovers,
   vaultAgentTotpRequestSchema, vaultBase64url, vaultAgentKeyRequestSchema, vaultAgentKeyTakeResultSchema, vaultAgentKeyListRequestSchema, vaultAgentKeyListResultSchema,
-  vaultAgentKeySaveRequestSchema, vaultAgentKeySaveResultSchema, vaultPasswordPolicyForField, vaultPolicyConstraints,
+  vaultAgentKeySaveRequestSchema, vaultAgentKeySaveResultSchema, vaultAgentOtpSaveRequestSchema, vaultPasswordPolicyForField, vaultPolicyConstraints,
   type Pane, type VaultGeneratePolicy, type VaultAgentResult, type VaultAuditEvent, type VaultHostFillResult, type VaultHostTarget
 } from "@space/contracts";
 import { connectorSealContext, type ConnectorCrypto } from "../dot-connectors.js";
 import { ownBrowserPane, type BrowserControlActivity } from "../browser-control-activity.js";
 import { isBrowserPane } from "../pane-guards.js";
 import type { VaultBroker } from "./broker-client.js";
-import type { VaultProtection } from "./protection.js";
+import { VAULT_BLIND_FENCE, vaultFlowStep, type VaultFlowBrowser, type VaultProtection } from "./protection.js";
 import { cliVaultPathPrefix, type VaultStore } from "./routes.js";
-import { handOverPendingLogin } from "./handover.js";
+import { handOverPendingLogin, queueWipedKeyItems } from "./handover.js";
 import { runVaultSignup } from "./signup.js";
-import { markSignin, resetHold, resetRefusal, VAULT_RESET_REASON } from "../signin-readback.js";
+import { markSignin, resetHold, resetRefusal, VAULT_OTP_SWAP_REASON, VAULT_RESET_REASON } from "../signin-readback.js";
+import { SpaceConflictError } from "@space/runtime";
 
 // What agents and Nous may do with the Vault (operator decision 2026-10-18, plan clipboard:Ml8zElMcc4Ac). One switch in the
 // dock is the whole authorization: while it is on, every item the dock delegated fills with no further approval, and new
@@ -25,11 +26,11 @@ import { markSignin, resetHold, resetRefusal, VAULT_RESET_REASON } from "../sign
 // the filled page is gone, and every answer is a status, a reason in the audit and, for a list, handles and origins only.
 // Nous calls the same paths as the agents' bridge, so both have identical access.
 
-export const VAULT_AGENT_PATHS = ["status", "list", "audit", "fill", "card-fill", "totp-fill", "generate-fill", "save", "key-take", "key-used", "key-list", "key-save"] as const;
+export const VAULT_AGENT_PATHS = ["status", "list", "audit", "fill", "card-fill", "totp-fill", "generate-fill", "save", "key-take", "key-used", "key-list", "key-save", "otp-save"] as const;
 export type VaultAgentPath = (typeof VAULT_AGENT_PATHS)[number];
 const actions: Record<VaultAgentPath, VaultAuditEvent["action"]> = {
   status: "AGENT_LIST", list: "AGENT_LIST", audit: "AGENT_LIST", fill: "FILL", "card-fill": "FILL", "totp-fill": "FILL", "generate-fill": "GENERATE", save: "ITEM_SAVE",
-  "key-take": "KEY_HANDOFF", "key-used": "KEY_HANDOFF", "key-list": "KEY_HANDOFF", "key-save": "KEY_HANDOFF"
+  "key-take": "KEY_HANDOFF", "key-used": "KEY_HANDOFF", "key-list": "KEY_HANDOFF", "key-save": "KEY_HANDOFF", "otp-save": "ITEM_SAVE"
 };
 /** The calls that need the delegation to hold every saved login (joinMissing). */
 const RETRIES_HAND_OVER = new Set<VaultAgentPath>(["status", "list", "fill", "totp-fill", "generate-fill"]);
@@ -62,7 +63,7 @@ export function createVaultAgent(deps: {
   /** The pane's owner (its explicit owner, else its room's); null when the pane does not exist. */
   paneOwner(paneId: string): Promise<string | null>;
   /** The Browser Host's sealed fill (absent where no Browser Host runs). */
-  browser?: { vaultTarget?(pane: Pane): Promise<VaultHostTarget>; vaultFill?(pane: Pane, request: unknown, traceId: string): Promise<VaultHostFillResult> };
+  browser?: VaultFlowBrowser & { vaultTarget?(pane: Pane): Promise<VaultHostTarget>; vaultFill?(pane: Pane, request: unknown, traceId: string): Promise<VaultHostFillResult> };
   /** The owner's Google accounts (id and address): a list names each login's account (Chrome imports, plan clipboard:SMcT__jALB6R). */
   googleAccounts?(owner: string): Promise<Array<{ id: string; email: string }>>;
   /** The Google account a pane's browser opens with (its id), or null. */
@@ -88,16 +89,27 @@ export function createVaultAgent(deps: {
   // shortcut: only logins the delegation lacks are retried; a changed password of a delegated login whose hand-over failed stays the
   // old one until the dock's next delegation re-attaches it; record joined entries if that ever happens.
   const retriedAt = new Map<string, number>();
+  // Handles already tried by queueWipedKeyItems in this process: an item that does not open with the zero key is opened once.
+  const wipedChecked = new Set<string>();
   async function joinMissing(repository: VaultStore, owner: string): Promise<void> {
     if (Date.now() - (retriedAt.get(owner) ?? 0) < 60_000) return;
     const delegation = await repository.getActiveDelegation(owner);
     if (!delegation?.inboxKeyEnvelope) return;
-    const held = new Set(delegation.certificate.claims.items.map((item) => item.handle));
-    const missing = new Set((await repository.listPending(owner)).map((entry) => entry.handle).filter((handle) => !held.has(handle)));
+    const held = new Map(delegation.certificate.claims.items.map((item) => [item.handle, item.fields]));
+    await queueWipedKeyItems(repository, owner, held, wipedChecked).catch(() => undefined);
+    // An authenticator key (SET_OTP) for a login the delegation already holds is missing until that login lists OTP.
+    const missing = new Set((await repository.listPending(owner))
+      .filter((entry) => !held.has(entry.handle) || entry.sealedOtp && !held.get(entry.handle)!.includes("OTP")).map((entry) => entry.handle));
     if (!missing.size) return;
     retriedAt.set(owner, Date.now());
     for (const handle of missing) await handOverPending(repository, owner, handle);
   }
+
+  /** Another agent's Vault/MFA flow holds the browser: refused; the caller's own flow tab comes back to front before its fill. */
+  const flowStep = (browser: VaultFlowBrowser, pane: Pane, call: VaultAgentCall): Promise<Outcome | null> => vaultFlowStep(deps.protection, browser, pane, call.viewer, call.traceId)
+    .then(() => null, (error: unknown) => blocked(error instanceof SpaceConflictError ? "BROWSER_HELD_BY_FLOW" : "FLOW_TAB_UNAVAILABLE"));
+  /** A CLI agent's fill or key capture starts (or moves) its flow's hold onto the filled tab. */
+  const holdFlow = (pane: Pane, call: VaultAgentCall, tab: string) => { if (call.viewer?.startsWith("cli:")) deps.protection.holdFlow(pane.id, call.viewer, tab); };
 
   /** The browser to fill: the named pane, else the caller itself when it is a browser, else its own browser (never another agent's); always the owner's. */
   async function browserPane(call: VaultAgentCall): Promise<Pane | null> {
@@ -115,6 +127,8 @@ export function createVaultAgent(deps: {
     const { vaultTarget, vaultFill } = host;
     const pane = await browserPane(call);
     if (!pane) return blocked("NO_BROWSER");
+    const held = await flowStep(host, pane, call);
+    if (held) return held;
     const live = async () => {
       const target = await vaultTarget(pane);
       return target.eligible && target.targetId && target.frameId && target.origin
@@ -138,6 +152,7 @@ export function createVaultAgent(deps: {
     const guarded = async (target: { targetId: string; origin: string; document: string | null; freshDocument: boolean }, fresh: { freshDocument?: boolean },
       run: () => Promise<Outcome>): Promise<Outcome> => {
       if (!await deps.protection.protect(owner, pane.id, { targetId: target.targetId, origin: target.origin, document: target.document }, call.viewer)) return blocked("PANE_PROTECTED_ELSEWHERE");
+      holdFlow(pane, call, target.targetId);
       const outcome = await run().catch((): Outcome => blocked("FILL_FAILED"));
       if (outcome.status === "SUBMITTED" && path !== "totp-fill" && siteSigninKeySchema.safeParse({site: target.origin}).success) {
         await deps.siteSignins?.record(owner, {site: target.origin, accountLabel: "main", outcome: "PENDING", method: "VAULT_LOGIN",
@@ -309,6 +324,54 @@ export function createVaultAgent(deps: {
   }
 
   /**
+   * An authenticator key from the setup QR in the caller's browser, onto an existing login (nous_msg:cb10eefe6cc544e7af63ff64, 14/11):
+   * the Browser Host captures and decodes the page and seals the key to the inbox; it goes the way of a saved login (SET_OTP pending
+   * entry, broker hand-over, the dock files it at its next unlock). The page shows the key as text, so the browser is fenced blind
+   * (no masked view for anyone) before the capture and stays so until that page is gone. The answer is a status and the item handle.
+   */
+  async function otpSave(repository: VaultStore, call: VaultAgentCall): Promise<Outcome> {
+    const { owner, traceId } = call;
+    const handle = String(call.body.handle);
+    const host = deps.browser;
+    if (!host?.vaultTarget || !host.vaultFill) return blocked("FILL_PATH_UNAVAILABLE");
+    const pane = await browserPane(call);
+    if (!pane) return blocked("NO_BROWSER");
+    const held = await flowStep(host, pane, call);
+    if (held) return held;
+    const vault = await repository.getVault(owner);
+    const inbox = vault && await repository.getInbox(owner);
+    if (!vault || !inbox) return blocked("INBOX_NOT_READY");
+    const item = await repository.getItem(owner, handle);
+    const saved = item ? null : (await repository.listPending(owner)).find((entry) => entry.handle === handle && entry.kind === "NEW_ACCOUNT");
+    if (item ? item.metadata.status !== "ACTIVE" || !item.metadata.policy.agentUse : !saved) return blocked("ITEM_NOT_FOUND");
+    const target = await host.vaultTarget(pane);
+    if (!target.eligible || !target.targetId || !target.frameId || !target.origin) return blocked(target.reason ?? "NOT_ELIGIBLE");
+    // An older Browser Host has no OTP_QR mode (its strict schema would refuse it).
+    if (target.otpQr !== true) return blocked("OTP_QR_NEEDS_HOST_RESTART");
+    if (!vaultOriginCovers(item ? item.metadata.origins : [saved!.origin], target.origin)) return { status: "ORIGIN_MISMATCH", reason: "ORIGIN_NOT_ITEM", itemId: handle };
+    const wasProtected = await deps.protection.ownerOf(pane.id) === owner;
+    if (!await deps.protection.protect(owner, pane.id, { targetId: target.targetId, origin: target.origin, document: target.document ?? null }, VAULT_BLIND_FENCE)) return blocked("PANE_PROTECTED_ELSEWHERE");
+    holdFlow(pane, call, target.targetId);
+    const result = await host.vaultFill(pane, { mode: "OTP_QR", ownerUserId: owner, vaultId: vault.vaultId, paneId: pane.id, targetId: target.targetId, frameId: target.frameId,
+      origin: target.origin, inboxPublicKey: inbox.publicKey }, traceId).catch((): null => null);
+    // The fence stays for any capture: the QR was on screen. Only a call that never reached the page leaves the browser as it was.
+    if (!result) {
+      if (!wasProtected) await deps.protection.unprotect(owner, pane.id);
+      return { ...blocked("FILL_FAILED"), itemId: handle };
+    }
+    if (result.status !== "SAVED" || !result.sealedGenerated) return { status: result.status === "SAVED" ? "BLOCKED" : result.status, reason: result.reason, itemId: handle,
+      ...(result.reason === "QR_NOT_FOUND" && { extra: { next: "No setup QR on the page yet: open the site's authenticator set-up step (e.g. Change 2FA App) and wait until its QR shows, then call save_totp_from_qr again; never snapshot or screenshot the page." } }) };
+    await repository.addPending(owner, { id: newVaultHandle("vault_pending"), kind: "SET_OTP", handle, label: item?.metadata.label ?? saved!.label, origin: target.origin,
+      sealedUsername: null, sealedPassword: null, sealedOtp: result.sealedGenerated, paneId: pane.id, createdAt: new Date().toISOString(), loginPage: null });
+    await handOverPending(repository, owner, handle);
+    // nous_msg:e3d9b230 (Braintrust): a saved key is no swap yet; this pane's done report waits for a Vault-only sign-in (otpSwapDoneHold).
+    if (siteSigninKeySchema.safeParse({site: target.origin}).success) {
+      await deps.siteSignins?.record(owner, {site: target.origin, accountLabel: "main", outcome: "CHANGED", vaultHandle: handle, reason: VAULT_OTP_SWAP_REASON}, `TERMINAL:${call.paneId}`).catch(() => undefined);
+    }
+    return { status: "SAVED", reason: null, itemId: handle, extra: { next: "Not done yet: confirm the site's 2FA change with space_vault_request_totp_fill, then sign out and sign in with the Vault login and Vault code only, read the page back and record SUCCESS." } };
+  }
+
+  /**
    * An API key the operator pasted for agents (operator request 2026-10-22, plan clipboard:-qvpC_Q0rAVg): this pane takes its
    * value once (the relay writes the file, the agent never sees it) and confirms the write, which deletes the value.
    */
@@ -361,6 +424,7 @@ export function createVaultAgent(deps: {
     if (!vault) return blocked("NOT_ENROLLED");
     if (!vault.agentAccess) return blocked("AGENT_ACCESS_OFF");
     if (call.path === "save") return save(repository, call);
+    if (call.path === "otp-save") return otpSave(repository, call);
     if (call.path === "key-take" || call.path === "key-used") return handoff(repository, call);
     if (call.path === "key-list" || call.path === "key-save") return keptKeys(repository, call);
     if (call.path === "list") {
@@ -428,7 +492,8 @@ export interface VaultAgentRouteDependencies {
 const agentSchemas: Record<VaultAgentPath, z.ZodTypeAny> = {
   status: vaultAgentEmptyRequestSchema, list: vaultAgentListRequestSchema, audit: vaultAgentAuditRequestSchema, fill: vaultAgentFillRequestSchema, "card-fill": vaultAgentCardFillRequestSchema,
   "totp-fill": vaultAgentTotpRequestSchema, "generate-fill": vaultAgentGenerateRequestSchema, save: vaultAgentSaveRequestSchema,
-  "key-take": vaultAgentKeyRequestSchema, "key-used": vaultAgentKeyRequestSchema, "key-list": vaultAgentKeyListRequestSchema, "key-save": vaultAgentKeySaveRequestSchema
+  "key-take": vaultAgentKeyRequestSchema, "key-used": vaultAgentKeyRequestSchema, "key-list": vaultAgentKeyListRequestSchema, "key-save": vaultAgentKeySaveRequestSchema,
+  "otp-save": vaultAgentOtpSaveRequestSchema
 };
 
 /** Every agent call is validated and audited; a pane without an owner has no Vault to use. */

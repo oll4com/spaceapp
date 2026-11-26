@@ -1,7 +1,11 @@
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
 import { cliToggleRuntimeIds, planIsParked, type ClipboardItem, type ManagedPlanExecution, type NousDecision, type NousSettings, type NousTurnFacts, type Pane, type RoomAgentEvent, type SpaceNotification, type TaskItem } from "@space/contracts";
 import type { NousLedgerRow, NousPaneCloseout, RailDecisionCount, NousPaneCloseoutsRepository, NousPaneSummaryRow, NousPlanMarksRepository, PaneReport } from "@space/db";
 import { isCliPane } from "../pane-guards.js";
-import { lastPromptAt, operatorPromptedLast } from "../queue-operator-grants.js";
+import { lastPromptAt, OPERATOR_TURN_GRACE_MS, operatorPaneReason, operatorPromptedLast } from "../queue-operator-grants.js";
+import { execGit, WORKTREES_ROOT } from "../worktrees/worktree-service.js";
 import { durationText, paneLabel } from "./digest.js";
 import { parkedSince } from "./parked-plans.js";
 import { boardPanes, type BoardPaneInput, type PaneBoardSnapshot } from "./pane-board.js";
@@ -22,7 +26,10 @@ import { awaitsOperator, NOUS_SAVE_RETRY_TEXT, NOUS_SAVE_TEXT } from "./save-req
 import { TASK_SOON_MS } from "./tools.js";
 import type { NousTurnItem } from "./turn-items.js";
 import { quote } from "./requests-waiting.js";
-import { localDayHour, NOUS_REVIEW_WINDOW_MS, renderDailyReview, type NousDeferral } from "./daily-review.js";
+import { sweepAreaTouched, sweepPieces } from "./utilization.js";
+import { localDayHour, NOUS_REVIEW_WINDOW_MS, renderDailyReview, requestKey, type NousDeferral } from "./daily-review.js";
+import { quotaPool } from "./quota-handover.js";
+import { COPILOT_SOURCES } from "./copilot-questions.js";
 export { NOUS_SAVE_REQUEST, NOUS_SAVE_RETRY_TEXT, NOUS_SAVE_TEXT } from "./save-request.js";
 const MEMORY_ID = /space_memory:[a-f0-9]{6,}/i;
 const SAVED_WORDS = /\b(?:saved|deduplicated)\b/i;
@@ -42,13 +49,16 @@ const SWEEP_HOURS = { from: 9, to: 23 } as const;
 const PUSH_MS = 10 * MINUTE;
 const PUSH_REQUEST_IDLE_MS = 30 * MINUTE;
 /** The pool a pane's CLI draws on, as the Provider advice names it (tokens.ts POOLS); null: a CLI outside Space Gateway's pools. */
-const RUNTIME_POOL: Record<string, string> = { "cli:claude": "claude", "cli:codex": "codex", "cli:gemini": "gemini" };
 
 /** An open operator request for the sweep: its words, plan, pane (and its state), newest report and the evidence it is finished. */
 export interface SweepRequest {
   key: string; messageId: string | null; words: string; plan?: string; pane?: string; paneName?: string;
   paneState?: string | null; paneSince?: string | null; report?: string | null; evidence?: string | null; openedAt: string;
+  /** The request's closed pane got request-done's durable "lost its pane" line (note paneGone === pane), so the 30-min sweep skips it. */
+  goneTold?: boolean;
 }
+/** Goal 5acd171d: a request item's left shape, the same in the sweep and the push (their lines differ, so one key kept re-arming the other). */
+const requestShape = (request: SweepRequest) => JSON.stringify([request.key, request.paneName ?? request.pane ?? null, request.paneState ?? null, request.paneSince ?? null, request.report ?? null, request.evidence ?? null]);
 const KEEP_VERDICTS = new Set(["KEEP_OPEN", "WAITING_OPERATOR", "WAITING_DATE", "BLOCKED"]);
 const BOARD_WAITS = new Set(["OPERATOR", "DATE", "PROMOTE", "THIRD_PARTY"]);
 const OPEN_PLAN = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
@@ -56,7 +66,7 @@ const OPEN_PLAN = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 /** R10-19: the daily review's turns that may fail in one local day before it waits for the next (the first ask and 2 retries). */
 export const NOUS_REVIEW_MAX_FAILED = 3;
 
-export type CloseoutSkip = "always-on" | "browser-held" | "busy" | "unknown" | "fresh" | "operator-test" | "keep-open" | "waiting-operator" | "card-check" | "task" | "managed" | "plan-open" | "board-waits" | "board-check" | "awaits-operator" | "scheduled" | "prompted";
+export type CloseoutSkip = "always-on" | "browser-held" | "busy" | "unknown" | "fresh" | "operator-test" | "keep-open" | "waiting-operator" | "card-check" | "task" | "managed" | "plan-open" | "board-waits" | "board-check" | "awaits-operator" | "scheduled" | "prompted" | "operator-pane" | "pending-deliverables";
 /** A browser tab count above this shows on the pane's line, so Nous has the finished tabs closed (browser hygiene, operator 27/10). */
 export const NOUS_TABS_SHOWN_ABOVE = 3;
 const isNousCard = (item: SpaceNotification) => item.source === "NOUS" && Boolean(item.dedupeKey?.startsWith(NOUS_PANE_NOTICE_PREFIX));
@@ -88,10 +98,14 @@ export interface CloseoutContext {
   plans?: ClipboardItem[];
   /** Whether the operator in person sent the pane its newest prompt (queue-operator-grants `operatorPromptedLast`). */
   operatorPromptedLast?(paneId: string): boolean;
+  /** Why the pane is the operator's own (queue-operator-grants `operatorPaneReason`), null when it is not. */
+  operatorPane?(pane: Pane): string | null;
   /** When the pane last got a prompt from anyone, its own memory-save request excepted (queue-operator-grants `lastPromptAt`). */
   promptedAt?(paneId: string): number;
   /** Panes a prompt is still to reach (Nous's held queue, Space Control's schedules); null when the read failed (then no pane closes). */
   prompts?: ReadonlySet<string> | null;
+  /** Panes whose worktree holds pending deliverables (uncommitted changes or unmerged commits); null when the check failed (CLI panes stay open). */
+  pendingWorktrees?: ReadonlySet<string> | null;
 }
 
 /** A pane with an AI CLI saves to memory before it closes; every other pane (a browser, a plain shell, ...) has nothing to save. */
@@ -152,6 +166,8 @@ export function closeoutSkipReason(input: BoardPaneInput, ctx: CloseoutContext):
   if (ctx.browsers?.get(pane.id)?.held) return "browser-held";
   if (ctx.browsers === null && !savesToMemory(pane)) return "unknown";
   if (state !== "done" && state !== "idle") return "busy";
+  // Operator 21/11 nous_msg:63896af5: a pane the operator opened or prompted is never finished nor idle for Nous's work.
+  if (ctx.operatorPane?.(pane)) return "operator-pane";
   if (savesToMemory(pane) && awaitsOperator(input.report, ctx.operatorPromptedLast?.(pane.id) ?? false)) return "awaits-operator";
   const since = closeoutSince(input, ctx);
   if (!since) return "unknown";
@@ -166,9 +182,10 @@ export function closeoutSkipReason(input: BoardPaneInput, ctx: CloseoutContext):
     const old = (iso: string) => ctx.now - Date.parse(iso) >= wait;
     return old(since) && input.notifications.every((card) => old(card.updatedAt)) ? "card-check" : "waiting-operator";
   }
-  const task = keptOpenForTask(pane.id, ctx.tasks);
-  if (task && Date.parse(task.schedule?.nextRunAt ?? "") - ctx.now < TASK_SOON_MS) return "task";
+  if (paneHasPendingTask(pane.id, ctx.tasks, ctx.now)) return "task";
   if (ctx.executions.some((execution) => execution.paneId === pane.id)) return "managed";
+  // 2026-11-25 REVIEW: never close or hand out a pane whose worktree still holds uncommitted changes or unmerged commits.
+  if (ctx.pendingWorktrees?.has(pane.id) || (ctx.pendingWorktrees === null && isCliPane(pane))) return "pending-deliverables";
   const plan = input.plan;
   // A plan that waits on a date, a promote, a third party or another plan does not keep its pane: it closes and reopens with the work (R10-3).
   const planOpen = plan && plan.progressPercentage < 100 && !OPEN_PLAN.has(plan.executionStatus) && plan.steps.some((step) => step.status !== "COMPLETED");
@@ -184,12 +201,119 @@ export function closeoutSkipReason(input: BoardPaneInput, ctx: CloseoutContext):
   return null;
 }
 
+/**
+ * Operator 23/11 (cli_session:SFmu0kLCt3yJ «αν δεν κλεισει η απαντηση απο εμενα ή απο τον Nous να μην λαμβανει νεο prompt γιατι χανετε η ερωτηση»):
+ * a CLI pane's question is open while its last answer or report asks, a card of its own waits on the operator, or its board reads a wait on the
+ * operator since it finished. Such a pane gets no new work, whatever the load; the operator's answer or Nous's (space_answer_pane) closes it.
+ */
+export function questionOpen(input: BoardPaneInput, ctx: Pick<CloseoutContext, "since" | "summaries">): boolean {
+  if (!savesToMemory(input.pane)) return false;
+  // Operator 24/11 12:50 BKK: a copilot's review or question waits in its queue, not at this prompt, so it holds no new work (its save still waits, closeoutSkipReason).
+  if (awaitsOperator(input.report, false) || input.decisions.length || input.notifications.some((item) => !isNousCard(item) && !COPILOT_SOURCES.has(item.source))) return true;
+  const since = ctx.since(input.pane.id), board = latestSummary(input.pane.id, ctx.summaries);
+  return Boolean(since && board?.waitsOn === "OPERATOR" && board.generatedAt >= since);
+}
+
 const latestSummary = (paneId: string, summaries: NousPaneSummaryRow[]) =>
   summaries.filter((row) => row.paneId === paneId).sort((left, right) => right.generatedAt.localeCompare(left.generatedAt))[0];
 
 /** The scheduled task bound to a pane, null when none; the scheduler reopens a closed pane when it falls due. */
 export function keptOpenForTask(paneId: string, tasks: TaskItem[]): TaskItem | null {
   return tasks.find((task) => task.paneId === paneId && task.schedule) ?? null;
+}
+
+/**
+ * 2026-11-25 REVIEW: checks every task bound to a pane (not only the first scheduled one): a RUNNING task, a scheduled task
+ * due within TASK_SOON_MS, or a one-off scheduled task that ran and has not yet been marked DONE keeps the pane open.
+ */
+export function paneHasPendingTask(paneId: string, tasks: readonly TaskItem[], at: number): boolean {
+  return tasks.some((task) => {
+    if (task.paneId !== paneId || task.status === "DONE" || task.status === "ARCHIVED") return false;
+    if (task.status === "RUNNING") return true;
+    if (!task.schedule) return false;
+    if (Date.parse(task.schedule.nextRunAt ?? "") - at < TASK_SOON_MS) return true;
+    return Boolean(task.schedule.lastRunAt && !task.schedule.nextRunAt);
+  });
+}
+
+/**
+ * 2026-11-25 REVIEW: a pane associated with any open/running task, open plan, managed execution, open operator request,
+ * or worktree with pending deliverables never receives a hygiene sweep (even if titled NOUS_SWEEP_PANE_TITLE).
+ */
+export function paneBoundToWork(
+  paneId: string,
+  work: {
+    tasks?: readonly TaskItem[];
+    plans?: readonly ClipboardItem[];
+    executions?: ReadonlyArray<Pick<ManagedPlanExecution, "paneId">>;
+    requests?: ReadonlyArray<Pick<SweepRequest, "pane">>;
+    pendingWorktrees?: ReadonlySet<string> | null;
+  }
+): boolean {
+  if (work.tasks?.some((task) => task.paneId === paneId && task.status !== "DONE" && task.status !== "ARCHIVED")) return true;
+  if (work.plans?.some((plan) => plan.paneId === paneId && !plan.isCompleted && plan.progressPercentage < 100 && !OPEN_PLAN.has(plan.executionStatus))) return true;
+  if (work.executions?.some((execution) => execution.paneId === paneId)) return true;
+  if (work.requests?.some((request) => request.pane === paneId)) return true;
+  return work.pendingWorktrees === null || Boolean(work.pendingWorktrees?.has(paneId));
+}
+
+/** True when a git worktree has uncommitted/untracked files or commits not yet merged into dev or main. */
+export async function worktreeHasPendingDeliverables(worktreePath: string): Promise<boolean> {
+  if (!existsSync(worktreePath)) return false;
+  const status = await execGit(worktreePath, ["status", "--porcelain"], 3_000);
+  if (status.code !== 0) return false;
+  if (status.stdout.trim().length > 0) return true;
+  const refs = await execGit(worktreePath, ["for-each-ref", "--format=%(refname)", "refs/heads/dev", "refs/heads/main"], 3_000);
+  if (refs.code !== 0) return false;
+  const bases = refs.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!bases.length) return false;
+  const ahead = await execGit(worktreePath, ["rev-list", "--count", "HEAD", "--not", ...bases], 3_000);
+  return ahead.code === 0 && Number.parseInt(ahead.stdout.trim(), 10) > 0;
+}
+
+/** Panes whose managed worktree (via pane.cwd or .worktree-registry.json) holds uncommitted changes or unmerged commits. */
+export async function panePendingWorktrees(
+  panes: readonly Pick<Pane, "id" | "cwd">[],
+  options: { worktreesRoot?: string; registryPath?: string } = {}
+): Promise<Set<string>> {
+  const root = resolve(options.worktreesRoot ?? WORKTREES_ROOT);
+  const inside = (path: string | null | undefined): string | null => {
+    if (!path) return null;
+    const resolved = resolve(path);
+    return resolved.startsWith(`${root}${sep}`) ? resolved : null;
+  };
+  const byPane = new Map<string, Set<string>>();
+  const add = (paneId: string, path: string | null) => {
+    if (!path) return;
+    let set = byPane.get(paneId);
+    if (!set) { set = new Set(); byPane.set(paneId, set); }
+    set.add(path);
+  };
+  const openIds = new Set(panes.map((pane) => pane.id));
+  for (const pane of panes) add(pane.id, inside(pane.cwd));
+  const registryPath = options.registryPath ?? join(root, ".worktree-registry.json");
+  if (existsSync(registryPath)) {
+    const raw = await readFile(registryPath, "utf8").catch(() => "");
+    try {
+      const parsed = JSON.parse(raw) as { worktrees?: Record<string, { paneId?: string | null; worktreePath?: string }> };
+      for (const record of Object.values(parsed?.worktrees ?? {})) {
+        if (record?.paneId && openIds.has(record.paneId)) add(record.paneId, inside(record.worktreePath));
+      }
+    } catch { /* ignore unreadable registry: cwd checks still apply */ }
+  }
+  const cache = new Map<string, Promise<boolean>>();
+  const check = (path: string) => {
+    let pending = cache.get(path);
+    if (!pending) { pending = worktreeHasPendingDeliverables(path).catch(() => false); cache.set(path, pending); }
+    return pending;
+  };
+  const pending = new Set<string>();
+  await Promise.all([...byPane.entries()].map(async ([paneId, paths]) => {
+    for (const path of paths) {
+      if (await check(path)) { pending.add(paneId); return; }
+    }
+  }));
+  return pending;
 }
 
 /** The memory id (or "saved") a pane's reports since the request carry, null when the save is not visible yet. */
@@ -216,7 +340,7 @@ export interface StandingOrdersDeps {
    * B (plan clipboard:ZWJJdBgHm64Z): the spend mode and the pools the Provider advice says to avoid. In LOW a stalled plan is still
    * nudged unless its pane runs on an avoided pool; CRITICAL skips the nudges. Without it `lowToken` decides as before.
    */
-  spend?(owner: string): Promise<{ mode: "NORMAL" | "LOW" | "CRITICAL"; avoid: string[] }>;
+  spend?(owner: string): Promise<{ mode: "NORMAL" | "LOW" | "CRITICAL"; avoid: string[]; refused?: string[] }>;
   /** C and D (plan clipboard:ZWJJdBgHm64Z): the open requests for the sweep, the operator's zone, and the In progress count to keep. */
   requests?: {
     zone(owner: string): Promise<string>;
@@ -224,12 +348,16 @@ export interface StandingOrdersDeps {
     /** Keeps the Requests tab's In progress count at the operator's 09:00 or 21:00 (once per day and slot, durable). */
     progress(owner: string, day: string, slot: "09:00" | "21:00"): Promise<void>;
   };
+  /** 17/11 REVIEW (follow-up churn): the requests and plans (requestKey) and "utilization" an open dated follow-up holds (followups.ts datedHolds). */
+  datedHolds?(owner: string): Promise<ReadonlySet<string>>;
   owners(): Promise<string[]>;
   collect(owner: string): Promise<PaneBoardSnapshot & { tasks: TaskItem[]; executions: Array<Pick<ManagedPlanExecution, "planId" | "paneId">>; summaries: NousPaneSummaryRow[];
     /** Live pane browsers and other recorded use (YouTube playback), by pane id. */
     browsers?: ReadonlyMap<string, CloseoutBrowser> | null; usedAt?: ReadonlyMap<string, string>; scheduled?: ReadonlySet<string> | null;
     /** Panes a prompt is still to reach (held or scheduled); null when the read failed. */
-    prompts?: ReadonlySet<string> | null }>;
+    prompts?: ReadonlySet<string> | null;
+    /** Panes whose managed worktree has pending deliverables; null when the check failed. */
+    pendingWorktrees?: ReadonlySet<string> | null }>;
   /** One pane's reports since a time (newest first is fine). */
   reportsSince(owner: string, paneId: string, since: string): Promise<PaneReport[]>;
   /** The plan map (plan-map.ts): a plan held on a date, another plan or the server is never nudged; the tick also fires its hold alerts. */
@@ -242,6 +370,8 @@ export interface StandingOrdersDeps {
    * guard); true when it closed. Without it Nous gets the "close it now" line, one Opus STANDING turn per pane.
    */
   closePane?(owner: string, roomId: string, paneId: string): Promise<boolean>;
+  /** The pane's newest own work report (space_close_pane's open-work guard reads the same one); null when none. */
+  lastWorkReport?(owner: string, paneId: string): Promise<{ status: string; at: string; summary: string } | null>;
   /** Starts the STANDING turn (or the Away HEARTBEAT round, or the daily REVIEW) with this text (service.standing). */
   standing(owner: string, reason: "STANDING" | "HEARTBEAT" | "REVIEW", text: string, options?: { meta?: Record<string, unknown>; items?: NousTurnItem[] }): Promise<StandingResult>;
   /** R13-9: what waits for the operator (open decisions, needs-you cards, held copilot questions past their hour), their clock, the last list posted. */
@@ -299,9 +429,21 @@ export interface StandingOrdersDeps {
   away?(owner: string): Promise<boolean>;
   serverLine?(): Promise<string | null>;
   /** Load (plan clipboard:f4SH36t3fJ6c): the inbox line when capacity stayed idle 10 minutes while `plans` open plans (or requests) wait; null otherwise. */
-  utilizationLow?(owner: string, plans: number, freed?: boolean): Promise<string | null>;
+  utilizationLow?(owner: string, runnablePlans: number, freed?: boolean): Promise<string | null>;
   /** Sends a text to a pane as Space through Nous's space_send_to_pane and its guards; true when it went. */
   dispatch?(owner: string, roomId: string, paneId: string, text: string): Promise<boolean>;
+  /** Runnable work no plan or pane holds (the daily-improvement queue's OPEN fixes), each under a stable key and as the text a pane gets. */
+  backlog?(owner: string): Promise<Array<{ key: string; text: string; strong?: boolean }>>;
+  /** Where the backlog hand-outs (owner + key → pane) outlive an API restart; in memory only without it. */
+  givenStore?: { read(): Promise<Record<string, string>>; write(entries: Record<string, string>): Promise<void> };
+  /** The hygiene sweep pieces after the backlog (utilization.ts sweepPieces of the API's checkout by default). */
+  sweep?(): Array<{ key: string; text: string }>;
+  /** Where clean sweep marks (owner + sweep key → { at, head }) outlive an API restart; in memory only without it. */
+  cleanSweepStore?: { read(): Promise<Record<string, CleanSweepMark>>; write(entries: Record<string, CleanSweepMark>): Promise<void> };
+  /** Current dev HEAD and files changed between two heads, so a clean sweep area re-opens as soon as dev touches it. */
+  sweepGit?: { head(): Promise<string | null>; changed(fromHead: string, toHead: string): Promise<string[] | null> };
+  /** Opens a new Antigravity Gemini 4 Neon CLI pane titled NOUS_SWEEP_PANE_TITLE in a room with free slots for a sweep; null when none opened. */
+  openSweepPane?(owner: string): Promise<{ roomId: string; paneId: string } | null>;
   /** R35-1 (stuck-panes.ts): the owner's CLI panes frozen on a spinner, or never taking a queued text, for 30 minutes. */
   stuck?(owner: string): Promise<Array<{ paneId: string; label: string; line: string }>>;
   log?: { warn(details: Record<string, unknown>, message: string): void };
@@ -319,6 +461,42 @@ const lookFirst = (pane: Pane) => pane.mode === "TERMINAL" ? " after a look (spa
 const dayHhmm = (iso: string) => `${iso.slice(0, 10)} ${hhmm(iso)}`;
 /** Item 7 A: the inbox key of a finished pane's line (`finished:<paneId>`); its line joins the INBOX batch that carries its FINISHED notice. */
 export const NOUS_FINISHED_KEY = "finished:";
+/**
+ * Operator 24/11 13:07 BKK (nous_msg:be8aea8592914e98b55cf568, memory 258fedce; rule 509eb378 one pane = one task): 25 panes with their own work got a
+ * hygiene sweep when idle, reported it done and were closed with their own work half done. Sweeps go only to panes Space opened for them, marked by this title.
+ */
+export const NOUS_SWEEP_PANE_TITLE = "Hygiene sweeps (Space)";
+export const sweepPane = (pane: Pick<Pane, "title" | "titleSource">) => pane.titleSource === "manual" && pane.title === NOUS_SWEEP_PANE_TITLE;
+/** Goal 5acd171d (24/11: 1,075/1,184 sweeps = 91% were "nothing to fix", 213.6M tokens / $87.5/day): skip clean areas until dev touches them or 24 h. */
+export const SWEEP_CLEAN_TTL_MS = 24 * 60 * MINUTE;
+/** A clean mark; with `pane` it is instead a sweep handed to that pane at `at` and not settled yet (kept so an API restart does not lose it). */
+export interface CleanSweepMark { at: number; head: string | null; pane?: string }
+/** A sweep that stopped on its provider (Gemini 503/429, usage limit, «όριο», «σταμάτησε λόγω») or names a merge-queue ticket did not prove its area clean. */
+const SWEEP_NOT_CLEAN = /\b(?:503|429|unavailable|rate[ -]?limit(?:ed)?|usage limit|quota (?:exceeded|exhausted)|resource[ _]?exhausted|overloaded|no accounts?)\b|q-\d{8}-|όριο|σταμάτησε λόγω/i;
+/**
+ * 26/11 (1,062 no-ticket sweep DONEs since 22/11: 16 clean ones missed the old wording list, e.g. «sweep clean on dev», «is clean on dev»):
+ * a sweep's DONE without a ticket is clean unless it names a provider error or limit.
+ */
+export const isCleanSweepReport = (report: Pick<PaneReport, "status" | "summary" | "ticket">): boolean =>
+  report.status === "DONE" && !report.ticket && !SWEEP_NOT_CLEAN.test(report.summary);
+
+/** Git reader for clean-sweep invalidation: tracks refs/heads/dev (fallback origin/dev, HEAD) and lists files changed between two commits. */
+export function createSweepGit(root: string): NonNullable<StandingOrdersDeps["sweepGit"]> {
+  return {
+    async head() {
+      for (const ref of ["refs/heads/dev", "refs/remotes/origin/dev", "HEAD"]) {
+        const out = await execGit(root, ["rev-parse", "--verify", ref], 3_000);
+        if (out.code === 0 && out.stdout.trim()) return out.stdout.trim();
+      }
+      return null;
+    },
+    async changed(fromHead, toHead) {
+      if (fromHead === toHead) return [];
+      const out = await execGit(root, ["diff", "--name-only", `${fromHead}..${toHead}`], 5_000);
+      return out.code === 0 ? out.stdout.split("\n").map((line) => line.trim()).filter(Boolean) : null;
+    }
+  };
+}
 const where = (input: BoardPaneInput) => `${input.room.name}/${paneLabel(input.pane)}`;
 
 export function createStandingOrders(deps: StandingOrdersDeps) {
@@ -363,6 +541,14 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
   const lastUtilization = new Map<string, number>();
   // shortcut: in memory, so after an API restart a pane that ended with the same step open gets it once more; a plan mark if repeats show.
   const dispatched = new Map<string, string>();
+  /** owner + backlog piece key → the pane Space handed it to (the push's free-pane hand-out). */
+  const given = new Map<string, string>();
+  let givenLoaded = false;
+  /** owner + sweep key → when it was last handed out: the least recently swept area goes first. */
+  const sweptAt = new Map<string, number>();
+  /** owner + sweep key → when it last reported "nothing to fix" and at which dev HEAD. */
+  const cleanSweeps = new Map<string, CleanSweepMark>();
+  let cleanSweepsLoaded = false;
   /** C: when each owner's requests sweep last went out; D: the "day slot" whose In progress count was kept. */
   const lastSweep = new Map<string, number>();
   const sweptState = new Map<string, { state: string; at: number }>();
@@ -435,6 +621,11 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
    * pane's state, newest report and the evidence it is finished; every one not visibly moving (its pane not working, or evidence it is
    * done) is a hold-A item. Nothing open, nothing. D: the In progress count is kept at the operator's 09:00 and 21:00 for the REVIEW.
    */
+  // 17/11 REVIEW (16/11: a follow-up rewritten ×22 while it waited on the operator until 09:07 BKK): what an open dated follow-up holds is no push item.
+  const heldBy = async (owner: string) => {
+    const holds = deps.datedHolds ? await deps.datedHolds(owner).catch(() => new Set<string>()) : new Set<string>();
+    return (...ids: Array<string | null | undefined>) => ids.some((id) => id && holds.has(id === "utilization" ? id : requestKey(id)));
+  };
   async function requestsSweep(owner: string, at: number): Promise<{ text: string; items: NousTurnItem[]; state: string } | null> {
     if (!deps.requests) return null;
     const local = localDayHour(at, await deps.requests.zone(owner).catch(() => "UTC"));
@@ -444,7 +635,8 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       await deps.requests.progress(owner, local.day, slot).catch((error) => warn({ err: error, owner }, "Nous In progress count failed."));
     }
     if (local.hour < SWEEP_HOURS.from || local.hour >= SWEEP_HOURS.to || at - (lastSweep.get(owner) ?? 0) < SWEEP_MS) return null;
-    const open = await deps.requests.open(owner);
+    // 21/11 REVIEW (521 INBOX turns/$168: closed-pane requests came back every 8 h): one request-done already told durably (paneGone) is not swept again.
+    const open = (await deps.requests.open(owner)).filter((request) => !(request.pane && !request.paneName && request.goneTold));
     if (!open.length) return null;
     // The operator's words are a quote beside the message id (space_open_requests reads each one whole); the pane's report and evidence are whole.
     const lineOf = (request: SweepRequest) => `- [${request.messageId ?? request.key}] «${quote(request.words)}» · open ${durationText(Math.max(0, at - Date.parse(request.openedAt)))}`
@@ -456,8 +648,9 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     const state = JSON.stringify(open.map((request) => [request.key, request.paneState, request.paneSince, request.report, request.evidence]));
     const last = sweptState.get(owner);
     if (last?.state === state && at - last.at < UNCHANGED_MS) return null;
-    const items: NousTurnItem[] = rows.filter(({ request }) => request.paneState !== "working" || request.evidence).map(({ request, line }) => ({
-      key: `request:${request.key}`, kind: "REQUEST", line, requestKey: request.key, ...(request.messageId ? { messageId: request.messageId } : {}),
+    const held = await heldBy(owner);
+    const items: NousTurnItem[] = rows.filter(({ request }) => (request.paneState !== "working" || request.evidence) && (request.evidence || !held(request.messageId, request.plan))).map(({ request, line }) => ({
+      key: `request:${request.key}`, kind: "REQUEST", line, shape: requestShape(request), requestKey: request.key, ...(request.evidence ? { finished: true } : {}), ...(request.messageId ? { messageId: request.messageId } : {}),
       ...(request.plan ? { plan: request.plan } : {}), ...(request.pane ? { pane: request.pane } : {}), ...(request.paneName ? { paneName: request.paneName } : {}) }));
     return { items, state, text: [`## Open requests (requests sweep by day when one changes, unchanged every 8 hours; operator 31/10 22:19 BKK: they move on your own, not only when he asks)`,
       "Each one now, one at a time: checked finished in this turn on its real surface (its evidence, its report, its ticket live where he uses it) → Done with what that check showed "
@@ -474,9 +667,10 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       const last = lastPromptAt(paneId);
       return row && row.state !== "CLOSED" && last <= Date.parse(row.retriedAt ?? row.requestedAt) ? -Infinity : last;
     };
-    return { since, tasks: snapshot.tasks, executions: snapshot.executions, summaries: snapshot.summaries, now: at, finishedAfterMs: orders.finishedAfterMinutes * MINUTE, closeOperatorPanes: orders.closeOperatorPanes, plans: snapshot.plans, operatorPromptedLast, promptedAt,
+    return { since, tasks: snapshot.tasks, executions: snapshot.executions, summaries: snapshot.summaries, now: at, finishedAfterMs: orders.finishedAfterMinutes * MINUTE, closeOperatorPanes: orders.closeOperatorPanes, plans: snapshot.plans, operatorPromptedLast, operatorPane: (pane) => operatorPaneReason(pane, at), promptedAt,
       ...(snapshot.browsers !== undefined ? { browsers: snapshot.browsers } : {}), ...(snapshot.usedAt ? { usedAt: snapshot.usedAt } : {}), ...(snapshot.scheduled !== undefined ? { scheduled: snapshot.scheduled } : {}),
-      ...(snapshot.prompts !== undefined ? { prompts: snapshot.prompts } : {}) };
+      ...(snapshot.prompts !== undefined ? { prompts: snapshot.prompts } : {}),
+      ...(snapshot.pendingWorktrees !== undefined ? { pendingWorktrees: snapshot.pendingWorktrees } : {}) };
   }
   async function tickOwner(owner: string, settings: NousSettings): Promise<StandingTickResult> {
     const at = now();
@@ -541,6 +735,14 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
         const inFlight = row && row.state !== "CLOSED";
         if (skip && skip !== "fresh" && skip !== "board-check") continue;
         const idle = `${input.state} ${durationText(at - Date.parse(paneSince!))}${tabs(input)}`;
+        // Token audit 21/11 (47 refused closes in 3 days, Dana 8x, Andy 10x): a pane whose newest own report is not done or failed has
+        // open work, and space_close_pane refuses it; its line asks for the act that passes, and Space closes no such pane itself.
+        const last = savesToMemory(input.pane) && (skip !== "fresh" || inFlight) && deps.lastWorkReport ? await deps.lastWorkReport(owner, input.pane.id).catch(() => null) : null;
+        if (last && last.status !== "DONE" && last.status !== "FAILED") {
+          list(input, `open:${last.at}`, `- ${where(input)} · ${idle} · last reported ${last.status.toLowerCase()} at ${hhmm(last.at)} ("${last.summary.replace(/\s+/g, " ")}"), no done or failed report since: `
+            + "its work is open, so no save or close (space_close_pane refuses it) → send its next step (space_send_to_pane), or record its wait (space_pane_checked WAITING_OPERATOR, WAITING_DATE or BLOCKED with nextCheckInMinutes)");
+          continue;
+        }
         if (inFlight) {
           // Step 10: a save verified after the pane last worked, nothing else keeping it: Space closes it, no turn (~800k input each, 6/11).
           const closable = row.state === "VERIFIED" && (skip === null || skip === "fresh") && Date.parse(row.updatedAt) >= Date.parse(paneSince!);
@@ -579,7 +781,10 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       .catch((error) => { warn({ err: error, owner }, "Nous plan activity failed."); return []; });
     const paneOf = (planId: string) => snapshot.plans.find((plan) => plan.id === planId)?.paneId ?? null;
     const poolOf = (paneId: string | null) => {
-      for (const { sample } of snapshot.rooms) { const pane = sample?.data.find((entry) => entry.id === paneId); if (pane) return RUNTIME_POOL[pane.terminalRuntimeId ?? ""] ?? null; }
+      for (const { sample } of snapshot.rooms) { const pane = sample?.data.find((entry) => entry.id === paneId); if (pane) {
+        // 22/11: a gemini-CLI pane on claude-opus-5-5 draws on Antigravity's Claude pool, not Gemini's (the pool noRoomGuard and wiring read).
+        return quotaPool(pane.terminalRuntimeId, (pane.terminalRuntimeId === "cli:gemini" ? sample!.details[pane.id]?.modelId : null) ?? pane.modelId);
+      } }
       return null;
     };
     const avoided = (planId: string) => spend?.mode === "LOW" && spend.avoid.includes(poolOf(paneOf(planId)) ?? "\u0000");
@@ -620,7 +825,9 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     // The rule is in the INBOX turn prompt.
     // Plan clipboard:CDbnZ7FSj-ww item 7: `soon` flushes the batch now, so the done/failed report reaches Nous within a minute as one turn with this line.
     for (const line of lines) await deps.notice?.(owner, `${NOUS_FINISHED_KEY}${line.paneId}`, `Finished pane ${line.text.replace(/^- /, "")}`, undefined, true);
-    if (cardLines.length || due.length || parkedItems.length || sweep || stuck.length) {
+    // Goal 5acd171d (22/11: ~27 sweeps/day, ~85k tokens each): a sweep with no item (every request working or held) is swept, never a turn of its own.
+    if (sweep && !sweep.items.length) { lastSweep.set(owner, at); sweptState.set(owner, { state: sweep.state, at }); }
+    if (cardLines.length || due.length || parkedItems.length || sweep?.items.length || stuck.length) {
       const text = ["# Standing orders (from Space, not the operator; they repeat every tick until each line is handled)",
         cardLines.length ? ["## Your cards on finished panes (a card the operator no longer needs keeps their room \"Needs attention\")", ...cardLines].join("\n") : "",
         stuckItems.length ? ["## Stuck panes (screen and CLI state unchanged 30+ min on a spinner, or a text queued for it never typed; the world may call them idle)", ...stuckItems.map((item) => `- ${item.line}`)].join("\n") : "",
@@ -651,29 +858,45 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     // pane" for hours): every tick (10 min) while utilization stays under 90 %, the server is not OVERLOADED and CLI panes have room
     // (`utilizationLow`), one line carries every piece of runnable work as an item, so Space refuses NOTHING_NEW until each is dispatched or its
     // wait recorded: plans not on a pane, plans whose pane is idle or done (R57: before they stall, 4/11 REVIEW 60 % with 14 such panes), open
-    // requests whose pane is done or gone 30+ minutes.
+    // requests whose pane is done 30+ minutes (a closed or gone one is request-done's own line).
     // 13/11 (operator 09:12 BKK «γιατι δεν πιεζεις τα πραγματα»): a CLI pane that finished since the last push with a plan step to run or a task
     // whose run ended is pushed at once (`soon` runs this tick within a minute of its report), not at the next 10-minute push.
     const pushedAt = lastUtilization.get(owner) ?? 0;
     const finishedTasks = snapshot.tasks.filter((task) => task.paneId && !task.schedule?.nextRunAt && (task.status === "RUNNING" || Boolean(task.schedule?.lastRunAt)))
-      .flatMap((task) => { const input = panes.find((entry) => entry.pane.id === task.paneId); return input && savesToMemory(input.pane) && (input.state === "done" || input.state === "idle") ? [{ task, input }] : []; });
+      .flatMap((task) => { const input = panes.find((entry) => entry.pane.id === task.paneId); return input && savesToMemory(input.pane) && (input.state === "done" || input.state === "idle") && !questionOpen(input, ctx) ? [{ task, input }] : []; });
     const finishedSince = (since: string | null | undefined) => Boolean(since) && Date.parse(since!) > pushedAt;
     // 13/11 23:03 BKK (operator «δωσε σε agent να το διορθωσει»): at 22:41 BKK seven CLI panes finished with no plan step or task of their own and
     // none got work until the 10-minute push. A CLI pane done or idle since the last push that holds no plan is free capacity: the push goes at once
     // (a pane with a plan is pushed by its ready step above, or waits on its BLOCKED steps).
-    const freed = panes.filter((input) => savesToMemory(input.pane) && (input.state === "done" || input.state === "idle") && finishedSince(closeoutSince(input, ctx))
-      && !snapshot.plans.some((plan) => plan.paneId === input.pane.id));
+    // Score row 19 (14/11 14:54 "Dana is closed and did not reopen"): a pane whose closeout is in flight or that closed after it last finished
+    // (Space may close it above, in this tick) gets no work from the push lists.
+    // 22/11 04:30Z (12 CLI panes not working, no free-pane list: Jack and Hugo asked to save at 04:21/04:22 and left open): a closeout is in
+    // flight only until a new prompt reaches the pane or its save stays unverified past NOUS_SAVE_WAIT_MS; then the open pane is capacity again.
+    const closing = (paneId: string | null) => {
+      const row = paneId ? rows.get(paneId) : undefined;
+      if (row && row.state !== "CLOSED") return (ctx.promptedAt?.(paneId!) ?? -Infinity) === -Infinity && at - Date.parse(row.retriedAt ?? row.requestedAt) < NOUS_SAVE_WAIT_MS;
+      const input = row && panes.find((entry) => entry.pane.id === paneId);
+      const since = input ? closeoutSince(input, ctx) : null;
+      return Boolean(row?.closedAt && (!since || row.closedAt >= since));
+    };
+    // 23/11 (operator «εμφανιζει errors»): the free-pane hand-out takes plain CLI panes only; a copilot pane (Design, Video, ...) refused goal pieces as Failed requests.
+    const freed = panes.filter((input) => input.pane.mode === "TERMINAL" && savesToMemory(input.pane) && (input.state === "done" || input.state === "idle") && finishedSince(closeoutSince(input, ctx))
+      && !snapshot.plans.some((plan) => plan.paneId === input.pane.id) && !closing(input.pane.id));
     const newlyFinished = freed.length > 0 || activity.some((item) => item.ready && !avoided(item.planId) && finishedSince(item.pane?.since));
     if (deps.utilizationLow && deps.notice && (at - pushedAt >= PUSH_MS - MINUTE || newlyFinished)) {
-      const line = await deps.utilizationLow(owner, snapshot.plans.length, newlyFinished).catch(() => null);
       // A plan whose whole-plan wait is on someone still runs its other steps (stalled-plans.ts); one whose waiting steps are all BLOCKED does not.
-      const runnable = line ? activity.filter((item) => (item.stalled || item.ready) && item.openStep && item.pane?.state !== "working" && !avoided(item.planId)) : [];
+      const asking = (paneId: string | null) => { const input = paneId ? panes.find((entry) => entry.pane.id === paneId) : undefined; return Boolean(input && questionOpen(input, ctx)); };
+      const work = activity.filter((item) => (item.stalled || item.ready) && item.openStep && item.pane?.state !== "working" && !avoided(item.planId) && !closing(paneOf(item.planId)) && !asking(paneOf(item.planId)));
+      // 21/11: runnable plans only; the count of open plans said "23 open plans" while all 23 were parked and nothing could run.
+      const line = await deps.utilizationLow(owner, work.length, newlyFinished).catch(() => null);
+      const runnable = line ? work : [];
       const roomOf = (planId: string) => { const roomId = snapshot.plans.find((plan) => plan.id === planId)?.roomId; return snapshot.rooms.find(({ room }) => room.id === roomId)?.room.name ?? null; };
       const planItem = (item: (typeof runnable)[number]): NousTurnItem => ({ key: `plan:${item.planId}`, kind: "PLAN", plan: item.planId, ...(paneOf(item.planId) ? { pane: paneOf(item.planId)! } : {}),
         ...(item.pane ? { paneName: item.pane.label } : {}), line: `Plan [${item.planId}] "${item.title.replace(/\s+/g, " ")}" ${item.percent}% · ${item.pane ? `${item.pane.label} ${item.pane.state ?? "state unknown"}`
           : `no open pane${roomOf(item.planId) ? ` (room ${roomOf(item.planId)})` : ""}`} · next: ${item.openStep!.replace(/\s+/g, " ")}${item.hold ? ` · plan ${item.hold.replace(/\s+/g, " ")}` : ""}`
           + `: ${item.pane ? `send it to ${item.pane.label} now (space_send_to_pane naming the plan)` : `open a pane for it now at the plan's minimum model (space_open_panes) and send it "Implement the following plan. Plan ID: ${item.planId}"`}, or mark the steps that wait BLOCKED.` });
-      const unpaned = runnable.filter((item) => !item.pane).map(planItem);
+      const held = await heldBy(owner);
+      const unpaned = runnable.filter((item) => !item.pane && !held(item.planId)).map(planItem);
       // 13/11 (operator: utilization at 80 % until morning; memory 60ca649d: under LOW the push waited up to an hour behind the inbox cap, then
       // needed a Nous turn): a ready plan with no recorded wait gets its next step from Space at once, each step once per pane (one that
       // ends with the same step still open stays with Nous). `line` is the gate: under target, calm, no limit, not CRITICAL, its pool not avoided.
@@ -687,31 +910,202 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
         if (await deps.dispatch(owner, roomId, paneId, `Continue plan ${item.planId} "${item.title.replace(/\s+/g, " ")}": its next step is ${item.openStep}. `
           + "Do it now, update the plan's steps and progress, and report when it is done.").catch(() => false)) sent.push(item);
       }
-      const idle = runnable.filter((item) => item.pane && !sent.includes(item)).map(planItem);
+      const idle = runnable.filter((item) => item.pane && !sent.includes(item) && !held(item.planId)).map(planItem);
       // One item per pane: a pane that already has its plan's next step gets no task item.
       const taskPanes = new Set([...idle.map((item) => item.pane), ...sent.map((item) => paneOf(item.planId))]);
       const taskItems: NousTurnItem[] = !line ? [] : finishedTasks.filter(({ task }) => !taskPanes.has(task.paneId!) && taskPanes.add(task.paneId!)).map(({ task, input }) => ({ key: `task:${task.id}`, kind: "PLAN",
         pane: input.pane.id, paneName: paneLabel(input.pane), refs: [task.id], line: `Task [${task.id}] "${task.title.replace(/\s+/g, " ")}" · ${where(input)} ${input.state}, nothing scheduled next`
           + `: finished → mark it DONE (space_task_update); else send ${paneLabel(input.pane)} its next step now (space_send_to_pane naming the task).` }));
-      const requests = line && deps.requests ? (await deps.requests.open(owner).catch(() => [] as SweepRequest[]))
-        .filter((request) => request.paneState !== "working" && at - Date.parse(request.paneSince ?? request.openedAt) >= PUSH_REQUEST_IDLE_MS) : [];
-      const requestItems: NousTurnItem[] = requests.map((request) => ({ key: `request:${request.key}`, kind: "REQUEST", requestKey: request.key, ...(request.messageId ? { messageId: request.messageId } : {}),
+      const openRequests = line && deps.requests ? await deps.requests.open(owner).catch(() => [] as SweepRequest[]) : [];
+      const requests = openRequests
+        .filter((request) => request.paneState !== "working" && at - Date.parse(request.paneSince ?? request.openedAt) >= PUSH_REQUEST_IDLE_MS && !held(request.messageId, request.plan)
+          // 21/11 REVIEW (521 INBOX turns/24h, 54+ on one closed pane, again after each promote): a request whose pane is closed or gone is request-done's
+          // one durable "lost its pane" line (reopen, reassign or Done; once per pane, paneGone), never also a push item every 10 minutes.
+          && !(request.pane && !request.paneName));
+      const requestItems: NousTurnItem[] = requests.map((request) => ({ key: `request:${request.key}`, kind: "REQUEST", shape: requestShape(request), requestKey: request.key, ...(request.messageId ? { messageId: request.messageId } : {}),
         ...(request.plan ? { plan: request.plan } : {}), ...(request.pane ? { pane: request.pane } : {}), ...(request.paneName ? { paneName: request.paneName } : {}),
         line: `[${request.messageId ?? request.key}] «${quote(request.words)}» · open ${durationText(Math.max(0, at - Date.parse(request.openedAt)))}${request.plan ? ` · ${request.plan}` : ""}`
           + ` · ${request.paneName ? `${request.paneName} ${request.paneState ?? "state unknown"}${request.paneSince ? ` since ${hhmm(request.paneSince)}` : ""}` : request.pane ? `${request.pane} closed or gone` : "no pane"}`
           + `: finished → Done (space_request_done); else send its next step to a pane naming it (a new pane when its own is gone).` }));
       const section = (title: string, items: NousTurnItem[]) => items.length ? [`${title}:`, ...items.map((item) => `- ${item.line}`)] : [];
-      const others = freed.filter((input) => !taskPanes.has(input.pane.id));
-      const free = others.length ? [`CLI panes free since the last push (hand each the next piece of work below now): ${others.map((input) => `${where(input)} ${input.state}`).join(", ")}`] : [];
-      const text = line ? [line, ...free, ...section("Plans not on a pane (open a pane for each now)", unpaned), ...section("Plans whose pane is idle or done (send each its next step now)", idle),
+      // 21/11 (operator 10:40 BKK «Σου ζήτησα να τρέξεις load 90%»; 12 panes finished side steps in 5-20 min and none got work): every free CLI pane
+      // is an item on every push, not a text line only for the panes freed since the last one, until it gets work, its wait is recorded, or it closes.
+      const shut = [...(spend?.mode === "LOW" ? spend.avoid : []), ...(spend?.refused ?? [])];
+      const handOutSkip = (input: BoardPaneInput) => { const reason = closeoutSkipReason(input, ctx);
+        if ((reason !== "awaits-operator" && reason !== "operator-pane") || ctx.now - Date.parse(closeoutSince(input, ctx) ?? "") < OPERATOR_TURN_GRACE_MS) return reason;
+        // The operator's-pane guard (nous_msg:63896af5) relaxes here as above for the panes they prompted; a fresh pane they opened stays theirs.
+        return closeoutSkipReason(input, { ...ctx, operatorPromptedLast: () => false, operatorPane: (pane) => operatorPaneReason(pane, ctx.now, true) }); };
+      const freeInputs = !line ? [] : panes.filter((input) => input.pane.mode === "TERMINAL" && savesToMemory(input.pane) && (input.state === "done" || input.state === "idle") && !taskPanes.has(input.pane.id)
+        // 21/11 10:55Z (load 36 %, 3 of 21 working, one free item): a pane whose own plan cannot run, or whose board reads a wait on a date
+        // or a third party, or that only holds Nous's own card, is idle capacity for other work all the same. A pane whose question is open
+        // is not (operator 23/11, questionOpen; it supersedes 21/11 12:48Z «Ακόμα 34% γιατί;;», which gave panes behind their own card new work).
+        && !openRequests.some((item) => item.pane === input.pane.id) && !work.some((item) => paneOf(item.planId) === input.pane.id) && !questionOpen(input, ctx)
+        // 21/11 (nous_msg:694ff0a9, Alex/Finn idle Opus skipped): the operator typed there last, but once its answer asks nothing and his turn's grace
+        // has passed it is free capacity; its other reasons still count.
+        && [null, "fresh", "board-waits", "board-check", "card-check", "waiting-operator"].includes(handOutSkip(input)) && !closing(input.pane.id)
+        // 21/11 04:18Z: three free Codex panes were listed while the send guard refused Codex new work, so the turn could not act on them.
+        && !shut.includes(poolOf(input.pane.id) ?? "\u0000"));
+      // 21/11 22:26 BKK (operator «load 90% τωρα και να το κρατησεις εως το πρωι»; 31 % while free panes were only listed for Nous): Space hands
+      // each free CLI pane one piece of runnable work itself, a plan with no pane first (a pane in its room first), then a daily-improvement fix
+      // (code: Opus or Fable; Antigravity Gemini 4 Neon when Claude has no room, operator 22/11 nous_msg:719620b3a7bb46fd8d85f717). Each piece goes to one pane.
+      const strong = (model: string | null | undefined) => /opus|fable/i.test(model ?? "") || (shut.includes("claude") && /gemini-\d+-neon/i.test(model ?? ""));
+      // Operator 18/11 (nous_msg:d52165794bee «αυστηρα δεν θα βαζεις κανενα flash Μοντελο να αλλαζει κώδικα!!», 08/11 32d5cdf7, correction c9c457f2):
+      // plans, goals and sweeps lead to code changes, so a Flash pane gets none of them; it stays listed for Nous with that rule.
+      const flash = (model: string | null | undefined) => /flash/i.test(model ?? "");
+      // DEV3D-046: a plan's minimum on any code model (Neon set while Claude was out, Astra) stays a code piece; strong() reads panes and drops Neon once Claude has room.
+      const codePlan = (model: string | null | undefined) => strong(model) || /astra|gemini-\d+-neon/i.test(model ?? "");
+      // A plan or goal whose pane closed goes back to the hand-out; a backlog line stays given (panes cannot mark queue.md, Nous does from their report).
+      // 23/11 (queue line 1191 panes.move went to Jack, then Emma twice, across the 08:38/11:43/12:51Z promotes; Nous never marked it): backlog
+      // hand-outs persist through givenStore, so a restart hands a line to no second pane.
+      // shortcut: a goal stays with the pane that got it until that pane closes; re-hand it on a timer if done panes sit holding goals.
+      // A sweep area is held only while its pane works on it, so the sweeps cycle and never run out.
+      const holds = (key: string) => { const paneId = given.get(`${owner}\u0000${key}`);
+        return Boolean(paneId && (key.startsWith("sweep:") ? panes.some((input) => input.pane.id === paneId && input.state === "working")
+          : !/^(plan|goal):/.test(key) || panes.some((input) => input.pane.id === paneId))); };
+      const backlog = line && deps.dispatch && deps.backlog ? await deps.backlog(owner).catch(() => []) : [];
+      if (backlog.length && deps.givenStore && !givenLoaded) {
+        givenLoaded = true;
+        for (const [key, paneId] of Object.entries(await deps.givenStore.read().catch(() => ({})))) if (!given.has(key)) given.set(key, paneId);
+      }
+      const rawSweeps = line && deps.dispatch ? deps.sweep?.() ?? sweepPieces(process.cwd()) : [];
+      let cleanDirty = false;
+      const dirtySweeps: Array<{ key: string; text: string }> = [];
+      if (rawSweeps.length) {
+        if (deps.cleanSweepStore && !cleanSweepsLoaded) {
+          cleanSweepsLoaded = true;
+          for (const [key, mark] of Object.entries(await deps.cleanSweepStore.read().catch(() => ({})))) {
+            if (!mark || !Number.isFinite(mark.at)) continue;
+            if (typeof mark.pane === "string") { if (!given.has(key)) { given.set(key, mark.pane); sweptAt.set(key, mark.at); } continue; }
+            if (!cleanSweeps.has(key)) cleanSweeps.set(key, { at: mark.at, head: typeof mark.head === "string" ? mark.head : null });
+          }
+        }
+        const sweepHead = deps.sweepGit ? await deps.sweepGit.head().catch(() => null) : null;
+        const ownerPrefix = `${owner}\u0000sweep:`;
+        for (const [ownerKey, paneId] of [...given.entries()]) {
+          if (!ownerKey.startsWith(ownerPrefix)) continue;
+          const sentAt = sweptAt.get(ownerKey) ?? 0;
+          // A sweep is settled only by its DONE/FAILED (25/11: 2 min or a late TURN_END of the pane's previous turn dropped it before its DONE, so a
+          // clean area went unmarked and was swept again), or once its pane closed or 24 h passed.
+          if (!panes.some((entry) => entry.pane.id === paneId) || at - sentAt >= SWEEP_CLEAN_TTL_MS) { given.delete(ownerKey); cleanDirty = true; continue; }
+          if (panes.some((entry) => entry.pane.id === paneId && entry.state === "working")) continue;
+          const since = new Date(sentAt).toISOString();
+          let reports = sentAt ? await deps.reportsSince(owner, paneId, since).catch(() => []) : [];
+          if (!reports.length) {
+            const latest = panes.find((entry) => entry.pane.id === paneId)?.report;
+            if (latest && latest.at >= since) reports = [latest];
+          }
+          const done = reports.filter((report) => report.status === "DONE");
+          if (done.length && !done.some((report) => Boolean(report.ticket)) && done.some(isCleanSweepReport)) {
+            cleanSweeps.set(ownerKey, { at, head: sweepHead });
+            cleanDirty = true;
+          }
+          if (reports.some((report) => report.status === "DONE" || report.status === "FAILED")) { given.delete(ownerKey); cleanDirty = true; }
+        }
+        const changedCache = new Map<string, string[] | null>();
+        for (const entry of rawSweeps) {
+          const ownerKey = `${owner}\u0000${entry.key}`;
+          const mark = cleanSweeps.get(ownerKey);
+          if (!mark) { dirtySweeps.push(entry); continue; }
+          if (at - mark.at >= SWEEP_CLEAN_TTL_MS) {
+            cleanSweeps.delete(ownerKey);
+            cleanDirty = true;
+            dirtySweeps.push(entry);
+            continue;
+          }
+          if (deps.sweepGit && mark.head && sweepHead && mark.head !== sweepHead) {
+            let files = changedCache.get(mark.head);
+            if (files === undefined) {
+              files = await deps.sweepGit.changed(mark.head, sweepHead).catch(() => null);
+              changedCache.set(mark.head, files);
+            }
+            if (files === null || sweepAreaTouched(entry.key, files)) {
+              cleanSweeps.delete(ownerKey);
+              cleanDirty = true;
+              dirtySweeps.push(entry);
+              continue;
+            }
+            mark.head = sweepHead;
+            cleanDirty = true;
+          }
+        }
+      }
+      const pieces = [...unpaned.map((item) => { const found = snapshot.plans.find((entry) => entry.id === item.plan);
+        return { key: item.key, roomId: found?.roomId ?? null, strong: codePlan(found?.minimumModel), text: `Implement the following plan. Plan ID: ${item.plan}` }; }),
+        ...backlog.map((entry) => ({ ...entry, roomId: null, strong: entry.strong ?? true })),
+        ...dirtySweeps.map((entry) => ({ ...entry, roomId: null, strong: true }))
+          .sort((left, right) => (sweptAt.get(`${owner}\u0000${left.key}`) ?? 0) - (sweptAt.get(`${owner}\u0000${right.key}`) ?? 0))].filter((piece) => !holds(piece.key));
+      const handed: Array<{ input: BoardPaneInput; key: string }> = [];
+      let open = deps.dispatch ? freeInputs : [];
+      const refused = new Set<BoardPaneInput>();
+      let sweepOpened = false;
+      for (const piece of pieces) {
+        const sweeping = piece.key.startsWith("sweep:");
+        // 22/11 05:42Z (load 75-81 %): goal 5acd171d went to Opus Alex/Bob while Gemini Dino/Jack sat free, then the strong-only sweep left Dino/Jack
+        // with nothing. A piece any model can take goes to a non-strong pane first, so strong panes stay for the strong pieces.
+        // A sweep goes only to a sweep pane, and a sweep pane takes only sweeps (operator 24/11, NOUS_SWEEP_PANE_TITLE).
+        // 24/11 19:27 BKK (Claude 7-day pools near 100 %, Gemini with room): a sweep pane on Neon counts as strong even while Claude has room.
+        const fits = open.filter((input) => sweepPane(input.pane) === sweeping
+          && (!sweeping || !paneBoundToWork(input.pane.id, { tasks: snapshot.tasks, plans: snapshot.plans, executions: snapshot.executions, requests: openRequests, pendingWorktrees: snapshot.pendingWorktrees }))
+          && !flash(input.model)
+          && (!piece.strong || strong(input.model) || (sweeping && /gemini-\d+-neon/i.test(input.model ?? ""))))
+          .sort((left, right) => piece.strong ? 0 : Number(strong(left.model)) - Number(strong(right.model)));
+        let input = fits.find((entry) => entry.room.id === piece.roomId) ?? fits[0];
+        // No free sweep pane: Space opens one (Antigravity Gemini 4 Neon, operator 22/11 rule); one per push so the next push reads its load, never while Gemini is shut.
+        if (!input && sweeping && !sweepOpened && deps.openSweepPane && !shut.includes("gemini")) {
+          sweepOpened = true;
+          const fresh = await deps.openSweepPane(owner).catch(() => null);
+          const room = fresh && (snapshot.rooms.find((entry) => entry.room.id === fresh.roomId)?.room ?? { id: fresh.roomId, name: fresh.roomId } as BoardPaneInput["room"]);
+          if (fresh && room) input = { room, pane: { id: fresh.paneId, roomId: room.id, title: NOUS_SWEEP_PANE_TITLE, titleSource: "manual", mode: "TERMINAL" } as Pane, state: "idle", model: "gemini-4-neon" } as BoardPaneInput;
+        }
+        if (!input) continue;
+        // 22/11 (stable 04:02-04:20Z): one refused piece (send guard) took the only free pane, so nothing went out; a pane leaves after its second refusal.
+        const sent = await deps.dispatch!(owner, input.room.id, input.pane.id, piece.text).catch(() => false);
+        if (sent || refused.has(input)) open = open.filter((entry) => entry !== input);
+        else refused.add(input);
+        if (sent) {
+          // A pane's earlier unsettled sweep ends with this one, so the new sweep's DONE is never credited to the old area.
+          if (sweeping) for (const [key, paneId] of given) if (paneId === input.pane.id && key.includes("\u0000sweep:")) given.delete(key);
+          given.set(`${owner}\u0000${piece.key}`, input.pane.id);
+          if (sweeping) { sweptAt.set(`${owner}\u0000${piece.key}`, at); cleanDirty = true; }
+          handed.push({ input, key: piece.key });
+        }
+      }
+      if (cleanDirty && deps.cleanSweepStore) {
+        const liveMarks = Object.fromEntries([...cleanSweeps].filter(([, mark]) => at - mark.at < SWEEP_CLEAN_TTL_MS));
+        const pending = [...given].filter(([key]) => key.includes("\u0000sweep:")).map(([key, pane]) => [key, { at: sweptAt.get(key) ?? at, head: null, pane }] as const);
+        await deps.cleanSweepStore.write({ ...liveMarks, ...Object.fromEntries(pending) }).catch(() => undefined);
+      }
+      const backlogKeys = new Set(backlog.map((entry) => entry.key));
+      // Every owner's hand-out of a line still open is kept (the queue is one file), so a line marked DONE leaves the store.
+      if (deps.givenStore && handed.some(({ key }) => backlogKeys.has(key))) {
+        await deps.givenStore.write(Object.fromEntries([...given].filter(([key]) => backlogKeys.has(key.slice(key.indexOf("\u0000") + 1))))).catch(() => undefined);
+      }
+      const unpanedLeft = unpaned.filter((item) => !holds(item.key));
+      const freeItems: NousTurnItem[] = freeInputs.filter((input) => !handed.some((entry) => entry.input === input) && !sweepPane(input.pane))
+        // DEV3D-067: the shape carries when this free spell began, so a pane left free once is an item again the next time it is free.
+        .map((input) => ({ key: `free:${input.pane.id}`, kind: "PLAN", pane: input.pane.id, paneName: paneLabel(input.pane), shape: `free ${input.state} ${ctx.since(input.pane.id) ?? ""}`,
+          line: `${where(input)} ${input.state}${closeoutSince(input, ctx) ? ` since ${hhmm(closeoutSince(input, ctx)!)}` : ""}${flash(input.model) ? " (a Flash model: no code work on it, operator 18/11)" : ""}: send it the next piece of work below now (space_send_to_pane naming it), or record why it stays free (space_pane_checked WAITING_*, a space_nous_followup naming it)` }));
+      const text = line ? [line, ...section("Free CLI panes (each gets work before it closes)", freeItems), ...section("Plans not on a pane (open a pane for each now)", unpanedLeft), ...section("Plans whose pane is idle or done (send each its next step now)", idle),
         ...(sent.length ? [`Space sent the next step itself (nothing to send): ${sent.map((item) => `${item.pane!.label} [${item.planId}] ${item.openStep}`).join("; ")}`] : []),
-        ...section("Tasks whose run ended on a finished pane", taskItems), ...section("Open requests whose pane is done or gone 30+ min", requestItems)].join("\n") : null;
+        ...(handed.length ? [`Space handed free panes work itself (nothing to send): ${handed.map(({ input, key }) => `${where(input)} ← ${key}`).join("; ")}`] : []),
+        ...section("Tasks whose run ended on a finished pane", taskItems), ...section("Open requests whose pane is done 30+ min", requestItems)].join("\n") : null;
       // Hold A: idle capacity is an item too: the turn that carries this line starts parallel work or records what blocks it. 13/11: words alone no
       // longer pass any item of it (turn-items.ts `always`): 121 of 224 pushes got an answer in words and no tool call.
-      if (text) {
+      // A Utilization wait on a dated follow-up: the line comes only with work of its own, and Utilization itself is no item until it fires.
+      const quiet = held("utilization");
+      if (text && (!quiet || unpanedLeft.length + idle.length + taskItems.length + requestItems.length + freeItems.length > 0)) {
         lastUtilization.set(owner, at);
-        const utilization: NousTurnItem = { key: "utilization", kind: "UTILIZATION", line: text };
-        await deps.notice(owner, "utilization-low", text, [utilization, ...unpaned, ...idle, ...taskItems, ...requestItems].map((item) => ({ ...item, always: true })), newlyFinished);
+        // Every CLI pane not working is capacity to fill: the item asks a dispatch for each (or helpers, or the block recorded), not one.
+        const need = panes.filter((input) => savesToMemory(input.pane) && input.state !== "working" && !closing(input.pane.id)
+          && !shut.includes(poolOf(input.pane.id) ?? "\u0000")).length;
+        // Goal 5acd171d (22/11 02:42-03:32Z: 13 of 17 INBOX lines carried it): its line lists the free panes and requests, which are items of
+        // their own, so a left push re-arms only when the runnable work it counts changes.
+        const runnable = /Runnable: [^.]*\./.exec(line!)?.[0];
+        const utilization: NousTurnItem = { key: "utilization", kind: "UTILIZATION", ...(runnable ? { shape: runnable } : {}), line: need > 1 ? `${text}\n${need} CLI panes are not working: this item moves by ${need} dispatches (a pane each), helpers, or what blocks the rest recorded (space_nous_followup add naming utilization); "save to memory" is no dispatch.` : text, ...(need > 1 ? { need } : {}) };
+        // Goal 5acd171d (23/11: 135 of 633 INBOX turns in 24 h were a finished pane's urgent push after Space had handed out its work itself, with
+        // no pane, plan or task left for Nous): urgent only while Nous has one of those to act on; else the line rides the inbox batch.
+        const forNous = freeItems.length + unpanedLeft.length + idle.length + taskItems.length > 0;
+        await deps.notice(owner, "utilization-low", text, [...(quiet ? [] : [utilization]), ...freeItems, ...unpanedLeft, ...idle, ...taskItems, ...requestItems].map((item) => ({ ...item, always: true })), newlyFinished && forNous);
       }
     }
     if (deps.away && at - (lastAway.get(owner) ?? 0) >= RELIST_MS && await deps.away(owner).catch(() => false)) {
@@ -769,6 +1163,34 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
         return { pane: input.pane, state: input.state, since, idleMinutes: since ? Math.max(0, Math.round((at - Date.parse(since)) / MINUTE)) : null, save,
           closable: skip === null && (!savesToMemory(input.pane) || verified), skip };
       }).sort((left, right) => (left.since ?? "\uffff").localeCompare(right.since ?? "\uffff"));
+    },
+    /**
+     * 21/11 14:00-15:08Z (load 13-19 %: Andy and Jack got "save to memory" ×5, Emma ×4; 25 saves against 9 work sends): with no new work typed
+     * since, a verified save is not asked again, nor an unverified one before NOUS_SAVE_WAIT_MS or a third time. Returns each such pane's refusal line.
+     */
+    async saveRepeats(owner: string, paneIds: readonly string[]): Promise<Map<string, string>> {
+      const at = now();
+      const rows = new Map((await deps.closeouts.list(owner)).map((row) => [row.paneId, row]));
+      const repeats = new Map<string, string>();
+      for (const paneId of paneIds) {
+        const row = rows.get(paneId);
+        if (!row || row.state === "CLOSED") continue;
+        // 21/11 15:06 BKK screenshot (Dana: "save to memory" ×6 after its 3 saves): a verified save is not asked again either; only new work earns a new one.
+        if (row.state === "VERIFIED") {
+          if (lastPromptAt(paneId) <= Date.parse(row.updatedAt)) repeats.set(paneId, `saved already (${row.verifiedMemoryId ?? "verified"}, ${hhmm(row.updatedAt)}): close it (space_close_pane) or give it its next work`);
+          continue;
+        }
+        const askedAt = Date.parse(row.retriedAt ?? row.requestedAt);
+        if (lastPromptAt(paneId) > askedAt) continue;
+        if (row.state === "SAVE_RETRIED") repeats.set(paneId, `asked twice already (last ${hhmm(row.retriedAt!)}): read its reports (space_pane_reports); the save is there: close it (space_close_pane); else space_pane_checked KEEP_OPEN with the reason`);
+        else if (at - askedAt < NOUS_SAVE_WAIT_MS) repeats.set(paneId, `asked ${hhmm(row.requestedAt)}, Space verifies it from the pane's reports; ask once more only after ${Math.round(NOUS_SAVE_WAIT_MS / MINUTE)} min unverified (the board lists it then)`);
+      }
+      return repeats;
+    },
+    /** Panes whose save is verified with no prompt typed since: their next work starts a fresh session (tools.ts space_send_to_pane). */
+    async savedUnprompted(owner: string, paneIds: readonly string[]): Promise<Set<string>> {
+      const rows = new Map((await deps.closeouts.list(owner)).map((row) => [row.paneId, row]));
+      return new Set(paneIds.filter((paneId) => { const row = rows.get(paneId); return row?.state === "VERIFIED" && lastPromptAt(paneId) <= Date.parse(row.updatedAt); }));
     },
     /** From Nous's tool calls (tools.ts): "save to memory" sent to panes, and panes closed. */
     async saveRequested(owner: string, roomId: string, paneIds: string[]): Promise<void> {

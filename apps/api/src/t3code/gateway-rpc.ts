@@ -55,8 +55,34 @@ const T3_0_0_45_METHODS = [
 const T3_0_1_0_CHAT_METHODS = [
   "orchestration.launchThread",
 ];
-const allowed: ReadonlySet<string> = new Set([...T3_0_0_45_METHODS, ...T3_0_1_0_CHAT_METHODS]);
-type Message = Record<string, any>;
+// Operator 2026-11-23 (supersedes the 2026-10-18 refusals): every T3 0.1.0 method whose scope the bridge grants, i.e.
+// all but access:*/relay:*. Still refused: provider sign-in/out and ChatGPT profiles (would rotate the Space accounts'
+// tokens), server self-update and provider CLI updates (Space patches and installs the runtime and its CLIs).
+const T3_0_1_0_GRANTED_METHODS = [
+  "assets.persistChatAttachments",
+  "device.action", "device.close", "device.configure", "device.detail", "device.list", "device.open", "device.shutdown",
+  "device.testHost",
+  "filesystem.getMetadata",
+  "mcpApps.callTool", "mcpApps.readResource", "mcpApps.toolInfo", "mcpApps.updateModelContext",
+  "orchestration.getThreadProjection", "orchestration.getTurnItem", "orchestration.searchThread",
+  "orchestration.searchThreadStream", "orchestration.stopWorkflow", "orchestration.subscribeArchivedShell",
+  "preview.adjust", "preview.clearProfile", "preview.reportProfiles",
+  "projects.mutate",
+  "pullRequests.checks", "pullRequests.generateReviewGuide", "pullRequests.reportState", "pullRequests.reviewGuide",
+  "scheduledTasks.delete", "scheduledTasks.getWebhookDelivery", "scheduledTasks.list", "scheduledTasks.listWebhookDeliveries",
+  "scheduledTasks.rotateWebhookToken", "scheduledTasks.runNow", "scheduledTasks.setEnabled", "scheduledTasks.subscribe",
+  "scheduledTasks.upsert",
+  "secrets.answerRequest",
+  "server.acceptAcpRegistryUrlAuth", "server.checkOtlpEndpoint", "server.deleteAcpRegistrySession",
+  "server.disableAcpRegistryProvider", "server.getStorageCleanupReport", "server.importAcpRegistrySession",
+  "server.listAcpRegistryProviders", "server.listAcpRegistrySessions", "server.logoutAcpRegistry",
+  "server.prepareAcpRegistryAgent", "server.runStorageCleanup", "server.searchAcpRegistry",
+  "server.setAcpRegistryProvider", "server.signalProcess", "server.uninstallAcpRegistryManagedBinary",
+  "terminal.observe",
+];
+const allowed: ReadonlySet<string> = new Set([...T3_0_0_45_METHODS, ...T3_0_1_0_CHAT_METHODS, ...T3_0_1_0_GRANTED_METHODS]);
+// messages() checks _tag; the server side reads only exit._tag and exit.value.
+type Message = Record<string, unknown> & { _tag: string; exit?: { _tag?: unknown; value?: { relativeUrl?: unknown; expiresAt?: unknown } | null } };
 function messages(raw: string): { batch: boolean; messages: Message[] } {
   const value: unknown = JSON.parse(raw);
   const list = Array.isArray(value) ? value : [value];

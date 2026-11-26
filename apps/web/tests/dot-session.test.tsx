@@ -67,8 +67,8 @@ describe("Dot isolation and guarded transitions", () => {
     writeChatSubmission("pane:one", request); expect(readChatSubmission("pane:one")).toEqual(request);
   });
 });
-const headerProps = { dots, selected: dots[0]!, status: "Ready", blocked: false, motionActive: true, onSelect: () => {}, onManage: () => {},
-  onNewConversation: () => {}, newConversationDisabled: false, onCall: () => {}, callDisabledReason: null, panelOpen: false, onTogglePanel: () => {}, actions: [] };
+const headerProps = { selected: dots[0]!, status: "Ready", motionActive: true,
+  onNewConversation: () => {}, newConversationDisabled: false, actions: [] };
 describe("truthful status and selector accessibility", () => {
   it("requires runtime evidence, never infers approval from permissions or offline from request failure", () => {
     const session = { runtimeState: "AVAILABLE", runStatus: "IDLE", binding: { status: "READY" }, permissionMode: "ask_for_approval" } as AgentPaneSession;
@@ -79,37 +79,12 @@ describe("truthful status and selector accessibility", () => {
     expect(dotStatus({ ...session, runStatus: "RUNNING" })).toBe("Working");
     expect(dotStatus(null)).toBe("Status unavailable");
   });
-  it("offers all six choices with keyboard navigation, Escape dismissal and focus return", async () => {
-    const select = vi.fn(); render(<DotHeader {...headerProps} onSelect={select} />);
-    const trigger = screen.getByRole("button", { name: "Choose Dot (Orbit)" }); fireEvent.click(trigger);
-    const options = screen.getAllByRole("menuitemradio"); expect(options).toHaveLength(6);
-    expect(screen.getByRole("menuitem", { name: "Manage Dots in Settings" })).toBeTruthy();
-    fireEvent.keyDown(options[0]!, { key: "ArrowRight" }); expect(document.activeElement).toBe(options[1]);
-    fireEvent.keyDown(options[1]!, { key: "ArrowDown" }); expect(document.activeElement).toBe(options[4]);
-    fireEvent.keyDown(options[4]!, { key: "Escape" }); expect(screen.queryByRole("menu")).toBeNull(); expect(document.activeElement).toBe(trigger);
-  });
-  it("dismisses outside pointer presses without taking focus from the clicked control", () => {
-    const select = vi.fn();
-    render(<><DotHeader {...headerProps} onSelect={select} />
-      <button type="button">Outside control</button></>);
-    const trigger = screen.getByRole("button", { name: "Choose Dot (Orbit)" });
-    fireEvent.click(trigger);
-    const option = screen.getAllByRole("menuitemradio")[1]!;
-    fireEvent.pointerDown(option.querySelector("svg")!);
-    expect(screen.queryByRole("menu")).not.toBeNull();
-    fireEvent.pointerDown(trigger.querySelector("span")!);
-    expect(screen.queryByRole("menu")).not.toBeNull();
-    const outside = screen.getByRole("button", { name: "Outside control" });
-    outside.focus();
-    fireEvent.pointerDown(outside);
-    expect(screen.queryByRole("menu")).toBeNull();
-    expect(document.activeElement).toBe(outside);
-    expect(select).not.toHaveBeenCalled();
-    fireEvent.click(trigger);
-    fireEvent.click(screen.getAllByRole("menuitemradio")[1]!);
-    expect(select).toHaveBeenCalledWith(dots[1]);
-    expect(screen.queryByRole("menu")).toBeNull();
-    expect(document.activeElement).toBe(trigger);
+  it("names the pane's Dot without a switcher, keeps New conversation and has no Call button", () => {
+    render(<DotHeader {...headerProps} />);
+    expect(screen.getByText("Orbit")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Choose Dot/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "New conversation" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Call/ })).toBeNull();
   });
   it("shows failed and empty reads distinctly, and Computer loads the Dot's real computer", async () => {
     const read = vi.fn().mockRejectedValue(Error("request failed"));

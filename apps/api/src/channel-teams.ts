@@ -40,7 +40,7 @@ export function createBotFrameworkVerifier(input: { appId: string; fetchImpl?: t
     if (!key) key = (await signingKeys(true)).find((candidate) => candidate.kid === header.kid);
     // Only keys endorsed for Teams; Web Chat and Direct Line tokens use other endorsements.
     if (!key || !Array.isArray(key.endorsements) || !key.endorsements.includes("msteams")) return false;
-    let valid = false;
+    let valid: boolean;
     try {
       valid = createVerify("RSA-SHA256").update(`${headerPart}.${payloadPart}`).verify(createPublicKey({ key: { kty: key.kty, n: key.n, e: key.e }, format: "jwk" } as JsonWebKeyInput), Buffer.from(signaturePart, "base64url"));
     } catch { return false; }

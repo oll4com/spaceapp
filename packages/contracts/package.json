@@ -3,6 +3,9 @@
   "version": "0.2.5",
   "private": true,
   "type": "module",
+  "sideEffects": [
+    "./dist/zod-runtime.js"
+  ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

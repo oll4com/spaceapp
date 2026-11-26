@@ -4,6 +4,9 @@ import { readStoredSessionString, writeStoredSessionString } from "../../session
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import { connectorResultMessage } from "../agent-pane/connector-result.js";
 import { settlePairAfterStepUp } from "../auth/mobile-pair-resume.js";
+import { runStepUpResume, takeStepUpResume } from "../auth/step-up-resume.js";
+import { STEP_UP_MAIL_KEY } from "../auth/StepUpConfirm.js";
+import { api } from "../../api.js";
 import { takePasswordStepUp } from "../settings/LoginPasswordSettingsCard.js";
 import { openSettingsSection } from "../settings/settings-section-request.js";
 
@@ -100,6 +103,18 @@ export function useAppNotices(): AppNotices {
   useAutoDismiss(accountNotice, setAccountNotice);
   // An error stays until closed: the Google step-up's refusal (what to turn on in Google's console) takes longer than 6 s to read.
 
+  // The link from a "Confirm it is you" mail (StepUpConfirm, POST /api/auth/step-up/mail): it confirms this session; the tab that asked
+  // hears it through localStorage and continues. The token leaves the address bar at once.
+  useEffect(() => {
+    const token = /^#space-step-up=([A-Za-z0-9_-]{32,})$/.exec(window.location.hash)?.[1];
+    if (!token) return;
+    window.history.replaceState({}, document.title, `${window.location.pathname}${window.location.search}`);
+    void Promise.resolve().then(() => api.stepUpWithMail(token)).then(() => {
+      try { window.localStorage.setItem(STEP_UP_MAIL_KEY, String(Date.now())); } catch { /* storage off: the asking tab checks again on focus */ }
+      setAccountNotice("Confirmed it is you for 5 minutes. Go back to the tab where you asked: it continues there.");
+    }, (failure: unknown) => setAccountError(failure instanceof Error ? failure.message.replace(/^[A-Z_]+: /, "") : "That link did not work."));
+  }, []);
+
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -120,8 +135,13 @@ export function useAppNotices(): AppNotices {
         window.history.replaceState({}, document.title, nextUrl);
       } else if (params.get("mobileStepUp") === "ok") {
         // The Google step-up reloaded the page: Pair a phone started it, so Settings > Account opens and Mobile app pairs (mobile-pair-resume).
-        if (takePasswordStepUp()) {
-          setAccountNotice("Confirmed it is you for 5 minutes. In Settings > Login password, leave the current password empty and save the new one.");
+        const resume = takeStepUpResume();
+        if (resume) {
+          // Granting a link's scopes or answering a linked decision started it: that action runs now, within the step-up's 5 minutes.
+          void runStepUpResume(resume).then(setAccountNotice, (failure: unknown) => setAccountError(failure instanceof Error ? failure.message : "That did not work."));
+          if (resume.purpose === "link-scopes") window.setTimeout(() => openSettingsSection("account"), 0);
+        } else if (takePasswordStepUp()) {
+          setAccountNotice("Confirmed it is you for 5 minutes. Choose the new password in Settings > Login password.");
           window.setTimeout(() => openSettingsSection("password"), 0);
         } else if (settlePairAfterStepUp(true)) {
           setAccountNotice("Confirmed it is you. Settings > Account > Mobile app shows your pairing code.");
@@ -131,7 +151,7 @@ export function useAppNotices(): AppNotices {
         }
         window.history.replaceState({}, document.title, window.location.pathname);
       } else if (googleLinkError) {
-        if (params.has("mobileStepUpError")) { settlePairAfterStepUp(false); takePasswordStepUp(); }
+        if (params.has("mobileStepUpError")) { settlePairAfterStepUp(false); takePasswordStepUp(); takeStepUpResume(); }
         setAccountError(decodeURIComponent(googleLinkError));
         const nextUrl = window.location.pathname;
         window.history.replaceState({}, document.title, nextUrl);

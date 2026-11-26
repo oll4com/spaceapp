@@ -180,7 +180,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     environment: { CLAUDE_CONFIG_DIR: `${codexHome}/space-claude` },
     nativeResumeArgs: ["--resume"],
     declaresNativeReference: true,
-    adapterLimitations: [interactivePicker("a bare `--resume`"), completionUnobserved],
+    adapterLimitations: [interactivePicker("a bare `--resume`"), {
+      operation: "nativeResume",
+      code: "REFERENCE_STEERED_BY_WRAPPER",
+      detail: "Each start carries the pane's Claude session id in SPACE_CLAUDE_SESSION_ID; the wrapper launches `claude --session-id <id>` on a fresh start and `claude --resume <id>` once that session's transcript exists; a bare `--resume` still opens the picker."
+    }, completionUnobserved],
     accountProfileEnv: "SPACE_CLAUDE_ACCOUNT_PROFILE",
     paneModelLaunchEnv: false,
     defaultModelId: "sonnet",

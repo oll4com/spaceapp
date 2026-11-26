@@ -19,8 +19,7 @@ function identity(input: DummyTurnInput, adapter: TurnAdapter) {
 }
 
 function emit(record: Record<string, unknown>) {
-  // Logging must not change the execution result when an output sink fails.
-  try { console.info(JSON.stringify(record)); } catch {}
+  try { console.info(JSON.stringify(record)); } catch { /* Logging must not change the execution result when an output sink fails. */ }
 }
 
 export function recordTurnStatePersistenceFailure(input: DummyTurnInput) {

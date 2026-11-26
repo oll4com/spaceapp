@@ -178,7 +178,7 @@ it("graceful stop: a Dot Goal step finishes while the worker drains and the next
 }, 60_000);
 
 it("graceful stop: a Room Agent mission's Codex turn is retried at once on the next worker and the mission finishes once", async () => {
-  const { item, seen, again, finish, discard, child } = await missionAcrossStop("codex-stop", "codex", "runCodexAppServerTurn", "rethrow");
+  const { item, seen, again, finish, discard } = await missionAcrossStop("codex-stop", "codex", "runCodexAppServerTurn", "rethrow");
   expect(seen).toEqual({ attempts: [1], cancel: ["WORKER_SHUTDOWN"] });
   expect(again).toEqual([2]);
   expect(finish).toHaveBeenCalledWith({ item, status: "COMPLETED", statusReason: "Room action verified." });
@@ -197,7 +197,7 @@ it("graceful stop: a single-attempt OpenCode mission turn is never re-sent and t
 }, 90_000);
 
 it("hard kill: a Room Agent mission's Codex turn is retried on the next worker after its 15 s heartbeat timeout", async () => {
-  const { item, seen, again, finish, discard, child } = await missionAcrossStop("codex-kill", "codex", "runCodexAppServerTurn", "vanish");
+  const { item, seen, again, finish, discard } = await missionAcrossStop("codex-kill", "codex", "runCodexAppServerTurn", "vanish");
   expect(seen.attempts).toEqual([1]);
   expect(again).toEqual([2]);
   expect(finish).toHaveBeenCalledWith({ item, status: "COMPLETED", statusReason: "Room action verified." });

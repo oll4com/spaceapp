@@ -16,7 +16,7 @@ function startRequestId(paneId: string, sessionId: string, planId: string): stri
   const requestId = startRequestIds.get(key) ?? crypto.randomUUID();
   startRequestIds.set(key, requestId);
   while (startRequestIds.size > 128) startRequestIds.delete(startRequestIds.keys().next().value!);
-  try { sessionStorage.setItem(START_REQUEST_STORAGE, JSON.stringify([...startRequestIds])); } catch {}
+  try { sessionStorage.setItem(START_REQUEST_STORAGE, JSON.stringify([...startRequestIds])); } catch { /* sessionStorage unavailable; the id still lives in memory */ }
   return requestId;
 }
 

@@ -94,7 +94,7 @@ export function FieldsTab({ paneId, application }: { paneId: string; application
   const steps = useMemo(() => {
     const groups = new Map<number, { title: string; fields: JobApplicationField[] }>();
     for (const field of fields) {
-      const group = groups.get(field.stepIndex) ?? { title: field.stepTitle ?? t("Step {number}", { number: field.stepIndex + 1 }), fields: [] };
+      const group = groups.get(field.stepIndex) ?? { title: field.stepTitle ?? uiText(language, "Step {number}", { number: field.stepIndex + 1 }), fields: [] };
       group.fields.push(field);
       groups.set(field.stepIndex, group);
     }

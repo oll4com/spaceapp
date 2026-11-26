@@ -15,13 +15,14 @@ export interface T3PaneAccessOptions {
 export interface T3PaneScope { userId: string; paneId: string; sessionId: string; pane: Pane; room: Room }
 
 // The session part of every T3 check: the feature is on and the caller is the
-// Space owner account (or its ADMIN proof identity).
+// Space owner account with the ADMIN role (or its ADMIN proof identity).
 export function authorizeT3Owner(request: FastifyRequest, options: { enabled: boolean; sessionSecret: string }): { owner: string; token: string } {
   if (!options.enabled) throw new T3GatewayError(404, "T3CODE_DISABLED");
   const token = request.cookies[cookieName], user = verifySession(token, options.sessionSecret);
   if (!user) throw new T3GatewayError(401, "UNAUTHENTICATED");
   const owner = user.id === "user:operator-proof" && user.role === "ADMIN" ? T3_GATEWAY_OWNER : user.id;
-  if (owner !== T3_GATEWAY_OWNER || user.automationScope === "APP_DIAGNOSTICS") throw new T3GatewayError(403, "T3_OWNER_REQUIRED");
+  // ADMIN only: the bridge grants every T3 scope except access/relay (operator rule 2026-11-23).
+  if (owner !== T3_GATEWAY_OWNER || user.role !== "ADMIN" || user.automationScope === "APP_DIAGNOSTICS") throw new T3GatewayError(403, "T3_OWNER_REQUIRED");
   return { owner, token: token! };
 }
 

@@ -53,7 +53,7 @@ function GoalHistory({ goalId, open, onToggle, onOpenPlan }: { goalId: string; o
   const chips = page ? [{ id: "ALL" as const, label: "All", count: total ?? 0 },
     ...NOUS_GOAL_HISTORY_KINDS.filter((entry) => page.counts[entry]).map((entry) => ({ id: entry, label: KIND_LABELS[entry], count: page.counts[entry]! }))] : [];
   return (
-    <details className="nous-goal-history" data-sensitive-masked="manual" open={open} onToggle={(event) => onToggle(event.currentTarget.open)}>
+    <details className="nous-goal-history" open={open} onToggle={(event) => onToggle(event.currentTarget.open)}>
       <summary>Work history{total ? ` · ${total}` : ""}</summary>
       {open ? <>
         {total ? <DockChips label="Show in the work history" options={chips} value={kind} onChange={setKind} /> : null}
@@ -136,12 +136,12 @@ export function NousGoals({ active, overview, onChanged, onOpenPlan }: { active:
     <div className="nous-decisions nous-goals">
       {/* The add field looks and behaves like the message composer: Enter adds, Shift+Enter breaks the line. */}
       <form className="nous-goal-add" onSubmit={add}>
-        <textarea data-sensitive-masked="manual" value={text} onChange={(event) => setText(event.target.value)} rows={1} aria-label="New goal" placeholder="A new goal for Nous"
+        <textarea value={text} onChange={(event) => setText(event.target.value)} rows={1} aria-label="New goal" placeholder="A new goal for Nous"
           onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); add(); } }} />
         <DockIconButton label="Add goal" icon={Plus} tone="primary" type="submit" disabled={busy || !text.trim()} />
       </form>
       {loop ? (
-        <p className={`nous-goals-loop is-${loopState}`} role="status" data-sensitive-masked="manual">
+        <p className={`nous-goals-loop is-${loopState}`} role="status">
           <span className="nous-goals-dot" aria-hidden="true" />
           {loop.held ? `Goal loop held: ${loop.held}` : loop.running ? "Goal loop on · a goal turn runs now"
             : loop.nextAt ? `Goal loop on · next goal turn ${formatUserTime(loop.nextAt)}` : open.some((goal) => goal.status === "ACTIVE") ? "Goal loop on" : "Goal loop on · waiting for an active goal"}
@@ -185,7 +185,7 @@ function GoalCard({ goal, expanded, onToggle, busy, planOf, onAct, confirm, onOp
       <button type="button" className="nous-goal-head" aria-expanded={expanded} aria-controls={bodyId} onClick={onToggle}>
         <span className={`nous-goal-status is-${goal.status.toLowerCase()}`}>{STATUS_LABELS[goal.status]}</span>
         {open ? <span className="nous-goal-rank" title="Priority">#{goal.priority}</span> : null}
-        <span className="nous-goal-line" data-sensitive-masked="manual">{goal.text.split("\n")[0]}</span>
+        <span className="nous-goal-line">{goal.text.split("\n")[0]}</span>
         {/* Operator 1/11 03:39 BKK: a percentage only on a goal with a limit (a deadline or a measurable target). */}
         {goal.limit ? <strong className="nous-goal-percent">{goal.progress}%</strong> : null}
         {/* Wrapped: the shell paints expanded buttons with a direct icon child as active toggles. */}
@@ -193,9 +193,9 @@ function GoalCard({ goal, expanded, onToggle, busy, planOf, onAct, confirm, onOp
       </button>
       {expanded ? (
         <div className="nous-goal-body" id={bodyId}>
-          {editing === null ? <h3 className="nous-goal-text" data-sensitive-masked="manual">{goal.text}</h3> : (
+          {editing === null ? <h3 className="nous-goal-text">{goal.text}</h3> : (
             <div className="nous-goal-edit">
-              <textarea data-sensitive-masked="manual" value={editing} onChange={(event) => setEditing(event.target.value)} rows={3} aria-label="Goal text" />
+              <textarea value={editing} onChange={(event) => setEditing(event.target.value)} rows={3} aria-label="Goal text" />
               <span className="nous-goal-edit-actions">
                 <DockButton icon={X} disabled={busy} onClick={() => setEditing(null)}>Cancel</DockButton>
                 <DockButton tone="primary" icon={Check} disabled={busy} onClick={save}>Save</DockButton>
@@ -207,13 +207,13 @@ function GoalCard({ goal, expanded, onToggle, busy, planOf, onAct, confirm, onOp
             {/* Right under the bar: the limit is what the percentage measures (long criteria pushed it out of view). */}
             {goal.limit ? <><dt>Limit</dt><dd>{goal.limit.kind === "DATE" ? `By ${formatUserTime(goal.limit.until, { withDate: true })}` : goal.limit.what}</dd></> : null}
             <dt>Criteria</dt>
-            <dd className={goal.criteria ? undefined : "is-empty"} data-sensitive-masked="manual">{goal.criteria ?? "Nous writes them in its first goal turn."}</dd>
-            {goal.planIds.length ? <><dt>Plans</dt><dd data-sensitive-masked="manual">{goal.planIds.map((id) => { const plan = planOf(id); return plan ? `${plan.title} (${plan.progress}%)` : id; }).join(" · ")}</dd></> : null}
-            {goal.waitsOn ? <><dt>Waits on</dt><dd className="is-wait" data-sensitive-masked="manual">{WAIT_LABELS[goal.waitsOn.kind]}: {goal.waitsOn.what}{goal.waitsOn.until ? ` until ${formatUserTime(goal.waitsOn.until)}` : ""}</dd></> : null}
+            <dd className={goal.criteria ? undefined : "is-empty"}>{goal.criteria ?? "Nous writes them in its first goal turn."}</dd>
+            {goal.planIds.length ? <><dt>Plans</dt><dd>{goal.planIds.map((id) => { const plan = planOf(id); return plan ? `${plan.title} (${plan.progress}%)` : id; }).join(" · ")}</dd></> : null}
+            {goal.waitsOn ? <><dt>Waits on</dt><dd className="is-wait">{WAIT_LABELS[goal.waitsOn.kind]}: {goal.waitsOn.what}{goal.waitsOn.until ? ` until ${formatUserTime(goal.waitsOn.until)}` : ""}</dd></> : null}
             <dt>Last move</dt>
-            <dd className={goal.lastWorkedAt ? undefined : "is-empty"} data-sensitive-masked="manual">{goal.lastWorkedAt ? `${formatUserTime(goal.lastWorkedAt)}${goal.note ? ` · ${goal.note}` : ""}` : "None yet"}</dd>
+            <dd className={goal.lastWorkedAt ? undefined : "is-empty"}>{goal.lastWorkedAt ? `${formatUserTime(goal.lastWorkedAt)}${goal.note ? ` · ${goal.note}` : ""}` : "None yet"}</dd>
             {goal.status === "ACTIVE" ? <><dt>Next turn</dt><dd>{due ? `${formatUserTime(goal.nextTurnAt!)}${goal.unchangedTurns ? ` · nothing moved in ${goal.unchangedTurns} ${goal.unchangedTurns === 1 ? "turn" : "turns"}` : ""}` : "Due now"}</dd></> : null}
-            {goal.evidence ? <><dt>Evidence</dt><dd data-sensitive-masked="manual">{goal.evidence}</dd></> : null}
+            {goal.evidence ? <><dt>Evidence</dt><dd>{goal.evidence}</dd></> : null}
             <dt>Cost</dt>
             <dd>today {cost(goal.cost.today)} · this month {cost(goal.cost.month)}</dd>
           </dl>

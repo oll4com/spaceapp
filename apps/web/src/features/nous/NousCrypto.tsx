@@ -54,7 +54,7 @@ export function NousCrypto({ active }: { active: boolean }) {
   const toggle = (id: string) => setOpen((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const rejected = report.verdicts.FAIL + report.verdicts.SKIP;
   return (
-    <div className="nous-decisions nous-programs nous-report" data-sensitive-masked="manual">
+    <div className="nous-decisions nous-programs nous-report">
       <p className="nous-programs-total">{t(report.source.final ? "Final table" : "Draft of the final table")}: <strong>{report.source.title}</strong> · {t("file updated {date}", { date: formatAppDateTime(report.source.modifiedAt) })}
         {report.source.final ? null : <> · {t("the final table replaces it here by itself")}</>}</p>
       <section className="nous-report-funnel" aria-label={t("Methods by result")}>

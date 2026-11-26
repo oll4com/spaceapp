@@ -30,13 +30,16 @@ export async function selectRoomCliMenuRow(input: {
       if (screen.revision === revision) throw new SpaceConflictError("The CLI did not acknowledge the menu selection.");
       return screen;
     }
-    if (!screen.text.includes(input.selection)) break;
+    const before = screen.text;
     await input.send("\u001b[B", `selection:${attempt}`);
     await wait(150);
     screen = await input.observe();
+    // Daily Nous errors 14/11 slice 14 (restart_pane ×1): a /resume row below the menu's window shows only once the highlight scrolls to it,
+    // so the search goes on while Down still moves the menu; the list's end leaves the screen unchanged.
+    if (screen.text === before && !screen.text.includes(input.selection)) break;
   }
   if (input.command?.startsWith("/")) await input.send("\u001b", "selection:escape").catch(() => {});
-  throw new SpaceConflictError("The requested menu selection could not be verified; inspect the pane's current menu.");
+  throw new SpaceConflictError(`The requested menu selection could not be verified (no row names "${input.selection}"); inspect the pane's current menu.`);
 }
 
 /**

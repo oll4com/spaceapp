@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
-import { NOTIFICATION_SOURCES, NOTIFICATION_SOURCE_LABELS, defaultNotificationSettings, resolveNotificationSettings, type NotificationSettings, type NotificationSource } from "@space/contracts";
+import { NOTIFICATION_SOURCES, NOTIFICATION_SOURCE_LABELS, appointmentHoursSchema, defaultNotificationSettings, resolveNotificationSettings, type AppointmentHoursSetting,
+  type NotificationSettings, type NotificationSource } from "@space/contracts";
 import { api } from "../../api.js";
+import { TIME_ZONE_GROUPS } from "../date-time-settings/date-time-settings.js";
 import { DockNotice } from "../dock-kit/DockKit.js";
+import { SettingsLabel } from "../settings/SettingsLabel.js";
+import { useUiText } from "../ui-language/ui-language.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { desktopNotificationPermission, desktopNotificationsEnabled, nativeNotificationsAvailable, pushNotificationsEnabled, pushNotificationsSupported, setDesktopNotifications, setPushNotifications } from "./desktop-notifications.js";
 
@@ -18,12 +22,17 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [leadText, setLeadText] = useState<string | null>(null);
+  const [hours, setHours] = useState<AppointmentHoursSetting | null>(null);
+  const t = useUiText();
 
   useEffect(() => {
     let cancelled = false;
     // The kill switch renders at once; the channels wait for the settings (or fall back to the defaults).
-    Promise.resolve().then(() => api.userSettings()).then((user) => { if (!cancelled) setSettings(resolveNotificationSettings(user.notifications)); })
-      .catch(() => { if (!cancelled) setSettings(defaultNotificationSettings); });
+    Promise.resolve().then(() => api.userSettings()).then((user) => {
+      if (cancelled) return;
+      setSettings(resolveNotificationSettings(user.notifications));
+      setHours(appointmentHoursSchema.safeParse(user.appointmentHours ?? {}).data ?? appointmentHoursSchema.parse({}));
+    }).catch(() => { if (!cancelled) { setSettings(defaultNotificationSettings); setHours(appointmentHoursSchema.parse({})); } });
     return () => { cancelled = true; };
   }, []);
 
@@ -36,6 +45,20 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
       setError(caught instanceof Error ? caught.message : "Notification settings could not be saved.");
     });
   }
+  // Operator 17/11 (nous_msg:266ee062): every appointment starts at or after the start and ends by the end; the server refuses or flags the rest.
+  function saveHours(patch: Partial<AppointmentHoursSetting>) {
+    if (!hours) return;
+    const next = { ...hours, ...patch };
+    if (next.start >= next.end) { setError("Appointment hours must end after they start."); return; }
+    const previous = hours;
+    setHours(next);
+    setError(null);
+    void api.updateUserSettings({ appointmentHours: next }).catch((caught: unknown) => {
+      setHours(previous);
+      setError(caught instanceof Error ? caught.message : "Appointment hours could not be saved.");
+    });
+  }
+  const zones = TIME_ZONE_GROUPS.flatMap((group) => group.options).filter((zone) => zone.value !== "system");
   const channel = (key: keyof NotificationSettings["channels"], checked: boolean) => settings && save({ ...settings, channels: { ...settings.channels, [key]: checked } });
   const perSource = (source: NotificationSource, key: "inApp" | "desktop" | "telegram" | "push", checked: boolean) => settings
     && save({ ...settings, perSource: { ...settings.perSource, [source]: { ...settings.perSource[source], [key]: checked } } });
@@ -104,6 +127,19 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
             onKeyDown={(event) => { if (event.key === "Enter") saveLeads(event.currentTarget.value); }} /></label>
         </div>
       ) : null}
+      <div className="settings-flat-row notification-quiet-hours">
+        <SettingsLabel label="Appointment hours" help="Every appointment agents propose, book or accept starts at or after the start and ends by the end. One the other side set outside them is kept and marked, so they are asked to move it." />
+        <label>{t("From")} <input type="time" name="appointment-hours-start" value={hours?.start ?? ""} disabled={!hours}
+          onChange={(event) => { if (/^\d{2}:\d{2}$/.test(event.target.value)) saveHours({ start: event.target.value }); }} /></label>
+        <label>{t("Until")} <input type="time" name="appointment-hours-end" value={hours?.end ?? ""} disabled={!hours}
+          onChange={(event) => { if (/^\d{2}:\d{2}$/.test(event.target.value)) saveHours({ end: event.target.value }); }} /></label>
+        <label>{t("Time zone")} <select name="appointment-hours-zone" value={hours?.timeZone ?? ""} disabled={!hours}
+          onChange={(event) => saveHours({ timeZone: event.target.value || null })}>
+          <option value="">{t("Working time zone")}</option>
+          {hours?.timeZone && !zones.some((zone) => zone.value === hours.timeZone) ? <option value={hours.timeZone}>{hours.timeZone.replace(/_/g, " ")}</option> : null}
+          {zones.map((zone) => <option key={zone.value} value={zone.value}>{zone.label}</option>)}
+        </select></label>
+      </div>
       <details className="settings-flat-row notification-source-settings">
         <summary>Per source</summary>
         {NOTIFICATION_SOURCES.map((source) => (

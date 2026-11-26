@@ -311,8 +311,8 @@ export function DesktopWidgetContainer({
           ? (dragZone === "header" ? "header" : "rail")
           : undefined;
 
-        let finalX = latest.x;
-        let finalY = latest.y;
+        let finalX: number;
+        let finalY: number;
 
         const minTop = getRailTopBoundary();
 
@@ -394,7 +394,7 @@ export function DesktopWidgetContainer({
       window.addEventListener("pointerup", handlePointerUp);
       window.addEventListener("pointercancel", handlePointerUp);
     },
-    [x, y, dodgeShiftX, dockedToRail, minimized, onPositionChange, onFocus, isAlertActive, onStopAlert, dockPosition, isMultiColumn, isHeaderDockActive, headerAvailable, toolbarTarget]
+    [id, x, y, dodgeShiftX, dockedToRail, onPositionChange, onFocus, isAlertActive, onStopAlert, dockPosition, isMultiColumn, headerAvailable, toolbarTarget]
   );
 
   const handleDoubleClick = useCallback(() => {

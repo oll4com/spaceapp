@@ -79,7 +79,15 @@ describe("Needs you keeps only what needs the operator (2/11)", () => {
     expect((await f.notifications.raise(ask("Enter the 2-minute pairing code 771 204 on the link page.", other), { realert: true })).payload.heldForNous).toBeFalsy();
     expect((await f.notifications.raise(ask("Which plan should the link use?", "pane:third0001"), { realert: true })).payload.heldForNous).toBeTruthy();
     // Follow-up: codes in seconds (Iris's 120 s code), Greek ones and QR codes show too; a held ask refreshed with a code leaves the hold.
-    for (const [question, at] of [["Type the 120 s public-host pairing code 482913.", "pane:fourth001"], ["Ο κωδικός λήγει σε 120 δευτερόλεπτα: 482913", "pane:fifth0001"], ["Scan the QR on the public-host page.", "pane:sixth0001"]]) {
+    for (const [question, at] of [["Type the 120 s public-host pairing code 482913.", "pane:fourth001"], ["Ο κωδικός λήγει σε 120 δευτερόλεπτα: 482913", "pane:fifth0001"], ["Scan the QR on the public-host page.", "pane:sixth0001"], ["Type the 120 s Space-Link pairing code 482913.", "pane:sixthb001"], ["Enter the 2 minute one-time code 482913.", "pane:sixthc001"]]) {
+      expect((await f.notifications.raise(ask(question!, at), { realert: true })).payload.heldForNous).toBeFalsy();
+    }
+    // DEV3D-039: seconds and "code" in an ordinary card are no expiring code.
+    for (const [question, at] of [["The code review is done; tests ran in 45s. Merge now?", "pane:seventh01"], ["Rewrite the encoder? It takes 30 s per file.", "pane:eighth001"]]) {
+      expect((await f.notifications.raise(ask(question!, at), { realert: true })).payload.heldForNous).toBeTruthy();
+    }
+    // DEV3D-049: a code entered "within" seconds, before it "changes", or «μέσα σε» seconds shows at once too.
+    for (const [question, at] of [["Enter the pairing code 482913 within 60 seconds.", "pane:ninth0001"], ["Type the code 482913 on the page before it changes in 30 s.", "pane:tenth0001"], ["Πληκτρολόγησε τον κωδικό 482913 μέσα σε 60 δευτερόλεπτα.", "pane:eleven001"]]) {
       expect((await f.notifications.raise(ask(question!, at), { realert: true })).payload.heldForNous).toBeFalsy();
     }
     const refreshed = await f.notifications.raise(ask("Type the 120 s pairing code 482913 now.", "pane:third0001"), { realert: true });

@@ -1,14 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  LIVE_AUDIO_PROVIDERS,
   getAllLiveAudioProviders,
-  getDefaultModelForProvider,
-  getDefaultVoiceForProvider,
   getLiveAudioProvider,
   getModelsForProvider,
   getVoicesForProvider,
   inferProviderFromModel,
-  isLiveAudioProviderId,
   validateLiveAudioConfig,
   voiceRealtimeSessionRequestSchema,
   voiceRealtimeSessionResponseSchema,

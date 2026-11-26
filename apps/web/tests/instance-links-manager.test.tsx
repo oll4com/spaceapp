@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { InstanceLink } from "../src/api.js";
 
-const apiMock = vi.hoisted(() => ({ listInstanceLinks: vi.fn(), linkInstance: vi.fn(), checkInstanceLink: vi.fn(), removeInstanceLink: vi.fn(), instanceLinkHistory: vi.fn() }));
+const apiMock = vi.hoisted(() => ({ listInstanceLinks: vi.fn(), linkInstance: vi.fn(), checkInstanceLink: vi.fn(), removeInstanceLink: vi.fn(), instanceLinkHistory: vi.fn(), instanceLinkVersions: vi.fn(), upgradeInstanceLink: vi.fn() }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
 const { InstanceLinksManager } = await import("../src/features/auth/InstanceLinksManager.js");
 
@@ -15,6 +15,7 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); vi.restoreAllMocks(); });
 describe("InstanceLinksManager", () => {
   it("links from a pasted code kept out of the Space clipboard, checks and removes the link", async () => {
     apiMock.listInstanceLinks.mockResolvedValue({ links: [] });
+    apiMock.instanceLinkVersions.mockResolvedValue({ local: { commit: "c".repeat(40), version: "0.4.1", syncing: true }, links: {} });
     apiMock.linkInstance.mockResolvedValue({ link: link(), pending: ["read", "act"] });
     apiMock.checkInstanceLink.mockResolvedValue({ link: link({ scopes: ["read", "act"], lastSeenAt: at, connected: true }), scopes: ["read", "act"], status: 200, rttMs: 42 });
     apiMock.removeInstanceLink.mockResolvedValue({ ok: true });
@@ -77,5 +78,26 @@ describe("InstanceLinksManager", () => {
     apiMock.listInstanceLinks.mockRejectedValue(new Error("Not found"));
     const { container } = render(<InstanceLinksManager />);
     await waitFor(() => expect(container.innerHTML).toBe(""));
+  });
+  // Space Link version sync (operator nous_msg:2c4707988f754da5b0719dd5): the local version, each link's, and the last sync with its reason.
+  it("shows this SpaceApp's version, the linked one's and its last update with the reason it failed", async () => {
+    apiMock.listInstanceLinks.mockResolvedValue({ links: [link()] });
+    apiMock.instanceLinkVersions.mockResolvedValue({ local: { commit: "c4863d37b6".padEnd(40, "0"), version: "0.4.1", syncing: true }, links: { "link:one": {
+      commit: "cdd498440a".padEnd(40, "0"), version: "0.2.5", error: null, checkedAt: at,
+      last: { state: "rolled-back", from: "cdd498440a".padEnd(40, "0"), target: "c4863d37b6".padEnd(40, "0"), startedAt: at, finishedAt: at, reason: "Its /readyz did not answer after the update." } } } });
+    render(<InstanceLinksManager />);
+    expect(await screen.findByText("This SpaceApp runs 0.4.1 (c4863d37b6).")).toBeTruthy();
+    expect((await screen.findByText(/runs 0\.2\.5 \(cdd498440a\)/)).textContent).toMatch(/rolled back from c4863d37b6 .+: Its \/readyz did not answer after the update\.$/);
+    // Plan step 4: "Upgrade to this version" asks again after the rollback; the other side's refusal shows as it said it.
+    apiMock.upgradeInstanceLink.mockResolvedValue({ commit: "cdd498440a".padEnd(40, "0"), version: "0.2.5", checkedAt: at, last: null,
+      error: "Not for this device. It needs the upgrade scope: its person allows it there in Settings > Account > Devices." });
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade to this version SpaceApp vm207" }));
+    await waitFor(() => expect(apiMock.upgradeInstanceLink).toHaveBeenCalledWith("link:one"));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/It needs the upgrade scope/);
+    apiMock.upgradeInstanceLink.mockResolvedValue({ commit: "cdd498440a".padEnd(40, "0"), version: "0.2.5", checkedAt: at, error: null,
+      last: { state: "running", from: "cdd498440a".padEnd(40, "0"), target: "c4863d37b6".padEnd(40, "0"), startedAt: at, finishedAt: null, reason: null } });
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade to this version SpaceApp vm207" }));
+    expect(await screen.findByText(/SpaceApp vm207 is upgrading to c4863d37b6/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Upgrade to this version SpaceApp vm207" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

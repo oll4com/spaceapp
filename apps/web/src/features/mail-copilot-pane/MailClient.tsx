@@ -185,8 +185,9 @@ export function Composer({ mode, accounts, defaultAccount, signature, paneId, on
   );
 }
 
-function MessageCard({ message, expanded, onToggle, onReply, onForward, paneId, onLoadImages }: {
-  message: MailMessage; expanded: boolean; onToggle(): void; onReply(all: boolean): void; onForward(): void; paneId: string; onLoadImages(): void;
+/** One message of a thread; without onReply (a notification's mail read in place, MailThreadDialog) it has no Reply/Forward row. */
+export function MessageCard({ message, expanded, onToggle, onReply, onForward, paneId, onLoadImages }: {
+  message: MailMessage; expanded: boolean; onToggle(): void; onReply?(all: boolean): void; onForward?(): void; paneId: string | undefined; onLoadImages(): void;
 }) {
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
@@ -219,11 +220,11 @@ function MessageCard({ message, expanded, onToggle, onReply, onForward, paneId, 
               ))}
             </ul>
           ) : null}
-          <div className="mc-message-actions">
+          {onReply && onForward ? <div className="mc-message-actions">
             <button type="button" className="jc-button" onClick={() => onReply(false)}><Undo2 aria-hidden="true" /> Reply</button>
             {message.to.length + message.cc.length > 1 ? <button type="button" className="jc-button" onClick={() => onReply(true)}><Undo2 aria-hidden="true" /> Reply all</button> : null}
             <button type="button" className="jc-button" onClick={onForward}><ChevronRight aria-hidden="true" /> Forward</button>
-          </div>
+          </div> : null}
         </>
       ) : <p className="mc-message-snippet jc-muted">{message.text.replace(/\s+/g, " ").slice(0, 160)}</p>}
     </article>

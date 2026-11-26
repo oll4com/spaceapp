@@ -16,14 +16,30 @@ export interface FindingDraft { advisoryId: string; advisory: SecurityAdvisory; 
 export const PRODUCT_CPE: Partial<Record<SecurityProduct, string>> = {
   php: "cpe:2.3:a:php:php", node: "cpe:2.3:a:nodejs:node.js", chrome: "cpe:2.3:a:google:chrome", proxmox_ve: "cpe:2.3:a:proxmox:virtual_environment"
 };
-/** Words a news headline names a product by, mapped to what the inventory calls it (products, then distro package names). */
-export const NEWS_KEYWORDS: Record<string, { products?: SecurityProduct[]; packages?: RegExp }> = {
-  php: { products: ["php"], packages: /^(php[0-9.]*|plesk-php\d+)(-|$)/ }, "node.js": { products: ["node"], packages: /^nodejs$/ }, nodejs: { products: ["node"], packages: /^nodejs$/ },
+/**
+ * Words a news headline names a product by, mapped to what the inventory calls it (products, then distro package names) and to the
+ * names a CVE 5 record's affected entries give it (`record`, default the keyword itself): a vendor word alone is not the product.
+ */
+export const NEWS_KEYWORDS: Record<string, { products?: SecurityProduct[]; packages?: RegExp; record?: RegExp }> = {
+  php: { products: ["php"], packages: /^(php[0-9.]*|plesk-php\d+)(-|$)/ }, "node.js": { products: ["node"], packages: /^nodejs$/, record: /\bnode\.?js\b/i },
+  nodejs: { products: ["node"], packages: /^nodejs$/, record: /\bnode\.?js\b/i },
   chrome: { products: ["chrome"] }, proxmox: { products: ["proxmox_ve"] }, openssh: { packages: /^openssh(-server)?$/ }, openssl: { packages: /^(openssl|libssl3t?6?4?)$/ },
   nginx: { packages: /^nginx(-common)?$/ }, exim: { packages: /^exim4?(-base|-daemon-light)?$/ }, postfix: { packages: /^postfix$/ }, dovecot: { packages: /^dovecot(-core)?$/ },
-  sudo: { packages: /^sudo$/ }, glibc: { packages: /^(glibc|libc6)$/ }, "linux kernel": { packages: /^(kernel|linux-image-amd64|proxmox-kernel.*)$/ }, docker: { packages: /^(docker\.io|docker-ce)$/ },
-  postgresql: { packages: /^postgresql(-\d+)?$/ }, apache: { packages: /^(apache2|httpd)$/ }, plesk: { packages: /^plesk-core$/ }
+  sudo: { packages: /^sudo$/ }, glibc: { packages: /^(glibc|libc6)$/, record: /\bglibc\b|gnu c library/i },
+  "linux kernel": { packages: /^(kernel|linux-image-amd64|proxmox-kernel.*)$/, record: /^linux$|linux[ _]kernel/i }, docker: { packages: /^(docker\.io|docker-ce)$/, record: /\b(docker|moby)\b/i },
+  // Apache is a vendor of hundreds of products (CVE-2026-128841 is Apache Griffin, pkg:maven/org.apache.griffin/service): only its HTTP Server is apache2/httpd.
+  postgresql: { packages: /^postgresql(-\d+)?$/ }, apache: { packages: /^(apache2|httpd)$/, record: /http[ _]server|\b(httpd|apache2)\b/i }, plesk: { packages: /^plesk-core$/ }
 };
+const recordPattern = (keyword: string) => NEWS_KEYWORDS[keyword]!.record ?? new RegExp(`\\b${keyword.replace(/[.]/g, "\\.")}\\b`, "i");
+/**
+ * Whether a CVE 5 record's affected names (parseCveRecord) name an inventory product or package the way NEWS_KEYWORDS does; null when
+ * no keyword covers that package or the record names nothing (an "n/a" record), so nothing can be concluded.
+ */
+export function cveRecordNamesPackage(pkg: string, names: string[]): boolean | null {
+  const keywords = Object.keys(NEWS_KEYWORDS).filter((keyword) => NEWS_KEYWORDS[keyword]!.products?.includes(pkg as SecurityProduct) || NEWS_KEYWORDS[keyword]!.packages?.test(pkg));
+  if (!keywords.length || !names.length) return null;
+  return keywords.some((keyword) => names.some((name) => recordPattern(keyword).test(name)));
+}
 const CVE = /CVE-\d{4}-\d{4,8}/g;
 const EXPLOITED = /\b(actively exploited|exploited in the wild|zero-day|0-day|in the wild)\b/i;
 const SERIOUS = /\b(critical|remote code execution|rce|unauthenticated|arbitrary code)\b/i;
@@ -213,8 +229,10 @@ export function exposureFindings(ip: string, vulns: string[], kev: Map<string, K
 /**
  * News headlines that name a product the host runs: a lead (source NEWS) until a structured source or a vendor page confirms it.
  * The title is built here from the feed name, the CVE ids and the keyword: a headline's own words never reach the agent.
+ * A headline with CVE ids matches only through a CVE whose record (`records`, from parseCveRecord) names the product; one without
+ * ids has no record to check, so it stays a P3 lead.
  */
-export function newsFindings(inventory: SecurityInventory, items: NewsItem[], kev: Map<string, KevEntry>): FindingDraft[] {
+export function newsFindings(inventory: SecurityInventory, items: NewsItem[], kev: Map<string, KevEntry>, records: Map<string, string[]>): FindingDraft[] {
   const drafts: FindingDraft[] = [];
   for (const item of items) {
     const text = item.title.toLowerCase();
@@ -223,14 +241,17 @@ export function newsFindings(inventory: SecurityInventory, items: NewsItem[], ke
       const product = inventory.products.find((entry) => match.products?.includes(entry.product));
       const pkg = product ? null : match.packages ? inventory.packages.find((entry) => match.packages!.test(entry.name)) : null;
       if (!product && !pkg) continue;
-      const id = item.cves[0] ?? `NEWS-${Buffer.from(item.link).toString("base64url").slice(-16)}`;
+      const named = recordPattern(keyword);
+      const cve = item.cves.find((entry) => records.get(entry)?.some((name) => named.test(name)));
+      if (item.cves.length && !cve) continue;
+      const id = cve ?? `NEWS-${Buffer.from(item.link).toString("base64url").slice(-16)}`;
       const exploited = EXPLOITED.test(item.title);
-      const enriched = withKev(advisory({ id, aliases: item.cves.slice(1), sources: ["NEWS"], title: `${item.feed}: ${item.cves.slice(0, 3).join(", ") || "an advisory"} names ${keyword}${exploited ? " (exploited)" : ""}`,
+      const enriched = withKev(advisory({ id, aliases: item.cves.filter((entry) => entry !== id), sources: ["NEWS"], title: `${item.feed}: ${item.cves.slice(0, 3).join(", ") || "an advisory"} names ${keyword}${exploited ? " (exploited)" : ""}`,
         severity: SERIOUS.test(item.title) ? "CRITICAL" : "UNKNOWN", publishedAt: item.publishedAt,
         // A headline's link is text a third party may write (a forum thread's slug): only an allowlisted vendor page, else the CVE's NVD page.
         references: securityAdvisoryUrlAllowed(item.link) ? [item.link] : item.cves.map((cve) => `https://nvd.nist.gov/vuln/detail/${cve}`) }), kev);
       drafts.push({ advisoryId: id, advisory: enriched, package: product ? product.product : pkg!.name, installedVersion: product?.version ?? pkg!.version, fixedVersion: null,
-        priority: priorityOf(enriched, exploited) === "P2" ? "P3" : priorityOf(enriched, exploited) });
+        priority: !cve || priorityOf(enriched, exploited) === "P2" ? "P3" : priorityOf(enriched, exploited) });
     }
   }
   return drafts;
@@ -264,6 +285,14 @@ export function parseNvdCve(raw: unknown): NvdCve | null {
     for (const node of configuration.nodes ?? []) for (const match of node.cpeMatch ?? []) if (typeof match.criteria === "string") ranges.push(match);
   }
   return { id: cve.id, published: typeof cve.published === "string" ? cve.published : null, cvss: score, severity: severityOfScore(score), ranges };
+}
+
+/** The names a CVE 5 record (cveawg.mitre.org) gives what it affects: product, packageName and packageURL of the CNA's and ADPs' entries. */
+export function parseCveRecord(raw: unknown): string[] {
+  type Affected = { product?: unknown; packageName?: unknown; packageURL?: unknown };
+  const containers = (raw as { containers?: { cna?: { affected?: Affected[] }; adp?: Array<{ affected?: Affected[] }> } })?.containers;
+  const affected = [...(containers?.cna?.affected ?? []), ...(containers?.adp ?? []).flatMap((adp) => adp.affected ?? [])];
+  return affected.flatMap((entry) => [entry.product, entry.packageName, entry.packageURL]).filter((name): name is string => typeof name === "string" && name !== "n/a");
 }
 
 /** One OSV record: aliases, the highest CVSS-like severity it states and the first fixed version for the package. */

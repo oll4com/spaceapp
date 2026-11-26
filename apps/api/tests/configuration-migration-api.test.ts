@@ -63,7 +63,7 @@ describe("Configuration Migration API", () => {
     });
 
     // 1. Setup sample data in store
-    const room = await store.createRoom({ name: "Export Room 1" });
+    await store.createRoom({ name: "Export Room 1" });
     await store.createUserLink({
       ownerUserId: user.id,
       url: "https://example.com/test",

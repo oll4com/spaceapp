@@ -53,6 +53,8 @@ export const HISTORY_ROUTES: Record<string, HistoryList[]> = {
 /** Routes whose own query takes the lower bound, so the store pages and counts inside the period. */
 export const HISTORY_FLOORS: Record<string, { key: string; as: "iso" | "day" | "days" }> = {
   "/api/nous/requests": { key: "since", as: "iso" },
+  "/api/nous/unified-inbox": { key: "since", as: "iso" },
+  "/api/inbox": { key: "since", as: "iso" },
   "/api/instance-links/:id/history": { key: "since", as: "iso" },
   "/api/admin/gateway/logs": { key: "from", as: "iso" },
   "/api/admin/gateway/logs/facets": { key: "from", as: "iso" },

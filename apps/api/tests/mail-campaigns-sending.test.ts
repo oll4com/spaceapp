@@ -3,13 +3,15 @@
 // freezes the audience, the sender job paces, never mails twice, re-checks suppression and health, treats a lost answer as UNKNOWN,
 // retries transient errors, marks refused recipients INVALID, pauses on bounces, and an untouched approval goes stale.
 import { describe, expect, it } from "vitest";
-import { mailCampaignCreateSchema, mailSenderCreateSchema, mailSuppressionInputSchema, mailTemplateCreateSchema, nousDecisionKind, type NotificationRaiseInput } from "@space/contracts";
+import { mailCampaignCreateSchema, mailCampaignFingerprintInput, mailSenderCreateSchema, mailSuppressionInputSchema, mailTemplateCreateSchema, nousDecisionKind, type NotificationRaiseInput } from "@space/contracts";
 import { InMemoryMailCampaignsRepository } from "@space/db";
 import { inSendWindow } from "../src/mail-campaigns/campaigns.js";
-import { buildCampaignMime, readUnsubscribeToken, unsubscribeToken } from "../src/mail-campaigns/mime.js";
+import { buildCampaignMime, campaignOpenToken, readUnsubscribeToken, trackLinks, unsubscribeToken } from "../src/mail-campaigns/mime.js";
+import { unsubscribeBases } from "../src/mail-campaigns/wiring.js";
 import { createMailCampaignsService } from "../src/mail-campaigns/service.js";
-import { SmtpError } from "../src/mail-campaigns/smtp.js";
+import { SmtpError, smtpSubmit } from "../src/mail-campaigns/smtp.js";
 import type { MailTransports } from "../src/mail-campaigns/transports.js";
+import { fakeSmtp } from "./fixtures/fake-smtp.js";
 import { passingDns, stubMailSite } from "./fixtures/mail-campaigns-dns.js";
 import { COPILOT_ACTION_DECISIONS } from "../src/nous/copilot-actions.js";
 
@@ -26,7 +28,8 @@ const part = (raw: Buffer, type: string) => {
 
 describe("campaign messages", () => {
   const base = { from: "offers@brand.example", fromName: "oll4", to: "a@shop.example", replyTo: null, subject: "Νέα προσφορά", preheader: "Only this week", html: "<html><body><p>Hi</p></body></html>",
-    text: "Hi", language: "en" as const, campaignId: "mcamp:abcdefgh", contactId: "mcontact:ijklmnop", senderDomain: "brand.example", footerAddress: "oll4.com, Athens" };
+    text: "Hi", language: "en" as const, campaignId: "mcamp:abcdefgh", contactId: "mcontact:ijklmnop", senderDomain: "brand.example", footerAddress: "oll4.com, Athens",
+    listId: "mlist:news1234", senderId: "msender:offers12" };
   it("carries one-click unsubscribe, the sender's domain Message-ID, a footer and 76-column base64", () => {
     const { raw, messageId } = buildCampaignMime({ ...base, unsubscribeUrl: "https://oll4.com/u/tok" });
     const text = decode(raw);
@@ -34,13 +37,25 @@ describe("campaign messages", () => {
     expect(text).toContain("List-Unsubscribe: <https://oll4.com/u/tok>, <mailto:offers@brand.example?subject=unsubscribe>\r\n");
     expect(text).toContain("List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n");
     expect(text).toContain("Subject: =?UTF-8?B?");
-    expect(text).toMatch(/Feedback-ID: abcdefgh:brand\.example:mailcampaigns/);
+    expect(text).toContain("Feedback-ID: abcdefgh:news1234:brand:offers12\r\n");
+    expect(text).toContain("List-Id: <news1234.brand.example>\r\n");
     expect(text.split("\r\n").every((line) => line.length <= 998)).toBe(true);
     expect(text.split("\r\n").filter((line) => /^[A-Za-z0-9+/=]{60,}$/.test(line)).every((line) => line.length <= 76)).toBe(true);
     const html = part(raw, "text/html");
     expect(html).toMatch(/^<html><body><div style="display:none[^"]*">Only this week<\/div><p>Hi<\/p><div style="margin-top/);
     expect(html).toContain('<a href="https://oll4.com/u/tok" style="color:#666">Unsubscribe</a>');
     expect(part(raw, "text/plain")).toContain("Unsubscribe: https://oll4.com/u/tok");
+  });
+  it("puts attachments after the alternatives in a multipart/mixed, and leaves a mail without them as it was (20/11)", () => {
+    const pdf = { filename: "oll4-sample-el.pdf", contentBase64: Buffer.from("%PDF-1.6 sample bytes").toString("base64") };
+    const text = decode(buildCampaignMime({ ...base, unsubscribeUrl: null, attachments: [pdf] }).raw);
+    expect(text).toMatch(/\r\nContent-Type: multipart\/mixed; boundary="mm-[^"]+"\r\n\r\n--mm-[^\r]+\r\nContent-Type: multipart\/alternative;/);
+    expect(text).toContain('Content-Type: application/pdf; name="oll4-sample-el.pdf"\r\nContent-Disposition: attachment; filename="oll4-sample-el.pdf"\r\nContent-Transfer-Encoding: base64\r\n\r\n' + pdf.contentBase64);
+    expect(text.trimEnd()).toMatch(/--mm-[A-Za-z0-9_-]+--$/);
+    expect(part(Buffer.from(text), "text/plain")).toContain("Hi");
+    const plain = decode(buildCampaignMime({ ...base, unsubscribeUrl: null, attachments: [] }).raw);
+    expect(plain).not.toContain("multipart/mixed");
+    expect(plain).toMatch(/MIME-Version: 1\.0\r\nContent-Type: multipart\/alternative;/);
   });
   it("without a public endpoint offers mailto only and no one-click POST", () => {
     const text = decode(buildCampaignMime({ ...base, unsubscribeUrl: null, test: true }).raw);
@@ -68,7 +83,7 @@ describe("campaign messages", () => {
   });
 });
 
-async function fixture(options: { fail?: (to: string) => Error | null; covers?: () => boolean; checkFails?: () => boolean;
+async function fixture(options: { fail?: (to: string) => Error | null; csv?: string; perMinute?: number; send?: (raw: Buffer, envelope: { from: string; to: string }) => Promise<{ providerId: string }>; covers?: () => boolean; checkFails?: () => boolean; unsubscribeBases?: Record<string, string>; trackingRelay?: string; trackingRelays?: Record<string, string>; templateHtml?: string;
   seedMessage?: (owner: string, account: string, messageId: string) => Promise<{ labels: string[]; headers: Array<{ name: string; value: string }> } | null> } = {}) {
   let clock = Date.parse("2026-10-27T08:00:00Z");
   const now = () => new Date(clock).toISOString();
@@ -79,24 +94,26 @@ async function fixture(options: { fail?: (to: string) => Error | null; covers?: 
   const transports = { for: () => ({ check: async () => { checks.push(now()); if (options.checkFails?.()) throw new Error("connect ETIMEDOUT"); return "ok"; }, send: async (raw: Buffer, envelope: { to: string }) => {
     const failure = options.fail?.(envelope.to);
     if (failure) throw failure;
+    const answer = await options.send?.(raw, envelope as { from: string; to: string });
     sent.push({ to: envelope.to, raw: raw.toString() });
-    return { providerId: `id-${sent.length}` };
+    return answer ?? { providerId: `id-${sent.length}` };
   } }) } as unknown as MailTransports;
   const repository = new InMemoryMailCampaignsRepository(now);
   const service = createMailCampaignsService({ repository, transports, now, campaigns: {
     notify: { raise: async (input) => { cards.push(input); }, resolve: async (_owner, keyName) => { resolved.push(keyName); } },
-    mailPane: async () => ({ id: "pane:mailpane1", roomId: "room:mailroom1" }), ownMailboxes: async () => ["operator@gmail.com"], unsubscribeKey: key, unsubscribeBase: null, dns: passingDns, seedMessage: options.seedMessage,
+    mailPane: async () => ({ id: "pane:mailpane1", roomId: "room:mailroom1" }), ownMailboxes: async () => ["operator@gmail.com"], unsubscribeKey: key, dns: passingDns, seedMessage: options.seedMessage, trackingRelay: options.trackingRelay ?? null, trackingRelays: options.trackingRelays,
+    ...(options.unsubscribeBases ? { unsubscribeBase: "https://oll4.com/u/?t=", unsubscribeBases: options.unsubscribeBases } : { unsubscribeBase: null }),
     ...(options.covers ? { coversApproval: async () => options.covers!() } : {}) } });
   const owner = "user:o";
-  const sender = await service.createSender(owner, mailSenderCreateSchema.parse({ address: "offers@brand.example", displayName: "oll4", footerAddress: "oll4.com, Athens",
-    config: { route: "SMTP", host: "smtp.brand.example", port: 465, username: "offers@brand.example", vaultKeyId: "vault_key:abcdef12" }, caps: { perMinute: 2, perDay: 500 } }), "test");
+  const sender = await service.createSender(owner, mailSenderCreateSchema.parse({ address: "offers@brand.example", displayName: "oll4", footerAddress: "Brand, Athens",
+    config: { route: "SMTP", host: "smtp.brand.example", port: 465, username: "offers@brand.example", vaultKeyId: "vault_key:abcdef12" }, caps: { perMinute: options.perMinute ?? 2, perDay: 500 } }), "test");
   await service.checkSender(owner, sender.id);
-  const { template } = await service.createTemplate(owner, mailTemplateCreateSchema.parse({ name: "Kits", language: "el", subject: "Γεια {{firstName}}", html: "<p>Γεια {{firstName}}</p>",
-    text: "Γεια {{firstName}}", variables: [{ name: "firstName", default: "σας" }] }), { by: "OPERATOR" }, null);
+  const { template } = await service.createTemplate(owner, mailTemplateCreateSchema.parse({ name: "Kits", language: "el", subject: "Γεια {{firstName}}", html: options.templateHtml ?? "<p>Γεια {{firstName}}</p>",
+    text: "Γεια {{firstName}}", variables: [{ name: "firstName", default: "σας" }, ...(options.templateHtml?.includes("{{webVersionUrl}}") ? [{ name: "webVersionUrl", default: "https://brand.example/newsletter/" }] : [])] }), { by: "OPERATOR" }, null);
   const list = await service.createList(owner, { name: "Buyers", description: "", source: "CSV", consentBasis: "CUSTOMER" });
-  await service.importContacts(owner, list.id, { csv: "email,name\nalice@shop.gr,Alice A\nbob@shop.gr,\ncarol@shop.gr,Carol\ndave@shop.gr,Dave\n" }, "test");
+  await service.importContacts(owner, list.id, { csv: options.csv ?? "email,name\nalice@shop.gr,Alice A\nbob@shop.gr,\ncarol@shop.gr,Carol\ndave@shop.gr,Dave\n" }, "test");
   const campaign = await service.createCampaign(owner, mailCampaignCreateSchema.parse({ name: "Kits offer", templateId: template.id, senderId: sender.id, listIds: [list.id],
-    pacing: { perMinute: 2, perDay: 300 }, testSeeds: ["operator@gmail.com"] }), "test", null);
+    pacing: { perMinute: options.perMinute ?? 2, perDay: 300 }, testSeeds: ["operator@gmail.com"] }), "test", null);
   return { service, repository, owner, sender, list, campaign, sent, cards, resolved, checks, tick: async (minutes = 1) => { clock += minutes * 60_000; await service.tick(); }, setClock: (iso: string) => { clock = Date.parse(iso); } };
 }
 
@@ -106,6 +123,25 @@ describe("the campaign gate and the sender job", () => {
     expect((await service.testCampaign(owner, campaign.id, ["check-auth@verifier.port25.com"])).sent).toHaveLength(1);
     expect(sent.map((mail) => mail.to)).toEqual(["check-auth@verifier.port25.com"]);
     await expect(service.testCampaign(owner, campaign.id, ["check-auth@verifier.port25.example"])).rejects.toThrow(/own mailboxes/);
+  });
+  it("sends the template's attachment in tests and to recipients, shows it in the review and each mail, and serves no bytes back (20/11)", async () => {
+    const { service, owner, campaign, sent, cards, tick } = await fixture();
+    const templateId = (await service.campaign(owner, campaign.id)).templateId;
+    const pdf = { filename: "sample-el.pdf", contentBase64: Buffer.from("%PDF-1.6 sample").toString("base64") };
+    const view = await service.updateTemplate(owner, templateId, { attachments: [pdf] }, { by: "OPERATOR" });
+    expect(view.version.attachments).toEqual([{ filename: "sample-el.pdf", contentType: "application/pdf", bytes: 15 }]);
+    // A later change that leaves attachments out keeps them.
+    expect((await service.updateTemplate(owner, templateId, { subject: "Γεια {{firstName}}!" }, { by: "OPERATOR" })).version.attachments).toHaveLength(1);
+    await service.updateCampaign(owner, campaign.id, { templateVersion: 3 });
+    await service.testCampaign(owner, campaign.id);
+    expect(sent[0]!.raw).toContain(`filename="sample-el.pdf"\r\nContent-Transfer-Encoding: base64\r\n\r\n${pdf.contentBase64}`);
+    await service.submit(owner, campaign.id);
+    expect(cards.at(-1)!.body).toContain("Attachments: sample-el.pdf (1 KB)");
+    const preview = await service.preview(owner, campaign.id, { offset: 0, limit: 1 });
+    expect((await service.previewMail(owner, campaign.id, preview.items[0]!.contactId)).attachments).toEqual([{ filename: "sample-el.pdf", contentType: "application/pdf", bytes: 15 }]);
+    await service.decide(owner, campaign.id, "approve", { who: "user:o", via: "RAIL", decisionId: null, fingerprint: (await service.campaign(owner, campaign.id)).fingerprint! });
+    await tick(0);
+    expect(sent.find((mail) => mail.to === "alice@shop.gr")!.raw).toContain('Content-Type: application/pdf; name="sample-el.pdf"');
   });
   it("fills a test copy with the first recipient's list fields and sends it from the campaign's sender (step 11, 2/11)", async () => {
     const { service, owner, campaign, sent } = await fixture();
@@ -165,6 +201,102 @@ describe("the campaign gate and the sender job", () => {
     expect(await service.decide(owner, campaign.id, "decline", { who: "user:o", via: "NOUS", decisionId: "nous_decision:x", note: "not now" })).toMatch(/draft/);
   });
 
+  it("tracks a campaign with a per-recipient pixel added after approval, its unsubscribe link untouched (plan ES4AQEtVuDon step 2)", async () => {
+    const relay = "https://brand.example/m/?i=dev";   // the shared relay on the brand's own host: the lab fails a domain with its own endpoints naming another (step 7b)
+    const fp = { templateFingerprint: "t", sender: { id: "s", address: "a@b.example", displayName: "A", config: { route: "SMTP" } } as never, listIds: ["l"], eligible: 1,
+      schedule: { startAt: null, timeZone: "Europe/Athens", days: [1], fromHour: 9, toHour: 18 }, pacing: { perMinute: 1, perDay: 1 } };
+    // Untracked campaigns keep the fingerprint (and approvals) they had before the flag existed.
+    expect(mailCampaignFingerprintInput({ ...fp, track: false })).toBe(mailCampaignFingerprintInput(fp));
+    expect(mailCampaignFingerprintInput({ ...fp, track: true })).not.toBe(mailCampaignFingerprintInput(fp));
+    const untracked = await fixture();
+    await untracked.service.updateCampaign(untracked.owner, untracked.campaign.id, { track: true });
+    await expect(untracked.service.submit(untracked.owner, untracked.campaign.id)).rejects.toThrow(/tracking relay/);
+
+    const { service, repository, owner, campaign, sent, cards, tick } = await fixture({ trackingRelay: relay, unsubscribeBases: { "brand.example": "https://brand.example/u/?t=" } });
+    await service.submit(owner, campaign.id);
+    const plain = (await service.campaign(owner, campaign.id)).fingerprint;
+    await service.updateCampaign(owner, campaign.id, { track: true }); // back to review with the new fingerprint
+    const tracked = (await service.campaign(owner, campaign.id)).fingerprint!;
+    expect(tracked).not.toBe(plain);
+    expect(cards.at(-1)!.body).toContain("Open tracking: on");
+    // The mail the operator reads carries no pixel; the approval covers exactly it.
+    const preview = await service.preview(owner, campaign.id, { offset: 0, limit: 1 });
+    expect((await service.previewMail(owner, campaign.id, preview.items[0]!.contactId)).html).not.toContain("/m/?i=dev");
+    await service.decide(owner, campaign.id, "approve", { who: "user:o", via: "RAIL", decisionId: null, fingerprint: tracked });
+    await tick(0);
+    const mail = sent.find((entry) => entry.to === "alice@shop.gr")!;
+    const alice = (await service.contact(owner, "alice@shop.gr")).contact;
+    const token = campaignOpenToken(key, campaign.id, alice.id);
+    const html = part(Buffer.from(mail.raw), "text/html");
+    expect(html).toContain(`<img src="${relay}&o=${token}" width="1"`);
+    // The pixel follows the footer; the unsubscribe link stays the plain signed one (never through the relay).
+    const unsubscribe = html.match(/<a href="(https:\/\/brand\.example\/u\/\?t=[^"]+)" style="color:#666">/)![1]!;
+    expect(unsubscribeToken(key, campaign.id, alice.id)).toBe(unsubscribe.split("?t=")[1]);
+    expect(html.indexOf(token)).toBeGreaterThan(html.lastIndexOf("</div>"));
+    expect(part(Buffer.from(mail.raw), "text/plain")).not.toContain("oll4.com/m/");
+    expect((await service.campaign(owner, campaign.id)).fingerprint).toBe(tracked);
+    // One tracked message per recipient, named after its campaign; a retry of the same send keeps the token.
+    await repository.trackMessage({ token, ownerUserId: owner, recipient: alice.address, recipientName: "", subject: "", links: [], campaignId: campaign.id, contactId: alice.id });
+    const messages = await repository.trackedMessages(owner, { campaignId: campaign.id });
+    expect(messages.filter((message) => message.recipient === "alice@shop.gr")).toMatchObject([{ token, campaignId: campaign.id }]);
+    expect(await repository.trackedMessages(owner, { campaignId: "mcamp:otherxxx" })).toEqual([]);
+  });
+  it("tracks a sender domain through its own relay, so its mail names no other site (plan 16ji8NSSApw0 step 2, unboxexpert.com/m/)", async () => {
+    // No default relay at all: the domain's own relay is enough to submit and send a tracked campaign.
+    const { service, repository, owner, campaign, sent, tick } = await fixture({ trackingRelays: { "brand.example": "https://brand.example/m/?i=dev" }, unsubscribeBases: { "brand.example": "https://brand.example/u/?t=" },
+      templateHtml: `<p>Γεια {{firstName}} <a href="https://shop.example/p/1/">p</a> <a href="{{webVersionUrl}}">web</a></p>` });
+    await service.updateCampaign(owner, campaign.id, { track: true });
+    await service.submit(owner, campaign.id);
+    await service.decide(owner, campaign.id, "approve", { who: "user:o", via: "RAIL", decisionId: null, fingerprint: (await service.campaign(owner, campaign.id)).fingerprint! });
+    await tick(0);
+    const mail = sent.find((entry) => entry.to === "alice@shop.gr")!;
+    const alice = (await service.contact(owner, "alice@shop.gr")).contact;
+    const html = part(Buffer.from(mail.raw), "text/html");
+    expect(html).toContain(`<img src="https://brand.example/m/?i=dev&o=${campaignOpenToken(key, campaign.id, alice.id)}"`);
+    for (const body of [mail.raw, html, part(Buffer.from(mail.raw), "text/plain")]) expect(body).not.toContain("oll4.com/");
+    // "View in browser" on the same relay as /m/v/<token>, signed like the unsubscribe link and never wrapped (plan vxtgxdSGE586 step 4); the
+    // template's {{webVersionUrl}} is the same link; product links go through /m/c/<token>/<n> (step 5).
+    const web = `https://brand.example/m/v/${unsubscribeToken(key, campaign.id, alice.id)}?i=dev`;
+    expect(html).toContain(`<a href="${web}" style="color:#666">Δείτε το στο browser</a>`);
+    expect(html).toContain(`<a href="${web}" target="_blank">web</a>`);
+    expect(html).toContain(`<a href="https://brand.example/m/c/${campaignOpenToken(key, campaign.id, alice.id)}/0?i=dev" target="_blank">p</a>`);
+    expect((await repository.trackedMessages(owner, { campaignId: campaign.id })).find((message) => message.recipient === "alice@shop.gr")?.links).toEqual(["https://shop.example/p/1/"]);
+    expect(part(Buffer.from(mail.raw), "text/plain").startsWith(`Δείτε το στο browser: ${web}\n`)).toBe(true);
+    // The page is the mail that was sent, without its pixel; another instance's token or a mail never sent shows nothing.
+    const page = html.replace(/<img src="https:\/\/brand\.example\/m\/\?i=dev&o=[^>]+>/, "");
+    expect(await service.webVersion(unsubscribeToken(key, campaign.id, alice.id))).toBe(page);
+    // Stored at the send: a contact's later change does not alter it.
+    expect(await repository.webCopy(owner, campaign.id, alice.id)).toBe(page);
+    await repository.saveWebCopy({ ownerUserId: owner, campaignId: campaign.id, contactId: alice.id, html: "<p>stored</p>" });
+    expect(await service.webVersion(unsubscribeToken(key, campaign.id, alice.id))).toBe("<p>stored</p>");
+    expect(await service.webVersion(unsubscribeToken(Buffer.alloc(32, 1), campaign.id, alice.id))).toBeNull();
+    expect(await service.webVersion(unsubscribeToken(key, campaign.id, "mcontact:nobody00"))).toBeNull();
+  });
+  it("wraps a tracked mail's https links through the relay by position; head links, mailto and the footer stay as they are (plan 2wiBJQwRzN8X step 5)", () => {
+    const { html, links } = trackLinks(`<head><link href="https://fonts.example/a.css"></head><a class="b" href="https://shop.example/p/1/?a=1&amp;b=2">x</a>`
+      + `<a href='https://shop.example/p/2/'>y</a><a href="mailto:x@y.example">m</a>`, "https://brand.example/m/?i=dev", "T");
+    expect(links).toEqual(["https://shop.example/p/1/?a=1&b=2", "https://shop.example/p/2/"]);
+    expect(html).toContain(`<a class="b" href="https://brand.example/m/?i=dev&amp;c=T&amp;n=0">`);
+    expect(html).toContain(`href='https://brand.example/m/?i=dev&amp;c=T&amp;n=1'`);
+    expect(html).toContain(`<link href="https://fonts.example/a.css">`);
+    expect(html).toContain(`href="mailto:x@y.example"`);
+    // A site's own relay: path links, `?i=dev` only off stable; the skipped link (web version) stays as it is.
+    const own = trackLinks(`<a href="https://shop.example/p/1/">x</a><a href="https://brand.example/m/v/W">w</a>`, "https://brand.example/m/?i=stable", "T", true, "https://brand.example/m/v/W");
+    expect(own).toEqual({ html: `<a href="https://brand.example/m/c/T/0">x</a><a href="https://brand.example/m/v/W">w</a>`, links: ["https://shop.example/p/1/"] });
+  });
+  it("links a sender domain with its own endpoint there, header and footer, never to the default (23/11 unboxexpert.com)", async () => {
+    const { service, owner, campaign, sent, tick } = await fixture({ unsubscribeBases: { "brand.example": "https://brand.example/u/?t=" } });
+    await service.submit(owner, campaign.id);
+    await service.decide(owner, campaign.id, "approve", { who: "user:o", via: "RAIL", decisionId: null, fingerprint: (await service.campaign(owner, campaign.id)).fingerprint! });
+    await tick(0);
+    expect(sent[0]!.raw).toMatch(/^List-Unsubscribe: <https:\/\/brand\.example\/u\/\?t=[^>]+>, <mailto:/m);
+    expect(sent[0]!.raw).not.toContain("oll4.com/u");
+    const preview = await service.preview(owner, campaign.id, { offset: 0, limit: 1 });
+    expect((await service.previewMail(owner, campaign.id, preview.items[0]!.contactId)).text).toContain("https://brand.example/u/?t=");
+    expect(unsubscribeBases("a.example=https://a.example/u/?t=, b.example = https://b.example/u/")).toEqual({ "a.example": "https://a.example/u/?t=", "b.example": "https://b.example/u/" });
+    expect(unsubscribeBases(undefined)).toEqual({ "unboxexpert.com": "https://unboxexpert.com/u/?t=" });
+    expect(() => unsubscribeBases("a.example=http://a.example/u/")).toThrow(/https/);
+  });
   it("paces, never mails twice, re-checks suppression at send time and finishes", async () => {
     const { service, repository, owner, campaign, list, sent, cards, tick } = await fixture();
     await service.submit(owner, campaign.id);
@@ -221,6 +353,52 @@ describe("the campaign gate and the sender job", () => {
     expect((await repository.listSends(owner, lost.id, { limit: 1 }))[0]!.status).toBe("UNKNOWN");
     expect(await repository.takeNextSend(owner, lost.id)).toBeNull();
   });
+
+  it("gives Gmail, Microsoft and Yahoo their own share of the minute and holds a provider after a 4xx (plan vxtgxdSGE586 step 8)", async () => {
+    // In-process transport only: these addresses never leave the test.
+    let busy = true;
+    const gmail = Array.from({ length: 9 }, (_, index) => `g${index}@gmail.com`);
+    const { service, repository, owner, campaign, sender, sent, tick } = await fixture({ perMinute: 10, csv: ["email", ...gmail, "h0@hotmail.com", "y0@yahoo.gr", "a@shop.gr", "b@shop.gr"].join("\n"),
+      fail: (to) => to === "h0@hotmail.com" && busy ? new SmtpError(421, "RCPT TO: 421 4.7.0 try again later", "RCPT TO") : null });
+    await repository.updateSender(owner, sender.id, { warmup: { stage: 7, since: "2026-10-27T00:00:00.000Z" } });
+    await service.submit(owner, campaign.id);
+    await service.decide(owner, campaign.id, "approve", { who: "user:o", via: "RAIL", decisionId: null, fingerprint: (await service.campaign(owner, campaign.id)).fingerprint! });
+    await tick(0);
+    expect(sent.filter((mail) => mail.to.endsWith("@gmail.com"))).toHaveLength(6);
+    expect(sent.map((mail) => mail.to)).toEqual(expect.arrayContaining(["a@shop.gr", "b@shop.gr", "y0@yahoo.gr"]));
+    busy = false;
+    // hotmail.com answered 4xx: Microsoft waits 15 minutes while Gmail goes on.
+    for (let minute = 0; minute < 3; minute++) await tick(1);
+    expect(sent.filter((mail) => mail.to.endsWith("@gmail.com"))).toHaveLength(9);
+    expect(sent.some((mail) => mail.to === "h0@hotmail.com")).toBe(false);
+    for (let minute = 0; minute < 14; minute++) await tick(1);
+    expect(sent.filter((mail) => mail.to === "h0@hotmail.com")).toHaveLength(1);
+    expect((await service.campaign(owner, campaign.id)).status).toBe("DONE");
+  });
+
+  it("load: 300 recipients through the real SMTP client into a local sink at 10 a minute, each once, a 4xx retried (plan vxtgxdSGE586 step 8)", async () => {
+    let refused = false;
+    const sink = await fakeSmtp((line) => line.startsWith("EHLO") ? "250-sink\r\n250-AUTH LOGIN PLAIN\r\n250 SIZE 10000000\r\n" : line.startsWith("AUTH") ? "235 ok\r\n" : line.startsWith("QUIT") ? "221 bye\r\n"
+      : line === "RCPT TO:<load-0007@sink.example>" && !refused ? (refused = true, "451 4.3.0 try later\r\n") : "250 ok\r\n");
+    try {
+      const recipients = Array.from({ length: 300 }, (_, index) => `load-${String(index).padStart(4, "0")}@sink.example`);
+      const options = { host: "127.0.0.1", port: sink.port as 465, username: "offers@brand.example", password: "pw", heloName: "smtp.brand.example", plainForTests: true };
+      const { service, repository, owner, campaign, sender, sent, tick } = await fixture({ perMinute: 10, csv: ["email", ...recipients].join("\n"), send: (raw, envelope) => smtpSubmit(options, envelope, raw) });
+      await repository.updateSender(owner, sender.id, { warmup: { stage: 7, since: "2026-10-27T00:00:00.000Z" } });
+      await service.submit(owner, campaign.id);
+      await service.decide(owner, campaign.id, "approve", { who: "user:o", via: "RAIL", decisionId: null, fingerprint: (await service.campaign(owner, campaign.id)).fingerprint! });
+      for (let minute = 0; minute < 40 && (await service.campaign(owner, campaign.id)).status !== "DONE"; minute++) {
+        const before = sent.length;
+        await tick(minute ? 1 : 0);
+        expect(sent.length - before).toBeLessThanOrEqual(10);
+      }
+      expect((await service.campaign(owner, campaign.id)).status).toBe("DONE");
+      expect(new Set(sent.map((mail) => mail.to)).size).toBe(300);
+      expect(sent).toHaveLength(300);
+      expect(sink.lines.filter((line) => line.startsWith("DATA:"))).toHaveLength(300);
+      expect((await repository.listSends(owner, campaign.id, { limit: 400 })).find((send) => send.address === "load-0007@sink.example")).toMatchObject({ status: "SENT", attempts: 2 });
+    } finally { await sink.close(); }
+  }, 60_000);
 
   it("skips a pass the database cannot serve instead of pausing, and pauses on any other job error (stable 3/11 08:15 UTC)", async () => {
     const { service, repository, owner, campaign, sent, cards, tick } = await fixture();
@@ -318,7 +496,7 @@ describe("the campaign gate and the sender job", () => {
     const { service, repository, owner, campaign, sender, cards, setClock, tick } = await fixture();
     await service.submit(owner, campaign.id);
     await service.decide(owner, campaign.id, "approve", { who: "user:o", via: "RAIL", decisionId: null, fingerprint: (await service.campaign(owner, campaign.id)).fingerprint! });
-    // 31 sent with 2 hard bounces is over 3 %.
+    // 34 sent with 2 hard bounces is over 2 %.
     const sends = await repository.listSends(owner, campaign.id, { limit: 10 });
     for (const send of sends) await repository.updateSend(owner, campaign.id, send.contactId, { status: "SENT", sentAt: "2026-10-27T07:00:00.000Z" });
     await repository.updateSend(owner, campaign.id, sends[0]!.contactId, { bounce: { at: "2026-10-27T07:30:00.000Z", kind: "HARD", code: "5.1.1" } });
@@ -350,7 +528,7 @@ describe("the campaign gate and the sender job", () => {
     const { service, owner, campaign } = await fixture();
     const alice = (await service.contact(owner, "alice@shop.gr")).contact;
     expect(await service.unsubscribe([unsubscribeToken(key, campaign.id, alice.id), "forged.token.value", unsubscribeToken(Buffer.alloc(32, 1), campaign.id, alice.id)], "oll4.com/u"))
-      .toEqual({ unsubscribed: 1, ignored: 2 });
+      .toEqual({ unsubscribed: 1, ignored: 2, invalid: 2 });
     expect(await service.contact(owner, "alice@shop.gr")).toMatchObject({ suppressed: true, contact: { health: "UNSUBSCRIBED" } });
   });
 });

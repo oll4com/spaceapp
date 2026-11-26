@@ -6,6 +6,7 @@ import type { SpaceStore } from "@space/runtime";
 import type { FastifyRequest } from "fastify";
 import type { BrowserHostActorContext } from "@space/browser-host";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
+import { isBrowserPane } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
 import { fenceCompletedHandoff } from "./vault/fence-hooks.js";
 
@@ -39,10 +40,13 @@ export function countsAsOperatorInput(input: { type?: unknown; eventType?: unkno
 export type BrowserControlActivity = ReturnType<typeof createBrowserControlActivity>;
 
 /**
- * The browser pane a CLI pane drives when it names none: the room browser it drove last, else one no open pane of the room drives.
- * Never another agent's (6/11 06:52 UTC: Dana's tools fell back to the room's first browser, Cody's). `panes`: the room's open panes.
+ * The browser pane a CLI pane drives when it names none: a copilot pane's own browser, else the room browser it drove last, else one
+ * no open pane of the room drives. Never another agent's (6/11 06:52 UTC: Dana's tools fell back to the room's first browser, Cody's).
+ * `panes`: the room's open panes.
  */
 export function ownBrowserPane(panes: Pane[], cliPaneId: string, agents?: Pick<BrowserControlActivity, "agentFor">): Pane | undefined {
+  const self = panes.find((pane) => pane.id === cliPaneId && !pane.isClosed && isBrowserPane(pane));
+  if (self) return self;
   const browsers = panes.filter((pane) => pane.mode === "BROWSER" && !pane.isClosed);
   const driver = (pane: Pane) => {
     const id = agents?.agentFor(pane.id)?.paneId;
@@ -78,6 +82,7 @@ export function createBrowserControlActivity(now: () => number = () => Date.now(
   // The operator's last input to each pane browser, and its open live views (browser-reaper.ts: a watched browser is in use).
   const used = new Map<string, number>();
   const views = new Map<string, number>();
+  const useListeners = new Set<(paneId: string) => void>();
   let savedAt = 0;
   let saving = Promise.resolve();
   // shortcut: a driver noted in the last minute before the API stops is lost when the browser had the same driver; fine for a label.
@@ -104,6 +109,12 @@ export function createBrowserControlActivity(now: () => number = () => Date.now(
       used.delete(paneId);
       used.set(paneId, now());
       if (used.size > 1000) used.delete(used.keys().next().value!);
+      for (const listener of useListeners) listener(paneId);
+    },
+    /** Called on every operator input to a pane browser (Teleport, the dock, the operator's own actions); returns the unsubscribe. */
+    onUse(listener: (paneId: string) => void): () => void {
+      useListeners.add(listener);
+      return () => { useListeners.delete(listener); };
     },
     /** A live view of the pane browser opened; the returned function closes it. While one is open the browser is in use. */
     view(paneId: string): () => void {

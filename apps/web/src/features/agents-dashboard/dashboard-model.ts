@@ -7,6 +7,11 @@ export type AgentStatus = typeof agentStatuses[number];
 export const agentStatusLabels: Record<AgentStatus, string> = {
   waiting: "Waiting for you", working: "Working", done: "Done", idle: "Idle",
 };
+/** What a Nous Live tile opens the dashboard on (operator nous_msg:ad2b3a6a): its own filter, never the remembered one. */
+export interface AgentsDashboardPreset { filter: AgentStatus | "all"; roomFilter: "current" | "all"; groupBy?: "status" | "project" | "room" }
+export const AGENTS_DASHBOARD_OPEN_EVENT = "space:agents-dashboard-open";
+export const openAgentsDashboard = (preset: AgentsDashboardPreset) =>
+  window.dispatchEvent(new CustomEvent<AgentsDashboardPreset>(AGENTS_DASHBOARD_OPEN_EVENT, { detail: preset }));
 const agentStatusPriority: Record<AgentStatus, number> = { waiting: 0, working: 1, done: 2, idle: 3 };
 
 /** Server-side reason for a status: fixed labels, timestamps and model ids only. */

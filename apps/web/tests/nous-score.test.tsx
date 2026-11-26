@@ -1,4 +1,4 @@
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { NousScore as NousScoreView, NousScoreTile } from "@space/contracts";
@@ -18,13 +18,13 @@ it("lists costs first by their share of the negative, then what gives points, th
 
 let at = "2026-11-05T03:00:00.000Z";
 let focused = true;
-function serve() {
+function serve(extra: Partial<NousScoreView> = {}) {
   const urls: string[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.startsWith("/api/nous/score")) urls.push(url);
     if (url.startsWith("/api/nous/score/history")) return Response.json({ range: "24h", points: [{ at, value: -40 }] });
-    if (url.startsWith("/api/nous/score")) return Response.json({ at, score: -40, change24h: -4, change7d: null, tiles: [tile("plans", -40)] } satisfies Partial<NousScoreView>);
+    if (url.startsWith("/api/nous/score")) return Response.json({ at, score: -40, change24h: -4, change7d: null, tiles: [tile("plans", -40)], ...extra } satisfies Partial<NousScoreView>);
     return Response.json({});
   }));
   return urls;
@@ -72,4 +72,17 @@ it("reads nothing while the dock is not shown", async () => {
   render(<QueryClientProvider client={new QueryClient()}><NousScore active={false} /></QueryClientProvider>);
   await wait(3 * NOUS_SCORE_POLL_MS);
   expect(urls).toEqual([]);
+});
+
+it("shows the chosen range's own rows and, for 24 h and 30 days, its score under the graph (operator 14/11 nous_msg:cf45a823)", async () => {
+  serve({ tiles: [tile("plans", -40), tile("completed", 10)],
+    periods: { "24h": { score: -35, tiles: [tile("plans", -40), tile("completed", 5)] }, "30d": { score: -25, tiles: [tile("plans", -40), tile("completed", 15)] } } });
+  const view = render(<QueryClientProvider client={new QueryClient()}><NousScore active /></QueryClientProvider>);
+  const shown = () => [view.container.querySelector(".nous-score-value")!.textContent, view.container.querySelector(".nous-score-period")?.textContent ?? null,
+    [...view.container.querySelectorAll(".nous-score-tile")].map((row) => row.textContent)];
+  await waitFor(() => expect(shown()).toEqual(["−40pts", "Over the last 24 hours: −35 pts", ["plans−40100 %", "completed+5"]]));
+  fireEvent.click(view.getByRole("button", { name: "7 days" }));
+  expect(shown()).toEqual(["−40pts", null, ["plans−40100 %", "completed+10"]]);
+  fireEvent.click(view.getByRole("button", { name: "30 days" }));
+  expect(shown()).toEqual(["−40pts", "Over the last 30 days: −25 pts", ["plans−40100 %", "completed+15"]]);
 });

@@ -2,12 +2,11 @@ import { readFile } from "node:fs/promises";
 import { CODEX_LB_BASE_URL, codexAuthHeaders, getCodexApiKey } from "../benchmark-routes.js";
 import { gatewayRequestIdHeader } from "../gateway-request-id.js";
 import { loadOpenRouterBenchmarkModels, requestOpenRouterDoctrine } from "../openrouter-benchmark-models.js";
-import { nativeOpenCodeModelCatalog } from "../task-title-opencode.js";
+import { openCodeModelsForProvider } from "../opencode-benchmark-models.js";
 import {
   CHESS_CLI_PROVIDERS,
   CLI_PROVIDER_IDS,
   cliModelEfforts,
-  currentOpenCodeBinary,
   parseCliModelCatalog,
   type CliMoveRunner,
   type ChessCliModel,
@@ -98,12 +97,16 @@ export const CLI_CONCURRENCY_LIMIT = 6;
 export const CLI_SLOT_GROUP = "cli";
 
 export function isCliProvider(providerId: string): boolean {
-  return CLI_PROVIDER_IDS.has(providerId);
+  return CLI_PROVIDER_IDS.has(providerId) && !providerId.startsWith("space-gateway-");
+}
+
+export function isOpencodeProvider(providerId: string): boolean {
+  return providerId === "opencode" || providerId.startsWith("space-gateway-");
 }
 
 const CODEX_MODELS_CACHE_FILE = `${SPACE_AGENT_HOME}/.codex/models_cache.json`;
 const CATALOG_CACHE_MS = 60_000;
-const CONTESTANT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,199}@[A-Za-z0-9._-]{1,40}$/;
+const CONTESTANT_ID_PATTERN = /^[A-Za-z0-9@][A-Za-z0-9._:/+@-]{0,199}@[A-Za-z0-9._-]{1,40}$/;
 const REASONING_ORDER = ["default", "auto", "disabled", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 export function isChessContestantId(value: unknown): value is string {
@@ -180,7 +183,9 @@ async function loadCodexContestants(): Promise<ChessContestant[]> {
       const contestants = codexContestantsFromCatalog(await response.json());
       if (contestants.length > 0) return contestants;
     }
-  } catch {}
+  } catch {
+    // The live catalog is unreachable or slow: the cached models file below answers instead.
+  }
   try {
     return codexContestantsFromCatalog(JSON.parse(await readFile(CODEX_MODELS_CACHE_FILE, "utf8")));
   } catch {
@@ -203,25 +208,6 @@ export interface ChessCliBridge {
   state(runtimeId: string): Promise<{ enabled: boolean; reason: string | null }>;
 }
 
-async function openCodeFreeModels(): Promise<ChessCliModel[]> {
-  const command = await currentOpenCodeBinary();
-  if (!command) throw new Error("OpenCode runtime not found.");
-  const catalog = await nativeOpenCodeModelCatalog(command);
-  const models = catalog.providers.find((provider) => provider.id === "opencode")?.models ?? {};
-  return Object.entries(models)
-    .filter(([id, raw]) => {
-      const model = raw as { cost?: { input?: number; output?: number }; status?: string };
-      return (
-        /^[A-Za-z0-9._-]{1,120}$/.test(id) &&
-        model.cost?.input === 0 &&
-        model.cost?.output === 0 &&
-        !model.status?.toLowerCase().includes("deprecated")
-      );
-    })
-    .map(([id]) => ({ id: `opencode/${id}`, name: id, efforts: [] }))
-    .sort((left, right) => left.id.localeCompare(right.id));
-}
-
 export function cliContestants(spec: ChessCliProviderSpec, models: ChessCliModel[]): ChessContestant[] {
   const excluded = spec.excludeModelPrefixes ?? [];
   const included = spec.includeModelPrefixes;
@@ -229,13 +215,15 @@ export function cliContestants(spec: ChessCliProviderSpec, models: ChessCliModel
     !excluded.some((prefix) => model.id.startsWith(prefix)) && (!included || included.some((prefix) => model.id.startsWith(prefix)));
   return models.filter(own).flatMap((model) => {
     const modelId = spec.catalog === "opencode" ? model.id : `${spec.id}/${model.id}`;
-    return cliModelEfforts(spec, model).map((effort) => contestant(spec.id, modelId, model.name, effort));
+    // The space-gateway-claude player plays as Claude Code on Claude Max (createChessMoveRequester), not on the API-credit key.
+    const name = spec.id === "space-gateway-claude" ? model.name.replace("(API credits)", "(Claude Max)") : model.name;
+    return cliModelEfforts(spec, model).map((effort) => contestant(spec.id, modelId, name, effort));
   });
 }
 
-/** The model id a CLI wrapper expects: OpenCode takes `opencode/<id>`, the others their own ids. */
+/** The model id a CLI wrapper expects: OpenCode takes `opencode/<id>` or `space-gateway-.../<id>`, the others their own ids. */
 export function cliModelArgument(player: ChessContestant): string {
-  return player.providerId === "opencode" ? player.modelId : player.modelId.slice(player.providerId.length + 1);
+  return isOpencodeProvider(player.providerId) ? player.modelId : player.modelId.slice(player.providerId.length + 1);
 }
 
 const CLI_CATALOG_DEADLINE_MS = 8_000;
@@ -274,15 +262,20 @@ async function cliCatalogText(
 async function loadCliProvider(
   spec: ChessCliProviderSpec,
   bridge: ChessCliBridge,
-  options: { deadlineMs: number; lastGoodDirectory: string }
+  options: { deadlineMs: number; lastGoodDirectory: string; loadOpenCodeModels?: (providerId: string) => Promise<ChessCliModel[]> }
 ): Promise<{ summary: ChessProviderSummary; contestants: ChessContestant[] }> {
   const base = { id: spec.id, name: spec.name, requestLimit: PROVIDER_REQUEST_LIMITS[spec.id] ?? 2 };
-  const state = await bridge.state(spec.runtimeId).catch(() => ({ enabled: false, reason: "Runtime state is unavailable." }));
-  if (!state.enabled) {
-    return { summary: { ...base, available: false, count: 0, note: (state.reason ?? "Not available").slice(0, 120) }, contestants: [] };
+  if (!spec.id.startsWith("space-gateway-")) {
+    const state = await bridge.state(spec.runtimeId).catch(() => ({ enabled: false, reason: "Runtime state is unavailable." }));
+    if (!state.enabled) {
+      return { summary: { ...base, available: false, count: 0, note: (state.reason ?? "Not available").slice(0, 120) }, contestants: [] };
+    }
   }
   try {
-    const models = spec.catalog === "opencode" ? await openCodeFreeModels() : parseCliModelCatalog(await cliCatalogText(spec, bridge, options));
+    const models =
+      spec.catalog === "opencode"
+        ? (options.loadOpenCodeModels ? await options.loadOpenCodeModels(spec.id) : await openCodeModelsForProvider(spec.id))
+        : parseCliModelCatalog(await cliCatalogText(spec, bridge, options));
     const contestants = cliContestants(spec, models);
     return {
       summary: { ...base, available: contestants.length > 0, count: contestants.length, ...(contestants.length ? {} : { note: "No models" }) },
@@ -302,6 +295,7 @@ export interface ChessCatalogOptions {
   /** Test seams for the HTTP catalogs. */
   loadCodex?: () => Promise<ChessContestant[]>;
   loadOpenRouter?: () => Promise<ChessContestant[]>;
+  loadOpenCodeModels?: (providerId: string) => Promise<ChessCliModel[]>;
 }
 
 export function createChessCatalog(options: ChessCatalogOptions = {}): (request?: { fresh?: boolean }) => Promise<ChessContestantCatalog> {
@@ -320,6 +314,7 @@ export function createChessCatalog(options: ChessCatalogOptions = {}): (request?
                 loadCliProvider(spec, cli, {
                   deadlineMs: options.cliCatalogDeadlineMs ?? CLI_CATALOG_DEADLINE_MS,
                   lastGoodDirectory: options.lastGoodDirectory ?? LAST_GOOD_CATALOG_DIR,
+                  loadOpenCodeModels: options.loadOpenCodeModels,
                 })
               )
             )
@@ -392,6 +387,69 @@ async function requestOpenRouterMove(request: ChessMoveRequest): Promise<ChessMo
   return { text };
 }
 
+const FREE_POOLS_KEY_FILE = `${SPACE_AGENT_HOME}/.config/space-gateway/free-pools.key`;
+
+async function getSpaceGatewayPoolKey(): Promise<string | null> {
+  try {
+    const key = (await readFile(FREE_POOLS_KEY_FILE, "utf8")).trim();
+    if (key) return key;
+  } catch {
+    // Fallback to internal gateway key
+  }
+  return getCodexApiKey();
+}
+
+async function requestSpaceGatewayMove(request: ChessMoveRequest): Promise<ChessMoveReply> {
+  const { contestant: player } = request;
+  const poolSlug = player.providerId.slice("space-gateway-".length);
+  const bareModel = player.modelId.slice(player.providerId.length + 1);
+  const apiKey = await getSpaceGatewayPoolKey();
+  if (!apiKey) throw new Error("The Space Gateway key is unavailable.");
+
+  const response = await fetch(`${CODEX_LB_BASE_URL}/pools/${poolSlug}/v1/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      ...gatewayRequestIdHeader(request.traceId),
+    },
+    signal: request.signal,
+    body: JSON.stringify({
+      model: bareModel,
+      messages: [
+        { role: "system", content: request.system },
+        { role: "user", content: request.prompt },
+      ],
+      max_tokens: Math.max(800, moveTokenBudget(player.reasoningEffort)),
+    }),
+  });
+  if (!response.ok) {
+    let detail = `Space Gateway ${poolSlug} HTTP ${response.status}`;
+    try {
+      const errPayload = (await response.json()) as { error?: { message?: unknown }; message?: unknown };
+      const msg = errPayload?.error?.message ?? errPayload?.message;
+      if (typeof msg === "string" && msg.trim()) detail = msg.trim();
+    } catch {
+      // Keep HTTP status fallback
+    }
+    throw new Error(detail);
+  }
+  const payload = (await response.json()) as {
+    choices?: Array<{ message?: { content?: unknown; reasoning_content?: unknown } }>;
+    usage?: { total_tokens?: unknown };
+  };
+  const msg = payload.choices?.[0]?.message;
+  const text =
+    typeof msg?.content === "string" && msg.content.trim()
+      ? msg.content
+      : typeof msg?.reasoning_content === "string" && msg.reasoning_content.trim()
+        ? msg.reasoning_content
+        : null;
+  if (!text) throw new Error(`Space Gateway ${poolSlug} returned no text.`);
+  const tokens = Number(payload.usage?.total_tokens);
+  return { text, ...(Number.isFinite(tokens) ? { tokens } : {}) };
+}
+
 export interface ChessMoveRequesterOptions {
   /** Claude account profile with the most quota left, or null for the main account. */
   claudeProfile?: () => Promise<string | null>;
@@ -433,6 +491,12 @@ export function createChessMoveRequester(options: ChessMoveRequesterOptions = {}
     const providerId = request.contestant.providerId;
     if (providerId === "codex") return requestCodexMove(request);
     if (providerId === "openrouter") return requestOpenRouterMove(request);
+    // nous_msg:0dfab66c: the API-credit key is spent and Claude Max serves only real Claude Code, so this player's model plays as the Claude CLI player.
+    if (providerId === "space-gateway-claude") {
+      const { contestant } = request;
+      return requestCliMove({ ...request, contestant: { ...contestant, providerId: "claude", modelId: `claude/${contestant.modelId.slice(providerId.length + 1)}` } });
+    }
+    if (providerId.startsWith("space-gateway-")) return requestSpaceGatewayMove(request);
     if (isCliProvider(providerId)) return requestCliMove(request);
     return Promise.reject(new Error("Unsupported chess provider."));
   };

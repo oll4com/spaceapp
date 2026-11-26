@@ -252,10 +252,12 @@ const SIMPLE_ESCAPES: Record<string, string> = { '"': '"', "\\": "\\", "/": "/",
 const NAMED_ESCAPES: Record<string, string> = { '"': '\\"', "\\": "\\\\", "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r" };
 const escapeUnit = (c: string) => NAMED_ESCAPES[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`;
 
+/* eslint-disable no-control-regex -- JSON must escape the control characters U+0000-U+001F */
 const ESCAPE = /["\\\u0000-\u001f]/;
 const ESCAPE_ALL = /["\\\u0000-\u001f]/g;
 const ESCAPE_ASCII = /["\\\u0000-\u001f\u007f-\uffff]/;
 const ESCAPE_ASCII_ALL = /["\\\u0000-\u001f\u007f-\uffff]/g;
+/* eslint-enable no-control-regex */
 
 function quote(s: string, ensureAscii: boolean): string {
   if (!(ensureAscii ? ESCAPE_ASCII : ESCAPE).test(s)) return `"${s}"`;

@@ -21,6 +21,7 @@ describe("API request classes", () => {
     expect(isCliBrowserBridgeRequest(request("POST", "/api/rooms"))).toBe(false);
     expect(publicPaths.has("/api/auth/login")).toBe(true);
     expect(publicPaths.has("/api/rooms")).toBe(false);
+    expect(publicPaths.has("/api/nous/live/relay/:ticket")).toBe(true);
   });
 
   it("lets app-diagnostics automation read anything but write only its own routes", () => {

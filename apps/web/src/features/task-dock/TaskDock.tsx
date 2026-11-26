@@ -363,12 +363,12 @@ export function TaskDock({ canInsert, activePaneLabel, activeCliPaneId = null, o
         <button type="button" className="dock-kit-task-check" aria-pressed={done} disabled={updatingId === item.id}
           aria-label={done ? `Mark "${item.title}" as not done` : `Mark "${item.title}" as done`} onClick={() => void toggleDone(item)} />
         <div className="task-row-body">
-          <div className="task-row-title" data-sensitive-masked="manual">{item.title}{item.status === "RUNNING" ? <span className="dock-kit-badge is-warning">Running</span> : null}
+          <div className="task-row-title">{item.title}{item.status === "RUNNING" ? <span className="dock-kit-badge is-warning">Running</span> : null}
             {/* The scheduler skips a task whose pane is closed and says so in its last outcome (daily review 2026-10-21). */}
             {!done && item.schedule?.lastOutcome?.includes("pane is closed") ? (
               <span className="dock-kit-badge is-warning" title={item.schedule.lastOutcome}>Pane closed · rebind</span>
             ) : null}</div>
-          <button className={`dock-kit-task-details${expanded ? " expanded" : ""}`} data-sensitive-masked="manual" onClick={() => void copyItem(item)}
+          <button className={`dock-kit-task-details${expanded ? " expanded" : ""}`} onClick={() => void copyItem(item)}
             aria-label="Copy task objective" title="Click to copy">{item.objective}</button>
           {isLong ? <button type="button" className="dock-kit-task-more" onClick={() => setExpandedIds((current) => {
             const next = new Set(current);

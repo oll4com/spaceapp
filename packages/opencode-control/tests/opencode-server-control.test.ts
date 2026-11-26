@@ -2,7 +2,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+// The shared host comes from the local env (SPACE_OPENCODE_SERVER_HOST), read when the module loads.
+vi.hoisted(() => { process.env.SPACE_OPENCODE_SERVER_HOST = "10.20.0.13"; });
 import {
   abortOpenCodeSession,
   createOpenCodeSession,
@@ -117,11 +120,11 @@ describe("readOpenCodeServerControl", () => {
     const hostPath = join(controlDir, "cli_session_hosted.json");
     await writeFile(
       hostPath,
-      `${JSON.stringify({ ...controlFixture, spaceSessionId: "cli_session:hosted", serverHost: "10.254.240.13", serverPort: 43212 })}\n`,
+      `${JSON.stringify({ ...controlFixture, spaceSessionId: "cli_session:hosted", serverHost: "10.88.240.13", serverPort: 43212 })}\n`,
       { encoding: "utf8", mode: 0o640 }
     );
     const control = await readOpenCodeServerControl("cli_session:hosted", tempRoot);
-    expect(control?.serverHost).toBe("10.254.240.13");
+    expect(control?.serverHost).toBe("10.88.240.13");
     await rm(hostPath, { force: true });
   });
 
@@ -139,6 +142,7 @@ describe("readOpenCodeServerControl", () => {
       );
       const control = await readOpenCodeServerControl(spaceSessionId, tempRoot);
       expect(control?.serverHost).toBe(openCodeSharedServerHost);
+      expect(openCodeSharedServerHost).toBe("10.20.0.13");
       await rm(path, { force: true });
     }
   });
@@ -256,27 +260,6 @@ describe("resolveOpenCodeTitleFallbackControl", () => {
       await rm(tempRoot, { recursive: true, force: true });
     }
   });
-});
-
-const zeroTokenUnknown = (overrides: Record<string, unknown> = {}) => ({
-  id: "msg_empty_first",
-  sessionID: "ses_abc123",
-  parentID: "msg_user_turn",
-  role: "assistant",
-  finish: "unknown",
-  time: { created: 1786000000000, completed: 1786000000100 },
-  tokens: {
-    input: 0,
-    output: 0,
-    reasoning: 0,
-    cache: { read: 0, write: 0 }
-  },
-  ...overrides
-});
-
-const messageUpdated = (info: Record<string, unknown>) => ({
-  type: "message.updated",
-  properties: { info }
 });
 
 describe("an OpenCode server that answers with its web UI", () => {

@@ -242,7 +242,7 @@ export function registerCliMaintenanceRoutes(app: FastifyInstance, options: {
       if (request.user?.role !== "ADMIN") {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI update-all requires the ADMIN role.");
       }
-      let input: ReturnType<typeof cliUpdateAllRequestSchema.parse> = {};
+      let input: ReturnType<typeof cliUpdateAllRequestSchema.parse>;
       try {
         input = cliUpdateAllRequestSchema.parse(request.body ?? {});
       } catch {

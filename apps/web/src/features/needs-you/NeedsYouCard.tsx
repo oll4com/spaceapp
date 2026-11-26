@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
-import { artifactIdsIn, NEEDS_YOU_DONE_ANSWERS, NEEDS_YOU_GO_NOW, NEEDS_YOU_QUESTION_MORE, needsYouAnswerKind, needsYouAsk, needsYouGroup, needsYouHasPlace, needsYouLayout, needsYouMail, needsYouPlace, needsYouTranslation, needsYouFiles, FREELANCE_CHANNEL_LABELS, MARKETING_CHANNEL_LABELS,
+import { artifactIdsIn, NEEDS_YOU_DONE_ANSWERS, NEEDS_YOU_GO_NOW, NEEDS_YOU_QUESTION_MORE, needsYouAnswerKind, needsYouAsk, needsYouCompletedAnswer, needsYouGroup, needsYouHasPlace, needsYouLayout, needsYouMail, needsYouMailTranslation, needsYouPlace, needsYouTranslation, needsYouFiles, FREELANCE_CHANNEL_LABELS, MARKETING_CHANNEL_LABELS,
   type MailComposeInput, type MailCopilotEvent, type MailParticipant, type MailThread, type NotificationAnswerInput, type NousOverview, type NousPaneBoardPane, type SpaceNotification, type UiLanguage } from "@space/contracts";
 import { api } from "../../api.js";
 import { ChatMarkdown } from "../agent-pane/ChatMarkdown.js";
@@ -55,6 +55,9 @@ const dayIn = (date: Date) => {
 export function needsYouDueToday(plan: { dueAt?: string | null; overdue?: boolean } | undefined, now = new Date()): boolean {
   return Boolean(plan?.dueAt && (plan.overdue || dayIn(new Date(plan.dueAt)) === dayIn(now)));
 }
+/** When the card asked its question: a pane's card is one record refreshed per ask, so its createdAt is the pane's first ask (nous_msg:832a500e). */
+export const needsYouAskedAt = (item: SpaceNotification) => typeof item.payload.alertAt === "string" ? item.payload.alertAt : item.createdAt;
+
 /** The soonest due date among the plans a card unblocks. */
 export const soonestDue = (plans: NousOverview["plans"]) => plans.filter((plan) => plan.dueAt).sort((left, right) => left.dueAt!.localeCompare(right.dueAt!))[0];
 
@@ -69,9 +72,58 @@ function reviewPreview(event: MailCopilotEvent | undefined): MailPreview | null 
 }
 function threadPreview(thread: MailThread): MailPreview | null {
   const last = thread.messages.at(-1);
-  return last ? { from: who(last.from), to: last.to.map(who).join(", "), cc: last.cc.map(who).join(", "), subject: last.subject || thread.subject, at: last.receivedAt ?? null, text: last.text,
+  return last ? { from: who(last.from), to: last.to.map(who).join(", "), cc: last.cc.map(who).join(", "), subject: last.subject || thread.subject, at: last.receivedAt ?? null, text: last.html && mostlyLinks(last.text) ? htmlAsText(last.html) : last.text,
     attachments: last.attachments.map((file) => file.filename).filter(Boolean) } : null;
 }
+/** A text part that is mostly tracking URLs (nous_msg:5bcbe4b0, Upwork): the sanitized HTML reads better. */
+const mostlyLinks = (text: string) => (text.match(/https?:\/\/\S+/g) ?? []).join("").length * 2 > text.replace(/\s/g, "").length;
+/** Sanitized HTML as text, each link written "label ( URL )" for mailTextParts; DOMParser's document is inert (no scripts, no loads). */
+export function htmlAsText(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("head, style, script").forEach((node) => node.remove());
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) node.nodeValue = node.nodeValue!.replace(/\s+/g, " ");
+  doc.querySelectorAll("a[href^='http']").forEach((link) => link.append(` ( ${link.getAttribute("href")} )`));
+  doc.querySelectorAll("br, p, div, tr, li, table, h1, h2, h3, h4, h5, h6").forEach((node) => node.after("\n"));
+  return (doc.body.textContent ?? "").replace(/^ +| +$/gm, "");
+}
+const INVISIBLE = /\u034f|[\u00ad\u200b-\u200f\u2060\ufeff]/g;
+const ENTITY = /&(nbsp|amp|lt|gt|quot|apos|#\d{1,7}|#x[\da-f]{1,6});/gi;
+const NAMED: Record<string, string> = { nbsp: " ", amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'" };
+const decodeEntity = (entity: string, name: string) => {
+  const code = name[0] !== "#" ? null : /^#x/i.test(name) ? parseInt(name.slice(2), 16) : Number(name.slice(1));
+  return code === null ? NAMED[name.toLowerCase()]! : code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+};
+const MAIL_URL = /\(\s*(https?:\/\/[^\s()]+)\s*\)|<?(https?:\/\/[^\s<>()"'`]+[^\s<>()"'`.,;:!?])>?/g;
+// One linear pass: an anchored /[ \t]+$/m backtracks quadratically, so a mail with a long blank run froze the card (40k spaces: 2 s per render).
+const trimLineEdge = (run: string, at: number, text: string) => at === 0 || text[at - 1] === "\n" || text[at + run.length] === undefined || text[at + run.length] === "\n" ? "" : run;
+export type MailTextPart = string | { label: string; href: string };
+/** A mail body as the operator reads it (nous_msg:5bcbe4b0): "label ( URL )" is a link named label, a bare URL a link named by its host/path
+ *  (60 characters at most), and blank runs one blank line; URLs are found in one linear pass, never by backtracking over a line. */
+export function mailTextParts(text: string): MailTextPart[] {
+  // Gmail text parts end lines with \r\n and carry HTML entities (micro1 20/11): both go first, then indents, trailing spaces and blank runs.
+  const clean = text.replace(/\r\n?/g, "\n").replace(ENTITY, decodeEntity).replace(INVISIBLE, "").replace(/[ \t\u00a0]+/g, trimLineEdge).replace(/\n{3,}/g, "\n\n").trim();
+  const parts: MailTextPart[] = [];
+  let at = 0;
+  for (const match of clean.matchAll(MAIL_URL)) {
+    const href = match[1] ?? match[2]!;
+    let before = clean.slice(at, match.index);
+    let label = linkLabel(href);
+    if (label.length > 60) label = label.split("/")[0]!;
+    if (match[1]) {
+      const start = before.search(/[^\n|•·]*$/);
+      const named = before.slice(start).trim();
+      if (named) { label = named; before = before.slice(0, start) + before.slice(start).match(/^\s*/)![0]; }
+    }
+    if (before) parts.push(before);
+    parts.push({ label, href });
+    at = match.index + match[0].length;
+  }
+  if (at < clean.length) parts.push(clean.slice(at));
+  return parts;
+}
+const MailText = ({ parts }: { parts: MailTextPart[] }) => <>{parts.map((part, index) => typeof part === "string" ? <Fragment key={index}>{part}</Fragment>
+  : <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" title={part.href}>{part.label}</a>)}</>;
 /** A mail body this long folds under "Show more". */
 const MAIL_FOLD = { lines: 12, characters: 900 };
 
@@ -165,6 +217,8 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const answers = offDefault ? [...NEEDS_YOU_DONE_ANSWERS] : options;
   const recommended = offDefault ? DONE_OK : ask.recommended && ask.recommended !== NEEDS_YOU_GO_NOW ? ask.recommended : null;
   const starred = (option: string) => option === ask.recommended && !offDefault && place !== "OFF_SPACE";
+  const completedAnswer = needsYouCompletedAnswer(item);
+  const completed = completedAnswer !== null && !answers.includes(DONE_OK);
 
   const answer = async (input: NotificationAnswerInput) => {
     setBusy(true);
@@ -228,7 +282,9 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const stepsShown = allSteps ? steps : steps.slice(0, STEPS_SHOWN);
 
   const where = [pane?.roomName, pane?.name].filter(Boolean).join(" · ");
-  const movedOn = pane?.report && pane.report.at > item.createdAt ? pane.report : null;
+  // nous_msg:832a500e: a card about one plan never shows the pane's later report about another plan.
+  const cardPlan = typeof item.payload.planId === "string" ? item.payload.planId : null;
+  const movedOn = pane?.report && pane.report.at > needsYouAskedAt(item) && !(cardPlan && pane.report.planId && pane.report.planId !== cardPlan) ? pane.report : null;
   // The pane's report is its own words (English); the pane board's line written since says it in the board's language.
   const since = movedOn && pane?.summary.source === "MODEL" && pane.summary.generatedAt >= movedOn.at && pane.lineLanguage === agents ? pane.summary.line : movedOn?.summary ?? "";
   // S5: what changed since the operator's earlier answer to the same question (R16-2), as Nous gave it on its items.
@@ -236,7 +292,11 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const failed = (item.payload.answerError as { text?: unknown } | undefined)?.text;
   const lastFailure = typeof failed === "string" ? failed : null;
   const draft = about.mail ? null : reviewDraft(item);
-  const readText = about.mail?.text ?? draft?.text ?? "";
+  // The mail in a third language reads translated, made once when the card was raised (operator 21/11 nous_msg:e9b4df3e); "Show original" shows it as sent.
+  const mailTranslation = about.mail ? needsYouMailTranslation(item, agents, about.mail) : null;
+  const mailShown = mailTranslation && !original ? { ...about.mail!, ...mailTranslation } : about.mail;
+  const readParts = mailTextParts(mailShown?.text ?? draft?.text ?? "");
+  const readText = readParts.map((part) => typeof part === "string" ? part : part.label).join("");
   const longMail = readText.split("\n").length > MAIL_FOLD.lines || readText.length > MAIL_FOLD.characters;
   const links = httpsLinks(details).filter((url) => url !== about.page);
   const due = soonestDue(unblocks);
@@ -274,7 +334,7 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   // His words on every card (operator 4/11 18:42 BKK: off Space too): the answer itself on a value ask, else a note with a pick or an answer of its own.
   const wordsForm = (
     <form className="ny-field" onSubmit={(event) => { event.preventDefault(); if (text.trim() && !decision) void answer({ text: text.trim() }); }}>
-      <input value={text} onChange={(event) => setText(event.target.value)} maxLength={2_000} aria-label={t("Your answer")} data-sensitive-masked="manual"
+      <input value={text} onChange={(event) => setText(event.target.value)} maxLength={2_000} aria-label={t("Your answer")}
         placeholder={t(decision ? "Note (optional)" : typed ? "Type your answer" : answers.length ? "Or answer in your words" : "Your answer")} />
       {decision ? null : <DockButton type="submit" tone={typed ? "primary" : "default"} icon={Send} disabled={busy || !text.trim()}>{t("Send")}</DockButton>}
     </form>
@@ -286,7 +346,7 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
     : typed ? wordsForm
     : place === "PANE" ? go
     : decision ? <DockButton tone="primary" onClick={() => setOpen(true)}>{t("Review and approve")}</DockButton>
-    : recommended ? <DockButton tone="primary" icon={offDefault ? Check : undefined} disabled={busy} data-sensitive-masked="manual" onClick={() => void pick(recommended)}>{choiceCaption(optionLabel(recommended)) || optionLabel(recommended)}</DockButton>
+    : recommended ? <DockButton tone="primary" icon={offDefault ? Check : undefined} disabled={busy} onClick={() => void pick(recommended)}>{choiceCaption(optionLabel(recommended)) || optionLabel(recommended)}</DockButton>
     : <DockButton tone="primary" onClick={() => setOpen(true)}>{t("Answer")}</DockButton>;
 
   return (
@@ -296,22 +356,22 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
       {/* The kind word on hover too: a narrow closed row keeps only its meta line's room · pane · time in sight. */}
       <span className="ny-tile" aria-hidden="true" title={t(KIND_LABEL[kind])}><Icon /></span>
       <div className="ny-head">
-        <h3 className="ny-title" data-sensitive-masked="manual">{heading}</h3>
+        <h3 className="ny-title">{heading}</h3>
         <p className="ny-meta">
           {/* lang: Space's kind word in the interface language. */}
           <span className="ny-kind" lang={language}>{t(KIND_LABEL[kind])}</span>
           <span className="ny-source">{uiSourceLabel(language, item.source)}</span>
           {item.severity === "URGENT" ? <span className="ny-urgent">{t("Urgent")}</span> : null}
           {due ? <span className={dueToday || due.overdue ? "ny-due" : undefined}><Clock aria-hidden="true" />{due.overdue ? t("Overdue") : dueToday ? t("Due today {time}", { time: formatUserTime(due.dueAt!) }) : t("Due {when}", { when: formatUserTime(due.dueAt!, { withDate: true }) })}</span> : null}
-          {where ? <span data-sensitive-masked="manual">{where}</span> : null}
-          <span>{formatUserTime(item.createdAt)}</span>
+          {where ? <span className="ny-where">{where}</span> : null}
+          <span>{formatUserTime(needsYouAskedAt(item))}</span>
         </p>
       </div>
       {variant === "peek"
         ? <DockIconButton className="ny-corner" label={t("Later")} icon={X} onClick={() => onLater?.()} />
         : <DockIconButton className="ny-corner" label={t(open ? "Less" : "Details")} icon={open ? ChevronUp : ChevronDown} aria-expanded={open} onClick={() => setOpen(!open)} />}
       <NeedsYouFiles item={item} fold={!open} />
-      {sent ? <p className="ny-sent" role="status" data-sensitive-masked="manual"><Check aria-hidden="true" />{sent}</p> : !open ? (
+      {sent ? <p className="ny-sent" role="status"><Check aria-hidden="true" />{sent}</p> : !open ? (
         <div className="ny-actions">
           {primary}
           {/* A list row opens on its chevron; the window has a Details button of its own (its corner is Later). */}
@@ -319,45 +379,45 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
         </div>
       ) : (
         <div className="ny-details">
-          {why ? <section><h4>{t("What it needs")}</h4><div className="ny-text" data-sensitive-masked="manual"><ChatMarkdown content={needsYouMarkdown(uiServerText(agents, why))} /></div></section> : null}
-          {translation ? <p className="ny-translated">{t(original ? "Original" : "Translated")} · <button type="button" className="ny-link" onClick={() => setOriginal(!original)}>{t(original ? "Show translation" : "Show original")}</button></p> : null}
+          {why ? <section><h4>{t("What it needs")}</h4><div className="ny-text"><ChatMarkdown content={needsYouMarkdown(uiServerText(agents, why))} /></div></section> : null}
+          {translation || mailTranslation ? <p className="ny-translated">{t(original ? "Original" : "Translated")} · <button type="button" className="ny-link" onClick={() => setOriginal(!original)}>{t(original ? "Show translation" : "Show original")}</button></p> : null}
           {stepsShown.length ? (
             <section><h4>{t("Steps")}</h4>
-              <div className="ny-text" data-sensitive-masked="manual"><ChatMarkdown content={needsYouMarkdown(uiServerText(agents, stepsShown.join("\n")))} /></div>
+              <div className="ny-text"><ChatMarkdown content={needsYouMarkdown(uiServerText(agents, stepsShown.join("\n")))} /></div>
               {steps.length > STEPS_SHOWN ? <button type="button" className="ny-link" onClick={() => setAllSteps(!allSteps)}>{allSteps ? t("Fewer steps") : t("{count} more steps", { count: steps.length - STEPS_SHOWN })}</button> : null}
             </section>
           ) : null}
           {about.mail ? (
             <section className="ny-mail" aria-label={t("Mail")}>
               <h4>{t("Mail")}</h4>
-              <dl className="ny-facts" data-sensitive-masked="manual">
+              <dl className="ny-facts">
                 <dt>{t("From")}</dt><dd>{about.mail.from}</dd>
                 <dt>{t("To")}</dt><dd>{about.mail.to}</dd>
                 {about.mail.cc ? <><dt>{t("Cc")}</dt><dd>{about.mail.cc}</dd></> : null}
-                <dt>{t("Subject")}</dt><dd>{about.mail.subject || t("(no subject)")}</dd>
+                <dt>{t("Subject")}</dt><dd>{mailShown!.subject || t("(no subject)")}</dd>
                 {about.mail.at ? <><dt>{t("Received")}</dt><dd>{formatUserTime(about.mail.at, { withDate: true })}</dd></> : null}
                 {about.mail.attachments.length ? <><dt>{t("Attachments")}</dt><dd>{about.mail.attachments.join(" · ")}</dd></> : null}
               </dl>
-              <div className={`ny-mail-body${longMail && !wholeMail ? " is-folded" : ""}`} data-sensitive-masked="manual">{about.mail.text.trim()}</div>
+              <div className={`ny-mail-body${longMail && !wholeMail ? " is-folded" : ""}`}><MailText parts={readParts} /></div>
               {longMail ? <button type="button" className="ny-link" aria-expanded={wholeMail} onClick={() => setWholeMail(!wholeMail)}>{t(wholeMail ? "Show less" : "Show more")}</button> : null}
             </section>
           ) : draft ? (
             <section className="ny-mail" aria-label={t("Draft")}>
               <h4>{t("Draft")}{draft.channel ? ` · ${draft.channel}` : ""}</h4>
-              <div className={`ny-mail-body${longMail && !wholeMail ? " is-folded" : ""}`} data-sensitive-masked="manual">{draft.text}</div>
+              <div className={`ny-mail-body${longMail && !wholeMail ? " is-folded" : ""}`}><MailText parts={readParts} /></div>
               {longMail ? <button type="button" className="ny-link" aria-expanded={wholeMail} onClick={() => setWholeMail(!wholeMail)}>{t(wholeMail ? "Show less" : "Show more")}</button> : null}
             </section>
           ) : null}
           <dl className="ny-facts">
-            {about.page ? <><dt>{t("Page")}</dt><dd data-sensitive-masked="manual"><a href={about.page} target="_blank" rel="noopener noreferrer">{linkLabel(about.page)}</a></dd></> : null}
-            {about.site && !about.page ? <><dt>{t("Site")}</dt><dd data-sensitive-masked="manual">{about.site}</dd></> : null}
-            {unblocks.length ? <><dt>{t("Unblocks")}</dt><dd data-sensitive-masked="manual">{unblocks.map((plan) => plan.title).join(" · ")}</dd></> : null}
-            {due ? <><dt>{t("Deadline")}</dt><dd data-sensitive-masked="manual">{formatUserTime(due.dueAt!, { withDate: true })}{due.overdue ? `, ${t("overdue")}` : ""}{unblocks.length > 1 ? ` (${due.title})` : ""}</dd></> : null}
-            {links.length ? <><dt>{t("Links")}</dt><dd data-sensitive-masked="manual">{links.map((url, index) => <Fragment key={url}>{index ? " · " : ""}<a href={url} target="_blank" rel="noopener noreferrer">{linkLabel(url)}</a></Fragment>)}</dd></> : null}
-            {movedOn || answeredSince ? <><dt>{t("Since then")}</dt><dd className="ny-wrap" data-sensitive-masked="manual">{answeredSince ? labelIds(answeredSince, agents) : null}{movedOn && answeredSince ? <br /> : null}{movedOn ? `${formatUserTime(movedOn.at)}: ${labelIds(since, agents)}` : null}</dd></> : null}
+            {about.page ? <><dt>{t("Page")}</dt><dd><a href={about.page} target="_blank" rel="noopener noreferrer">{linkLabel(about.page)}</a></dd></> : null}
+            {about.site && !about.page ? <><dt>{t("Site")}</dt><dd>{about.site}</dd></> : null}
+            {unblocks.length ? <><dt>{t("Unblocks")}</dt><dd>{unblocks.map((plan) => plan.title).join(" · ")}</dd></> : null}
+            {due ? <><dt>{t("Deadline")}</dt><dd>{formatUserTime(due.dueAt!, { withDate: true })}{due.overdue ? `, ${t("overdue")}` : ""}{unblocks.length > 1 ? ` (${due.title})` : ""}</dd></> : null}
+            {links.length ? <><dt>{t("Links")}</dt><dd>{links.map((url, index) => <Fragment key={url}>{index ? " · " : ""}<a href={url} target="_blank" rel="noopener noreferrer">{linkLabel(url)}</a></Fragment>)}</dd></> : null}
+            {movedOn || answeredSince ? <><dt>{t("Since then")}</dt><dd className="ny-wrap">{answeredSince ? labelIds(answeredSince, agents) : null}{movedOn && answeredSince ? <br /> : null}{movedOn ? `${formatUserTime(movedOn.at)}: ${labelIds(since, agents)}` : null}</dd></> : null}
           </dl>
           {choices.length ? <NeedsYouChoices choices={choices} recommended={recommended} busy={busy} onChoose={choose} onStudio={setStudio} /> : null}
-          {checked ? <details className="ny-checked" open={checkedOpen.has(item.id)} onToggle={(event) => checkedOpen.setOpen(item.id, event.currentTarget.open)}><summary>{t(item.source === "AGENT" ? "What the agent checked" : "What Nous checked")}</summary><div className="ny-text" data-sensitive-masked="manual"><ChatMarkdown content={needsYouMarkdown(checked)} /></div></details> : null}
+          {checked ? <details className="ny-checked" open={checkedOpen.has(item.id)} onToggle={(event) => checkedOpen.setOpen(item.id, event.currentTarget.open)}><summary>{t(item.source === "AGENT" ? "What the agent checked" : "What Nous checked")}</summary><div className="ny-text"><ChatMarkdown content={needsYouMarkdown(checked)} /></div></details> : null}
           {/* A review's note comes before its Approve or Decline, which sends it. */}
           {decision ? wordsForm : null}
           <div className="ny-answers">
@@ -368,13 +428,14 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
               // A review's two answers never look alike, vouched or not (operator 12/11 21:38 BKK): Approve filled with a tick, Decline outlined with a cross.
               const side = decision && (option === "Approve" || option === "Decline") ? option : null;
               return (
-                <DockButton key={option} data-sensitive-masked="manual" className={[side ? `ny-${side.toLowerCase()}` : "", starred(option) ? "is-recommended" : ""].filter(Boolean).join(" ") || undefined} disabled={busy}
+                <DockButton key={option} className={[side ? `ny-${side.toLowerCase()}` : "", starred(option) ? "is-recommended" : ""].filter(Boolean).join(" ") || undefined} disabled={busy}
                   tone={side ? (side === "Approve" ? "primary" : "default") : option === recommended || (option === PROBLEM && problem) ? "primary" : "default"}
                   icon={side === "Approve" || option === DONE_OK ? Check : side === "Decline" ? X : option === PROBLEM ? AlertTriangle : undefined} aria-pressed={option === PROBLEM ? problem : undefined} onClick={() => choose(option)}>
                   {optionLabel(option)}{starred(option) ? <RecommendedBadge /> : null}
                 </DockButton>
               );
             }) : null}
+            {completed ? <DockButton icon={Check} disabled={busy} onClick={() => void pick(completedAnswer && "option" in completedAnswer ? completedAnswer.option : DONE_OK, text.trim() || undefined)}>{t("Completed")}</DockButton> : null}
             {!offDefault && ask.recommended && needsYouAnswerKind(item) ? (
               <DockButton tone="ghost" disabled={busy || Boolean(text.trim())} title={t("From now on, Space answers \"{answer}\" to cards like this one without asking you (Settings → Assistants & AI → Nous: Ask me again)", { answer: optionLabel(ask.recommended) })}
                 onClick={() => void answer({ option: ask.recommended!, always: true })}>{t("Always answer like this")}</DockButton>
@@ -382,7 +443,7 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
           </div>
           {problem ? (
             <form className="ny-field" onSubmit={(event) => { event.preventDefault(); if (text.trim()) void pick(PROBLEM, text.trim()); }}>
-              <textarea value={text} onChange={(event) => setText(event.target.value)} maxLength={2_000} rows={3} aria-label={t("What went wrong?")} placeholder={t("What went wrong?")} data-sensitive-masked="manual" />
+              <textarea value={text} onChange={(event) => setText(event.target.value)} maxLength={2_000} rows={3} aria-label={t("What went wrong?")} placeholder={t("What went wrong?")} />
               <DockButton type="submit" tone="primary" icon={Send} disabled={busy || !text.trim()}>{t("Send")}</DockButton>
             </form>
           ) : !ask.code && !decision ? wordsForm : null}
@@ -390,15 +451,15 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
             {variant === "peek" ? <button type="button" className="ny-link" onClick={() => setOpen(false)}>{t("Less")}<ChevronUp aria-hidden="true" /></button> : null}
             {onOpenPlan && !item.paneId && typeof item.payload.planId === "string" ? <button type="button" className="ny-link" onClick={() => onOpenPlan(item.payload.planId as string)}>{t("Open plan")}<ArrowUpRight aria-hidden="true" /></button> : null}
             {studio ? <button type="button" className="ny-link" onClick={() => toPane(studio.roomId, studio.paneId, studio.target)}>{t(studio.source === "DESIGN" ? "Open in Design" : "Open in Video")}<ArrowUpRight aria-hidden="true" /></button> : null}
-            {opens && !(studio && opensPane?.paneId === studio.paneId) ? <button type="button" className="ny-link" data-sensitive-masked={opensPane ? "manual" : undefined}
+            {opens && !(studio && opensPane?.paneId === studio.paneId) ? <button type="button" className="ny-link"
               onClick={() => opensPane && item.roomId && item.paneId ? toPane(item.roomId, item.paneId) : goToNeedsYouPane(item)}>{opens}<ArrowUpRight aria-hidden="true" /></button> : null}
             <button type="button" className="ny-link" title={t("It no longer needs you: remove it")} onClick={() => void ackNotification(item.id)}>{t("It no longer needs me")}</button>
           </div>
         </div>
       )}
       {/* R13-6: an answer that failed keeps the card waiting and says why, closed or open. */}
-      {lastFailure && !error && !sent ? <p className="ny-error" role="alert" data-sensitive-masked="manual"><AlertTriangle aria-hidden="true" />{t("Last try failed")}: {lastFailure}</p> : null}
-      {error ? <p className="ny-error" role="alert" data-sensitive-masked="manual"><AlertTriangle aria-hidden="true" />{t("Not sent: {reason}", { reason: error })}</p> : null}
+      {lastFailure && !error && !sent ? <p className="ny-error" role="alert"><AlertTriangle aria-hidden="true" />{t("Last try failed")}: {lastFailure}</p> : null}
+      {error ? <p className="ny-error" role="alert"><AlertTriangle aria-hidden="true" />{t("Not sent: {reason}", { reason: error })}</p> : null}
     </article>
   );
 }

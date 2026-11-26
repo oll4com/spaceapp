@@ -8,6 +8,7 @@ export interface PaneWorkingTimeBadgeProps {
   categoryColor?: string | null;
   isWorking: boolean;
   screenWorkingMs?: number | null;
+  isVisible?: boolean;
 }
 
 export const PaneWorkingTimeBadge = memo(function PaneWorkingTimeBadge({
@@ -15,13 +16,15 @@ export const PaneWorkingTimeBadge = memo(function PaneWorkingTimeBadge({
   paneCreatedAt,
   categoryColor,
   isWorking,
-  screenWorkingMs
+  screenWorkingMs,
+  isVisible
 }: PaneWorkingTimeBadgeProps) {
   const { isWorking: active, formattedTime } = usePaneWorkingTime({
     paneId,
     paneCreatedAt,
     isWorking,
-    screenWorkingMs
+    screenWorkingMs,
+    isVisible
   });
 
   const statusLabel = active ? "Actively working" : "Waiting for command";
@@ -34,7 +37,7 @@ export const PaneWorkingTimeBadge = memo(function PaneWorkingTimeBadge({
       if (navigator?.clipboard?.writeText) {
         await navigator.clipboard.writeText(formattedTime);
       }
-    } catch {}
+    } catch { /* clipboard denied: copy is best effort */ }
   }, [formattedTime]);
 
   return (

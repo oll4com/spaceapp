@@ -308,3 +308,16 @@ body:has(.desktop-window-titlebar):not(:fullscreen):not([data-browser-fullscreen
 .diff-spinner { width: 24px; height: 24px; border: 3px solid rgba(255, 255, 255, 0.1); border-top-color: var(--room-accent, #87b9ff); border-radius: 50%; animation: diff-spin 0.8s linear infinite; }
 @keyframes diff-spin { to { transform: rotate(360deg); } }
 
+
+/* Review notes: a line number is a button that opens a note for the agent. */
+.source-control-diff-card .diff-gutter-note { display: block; padding: 0 8px; border: 0; border-radius: 0; background: rgba(0, 0, 0, 0.15); color: #57606a; font-family: inherit; line-height: inherit; text-align: right; cursor: pointer; }
+.source-control-diff-card .diff-gutter-note:hover, .source-control-diff-card .diff-gutter-note:focus-visible { color: #c9d1d9; background: rgba(88, 166, 255, 0.18); }
+.source-control-diff-card .diff-gutter-note.is-noted { color: #58a6ff; font-weight: 700; box-shadow: inset 2px 0 0 #58a6ff; }
+.diff-review-notes { display: flex; flex-direction: column; gap: .5rem; padding: .5rem 1rem; background: #13171b; border-top: 1px solid var(--room-border, #2a323a); font-size: .74rem; max-height: 40%; overflow-y: auto; }
+.diff-review-draft { display: flex; flex-direction: column; gap: .35rem; }
+.diff-review-draft textarea { width: 100%; resize: vertical; font: inherit; color: inherit; background: #0e1216; border: 1px solid var(--room-border, #333d45); border-radius: 4px; padding: 4px 6px; }
+.diff-review-summary ul { margin: 0 0 .4rem; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .2rem; }
+.diff-review-summary li { display: flex; gap: .5rem; align-items: baseline; }
+.diff-review-summary li span { white-space: pre-wrap; }
+.source-control-diff-card .diff-review-note-link { display: inline; border: 0; background: none; color: #58a6ff; cursor: pointer; font: inherit; padding: 0; flex-shrink: 0; }
+.diff-review-summary .diff-file-actions { justify-content: flex-end; }

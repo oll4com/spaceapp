@@ -75,7 +75,9 @@ export function NousScore({ active }: { active: boolean }) {
     const pad = Math.max(5, (high - low) * 0.1);
     return [low - pad, high + pad];
   }, [values]);
-  const rows = useMemo(() => score ? scoreRows(score.tiles) : [], [score]);
+  // The rows are the chosen range's own (operator 14/11 nous_msg:cf45a823); the headline and graph stay the 7 days' score.
+  const shown = score?.periods?.[range] ?? score;
+  const rows = useMemo(() => shown ? scoreRows(shown.tiles) : [], [shown]);
   if (!score) return error ? <DockState kind="error" icon={Star} title="The score could not be read" detail={error} /> : <DockState kind="loading" icon={Star} title="Reading the score" />;
   const widest = Math.max(1, ...rows.map((row) => Math.abs(row.points)));
   return (
@@ -95,6 +97,7 @@ export function NousScore({ active }: { active: boolean }) {
         <LoadWave values={values} target={0} bounds={bounds} animate={false}
           label={`Score over the last ${range === "24h" ? "24 hours" : range === "7d" ? "7 days" : "30 days"}; ${signed(score.score)} now`} />
       </div>
+      {shown && shown !== score ? <p className="nous-score-period">{uiText(language, range === "24h" ? "Over the last 24 hours: {points} pts" : "Over the last 30 days: {points} pts", { points: signed(shown.score) })}</p> : null}
       <ul className="nous-score-tiles" aria-label="Breakdown">
         {rows.map((row) => {
           const expanded = open === row.key;

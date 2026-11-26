@@ -190,6 +190,12 @@ describe("marketing copilot scheduler", () => {
     expect(notices[0]![1]).toContain("failed: X said: something went wrong");
     for (const post of [failed, late]) expect((await repository.getPost(owner, post.id))!.status).toBe("IN_REVIEW");
     await expect(service.beginPublish(owner, target, late.id)).rejects.toThrow(/cannot be published now/);
+    // Nous sees the stale time in the review item (its ask is held), and a fresh review carries no such summary.
+    const stale = (await service.pendingItems(owner, null)).find((item) => item.id === failed.id)!;
+    expect((stale.payload as { summary?: string }).summary).toMatch(/^MARKETING_STALE: its time .* more than 24 hours past/);
+    const { post: draft } = await service.createPost(owner, target, { channel: "X", kind: "POST", body: "Fresh draft", assets: [], scheduledAt: new Date(clock + 3_600_000).toISOString() });
+    await service.requestReview(owner, target, { postId: draft.id });
+    expect(((await service.pendingItems(owner, null)).find((item) => item.id === draft.id)!.payload as { summary?: string }).summary).toBeUndefined();
     // Nous's three answers: an approval at the old time is refused; a new future time retries it; reject closes it.
     await expect(service.decideReview(owner, target, failed.id, { decision: "approve" })).rejects.toThrow(/MARKETING_STALE/);
     const retried = await service.decideReview(owner, target, failed.id, { decision: "approve", scheduledAt: new Date(clock + 3_600_000).toISOString() });

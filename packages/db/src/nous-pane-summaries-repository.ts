@@ -1,4 +1,5 @@
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
+import { keptRead, withNewest } from "./kept-read.js";
 
 // Nous's pane board (migration 0237, plan clipboard:Y9cgKVHFaHrr): each pane's summary lines, newest first per pane. The
 // newest row is the board's line; a MODEL row with a batch id counts toward the owner's daily cap of summary calls.
@@ -43,7 +44,7 @@ export class InMemoryNousPaneSummariesRepository implements NousPaneSummariesRep
     });
   }
   async latest(owner: string) {
-    const mine = this.rows.filter((row) => row.owner === owner).map(({ owner: _owner, ...row }) => row);
+    const mine = this.rows.filter((row) => row.owner === owner).map((stored) => { const row: Partial<typeof stored> = { ...stored }; delete row.owner; return row as Omit<typeof stored, "owner">; });
     return { any: newestPerPane(mine), model: newestPerPane(mine.filter((row) => row.source === "MODEL")) };
   }
   async batchesSince(owner: string, since: string) {
@@ -66,26 +67,46 @@ const rowOf = (row: Row): NousPaneSummaryRow => ({ ...row, id: String(row.id), u
   generatedAt: new Date(row.generatedAt).toISOString() });
 
 export class PostgresNousPaneSummariesRepository implements NousPaneSummariesRepository {
-  constructor(private readonly pool: PgPoolLike) {}
+  // Speed audit 14/11: latest() read every summary of the owner twice for the newest per pane (stable: 18,492 rows, 2 x 98 ms on this pool
+  // of 1, every 5 s). Only this instance writes them (add, prune), so the answer is kept: add puts its rows in it, prune drops it.
+  private readonly newest: ReturnType<typeof keptRead<{ any: NousPaneSummaryRow[]; model: NousPaneSummaryRow[] }>>;
+  constructor(private readonly pool: PgPoolLike, keptMs?: number) {
+    const newest = (filter: string) => `SELECT DISTINCT ON (pane_id) ${columns} FROM nous_pane_summaries WHERE owner_user_id = $1 ${filter}
+      ORDER BY pane_id, generated_at DESC, id DESC`;
+    this.newest = keptRead(async (owner) => {
+      const [any, model] = await Promise.all([this.pool.query<Row>(newest(""), [owner]), this.pool.query<Row>(newest("AND source = 'MODEL'"), [owner])]);
+      return { any: any.rows.map(rowOf), model: model.rows.map(rowOf) };
+    }, keptMs);
+  }
   static fromConnectionString(url: string) { return new PostgresNousPaneSummariesRepository(createSpacePgPool(url, { max: 1 })); }
 
   async add(owner: string, rows: NewNousPaneSummaryRow[]) {
     const stored: NousPaneSummaryRow[] = [];
-    for (const row of rows) {
-      const result = await this.pool.query<Row>(`INSERT INTO nous_pane_summaries (owner_user_id, pane_id, room_id, fingerprint, line, waits_on, needs_operator, until,
-          detail, model, source, batch_id, generated_at, input_report_id, tokens_in, tokens_out)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING ${columns}`,
-      [owner, row.paneId, row.roomId, row.fingerprint, row.line, row.waitsOn, row.needsOperator, row.until, row.detail, row.model, row.source, row.batchId,
-        row.generatedAt, row.inputReportId, row.tokensIn ?? null, row.tokensOut ?? null]);
-      stored.push(rowOf(result.rows[0]!));
+    let written = false;
+    try {
+      for (const row of rows) {
+        const result = await this.pool.query<Row>(`INSERT INTO nous_pane_summaries (owner_user_id, pane_id, room_id, fingerprint, line, waits_on, needs_operator, until,
+            detail, model, source, batch_id, generated_at, input_report_id, tokens_in, tokens_out)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING ${columns}`,
+        [owner, row.paneId, row.roomId, row.fingerprint, row.line, row.waitsOn, row.needsOperator, row.until, row.detail, row.model, row.source, row.batchId,
+          row.generatedAt, row.inputReportId, row.tokensIn ?? null, row.tokensOut ?? null]);
+        stored.push(rowOf(result.rows[0]!));
+      }
+      written = true;
+    } finally {
+      // Copies now: the caller owns `stored`, and a read still under way takes them when it ends.
+      const added = stored.map((row) => ({ ...row }));
+      const newer = (rows: NousPaneSummaryRow[], more: NousPaneSummaryRow[]) => more.reduce((list, row) =>
+        withNewest(list, row, (entry) => entry.paneId, (entry) => entry.generatedAt), rows);
+      if (written) this.newest.patch(owner, ({ any, model }) => ({ any: newer(any, added), model: newer(model, added.filter((row) => row.source === "MODEL")) }));
+      else this.newest.drop(owner);
     }
     return stored;
   }
+  // Copies: callers own what they get.
   async latest(owner: string) {
-    const newest = (filter: string) => `SELECT DISTINCT ON (pane_id) ${columns} FROM nous_pane_summaries WHERE owner_user_id = $1 ${filter}
-      ORDER BY pane_id, generated_at DESC, id DESC`;
-    const [any, model] = await Promise.all([this.pool.query<Row>(newest(""), [owner]), this.pool.query<Row>(newest("AND source = 'MODEL'"), [owner])]);
-    return { any: any.rows.map(rowOf), model: model.rows.map(rowOf) };
+    const { any, model } = await this.newest.get(owner);
+    return { any: any.map((row) => ({ ...row })), model: model.map((row) => ({ ...row })) };
   }
   async batchesSince(owner: string, since: string) {
     const result = await this.pool.query<{ count: string }>(`SELECT count(DISTINCT batch_id)::text AS count FROM nous_pane_summaries
@@ -93,9 +114,11 @@ export class PostgresNousPaneSummariesRepository implements NousPaneSummariesRep
     return Number(result.rows[0]?.count ?? 0);
   }
   async prune(before: string) {
-    const result = await this.pool.query(`DELETE FROM nous_pane_summaries WHERE generated_at < $1 AND id NOT IN (
-      SELECT DISTINCT ON (owner_user_id, pane_id) id FROM nous_pane_summaries ORDER BY owner_user_id, pane_id, generated_at DESC, id DESC)`, [before]);
-    return result.rowCount ?? 0;
+    try {
+      const result = await this.pool.query(`DELETE FROM nous_pane_summaries WHERE generated_at < $1 AND id NOT IN (
+        SELECT DISTINCT ON (owner_user_id, pane_id) id FROM nous_pane_summaries ORDER BY owner_user_id, pane_id, generated_at DESC, id DESC)`, [before]);
+      return result.rowCount ?? 0;
+    } finally { this.newest.drop(); }
   }
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }
 }

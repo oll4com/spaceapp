@@ -1,13 +1,14 @@
 import { Fragment, useRef, useState, type CSSProperties, type HTMLAttributes } from "react";
-import { appointmentOverdue, appointmentSections, type Appointment, type UiLanguage } from "@space/contracts";
+import { appointmentHoursOf, appointmentOverdue, appointmentSections, type Appointment, type UiLanguage } from "@space/contracts";
 import { api } from "../../api.js";
-import { LinkedText } from "../appointments/AppointmentDetail.js";
+import { AppointmentFollowUp, LinkedText } from "../appointments/AppointmentDetail.js";
 import {
-  APPOINTMENT_KIND_COLORS, APPOINTMENT_KIND_ICONS, APPOINTMENT_KIND_LABELS, appointmentCalendarDayLabel, appointmentClock, appointmentCountdown,
-  appointmentDay, appointmentDayLabel, appointmentLink, appointmentRelativeDay, appointmentsByDay, appointmentWhen, useAppointments
+  APPOINTMENT_KIND_COLORS, APPOINTMENT_KIND_ICONS, APPOINTMENT_KIND_LABELS, appointmentCalendarDayLabel, appointmentClock, appointmentCompleteAllowed, appointmentCountdown,
+  appointmentDay, appointmentDayLabel, appointmentLink, appointmentMonthLabel, appointmentRecurrenceLabel, appointmentRelativeDay, appointmentsByDay, appointmentWhen,
+  useAppointments
 } from "../appointments/appointments-view.js";
 import { APPOINTMENT_FORMAT_LABELS, AppointmentBadges } from "../appointments/AppointmentBadges.js";
-import { DockSearch } from "../dock-kit/DockKit.js";
+import { DockSearch, useDockConfirm } from "../dock-kit/DockKit.js";
 import { dayLabel, monthDays, shiftDay, shiftMonth, weekDays } from "../task-dock/calendar-days.js";
 import { CalendarDays, ChevronLeft, ChevronRight, Columns3, ExternalLink, List, Timer, type LucideIcon } from "../ui-theme/app-icons.js";
 import { requestNousFocus } from "../nous-focus/nous-focus-events.js";
@@ -59,6 +60,8 @@ export function NousAppointments() {
   const every = useAppointments("all", view !== "list");
   const { list, error, now, settings, zone } = upcoming;
   const [failure, setFailure] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const { confirm, confirmDialog } = useDockConfirm();
   const [openId, setOpenId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
@@ -72,10 +75,12 @@ export function NousAppointments() {
   const today = appointmentDay(new Date(now).toISOString(), zone);
   const focus = cursor ?? today;
   const chosen = selected ?? today;
-  const hoursZone = list?.timeZone ?? zone;
+  const hours = list?.hours ?? appointmentHoursOf(null, list?.timeZone ?? zone);
   const shortDay = (day: string) => appointmentCalendarDayLabel(day, settings, "short");
 
-  async function mark(id: string, status: "DONE" | "CANCELLED") {
+  async function mark(item: Appointment, status: "DONE" | "CANCELLED") {
+    if (status === "DONE" && !(await appointmentCompleteAllowed(item, settings, language, confirm))) return;
+    const id = item.id;
     setBusy(true);
     setFailure(null);
     try {
@@ -112,7 +117,8 @@ export function NousAppointments() {
     <div id={`nous-appointment-${item.id}`} className="nous-appointments-detail">
       <p>
         {kind(item)}
-        {" · "}{appointmentClock(item.startsAt, settings)}{item.endsAt ? `–${appointmentClock(item.endsAt, settings)}` : ""} ({zone})
+        {" · "}{appointmentCalendarDayLabel(appointmentDay(item.startsAt, zone), settings, "short")} {appointmentClock(item.startsAt, settings)}{item.endsAt ? `–${appointmentClock(item.endsAt, settings)}` : ""} ({zone})
+        {item.recurrence ? <> · {appointmentRecurrenceLabel(item, settings, language)}</> : null}
       </p>
       {link ? <a className="appointments-join" href={link.href} target="_blank" rel="noreferrer noopener"><ExternalLink aria-hidden="true" />{t("Open {host}", { host: link.host })}</a> : null}
       {item.location ? <p><LinkedText text={item.location} /></p> : null}
@@ -126,10 +132,13 @@ export function NousAppointments() {
       </dl>
       {item.status === "UPCOMING" ? (
         <div className="nous-appointments-actions">
-          <button type="button" disabled={busy} onClick={() => void mark(item.id, "DONE")} aria-label={t("Mark {title} completed", { title: item.title })}>{t("Completed")}</button>
-          <button type="button" disabled={busy} onClick={() => void mark(item.id, "CANCELLED")} aria-label={t("Cancel {title}", { title: item.title })}>{t("Cancel")}</button>
+          <button type="button" disabled={busy} onClick={() => void mark(item, "DONE")} aria-label={t("Mark {title} completed", { title: item.title })}>{t("Completed")}</button>
+          <button type="button" disabled={busy} onClick={() => void mark(item, "CANCELLED")} aria-label={t("Cancel {title}", { title: item.title })}>{t("Cancel")}</button>
         </div>
       ) : null}
+      {item.status !== "CANCELLED" ? <AppointmentFollowUp key={item.id} item={item} hours={hours} settings={settings}
+        onChanged={() => Promise.all([upcoming.reload(), view === "list" ? null : every.reload()])}
+        onRecontact={(created, message) => { const day = appointmentDay(created.startsAt, zone); setCursor(day); setSelected(day); setOpenId(created.id); setNotice(message); }} /> : null}
     </div>
   );
 
@@ -150,9 +159,10 @@ export function NousAppointments() {
             <Icon aria-hidden="true" />{kind(item)} · {appointmentOverdue(item, now) ? <span className="nous-appointments-overdue">{t("Expired")}</span>
               : item.status === "UPCOMING" ? appointmentCountdown(when, now, language)
               : t(item.status === "DONE" ? "Completed" : "Cancelled")}
+            {item.recurrence ? <> · {appointmentRecurrenceLabel(item, settings, language)}</> : null}
           </span>
           <span className="nous-appointments-badges" id={`nous-appointment-badges-${item.id}`}>
-            <AppointmentBadges item={item} settings={settings} hoursZone={hoursZone} />
+            <AppointmentBadges item={item} settings={settings} hours={hours} />
           </span>
         </button>
         {expanded ? detail(item) : null}
@@ -192,8 +202,8 @@ export function NousAppointments() {
     if (view === "month") period = period.slice(0, Math.ceil((period.map((day) => day.startsWith(month)).lastIndexOf(true) + 1) / 7) * 7);
     const first = period[0]!, last = period[period.length - 1]!;
     const title = view === "week"
-      ? `${dayLabel(first, { day: "numeric", month: "short" }, locale)} – ${dayLabel(last, { day: "numeric", month: "short", year: "numeric" }, locale)}`
-      : dayLabel(`${month}-01`, { month: "long", year: "numeric" }, locale);
+      ? `${appointmentCalendarDayLabel(first, settings)} – ${appointmentCalendarDayLabel(last, settings)}`
+      : appointmentMonthLabel(`${month}-01`, settings);
     const move = (by: number) => { setSlide(by); setCursor(view === "week" ? shiftDay(focus, 7 * by) : `${shiftMonth(month, by)}-01`); };
     const slid = slide > 0 ? " is-slide-next" : slide < 0 ? " is-slide-prev" : "";
     const gestures: HTMLAttributes<HTMLDivElement> = {
@@ -301,6 +311,8 @@ export function NousAppointments() {
         <DockSearch value={query} onChange={setQuery} label={t("Search appointments")} name="appointments-search" />
       </div>
       {failure || error ? <p className="nous-muted" role="alert">{failure ?? error}</p> : null}
+      {notice ? <p className="nous-appointments-notice" role="status">{notice}</p> : null}
+      {confirmDialog}
       {!list ? <p className="nous-muted">{t("Loading appointments…")}</p> : view === "list" ? renderList() : renderCalendar()}
     </section>
   );

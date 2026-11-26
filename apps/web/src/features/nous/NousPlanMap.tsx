@@ -32,9 +32,11 @@ const isPlanView = (value: unknown): value is "list" | "diagram" => value === "l
 export function NousPlanMap({ overview, onOpen }: { overview: NousOverview | null; onOpen(id: string): void }) {
   const [view, setView] = useNousUiState("plans.view", "list", isPlanView);
   const [allDates, setAllDates] = useNousUiState("plans.allDates", false, isFlag);
+  const language = useUiLanguage();
   if (!overview) return <DockState kind="loading" title="Loading the plans" />;
   const plans = overview.plans;
-  if (!plans.length) return <DockState kind="empty" icon={Nous} title="No open plans" detail="Plans you or Nous record appear here with what they wait on, their dates and what depends on what." />;
+  const closed = overview.closedPlans ?? [];
+  if (!plans.length && !closed.length) return <DockState kind="empty" icon={Nous} title="No open plans" detail="Plans you or Nous record appear here with what they wait on, their dates and what depends on what." />;
   const holds = overview.planHolds ?? { holds: [], unblockFirst: [], dates: [] };
   const byId = new Map(plans.map((plan) => [plan.id, plan]));
   const titleOf = (id: string) => byId.get(id)?.title ?? id;
@@ -126,6 +128,19 @@ export function NousPlanMap({ overview, onOpen }: { overview: NousOverview | nul
             </div>
           ))}
         </section>
+
+        {/* Operator nous_msg:8076f33e: plans closed with work left (under 100% or parked) stay in sight. */}
+        {closed.length ? (
+          <section className="nous-plans-section" aria-label="Closed with work left">
+            <h3>{uiText(language, "Closed with work left")}</h3>
+            <div className="nous-plan-group">
+              <h4>{uiText(language, "Under 100% or parked")}<span className="nous-plan-group-count">{closed.length}</span></h4>
+              <ul aria-label="Closed with work left">
+                {closed.map((plan) => <PlanItem key={plan.id} plan={plan} chip={chip} onOpen={onOpen} closed />)}
+              </ul>
+            </div>
+          </section>
+        ) : null}
       </div>
     </div>
   );
@@ -134,7 +149,29 @@ export function NousPlanMap({ overview, onOpen }: { overview: NousOverview | nul
 /** A plan's resume time (a wait for a date) or due date, for sorting inside its group. */
 const sortTime = (plan: PlanRow) => plan.hold?.kind === "DATE" && plan.hold.until ? plan.hold.until : plan.dueAt ?? null;
 
-function PlanItem({ plan, chip, onOpen }: { plan: PlanRow; chip(id: string): ReactNode; onOpen(id: string): void }) {
+/** A closed plan with work left (operator nous_msg:8076f33e): when it closed, why, and each condition that reopens it. */
+export function ClosedPlanDetail({ plan }: { plan: PlanRow }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  return (
+    <div className="nous-plan-closed">
+      <p>{t("Closed at {progress}%", { progress: plan.progress })}</p>
+      {plan.parked ? <p>{t("Why: {reason}", { reason: plan.parked.reason })}</p> : <p className="nous-muted">{t("No reason or condition to reopen it was recorded.")}</p>}
+      {plan.parked?.conditions?.length ? (
+        <ul aria-label={t("Conditions to reopen")}>
+          {plan.parked.conditions.map((condition, index) => (
+            <li key={index} className={`is-${condition.state.toLowerCase()}`}>
+              <span className="nous-plan-condition-state">{condition.state}</span>
+              <span>{condition.who} · {condition.what}{condition.at ? ` · ${when(condition.at)}` : ""}{condition.metAt ? ` · ${t("met {date}", { date: when(condition.metAt) })}` : ""}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function PlanItem({ plan, chip, onOpen, closed }: { plan: PlanRow; chip(id: string): ReactNode; onOpen(id: string): void; closed?: boolean }) {
   const hold = plan.hold ?? null;
   const resumes = hold?.kind === "DATE" ? hold.until : null;
   const phrase = hold ? GROUP_TITLE.get(hold.kind)!.toLowerCase() : null;
@@ -149,7 +186,7 @@ function PlanItem({ plan, chip, onOpen }: { plan: PlanRow; chip(id: string): Rea
         </span>
         <span className="nous-progress" aria-hidden="true"><span style={{ width: `${plan.progress}%` }} /></span>
         {/* A parked plan's reason already says what it waits on. */}
-        {plan.parked ? <span className="nous-plan-row-detail nous-plan-row-parked" title={plan.parked.reason}>{uiText(language, "Parked: {reason} · {met}/{total} conditions met", plan.parked)}</span>
+        {plan.parked && !closed ? <span className="nous-plan-row-detail nous-plan-row-parked" title={plan.parked.reason}>{uiText(language, "Parked: {reason} · {met}/{total} conditions met", { reason: plan.parked.reason, met: plan.parked.met, total: plan.parked.total })}</span>
           : hold && hold.kind !== "PLAN" ? <span className="nous-plan-row-detail" title={hold.what}>{hold.what}</span> : null}
         <span className="nous-plan-row-meta">
           <span>{plan.pane ? `${plan.pane}${plan.room ? ` · ${plan.room}` : ""}` : plan.paneClosed ? "Pane closed" : "No pane"}</span>
@@ -157,6 +194,7 @@ function PlanItem({ plan, chip, onOpen }: { plan: PlanRow; chip(id: string): Rea
           {plan.dueAt ? <span className={plan.overdue ? "is-overdue" : undefined}>Due {when(plan.dueAt)}{plan.overdue ? " · overdue" : ""}</span> : null}
         </span>
       </button>
+      {closed ? <ClosedPlanDetail plan={plan} /> : null}
       {plan.dependsOn?.length ? <p className="nous-plan-needs"><span>Needs</span><span className="nous-plan-chips">{plan.dependsOn.map(chip)}</span></p> : null}
     </li>
   );

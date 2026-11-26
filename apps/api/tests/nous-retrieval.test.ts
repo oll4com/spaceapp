@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { NOUS_PROMPT_MAX_CHARS } from "@space/contracts";
 import { fitPrompt, fitWhole, historyLines, nameList, NOUS_RETRIEVED_NAMES_CHARS, promptSection, rankByWords, references, relevantHistory, relevantParts } from "../src/nous/retrieval.js";
 import { planMapParts, PLAN_MAP_ROWS } from "../src/nous/plan-map.js";
 
@@ -89,6 +88,13 @@ describe("relevance for turns that do not answer the operator (token study 1/11)
     expect(fitted.text).toContain("- [task:a] Check the Hetzner backup");
     expect(fitted.left.map((part) => part.name)).toEqual(["Goals"]);
     expect(fitted.text).toContain("- Goals (");
+  });
+
+  it("keeps a parked plan with its condition lines when an inbox turn's list is about it (token audit 22/11: an inbox turn's parked plans are a list)", () => {
+    const parked = { name: "Parked plans", rank: 6, entries: true, text: "## Parked plans (why each is parked)\n- [clipboard:aaaaaaaaaaaa] \"Hetzner backup\" closed at 90% · 0/1 met\n"
+      + "  - c1 OPEN DATE: Andy re-checks the Hetzner backup (on 2026-11-24 09:00)\n- [clipboard:bbbbbbbbbbbb] \"Sell the car\" closed at 40% · 0/1 met\n  - c1 OPEN THIRD_PARTY: A buyer answers" };
+    expect(relevantParts([parked], "Andy finished the Hetzner backup")[0]!.text).toBe("## Parked plans (why each is parked)\n- [clipboard:aaaaaaaaaaaa] \"Hetzner backup\" closed at 90% · 0/1 met\n"
+      + "  - c1 OPEN DATE: Andy re-checks the Hetzner backup (on 2026-11-24 09:00)\n- 1 other entry not about this turn: space_world {\"section\": \"Parked plans\"}");
   });
 
   it("gives the dialogue's message the turn works on first, then the matching ones in time order, and counts the rest", () => {

@@ -26,13 +26,13 @@ describe("Dot Tools view", () => {
     expect(within(deploy).getByText(/Not allowed/)).toBeTruthy();
     expect(within(deploy).getByText("Tests and deploys are never available to Native agents.")).toBeTruthy();
     fireEvent.change(screen.getByRole("searchbox", { name: "Search tools" }), { target: { value: "memory" } });
-    expect(screen.getByText("memory.search")).toBeTruthy();
+    expect(screen.getByText("dot_memory.recall")).toBeTruthy();
     expect(screen.queryByText("resource.ops.deploy")).toBeNull();
     fireEvent.change(screen.getByRole("searchbox", { name: "Search tools" }), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Browser" }));
     expect(screen.getByRole("button", { name: "Browser" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("browser.navigate")).toBeTruthy();
-    expect(screen.queryByText("memory.search")).toBeNull();
+    expect(screen.queryByText("dot_memory.recall")).toBeNull();
     expect(screen.getAllByText("space.execute").length).toBeGreaterThan(0);
     expect(screen.getByText("Minimized 1 pane")).toBeTruthy();
   });

@@ -108,7 +108,8 @@ export interface OAuthTokens { accessToken: string; refreshToken: string | null;
 export interface MailMessage { to: string[]; subject: string; body: string }
 export interface CalendarEventInput { title: string; start: string; end: string; timeZone?: string; location?: string; description?: string; attendees?: string[] }
 /** An answer to an invitation: the event by its provider id or by the invite's iCalendar UID. */
-export interface CalendarResponseInput { eventId?: string; iCalUID?: string; response: "accepted" | "declined" | "tentative"; comment?: string }
+/** `check`: only find the event and that this account is its guest, answering nothing (15/11, decision f4996c2b: a 404 after the yes). */
+export interface CalendarResponseInput { eventId?: string; iCalUID?: string; response: "accepted" | "declined" | "tentative"; comment?: string; check?: boolean }
 export interface CalendarResponse { eventId: string; title: string | null; start: string | null }
 export interface ConnectorProviderClient {
   provider: ConnectorProvider;
@@ -298,6 +299,7 @@ export function createGoogleConnector(input: { clientId: string; clientSecret?: 
       if (!event?.id) throw invitationMissing();
       const attendees = (event.attendees as Array<Record<string, unknown>> | undefined) ?? [];
       if (!attendees.some((attendee) => attendee.self === true)) throw new ConnectorError(409, "CONNECTOR_NOT_INVITED", "This account is not a guest of that event.");
+      if (answer.check) return { eventId: String(event.id), title: bounded(event.summary as string, 300), start: null };
       // Only the self attendee changes; sendUpdates=all tells the organizer like Google Calendar's own Yes/No/Maybe.
       await json(await fetchImpl(`${calendar}/events/${encodeURIComponent(String(event.id))}?sendUpdates=all`, authed(token, { method: "PATCH", headers: { "content-type": "application/json" },
         body: JSON.stringify({ attendees: attendees.map((attendee) => attendee.self === true
@@ -410,6 +412,7 @@ export function createMicrosoftConnector(input: { clientId: string; clientSecret
         : (await graphPages(`${graph}/events?$filter=${encodeURIComponent(`iCalUId eq '${(answer.iCalUID ?? "").replace(/'/g, "''")}'`)}&$select=id,subject,start`,
           token, 1, "Outlook calendar find"))[0];
       if (!event?.id) throw invitationMissing();
+      if (answer.check) return { eventId: String(event.id), title: bounded(event.subject as string, 300), start: null };
       const action = { accepted: "accept", declined: "decline", tentative: "tentativelyAccept" }[answer.response];
       const sent = await fetchImpl(`${graph}/events/${encodeURIComponent(String(event.id))}/${action}`, authed(token, { method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ sendResponse: true, ...(answer.comment ? { comment: answer.comment } : {}) }) }));
@@ -548,10 +551,10 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
         }
         case "calendar.respond": {
           const input = z.object({ eventId: z.string().trim().min(1).max(1024).optional(), iCalUID: z.string().trim().min(1).max(1024).optional(),
-            response: z.enum(["accepted", "declined", "tentative"]), comment: z.string().trim().max(2000).optional(), account: z.string().optional() }).strict()
+            response: z.enum(["accepted", "declined", "tentative"]), comment: z.string().trim().max(2000).optional(), check: z.boolean().optional(), account: z.string().optional() }).strict()
             .refine((value) => value.eventId || value.iCalUID, "Give the invitation's eventId or iCalUID.").parse(args);
           const answered = await api.respondEvent(token, input);
-          await deps.audit(null, "connector.calendar.respond", { accountId: account.accountId, response: input.response });
+          if (!input.check) await deps.audit(null, "connector.calendar.respond", { accountId: account.accountId, response: input.response });
           return { status: "COMPLETED", result: { ...base, ...answered, response: input.response } };
         }
       }

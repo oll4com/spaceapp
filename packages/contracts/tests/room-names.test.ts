@@ -3,7 +3,6 @@ import { PANE_NAMES } from "../src/pane-names.js";
 import {
   MAX_ROOMS,
   ROOM_NAMES,
-  ROOM_NAME_ALIASES,
   normalizeRoomName,
   pickNextAvailableRoomName,
   resolveRoomByName

@@ -26,7 +26,7 @@ beforeAll(async () => {
   expect(migration, "Google registry migration must exist").toBeDefined();
   await pool.query(migration!.sql);
 }, 150_000);
-afterAll(async () => { await postgres?.stop(); });
+afterAll(async () => { await postgres?.stop(); }, 120_000);
 
 it.skipIf(postgresUnavailable)("migrates legacy login to a stable primary and survives replay without duplication", async () => {
   const store = new PostgresSpaceStore(pool);
@@ -98,7 +98,7 @@ for (const backend of ["memory", "postgres"] as const) describe.skipIf(backend =
     expect(claims.filter(result => result.status === "fulfilled")).toHaveLength(1);
     const a = (claims[0] as PromiseFulfilledResult<Awaited<ReturnType<SpaceStore["linkGoogleAccount"]>>>).value;
     const actualOwner = a?.ownerUserId ?? other;
-    const b = await store.linkGoogleAccount(actualOwner, { sub: `${owner}-b`, email: "b@example.test" });
+    await store.linkGoogleAccount(actualOwner, { sub: `${owner}-b`, email: "b@example.test" });
     const accounts = await store.listGoogleAccounts(actualOwner);
     await Promise.all(accounts.map(account => store.setPrimaryGoogleAccount(actualOwner, account.id)));
     expect((await store.listGoogleAccounts(actualOwner)).filter(account => account.isPrimary)).toHaveLength(1);

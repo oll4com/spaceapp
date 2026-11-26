@@ -454,7 +454,7 @@ describe("AppDiagnosticsService", () => {
     const technical = (await repository.listSegments({ kind: "TECHNICAL" }))[0]!;
 
     setNow(result.expiresAt);
-    await expect(service.openSegment(technical.segmentId, "user:admin"))
+    await expect(service.openSegment(technical.segmentId))
       .rejects.toMatchObject({ code: "SEGMENT_EXPIRED" });
     await service.sweepExpired();
     expect(await repository.getSegment(technical.segmentId)).toBeNull();
@@ -484,9 +484,9 @@ describe("AppDiagnosticsService", () => {
       endedAt: "2026-07-25T10:00:04.000Z",
       expiresAt: "2026-07-26T10:00:04.000Z"
     });
-    await expect(service.openSegment("app_debug_segment:symlink1234", "user:admin"))
+    await expect(service.openSegment("app_debug_segment:symlink1234"))
       .rejects.toBeInstanceOf(AppDiagnosticsServiceError);
-    await expect(service.openSegment("app_debug_segment:symlink1234", "user:admin"))
+    await expect(service.openSegment("app_debug_segment:symlink1234"))
       .rejects.toMatchObject({ code: "SEGMENT_PATH_INVALID" });
   });
 });

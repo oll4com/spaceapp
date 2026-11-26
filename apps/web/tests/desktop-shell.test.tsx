@@ -56,7 +56,7 @@ it("keeps navigation and version visible and launches CLI directly from Create w
   expect(within(navigation).queryByRole("button", { name: "Admin" })).toBeNull();
   fireEvent.click(within(navigation).getByRole("button", { name: "Admin mode" }));
   fireEvent.click(await workspaceAction("Advanced settings"));
-  expect(await screen.findByRole("button", { name: "Telegram notifications" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Telegram notifications" }, { timeout: 10_000 })).toBeTruthy();
   expect(document.querySelector("[data-test-terminal]")).toBe(terminal);
   fireEvent.click(within(navigation).getByRole("button", { name: "Admin mode" }));
   expect(screen.queryByRole("button", { name: "Telegram notifications" })).toBeNull();

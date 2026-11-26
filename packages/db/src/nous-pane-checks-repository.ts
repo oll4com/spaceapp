@@ -1,3 +1,4 @@
+import { keptRead } from "./kept-read.js";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 
 // Nous's pane watch (migration 0223, plan clipboard:MAongwnxq9Ro): one row per pane with Nous's last check, its verdict and
@@ -39,23 +40,44 @@ const columns = `pane_id AS "paneId", room_id AS "roomId", checked_at AS "checke
 const checkOf = (row: Row): NousPaneCheck => ({ ...row, checkedAt: iso(row.checkedAt)!, nextCheckAt: iso(row.nextCheckAt) });
 
 export class PostgresNousPaneChecksRepository implements NousPaneChecksRepository {
-  constructor(private readonly pool: PgPoolLike) {}
+  // Speed audit 21/11: list(owner) read 6.20M rows/24h across boardSnapshot, nous_world and paneWatch checks; keep per-owner and patch on record().
+  // shortcut: a check written outside this process shows after cacheMs (default 1 h); LISTEN/NOTIFY if a second writer appears.
+  private readonly checks: ReturnType<typeof keptRead<NousPaneCheck[]>>;
+  constructor(private readonly pool: PgPoolLike, cacheMs = 3_600_000) {
+    this.checks = keptRead((owner) => this.readList(owner), cacheMs);
+  }
   static fromConnectionString(url: string) { return new PostgresNousPaneChecksRepository(createSpacePgPool(url, { max: 1 })); }
 
   async record(owner: string, input: NousPaneCheckInput) {
-    const result = await this.pool.query<Row>(input.verdict
-      ? `INSERT INTO nous_pane_checks (owner_user_id, pane_id, room_id, checked_at, verdict, note, next_check_at) VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (owner_user_id, pane_id) DO UPDATE SET room_id = EXCLUDED.room_id, checked_at = EXCLUDED.checked_at, verdict = EXCLUDED.verdict,
-           note = EXCLUDED.note, next_check_at = EXCLUDED.next_check_at RETURNING ${columns}`
-      : `INSERT INTO nous_pane_checks (owner_user_id, pane_id, room_id, checked_at) VALUES ($1, $2, $3, $4)
-         ON CONFLICT (owner_user_id, pane_id) DO UPDATE SET room_id = EXCLUDED.room_id, checked_at = EXCLUDED.checked_at RETURNING ${columns}`,
-    input.verdict ? [owner, input.paneId, input.roomId, input.at, input.verdict.verdict, input.verdict.note, input.verdict.nextCheckAt]
-      : [owner, input.paneId, input.roomId, input.at]);
-    return checkOf(result.rows[0]!);
+    try {
+      const result = await this.pool.query<Row>(input.verdict
+        ? `INSERT INTO nous_pane_checks (owner_user_id, pane_id, room_id, checked_at, verdict, note, next_check_at) VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (owner_user_id, pane_id) DO UPDATE SET room_id = EXCLUDED.room_id, checked_at = EXCLUDED.checked_at, verdict = EXCLUDED.verdict,
+             note = EXCLUDED.note, next_check_at = EXCLUDED.next_check_at RETURNING ${columns}`
+        : `INSERT INTO nous_pane_checks (owner_user_id, pane_id, room_id, checked_at) VALUES ($1, $2, $3, $4)
+           ON CONFLICT (owner_user_id, pane_id) DO UPDATE SET room_id = EXCLUDED.room_id, checked_at = EXCLUDED.checked_at RETURNING ${columns}`,
+      input.verdict ? [owner, input.paneId, input.roomId, input.at, input.verdict.verdict, input.verdict.note, input.verdict.nextCheckAt]
+        : [owner, input.paneId, input.roomId, input.at]);
+      const row = checkOf(result.rows[0]!);
+      this.checks.patch(owner, (rows) => {
+        const index = rows.findIndex((entry) => entry.paneId === row.paneId);
+        if (index < 0) return [...rows, row];
+        // DEV3D-013: an overlapping write landed first; checked_at is the caller's, so only the table knows which committed last.
+        if (rows[index]!.checkedAt > row.checkedAt) { this.checks.drop(owner); return rows; }
+        return rows.map((entry, at) => (at === index ? row : entry));
+      });
+      return { ...row };
+    } catch (error) {
+      this.checks.drop(owner);
+      throw error;
+    }
   }
-  async list(owner: string) {
+  private async readList(owner: string) {
     const result = await this.pool.query<Row>(`SELECT ${columns} FROM nous_pane_checks WHERE owner_user_id = $1`, [owner]);
     return result.rows.map(checkOf);
+  }
+  async list(owner: string) {
+    return (await this.checks.get(owner)).map((row) => ({ ...row }));
   }
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }
 }

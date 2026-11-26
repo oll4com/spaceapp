@@ -1,4 +1,4 @@
-import { spawn } from "./safe-child-process.js";
+import { execInHelper, spawn } from "./safe-child-process.js";
 import { z } from "zod";
 import {
   cliToggleRuntimeIds,
@@ -11,6 +11,7 @@ import {
   type CliVpnConnection
 } from "@space/contracts";
 import { SPACE_INSTALL_ROOT } from "@space/contracts";
+import { createStaleWhileRevalidateCache, type StaleWhileRevalidateCache } from "./stale-while-revalidate.js";
 
 const brokerCommand = "/usr/bin/sudo";
 const brokerExecutable = `${SPACE_INSTALL_ROOT}/bin/space-cli-vpn-broker`;
@@ -147,16 +148,34 @@ function brokerStatus(code: string): number {
   return 502;
 }
 
-async function executeBroker(command: string, args: string[], stdin: string): Promise<string> {
+function brokerRejection(stderr: string, stdout: string): CliVpnError {
+  const safeFailure = brokerErrorSchema.safeParse(safeJson(stderr || stdout));
+  return safeFailure.success
+    ? new CliVpnError(safeFailure.data.code, safeFailure.data.message, brokerStatus(safeFailure.data.code))
+    : new CliVpnError("BROKER_FAILED", "The protected CLI VPN broker rejected the request.", 502);
+}
+
+// Read-only broker actions; any other action may change routes or profiles.
+const readOnlyBrokerActions = new Set(["status", "egress-status"]);
+const brokerEnv = { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", LANG: "C.UTF-8" };
+
+/** `args` is sudo's: -n, the broker, its action. Exported for its test. */
+export async function executeBroker(command: string, args: string[], stdin: string): Promise<string> {
+  // The polled read-only actions run in the exec helper, not in a fork of the API (docs/agents/server-cpu.md); the others stay
+  // here, so a profile's config never crosses to it.
+  const helped = readOnlyBrokerActions.has(args[2] ?? "")
+    ? execInHelper(command, args, { env: brokerEnv, timeout: 90_000, killSignal: "SIGKILL", maxBuffer: 65_536, input: stdin })
+    : null;
+  if (helped) {
+    const { error, stdout, stderr } = await helped;
+    if (!error) return String(stdout);
+    if (error.killed && error.code == null) throw new CliVpnError("BROKER_TIMEOUT", "CLI VPN verification timed out.", 504);
+    // A number is the broker's exit status; more output than a status ever has is a rejection too.
+    if (typeof error.code === "number" || error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw brokerRejection(String(stderr), String(stdout));
+    throw new CliVpnError("BROKER_FAILED", "The protected CLI VPN broker could not start.", 503);
+  }
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        LANG: "C.UTF-8"
-      },
-      windowsHide: true
-    });
+    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: brokerEnv, windowsHide: true });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -186,34 +205,32 @@ async function executeBroker(command: string, args: string[], stdin: string): Pr
         resolve(stdout);
         return;
       }
-      const safeFailure = brokerErrorSchema.safeParse(safeJson(stderr || stdout));
-      if (safeFailure.success) {
-        reject(new CliVpnError(
-          safeFailure.data.code,
-          safeFailure.data.message,
-          brokerStatus(safeFailure.data.code)
-        ));
-        return;
-      }
-      reject(new CliVpnError("BROKER_FAILED", "The protected CLI VPN broker rejected the request.", 502));
+      reject(brokerRejection(stderr, stdout));
     });
     child.stdin.end(stdin);
   });
 }
 
-// Read-only broker actions; any other action may change routes or profiles.
-const readOnlyBrokerActions = new Set(["status", "egress-status"]);
 /** Status displays poll egress-status (sudo) every few seconds; share it this long. */
 export const CLI_VPN_INSPECTION_CACHE_MS = 15_000;
+/**
+ * A status display may show the last settled inspection this long while one refresh runs behind it: egress-status waits for the
+ * broker lock, up to 30 s behind a CLI launch (34 of 892 calls took 87% of the broker time, 2026-11-21). Older than this, callers wait.
+ */
+export const CLI_VPN_INSPECTION_STALE_MS = 60_000;
 
 export class CliVpnBrokerClient {
-  private inspectionCache = new Map<string, { at: number; value: Promise<CliVpnInspectionResult> }>();
-  private inspectionGeneration = 0;
+  private readonly inspections: StaleWhileRevalidateCache<CliVpnInspectionResult>;
 
   constructor(
     private readonly execute: CliVpnBrokerExecutor = executeBroker,
-    private readonly now: () => number = Date.now
-  ) {}
+    now: () => number = Date.now
+  ) {
+    // 64 keys: one per polled runtime/pid set; an evicted set is inspected again on its next read.
+    this.inspections = createStaleWhileRevalidateCache({
+      freshMs: CLI_VPN_INSPECTION_CACHE_MS, maxAgeMs: CLI_VPN_INSPECTION_STALE_MS, maxEntries: 64, now
+    });
+  }
 
   private async run(action: string, args: string[] = [], stdin = ""): Promise<unknown> {
     if (!readOnlyBrokerActions.has(action)) this.invalidateInspections();
@@ -282,35 +299,21 @@ export class CliVpnBrokerClient {
 
   /**
    * Same result as inspectRuntimes, shared for CLI_VPN_INSPECTION_CACHE_MS per
-   * identical runtime/pid set. Only for status displays: isolation checks that
+   * identical runtime/pid set, then served stale (up to CLI_VPN_INSPECTION_STALE_MS)
+   * while one refresh runs. Only for status displays: isolation checks that
    * gate a launch must call inspectRuntimes directly. Every mutating broker
-   * action drops the cache, also before it runs.
+   * action drops the cache, also before it runs; failures are never kept.
    */
   inspectRuntimesCached(
     runtimes: Array<{ runtimeId: CliVpnManagedRuntimeId; pids: number[] }>
   ): Promise<CliVpnInspectionResult> {
     const key = JSON.stringify(runtimes.map((runtime) => [runtime.runtimeId, [...runtime.pids].sort((a, b) => a - b)]));
-    const nowMs = this.now();
-    const cached = this.inspectionCache.get(key);
-    if (cached && nowMs - cached.at < CLI_VPN_INSPECTION_CACHE_MS) return cached.value;
-    const generation = this.inspectionGeneration;
-    const value = this.inspectRuntimes(runtimes);
-    this.inspectionCache.set(key, { at: nowMs, value });
-    value.catch(() => {
-      // Failures are not shared beyond the requests already waiting on them.
-      if (this.inspectionCache.get(key)?.value === value) this.inspectionCache.delete(key);
-    });
-    void value.then(() => {
-      // A mutation that started meanwhile makes this result stale on arrival.
-      if (generation !== this.inspectionGeneration && this.inspectionCache.get(key)?.value === value) this.inspectionCache.delete(key);
-    }, () => undefined);
-    if (this.inspectionCache.size > 64) this.inspectionCache.delete(this.inspectionCache.keys().next().value!);
-    return value;
+    return this.inspections.get(key, () => this.inspectRuntimes(runtimes));
   }
 
   invalidateInspections(): void {
-    this.inspectionGeneration += 1;
-    this.inspectionCache.clear();
+    // Also detaches a refresh in flight: a result read before the mutation is never stored.
+    this.inspections.invalidate();
   }
 
   async setGlobalRoute(

@@ -3,6 +3,7 @@ import { dotPersonalities, type AgentPaneTaskRun, type DotCharacter, type DotFee
 import { Bell, Check, CircleAlert, ExternalLink, Loader2, Mic, Paperclip, Slack, Sparkles, Users, X } from "../ui-theme/app-icons.js";
 import { readDateTimeSettings, type DateTimeSettings } from "../date-time-settings/date-time-settings.js";
 import { ChatCopyButton, ChatMarkdown } from "./ChatMarkdown.js";
+import { writeClipboardText } from "../clipboard-dock/clipboard-events.js";
 import { TaskDetails } from "./TaskDetails.js";
 import { DotAvatar } from "./DotAvatar.js";
 import { CodexSteps, type CodexReplySteps } from "./CodexTranscript.js";
@@ -82,6 +83,15 @@ export function DotFeed({ dot, mood = "idle", motion = true, items, status, hasO
   const language = useUiLanguage();
   const t: Translate = (text, vars) => uiText(language, text, vars);
   const [detailsFor, setDetailsFor] = useState<string | null>(null);
+  const [copied, setCopied] = useState<{ id: string; ok: boolean } | null>(null);
+  // Double-click copies a reply (operator 23/11); the Copy button stays for keyboard and touch.
+  function copyOnDoubleClick(item: DotFeedItem) {
+    if (!item.content) return;
+    writeClipboardText(item.content).then(() => true, () => false).then((ok) => {
+      setCopied({ id: item.id, ok });
+      window.setTimeout(() => setCopied((value) => value?.id === item.id ? null : value), 2500);
+    });
+  }
   const settings = readDateTimeSettings();
   const now = new Date();
   return <main className="dots-feed" role="log" aria-live="polite" aria-label={t("Conversation with {name}", { name: dot.name })}>
@@ -116,7 +126,8 @@ export function DotFeed({ dot, mood = "idle", motion = true, items, status, hasO
             {item.origin === "VOICE" ? <span className="dots-bubble-tag"><Mic aria-hidden="true" />{t("Voice")}</span>
               : item.origin === "CHANNEL" ? <span className="dots-bubble-tag"><Slack aria-hidden="true" />{t("From Slack or Teams")}</span> : null}
           </article>
-          : <article className={`dots-bubble dot${item.status === "FAILED" ? " failed" : ""}${item.kind === "NOTICE" ? " notice" : ""}`} title={title}>
+          : <article className={`dots-bubble dot${item.status === "FAILED" ? " failed" : ""}${item.kind === "NOTICE" ? " notice" : ""}`} title={title}
+            onDoubleClick={() => copyOnDoubleClick(item)}>
             {item.status === "FAILED" ? <p className="dots-bubble-failed"><CircleAlert aria-hidden="true" />{item.content || t("This task could not finish.")}</p>
               // A notice may quote email: it is plain text, so nothing in it becomes a link; Space adds the only link.
               : item.kind === "NOTICE" ? <p className="dots-notice-text">{item.content}</p>
@@ -128,6 +139,7 @@ export function DotFeed({ dot, mood = "idle", motion = true, items, status, hasO
               {latestRun && item.runId === latestRun.runId ? <button type="button" data-task-details-run={latestRun.runId} aria-expanded={detailsFor === item.id}
                 onClick={() => setDetailsFor((value) => value === item.id ? null : item.id)}>{detailsFor === item.id ? t("Hide details") : t("Details")}</button> : null}
             </div> : null}
+            {copied?.id === item.id ? <span role="status" className="dots-bubble-copied">{copied.ok ? t("Copied") : t("Copy failed. Select the text and copy it manually.")}</span> : null}
             {detailsFor === item.id && latestRun ? <TaskDetails key={latestRun.runId} run={latestRun} /> : null}
           </article>}
       </div>;

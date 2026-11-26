@@ -1744,13 +1744,13 @@ export function createRoomActionExecutor(options: {
         missionId: bridge.missionId,
         evidence: completed.evidence
       };
-    } catch (error) {
+    } catch (caught) {
       // Keep the durable action RUNNING. Temporal retries this bridge against the
       // same control key after lost replies/API restarts; never create a new key.
-      if (error instanceof RetryableRoomControlError) {
-        if (action.attemptCount < 2) throw error;
-        error = new UnconfirmedRoomControlError("Control recovery attempts were exhausted. Inspect the persisted operation before continuing; it was not repeated under a new key.");
-      }
+      if (caught instanceof RetryableRoomControlError && action.attemptCount < 2) throw caught;
+      const error = caught instanceof RetryableRoomControlError
+        ? new UnconfirmedRoomControlError("Control recovery attempts were exhausted. Inspect the persisted operation before continuing; it was not repeated under a new key.")
+        : caught;
       const stopped = await actionInMission(bridge.missionId, action.actionId);
       if (stopped?.status === "BLOCKED") {
         return {

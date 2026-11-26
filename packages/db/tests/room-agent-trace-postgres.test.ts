@@ -93,5 +93,11 @@ describe.skipIf(unavailable !== null)(`Room Agent trace lookup on PostgreSQL${un
       cliTaskId: session.cliTaskId, cliTaskRevisionId: session.cliTaskRevisionId, launchMode: "FRESH" })]);
     expect((await store.listTraceRecords("req:clitrace0002")).cliSessions.map((row) => row.sessionId)).toEqual(["cli_session:clitrace0002"]);
     expect((await store.listTraceRecords("req:clitrace0003")).cliSessions).toEqual([]);
+    // EXT-G-5: the session's own gateway calls, by its pane tag (x-space-project) from its start; another pane's call is not its.
+    await pool.query(`INSERT INTO space_gateway_request_logs(request_id, provider, model, status, latency_ms, project, requested_at)
+      VALUES ('req_cli0001', 'CODEX', 'gpt-5.5', 'success', 900, $1, now()), ('req_cli0002', 'CODEX', 'gpt-5.5', 'success', 800, 'pane:other0001', now()),
+             ('req_cli0003', 'CODEX', 'gpt-5.5', 'success', 700, $1, now() - interval '1 day')`, [pane.id]);
+    expect((await store.listTraceRecords(traceId)).gatewayRequests).toEqual([expect.objectContaining({ provider: "CODEX", latencyMs: 900,
+      cliSessionId: session.sessionId })]);
   }, 60_000);
 });

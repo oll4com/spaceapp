@@ -998,7 +998,7 @@ describe("CliRuntimeSettingsCard", () => {
     render(<CliRuntimeSettingsCard canManage client={settingsClient} />);
 
     fireEvent.click(await screen.findByRole("switch", { name: "Enable DeepSeek CLI" }));
-    let dialog = await screen.findByRole("dialog", { name: "Disable DeepSeek CLI?" });
+    const dialog = await screen.findByRole("dialog", { name: "Disable DeepSeek CLI?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Disable DeepSeek CLI" }));
 
     expect(await within(dialog).findByText("The impact changed. Review the updated counts and confirm again.")).toBeTruthy();

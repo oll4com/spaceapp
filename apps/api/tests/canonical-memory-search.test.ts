@@ -78,6 +78,12 @@ describe('canonical semantic index',()=>{
    .search({...query,q:undefined},[]);
   expect([(await search('text-embedding-3-small',.45)).length,(await search('bge-m3',.45)).length,(await search('bge-m3',.6)).length]).toEqual([1,0,1]);
  });
+ it('keeps the canonical read warm while embeddings are not ready',async()=>{
+  const list=vi.fn(async()=>[entry]);const embed=vi.fn(async()=>[]);
+  const service=new CanonicalMemorySearch({canonical:{list,save:async()=>entry},repository:{list:async()=>[],upsert:async()=>{},remove:async()=>{},search:async()=>[],close:async()=>{}},provider:'test',model:'test',ready:async()=>false,embed});
+  await expect(service.sync()).resolves.toEqual({total:0,updated:0});
+  expect(list).toHaveBeenCalledTimes(1);expect(embed).not.toHaveBeenCalled();
+ });
  it('includes visibility changes in the embedding fingerprint',()=>{
   expect(canonicalEmbeddingHash(entry)).not.toBe(canonicalEmbeddingHash({...entry,scope:'SYSTEM',roomId:null}));
  });

@@ -15,6 +15,8 @@ export function manualChunkForModule(moduleId: string): string | undefined {
   if (normalizedId.includes("/node_modules/@xterm/")) return "vendor-xterm";
   if (normalizedId.includes("/node_modules/lucide-react/")) return "vendor-icons";
   if (normalizedId.includes("/node_modules/zod/")) return "vendor-validation";
+  // The app shell's libraries no deploy changes: in their own chunk they stay cached while App is fetched again. Not motion: it loads lazily.
+  if (/\/node_modules\/(tldts|tldts-core|react-markdown|remark-[^/]+|micromark[^/]*|mdast-[^/]+|hast-[^/]+|unified|vfile[^/]*|property-information)\//.test(normalizedId)) return "vendor-shell";
   return undefined;
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { projectRoomTerminalScreen, roomAnswerInput, roomComposerEmpty, roomComposerHolds, roomTerminalMode } from "../src/room-terminal-screen.js";
+import { projectRoomTerminalScreen, roomAnswerInput, roomComposerEmpty, roomComposerHolds, roomComposerNotReady, roomTerminalMode } from "../src/room-terminal-screen.js";
 
 // Footers as Claude Code 2.1.296 draws them; background shells replace the "(shift+tab to cycle)" hint.
 const prompt = ["────", "❯ ", "────"];
@@ -101,6 +101,19 @@ describe("A prompt Claude Code keeps as a draft after its Enter", () => {
     expect(roomComposerEmpty(["❯ ", "⏺ Working on it.", rule, "❯ fix the tests", rule, ...panel].join("\n"))).toBe(false);
     expect(roomComposerEmpty([rule, "❯ ", rule, footer, "❯ ● main"].join("\n"))).toBe(true);
     expect(roomComposerEmpty([rule, "❯ fix the tests", rule, footer, "❯ ● main"].join("\n"))).toBe(false);
+  });
+
+  it("reads Claude's dim placeholders as an empty composer, never a draft (23/11 Jack, refused 4 h after a lost connection)", () => {
+    const jack = ["⏺ Searching the job boards…", "  ⎿  API Error: Connection lost mid-response", "", rule, "❯ Resend your message to try again", rule, footer].join("\n");
+    expect(roomComposerEmpty(jack)).toBe(true);
+    expect(roomComposerNotReady(jack)).toBeNull();
+    for (const row of ['❯ Try "refactor the auth module"', "❯ Press up to edit queued messages"]) {
+      expect(roomComposerEmpty([rule, row, rule, footer].join("\n")), row).toBe(true);
+    }
+    for (const draft of ["❯ Resend your message to try again later", "❯ Try refactoring the auth module", "❯ resend your message to try again"]) {
+      expect(roomComposerEmpty([rule, draft, rule, footer].join("\n")), draft).toBe(false);
+    }
+    expect(roomComposerNotReady([rule, "❯ apply to the Berlin role", rule, footer].join("\n"))).toBe("its composer holds text");
   });
 
   it("reads Codex's placeholder row as an empty composer, never a draft (R15-1, 29/10 Alex/Kate)", () => {

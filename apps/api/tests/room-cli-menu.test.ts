@@ -36,7 +36,21 @@ describe("selectRoomCliMenuRow", () => {
     const menu = fakeMenu(["Default", "Opus"]);
     await expect(selectRoomCliMenuRow({ ...menu, selection: "Sonnet", command: "/model" }))
       .rejects.toThrow("could not be verified");
-    expect(menu.sent).toEqual(["\u001b"]);
+    expect(menu.sent).toEqual(["\u001b[B", "\u001b[B", "\u001b"]);
+  });
+
+  it("scrolls to a row below the menu's visible window (restart_pane /resume, slice 14)", async () => {
+    const rows = ["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"];
+    let cursor = 0;
+    let picked: string | null = null;
+    // A three-row window that follows the highlight, as the CLIs' /resume lists do.
+    const render = (): RoomCliScreen => {
+      const top = Math.max(0, cursor - 2);
+      return { text: picked ?? rows.slice(top, top + 3).map((row, index) => `${top + index === cursor ? "❯" : " "} ${row}`).join("\n"), revision: cursor + (picked ? 100 : 0) };
+    };
+    const send = async (data: string) => { if (data === "\u001b[B") cursor = Math.min(cursor + 1, rows.length - 1); if (data === "\r") picked = `Resumed ${rows[cursor]}`; };
+    const screen = await selectRoomCliMenuRow({ screen: render(), selection: "Task 5", command: "/resume", send, observe: async () => render(), wait: async () => {} });
+    expect(screen.text).toBe("Resumed Task 5");
   });
 
   it("refuses a selection the CLI never acknowledges", async () => {

@@ -9,4 +9,8 @@ describe("Nous space_inspect description", () => {
     expect(named.length).toBeGreaterThan(3);
     expect(named.filter((name) => !(controlInspectSections as readonly string[]).includes(name))).toEqual([]);
   });
+  it("space_execute shows panes.move's form with its required id (2026-11-23 REVIEW)", () => {
+    const description = nousToolDefinitions({ copilots: false }).find((tool) => tool.name === "space_execute")!.description;
+    expect(description).toContain('{kind:"resource",operation:"panes.move",id:"<paneId>",input:{targetRoomId:"<roomId>"}}');
+  });
 });

@@ -195,7 +195,8 @@ function runId(mode: ArenaMode, now: number): string {
   return `arena-${stamp}-${slug}-${randomBytes(3).toString("hex")}`;
 }
 
-const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
+// "-" last: "/-@" was a range and refused every hyphenated id (claude-..., gpt-...) from 18/11.
+const MODEL_ID_PATTERN = /^[A-Za-z0-9@][A-Za-z0-9._:/@+-]{0,199}$/;
 
 export function isArenaModelId(value: unknown): value is string {
   return typeof value === "string" && MODEL_ID_PATTERN.test(value);
@@ -749,7 +750,7 @@ export class ArenaBenchmarkRunner {
   /** The account a Claude call uses: the run's choice, or the one with most quota left (re-checked every minute). */
   private async claudeAccountFor(modelId: string): Promise<string | undefined> {
     const configured = this.run!.config.claudeAccount;
-    if (!modelId.startsWith("claude/")) return undefined;
+    if (!modelId.startsWith("claude/") && !modelId.startsWith("space-gateway-claude/")) return undefined;
     if (configured !== CLAUDE_ACCOUNT_AUTO) return configured;
     if (!this.claudeProfile) return "main";
     const now = this.now();

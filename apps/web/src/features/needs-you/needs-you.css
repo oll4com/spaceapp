@@ -164,7 +164,7 @@ button.ny-choice-media:focus-visible { outline: 2px solid var(--modern-accent, #
   .ny-card:not(.is-open) .ny-meta > .ny-source + span::before { content: none; }
   .ny-card:not(.is-open) .ny-meta > span { flex: 0 0 auto; }
   /* The room · pane part gives way first, so the time stays readable. */
-  .ny-card:not(.is-open) .ny-meta > span[data-sensitive-masked] { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .ny-card:not(.is-open) .ny-meta > .ny-where { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 }
 @container ny-card (min-width: 520px) {
   .ny-choices { grid-template-columns: repeat(3, minmax(0, 1fr)); }

@@ -78,6 +78,23 @@ describe("measureHealthRtt", () => {
     expect(result).toBe(215);
   });
 
+  it("reads only this ping's own entry, never an older /healthz ping's", async () => {
+    const ping = vi.fn().mockResolvedValue(true);
+    const clearResourceTimings = vi.fn();
+    let callCount = 0;
+    vi.stubGlobal("performance", {
+      now: () => (++callCount === 1 ? 0 : 40),
+      getEntriesByName: (url: string) =>
+        url === "http://localhost/healthz" ? [{ name: url, requestStart: 1, responseStart: 10_001 }] : [],
+      clearResourceTimings,
+    });
+    vi.stubGlobal("window", { location: { href: "http://localhost/" } });
+
+    expect(await measureHealthRtt(ping)).toBe(40);
+    expect(ping.mock.calls[0]?.[0]).toMatch(/^\/healthz\?rtt=\d+$/);
+    expect(clearResourceTimings).toHaveBeenCalledBefore(ping);
+  });
+
   it("supports custom ping function", async () => {
     const customPing = vi.fn().mockResolvedValue(true);
     let callCount = 0;

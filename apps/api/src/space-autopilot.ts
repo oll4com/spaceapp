@@ -182,7 +182,7 @@ export function createSpaceAutopilot(options: SpaceAutopilotOptions) {
       roomId,
       offset: 0,
       limit: 10
-    })) as any;
+    })) as { revision?: number; state?: { revision?: number } } | undefined;
 
     const opSuccess = operation.status === "COMPLETED";
     let recoveryRec: RecoveryActionOutcome | undefined;

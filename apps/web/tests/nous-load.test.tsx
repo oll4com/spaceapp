@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { NousLoad as NousLoadView } from "@space/contracts";
+import type { NousLinkedLoad, NousLoad as NousLoadView } from "@space/contracts";
 import { NousLoad } from "../src/features/nous/NousLoad.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
@@ -87,22 +87,37 @@ it("offers no range longer than the History period", async () => {
   await waitFor(() => expect(screen.queryByRole("button", { name: "30 days" })).toBeNull());
 });
 
-it("lists each linked SpaceApp's load with the average over all, and keeps a stale reading for one that stops answering (Space Link Λ7)", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-  let answering = true;
-  const link = { id: "link:b", label: "SpaceApp vm207", origins: ["https://vm207.example"], deviceId: "appdev:b", scopes: ["read"], createdAt: "2026-11-13T01:00:00.000Z", lastSeenAt: null, connected: true };
+// Operator nous_msg:766c70a6: every linked SpaceApp's row beside this one's load, how many answer, and one that does not answer kept listed.
+const row = (id: string, rest: Partial<NousLinkedLoad> = {}): NousLinkedLoad => ({ id, label: id.slice(5), host: `${id.slice(5)}.example`, answering: true,
+  answeredAt: "2026-11-15T02:00:00.000Z", overall: 70, level: "BUSY", error: null,
+  parts: [{ key: "cpu", label: "CPU", percent: 41, detail: "8 cores" }, { key: "load", label: "Load", percent: 30, detail: "2.4 on 8 cores (5 min)" },
+    { key: "panes", label: "CLI panes", percent: 50, detail: "2 of 4 working" }], ...rest });
+const threeLinks = [row("link:hz"), row("link:b", { overall: null, level: null, parts: [{ key: "memory", label: "Memory", percent: 47, detail: "in use" }] }),
+  row("link:c", { answering: false, answeredAt: "2026-11-14T22:10:00.000Z", overall: null, level: null, parts: [], error: "That SpaceApp did not answer." })];
+
+it("lists three linked SpaceApps with the count, each one's parts, and one not answering since when, with the average over those that answer", async () => {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.startsWith("/api/instance-links/load")) return Response.json({ instances: [{ link, load: answering ? view(70) : null, error: answering ? null : "It did not answer." }] });
+    if (url.startsWith("/api/instance-links/load")) return Response.json({ instances: threeLinks.map((entry) => ({ row: entry })) });
     return Response.json(url.startsWith("/api/nous/load") ? view(40) : {});
   }));
   render(<NousLoad active />);
   const linked = await screen.findByRole("region", { name: "Linked SpaceApps" });
-  expect(linked.textContent).toContain("55% average over this SpaceApp and 1 linked");
-  expect(within(linked).getByText("SpaceApp vm207")).toBeTruthy();
-  answering = false;
-  await act(async () => { vi.advanceTimersByTime(30_000); });
-  await waitFor(() => expect(linked.textContent).toContain("70% at"));
-  expect(linked.textContent).toContain("stale: It did not answer.");
-  expect(linked.textContent).toContain("40% average over this SpaceApp and 1 linked");
+  expect(linked.textContent).toContain("3 linked · 2 connected · 55% average over this SpaceApp and them");
+  const [hz, b, c] = within(linked).getAllByRole("listitem");
+  expect(hz!.textContent).toContain("hz hz.example");
+  expect(hz!.textContent).toContain("70% · BUSY");
+  expect(hz!.textContent).toContain("CPU 41% · Load 30%, 2.4 on 8 cores (5 min) · CLI panes 2 of 4 working");
+  expect(b!.textContent).toContain("Memory 47%");
+  // One built before /api/nous/load has no Load %: just when it answered.
+  expect(b!.textContent).not.toContain("–");
+  expect(c!.textContent).toMatch(/not answering since \S+ \d\d:\d\d/);
+  expect(c!.textContent).toContain("That SpaceApp did not answer.");
+});
+
+it("shows nothing more without links", async () => {
+  serve(() => view(40));
+  render(<NousLoad active />);
+  await screen.findByRole("button", { name: "7 days" });
+  expect(screen.queryByRole("region", { name: "Linked SpaceApps" })).toBeNull();
 });

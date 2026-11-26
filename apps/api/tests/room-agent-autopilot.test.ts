@@ -198,6 +198,42 @@ describe("Room Agent autopilot", () => {
     expect(c.answer).toHaveBeenCalledTimes(2);
   });
 
+  it("goal 401b115b: an escalated continue that missed the empty prompt is retried at every sweep until it lands (20-22/11: 20-54 min until a restart)", async () => {
+    const idle = ["● API Error: 500 Internal server error", "", "─────────────", "❯ ", "─────────────"].join("\n");
+    const c = await setup(null, idle);
+    c.inspect.mockResolvedValue(observation("● API Error: 500 Internal server error", { state: "UNKNOWN" }));
+    const event = await c.repository.addEvent({ roomId: pane.roomId, paneId: pane.id, paneName: "Bob", kind: "STUCK", severity: "ATTENTION", title: "Bob stopped on an API error", detail: null });
+    expect(await c.autopilot.handle(event)).toBeNull();
+    c.advance(CONTINUE_RETRY_MS);
+    await c.autopilot.sweep([pane.roomId]);
+    expect(await c.repository.getEvent(event.eventId)).toMatchObject({ status: "ESCALATED", decision: "Needs you: the Room Agent could not find the pane's empty prompt to continue the task." });
+    c.onEvent.mockClear();
+    // Still no empty prompt, or running again: nothing changes and nothing is announced.
+    c.advance(30_000);
+    await c.autopilot.sweep([pane.roomId]);
+    c.inspect.mockResolvedValueOnce(observation("✻ Brewing… (esc to interrupt)", { state: "RUNNING" }));
+    c.advance(30_000);
+    await c.autopilot.sweep([pane.roomId]);
+    expect((await c.repository.getEvent(event.eventId))?.status).toBe("ESCALATED");
+    expect(c.onEvent).not.toHaveBeenCalled();
+    // A draft is never typed into.
+    c.inspect.mockResolvedValueOnce(observation(idle.replace("❯ ", "❯ half-written reply"), { state: "IDLE" }));
+    c.advance(30_000);
+    await c.autopilot.sweep([pane.roomId]);
+    expect(c.answer).not.toHaveBeenCalled();
+    c.inspect.mockResolvedValue(observation(idle, { state: "IDLE" }));
+    c.advance(20 * 60_000);
+    await c.autopilot.sweep([pane.roomId]);
+    expect(await c.repository.getEvent(event.eventId)).toMatchObject({ status: "HANDLED", decision: "Told the pane to continue the task after the API error." });
+    expect(c.answer).toHaveBeenCalledWith(pane, { expectedSessionId: "session:bob", answer: AUTOPILOT_CONTINUE_PROMPT, submit: true, expectedPromptFingerprint: "0123456789abcdef" });
+    // Other escalations stay the operator's.
+    const question = await c.repository.addEvent({ roomId: pane.roomId, paneId: pane.id, paneName: "Bob", kind: "QUESTION", severity: "ATTENTION", title: "Bob has a question for you", detail: null });
+    await c.autopilot.handle(question);
+    await c.autopilot.sweep([pane.roomId]);
+    expect(await c.repository.getEvent(question.eventId)).toMatchObject({ status: "ESCALATED", decision: "Needs you: Answer its question in the pane." });
+    expect(c.answer).toHaveBeenCalledTimes(1);
+  });
+
   it("coordinates an overlap with a Room Agent turn, retries while the Room Agent is busy and asks the operator when auto-answer is off", async () => {
     const repository = new InMemoryRoomAgentMonitorRepository();
     let busy = true;

@@ -154,6 +154,29 @@ Codex compaction proof.
   recorded 82 `compacted` entries, 79 at 200k input or more, median 258,669 against
   `model_auto_compact_token_limit = 258000`. That a pane kept its task across one is
   shown only for the short Codex thread above.
+  Claude panes compact at a 160k window since 5/11; the light copilot panes (Mail, Marketing,
+  Freelance, Job, Monitoring) at 120k since 20/11, Design and Video since 21/11 (plan clipboard:nsWKwUFhUFWA slice 2) (`SPACE_CLAUDE_COMPACT_WINDOW` from
+  `buildCliEnvironment`, read by `deploy/claude-vscode-parity`; plan clipboard:VypZ4sl7NR04 M5), TERMINAL panes stay at 160k
+  (120k from 21/11 00:06Z, plan clipboard:ipO4c7J656Ed step 4, was reverted the same day by the operator: with a ~27k base it
+  compacted at ~88k, a coding pane 2 minutes after it started, for a 94 s compaction). The window is read at launch: a running session keeps its old one until it restarts.
+  Claude panes started in the repo (`/opt/spaceapp`, a worktree) read `.claude/settings.json` (Claude Code reads it from the
+  session's folder, never a copilot's managed one): the copilot-only, design, video, `claude-api` and `dataviz` skills are listed
+  by name only and the two deprecated aliases are left out (still `/name`-invocable), 26,464 → 19,172 listing characters per
+  request (20/11). Guard: `scripts/tests/claude-skill-overrides-merge.test.mjs`.
+  Gemini (agy) homes get one link per Space skill instead of the whole `~/.codex/skills` directory, minus the two deprecated
+  aliases and what Codex disables: 48 → 40 listed (21/11, `link_gemini_skills` in `deploy/gemini-vscode-parity`). Space MCP answers
+  (`scripts/lib/mcp-result.mjs`) are compact JSON since 21/11: indentation was ~25-35% of each answer's tokens.
+  Since 21/11 (plan clipboard:ipO4c7J656Ed step 3) the skills no repo or worktree pane called in 30 days of transcripts (the
+  opt-in method skills, ops/diagnostics/release skills and Claude Code's built-ins) are listed by name only too, still loadable:
+  first request 24,059 → 21,709 tokens (Claude Code 2.1.329). Described still: the ones panes call, and `space-agent-reach`,
+  `space-hyperframes`, `space-huashu-design`, whose names do not say their task.
+  Every Space skill's description is one short trigger line (20/11, plan clipboard:VypZ4sl7NR04 step 5): the root skills'
+  listing went 18,894 → 6,165 characters (14,263 → 5,182 in a repo pane), in every Claude and Codex request; the full manual
+  stays in SKILL.md, which copilots and agents read. Guard: root descriptions at most 250 characters in
+  `scripts/tests/agent-skills-lint.test.mjs`.
+  A rail-tab pane's managed folder gets its own (`paneClaudeSettings`, `agent-bootstrap.ts`): the other panes' own skills are
+  left out (Design's and Video's stay by name), and outside App Studio the coding skills are listed by name only. Mail Copilot
+  26,464 → 10,566, App Studio → 22,104 (20/11). Guard: `apps/api/tests/agent-bootstrap.test.ts`.
   Qwen Code panes were measured the same way on 2026-11-03 (chat metadata and Qwen's own
   `usage_record.jsonl`, counts only; `/var/lib/spaceapp-user/agent-workspace/reports/20261103-ctx-001-qwen/`):
   none has compacted. Qwen 0.20.0 records a compaction as a `system`/`chat_compression`

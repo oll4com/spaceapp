@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GatewayAccountRecord } from "@space/db";
@@ -285,5 +285,47 @@ describe("antigravity usage services", () => {
     const hidden = emailsOutOfRotation([account("Paused@gmail.com", "PAUSED"), account("both@gmail.com", "PAUSED"), account("both@gmail.com", "ACTIVE"),
       account("codex@gmail.com", "PAUSED", "CODEX"), account("gone@gmail.com", "DEACTIVATED")], "ANTIGRAVITY", Date.now());
     expect([...hidden].sort()).toEqual(["gone@gmail.com", "paused@gmail.com"]);
+  });
+
+  it("keeps a refreshed token in memory and never rewrites the CLI's shared token file", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "space-test-gemini-"));
+    try {
+      const dir = join(tempDir, "space-gemini", "home", ".gemini", "antigravity-cli");
+      await mkdir(dir, { recursive: true });
+      const tokenPath = join(dir, "antigravity-oauth-token");
+      const original = JSON.stringify({
+        token: { access_token: "old", expiry: new Date(Date.now() - 60_000).toISOString(), refresh_token: "r1" },
+        auth_method: "consumer",
+        id_token_email: "main@gmail.com"
+      });
+      await writeFile(tokenPath, original, "utf8");
+      const bearers: string[] = [];
+      let oauthCalls = 0;
+      const mockFetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url);
+        if (u.includes("oauth2")) {
+          oauthCalls += 1;
+          return { ok: true, status: 200, json: async () => ({ access_token: "fresh", expires_in: 3600 }) } as Response;
+        }
+        bearers.push(String((init?.headers as Record<string, string>)?.Authorization ?? ""));
+        return { ok: true, status: 200, json: async () => ({}) } as Response;
+      });
+      let nowMs = Date.now();
+      const provider = createAntigravityUsageAccountProvider({
+        codexHome: tempDir,
+        fetchImpl: mockFetch as unknown as typeof fetch,
+        now: () => new Date(nowMs)
+      });
+      await provider();
+      nowMs += 61_000;
+      const before = bearers.length;
+      await provider();
+      await vi.waitFor(() => expect(bearers.length).toBeGreaterThan(before));
+      expect(oauthCalls).toBe(1);
+      expect(bearers.every((b) => b === "Bearer fresh")).toBe(true);
+      expect(await readFile(tokenPath, "utf8")).toBe(original);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 });

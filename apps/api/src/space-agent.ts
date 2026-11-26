@@ -38,10 +38,9 @@ import {
   type SpaceAgentRunRecord,
   type SpaceAgentSessionRecord
 } from "@space/contracts";
-import { SpaceConflictError, SpaceFeatureDisabledError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
+import { SpaceConflictError, SpaceFeatureDisabledError, makeSpaceId, nowIso, type SpaceStore } from "@space/runtime";
 import {
   codexChatProviderAdapter,
-  codexChatProviderConfigIdPrefix,
   codexChatProviderId,
   opencodeChatProviderAdapter,
   providerForConfigId,
@@ -449,8 +448,6 @@ const browserToolDefinitions: Array<{ id: string; displayName: string; slug: str
   { id: "browser:record", displayName: "Browser recording", slug: "browser.record", description: "Record bounded WebM and frame evidence for frame-by-frame debugging across parallel browser panes." }
 ];
 
-const browserToolIds = new Set(browserToolDefinitions.map((tool) => tool.id));
-
 function browserToolOptionsFromSessions(config: SpaceApiConfig, sessions: PaneBrowserSession[]): AgentPaneToolOption[] {
   const statusReason = !config.browserSessionsEnabled
     ? "Managed browser sessions are disabled."
@@ -471,35 +468,6 @@ function browserToolOptionsFromSessions(config: SpaceApiConfig, sessions: PaneBr
     statusReason,
     isForceOn: false
   }));
-}
-
-function truncateForPrompt(value: string, maxLength: number): string {
-  return value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 3))}...` : value;
-}
-
-function safeBrowserUrl(raw: string | null): string {
-  if (!raw) return "about:blank";
-  try {
-    const url = new URL(raw);
-    url.username = "";
-    url.password = "";
-    for (const key of Array.from(url.searchParams.keys())) {
-      if (/(auth|credential|key|pass|secret|session|token)/i.test(key)) {
-        url.searchParams.set(key, "[REDACTED]");
-      }
-    }
-    return truncateForPrompt(url.toString(), 500);
-  } catch {
-    return truncateForPrompt(redactMemoryText(raw), 500);
-  }
-}
-
-function safePromptText(value: string | null, maxLength: number): string {
-  return value ? truncateForPrompt(redactMemoryText(value).replace(/\s+/g, " ").trim(), maxLength) : "";
-}
-
-function selectedBrowserToolIds(selectedToolIds: string[] | null | undefined): string[] {
-  return Array.from(new Set((selectedToolIds ?? []).filter((toolId) => browserToolIds.has(toolId))));
 }
 
 function clipboardToolContext(selectedToolIds: string[] | null | undefined): string | null {
@@ -547,41 +515,6 @@ function taskToolContext(selectedToolIds: string[] | null | undefined): string |
     '```space-task-actions\n{"version":1,"actions":[{"toolId":"tasks:list","action":{"type":"list","pageSize":10}}]}\n```',
     "Action bodies: tasks:list uses type=list with optional q/status/pageSize; tasks:get uses type=get with taskItemId; tasks:save uses type=save with title and objective; tasks:update uses type=update with taskItemId and optional status/objective.",
     "V1 allows at most 3 actions per turn. tasks:save creates an OPEN task with source AGENT and accepts objectives up to 10,000 characters. CLI agents do not have task API access."
-  ].join("\n");
-}
-
-function browserToolContext(selectedToolIds: string[] | null | undefined, sessions: PaneBrowserSession[]): string | null {
-  const selected = selectedBrowserToolIds(selectedToolIds);
-  const activeSessions = sessions.filter((session) => session.isActive && session.status !== "CLOSED").slice(0, 8);
-  if (!selected.length || !activeSessions.length) return null;
-  const sessionLines = activeSessions.map((session) => {
-    const title = safePromptText(session.title, 120);
-    const parts = [
-      `agent=${session.agentNumber}`,
-      `pane=${session.paneId}`,
-      `session=${session.sessionId}`,
-      `viewport=${session.viewport}`,
-      `stream=${session.streamMode}/${session.resolvedStreamMode}`,
-      `control=${session.controlState}`,
-      `tabs=${session.pages.length}`,
-      `status=${session.status}`,
-      `url=${safeBrowserUrl(session.currentUrl ?? session.targetUrl)}`
-    ];
-    if (title) parts.push(`title=${title}`);
-    return `- ${parts.join("; ")}`;
-  });
-  return [
-    "Space managed browser tools selected:",
-    `tools=${selected.join(", ")}`,
-    "Use only Space-scoped managed browser actions: navigate, screenshot, extract_text, click, type, scroll, set_viewport, diagnostics, record.",
-    "To request browser actions, include one fenced block named space-browser-actions with JSON only:",
-    '```space-browser-actions\n{"version":1,"actions":[{"toolId":"browser:extract_text","targetPaneId":"pane:id","action":{"type":"extract_text"}}]}\n```',
-    "The toolId must match the action type, targetPaneId must be a listed browser pane, and a single turn may request at most 3 actions.",
-    "Diagnostics and recordings return sanitized console/network summaries and Space artifact paths only. Do not request raw browser internals, browser cookies, localStorage, stream tickets, profile paths, or private network targets.",
-    "Up to eight sessions may stay active, with four simultaneous live or recording workloads. Prefer SILENT or PREVIEW for unattended background work and request INTERACTIVE or REALTIME only when visual response is needed.",
-    "If a site requires human login, CAPTCHA, or lock handoff, pause agent input and ask the operator to join that same visible browser pane. Resume only after operator control is released.",
-    "Active browser sessions in this room:",
-    ...sessionLines
   ].join("\n");
 }
 
@@ -742,27 +675,6 @@ function mapMessage(message: Awaited<ReturnType<SpaceStore["listSpaceAgentMessag
   };
 }
 
-function persistentTranscriptContext(
-  messages: Awaited<ReturnType<SpaceStore["listSpaceAgentMessages"]>>,
-  excludedMessageIds: Set<string>
-): string | null {
-  const priorMessages = messages
-    .filter((message) => !excludedMessageIds.has(message.messageId))
-    .filter((message) => message.status === "COMPLETED" && message.content.trim())
-    .slice(-12);
-  if (!priorMessages.length) return null;
-
-  const lines = priorMessages.map((message) => {
-    const content = safePromptText(message.content, message.role === "tool" ? 900 : 1200);
-    return `- ${message.role}: ${content}`;
-  });
-  return [
-    "Space persistent conversation context:",
-    "Recent completed messages in this agent pane are below. Use them as continuity context for this turn.",
-    ...lines
-  ].join("\n").slice(0, 9000);
-}
-
 function runStatusFromRecord(
   session: SpaceAgentSessionRecord,
   run: Awaited<ReturnType<SpaceStore["getLatestSpaceAgentRun"]>>
@@ -897,6 +809,8 @@ export function createSpaceAgentAdapter(options: {
   readDotAttachments?: (input: { dotId: string; artifacts: Artifact[] }) => Promise<Array<{ artifactId: string; coverage: AttachmentCoverage; line: string }>>;
   /** Stage 7: facts for the Auto policy's shadow decision; without them no decision is recorded. */
   autoRouteFacts?: () => Promise<AutoRouteFacts>;
+  /** Why Codex cannot serve Chat now (its Space Gateway pool has no tokens), or null; Chat then offers it as unavailable. */
+  codexQuotaReason?: () => Promise<string | null>;
   requirementsCacheTtlMs?: number;
   modelCatalogCacheMaxAgeMs?: number;
   cancelWorkflow?: (workflowId: string) => Promise<void>;
@@ -921,8 +835,10 @@ export function createSpaceAgentAdapter(options: {
   function createProviderRegistry(): ChatProviderAdapter[] {
     const codexSnapshot = createModelCatalogSnapshot();
     const providers: ChatProviderAdapter[] = [
-      codexChatProviderAdapter(codexAgentControl, () =>
-        codexSnapshot().then((result) => ({
+      codexChatProviderAdapter(codexAgentControl, async () => {
+        const quota = await options.codexQuotaReason?.().catch(() => null);
+        if (quota) return { models: [], current: null, error: quota };
+        return codexSnapshot().then((result) => ({
           models: result.catalog.map((model) => ({
             id: model.id,
             displayName: model.displayName,
@@ -934,8 +850,8 @@ export function createSpaceAgentAdapter(options: {
           })),
           current: null,
           error: result.error
-        }))
-      )
+        }));
+      })
     ];
     if (openCodeControlResolver) {
       providers.push(opencodeChatProviderAdapter(openCodeControlResolver));
@@ -1492,18 +1408,33 @@ export function createSpaceAgentAdapter(options: {
    */
   async function applyDotRuntime(session: SpaceAgentSessionRecord, input: SpaceAgentCreateInput,
     operation: SpaceAgentOperationContext): Promise<SpaceAgentSessionRecord> {
-    if (!session.dotId || !options.dotRuntime) return session;
-    const runtime = await options.dotRuntime(session).catch(() => null);
-    if (!runtime) return session;
-    let update: Partial<ReturnType<typeof selectedSessionFields> & { permissionMode: PermissionMode }> = {};
+    if (!session.dotId) return session;
+    const runtime = await options.dotRuntime?.(session).catch(() => null) ?? { modelConfigId: null, permissionMode: null };
+    let update: Partial<ReturnType<typeof selectedSessionFields> & { permissionMode: PermissionMode; status: SpaceAgentSessionRecord["status"] }> = {};
     let providerId = session.selectedProviderId === codexChatProviderId ? null : session.selectedProviderId ?? null;
-    if (runtime.modelConfigId && runtime.modelConfigId !== session.selectedModelConfigId && session.status !== "RUNNING") {
-      const run = await store.getLatestSpaceAgentRun(session.sessionId);
-      if (run?.status !== "QUEUED" && run?.status !== "RUNNING") {
+    const idle = session.status !== "RUNNING" && !["QUEUED", "RUNNING"].includes((await store.getLatestSpaceAgentRun(session.sessionId))?.status ?? "");
+    if (runtime.modelConfigId && runtime.modelConfigId !== session.selectedModelConfigId && idle) {
+      const select = await selection(input.pane.roomId, operation.providers, operation.providerCatalogs, operation.providerEnabled,
+        runtime.modelConfigId, session.selectedToolIds);
+      if (select.selectedModel?.id === runtime.modelConfigId) {
+        update = selectedSessionFields(select, session);
+        providerId = select.selectedModel.providerId ?? null;
+      }
+    }
+    // Operator 22/11: a Dot never stays on a provider with no tokens (Codex out of quota). Between turns it moves to the
+    // first provider Chat can serve now; OpenCode is skipped because it spends the paid Claude API key.
+    // shortcut: it stays on that provider when the first one recovers unless Settings → Dots names a model; follow the Gateway order once Chat reads it.
+    if (!update.selectedModelConfigId && idle) {
+      const current = await selection(input.pane.roomId, operation.providers, operation.providerCatalogs, operation.providerEnabled,
+        session.selectedModelConfigId, session.selectedToolIds);
+      const fallback = current.selectedModel && !current.modelProviders.find((provider) => provider.isCurrent)?.isInactive ? null
+        : current.modelProviders.find((provider) => !provider.isInactive && provider.models.length > 0 && provider.providerId !== "opencode");
+      const model = fallback?.models.find((candidate) => candidate.isDefault) ?? fallback?.models[0];
+      if (fallback && model) {
         const select = await selection(input.pane.roomId, operation.providers, operation.providerCatalogs, operation.providerEnabled,
-          runtime.modelConfigId, session.selectedToolIds);
-        if (select.selectedModel?.id === runtime.modelConfigId) {
-          update = selectedSessionFields(select, session);
+          `${fallback.configIdPrefix}${model.id}|${model.defaultReasoningEffort}`, session.selectedToolIds);
+        if (select.selectedModel) {
+          update = { ...selectedSessionFields(select, session), ...sessionRefreshStatus(session, null) };
           providerId = select.selectedModel.providerId ?? null;
         }
       }
@@ -1746,7 +1677,7 @@ export function createSpaceAgentAdapter(options: {
         errorMessage: message
       });
       await store.updateSpaceAgentMessage(assistantMessageId, { status: "FAILED", content: message });
-      session = await store.updateSpaceAgentSession(session.sessionId, { status: "BLOCKED", lastSyncedAt: nowIso() });
+      await store.updateSpaceAgentSession(session.sessionId, { status: "BLOCKED", lastSyncedAt: nowIso() });
       throw new SpaceFeatureDisabledError("SPACE_AGENT_RUNTIME_UNAVAILABLE", message);
     }
 

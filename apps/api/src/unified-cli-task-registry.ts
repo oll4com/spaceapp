@@ -67,11 +67,13 @@ const runtimeProviderLabels: Record<string, string> = {
   "cli:hermes": "Hermes Agent"
 };
 
+// eslint-disable-next-line no-control-regex -- strips terminal escape sequences, which start with ESC
 const ansiEscapePattern = /\u001b(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g;
 
 function cleanTaskText(value: string, maxLength: number): string {
   return redactMemoryText(value)
     .replace(ansiEscapePattern, "")
+    // eslint-disable-next-line no-control-regex -- replaces control characters on purpose
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
     .replace(/\r/g, "\n")
     .replace(/[ \t]+/g, " ")

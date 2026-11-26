@@ -71,7 +71,7 @@ describe("Vault phase 6 checks without the Browser Host", () => {
       harness.tamper.signWith = undefined;
 
       // A real broker signature over wider claims than asked (submit, another origin) is refused too.
-      harness.tamper.widen = (claims) => ({ ...claims, items: claims.items.map((item: { origins: string[] }) => ({ ...item, submit: true, origins: [...item.origins, "https://evil.example"] })) });
+      harness.tamper.widen = (claims) => ({ ...claims, items: (claims.items as Array<{ origins: string[] }>).map((item) => ({ ...item, submit: true, origins: [...item.origins, "https://evil.example"] })) });
       expect((await delegate()).json().error.code).toBe("VAULT_DELEGATION_REFUSED");
       harness.tamper.widen = undefined;
 

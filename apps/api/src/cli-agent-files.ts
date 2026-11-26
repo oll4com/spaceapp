@@ -170,6 +170,7 @@ function safeStorageSegment(value: string): string {
 
 function safeOriginalFilename(value: string): string {
   const leaf = value.replaceAll("\\", "/").split("/").pop()?.trim() ?? "";
+  // eslint-disable-next-line no-control-regex -- control characters are what this strips from a file name
   const sanitized = leaf.replace(/[\u0000-\u001f\u007f]/g, "").replace(/[<>:"|?*]/g, "_").slice(0, 220);
   return sanitized || "agent-file";
 }
@@ -429,6 +430,7 @@ export function agentFileStoragePath(input: {
 export function agentFileReadPath(input: Parameters<typeof agentFileStoragePath>[0]): string {
   const sanitized = agentFileStoragePath(input);
   const name = input.storedFilename;
+  // eslint-disable-next-line no-control-regex -- a NUL byte in a stored name is what this refuses
   if (name === "." || name === ".." || /[/\\\u0000]/.test(name) || existsSync(sanitized)) return sanitized;
   const raw = join(dirname(sanitized), name);
   return existsSync(raw) ? raw : sanitized;

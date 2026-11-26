@@ -52,11 +52,11 @@ export function createNousSharedFiles(deps: {
   return {
     list,
     remove: (owner: string, shareId: string) => deps.repository.removeFileShare(owner, shareId),
-    async share(owner: string, args: z.infer<typeof shareFileArgsSchema>): Promise<{ ok: boolean; display: string; result: string }> {
+    async share(owner: string, args: z.infer<typeof shareFileArgsSchema>): Promise<{ ok: boolean; refused?: boolean; display: string; result: string }> {
       // 13/11 15:40 (×2, then files_list): a bare id is the artifact's id without its "artifact:" prefix, as space_execute takes it.
       const id = /^[A-Za-z0-9_-]{6,80}$/.test(args.artifactId) ? `artifact:${args.artifactId}` : args.artifactId;
       const artifact = await agentFile(await roomIds(owner), id);
-      if (!artifact) return { ok: false, display: "Not shared", result: `No Agent File ${id} in your rooms: only the operator's Agent Files are shared (list them with space_files_list artifacts AGENT_FILES).` };
+      if (!artifact) return { ok: false, refused: true, display: "Not shared", result: `No Agent File ${id} in your rooms: only the operator's Agent Files are shared (list them with space_files_list artifacts AGENT_FILES).` };
       const hours = args.hours ?? NOUS_SHARE_DEFAULT_HOURS;
       const at = now();
       const share = await deps.repository.addFileShare({ ownerUserId: owner, artifactId: artifact.id, note: args.note ?? null, sharedBy: "nous",

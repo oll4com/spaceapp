@@ -129,7 +129,9 @@ export const mailSenderUpdateSchema = z.object({
   status: mailSenderStatusSchema.optional(),
   caps: z.object({ perMinute: z.number().int().min(1).max(60), perDay: z.number().int().min(1).max(100_000) }).strict().optional(),
   /** SMTP senders only; null stops Space's own signature. */
-  dkim: mailSenderDkimSchema.nullable().optional()
+  dkim: mailSenderDkimSchema.nullable().optional(),
+  /** SMTP and delegated senders: the kept Vault key with the password (or delegation key); agents rebind it themselves (nous_msg:832a500e). */
+  vaultKeyId: vaultKeyIdSchema.optional()
 }).strict();
 export type MailSenderUpdate = z.infer<typeof mailSenderUpdateSchema>;
 
@@ -149,6 +151,28 @@ export type MailMadeBy = z.infer<typeof mailMadeBySchema>;
 
 /** Gmail clips a message past ~102 KB; templates stay well under it. */
 export const MAIL_TEMPLATE_HTML_MAX = 90_000;
+
+// ---- attachments (operator 20/11 21:42 BKK: the sample PDF goes attached, recipients fear links) ----
+/** Documents and pictures only: a recipient opens these without risk; anything executable or archived stays out. */
+export const MAIL_ATTACHMENT_TYPES: Readonly<Record<string, string>> = { pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg" };
+/** The base64 rides in the API's JSON body (Fastify's 1 MiB default) next to the HTML and the text: at most this many file bytes in all. */
+export const MAIL_TEMPLATE_ATTACHMENTS_MAX_BYTES = 600_000;
+const ATTACHMENT_MAGIC: Readonly<Record<string, string>> = { "application/pdf": "%PDF-", "image/png": "\x89PNG", "image/jpeg": "\xFF\xD8\xFF" };
+export const mailAttachmentType = (filename: string) => MAIL_ATTACHMENT_TYPES[filename.slice(filename.lastIndexOf(".") + 1).toLowerCase()] ?? "application/octet-stream";
+export const mailAttachmentBytes = (contentBase64: string) => Math.floor(contentBase64.length * 3 / 4) - (contentBase64.endsWith("==") ? 2 : contentBase64.endsWith("=") ? 1 : 0);
+export const mailTemplateAttachmentSchema = z.object({
+  filename: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,115}\.(pdf|png|jpe?g)$/i, "A file name of letters, digits, spaces and ._()- ending in .pdf, .png, .jpg or .jpeg."),
+  contentBase64: z.string().min(8).regex(/^[A-Za-z0-9+/]+={0,2}$/, "Standard base64 without line breaks.")
+// zod still runs a refine after the regex failed, and atob throws on a non-base64 character: test the head first so a bad file is a 400, not a throw.
+}).strict().refine((file) => /^[A-Za-z0-9+/]{8}$/.test(file.contentBase64.slice(0, 8)) && atob(file.contentBase64.slice(0, 8)).startsWith(ATTACHMENT_MAGIC[mailAttachmentType(file.filename)]!), "The file's bytes do not match its extension.");
+export type MailTemplateAttachment = z.infer<typeof mailTemplateAttachmentSchema>;
+const mailTemplateAttachmentsSchema = z.array(mailTemplateAttachmentSchema)
+  .refine((files) => files.reduce((sum, file) => sum + mailAttachmentBytes(file.contentBase64), 0) <= MAIL_TEMPLATE_ATTACHMENTS_MAX_BYTES,
+    `Attachments over ${MAIL_TEMPLATE_ATTACHMENTS_MAX_BYTES} bytes in all (compress the PDF).`)
+  .refine((files) => new Set(files.map((file) => file.filename.toLowerCase())).size === files.length, "Two attachments share a file name.");
+/** What a reader is shown of an attachment (the bytes stay on the server). */
+export interface MailAttachmentInfo { filename: string; contentType: string; bytes: number }
+export const mailAttachmentInfo = (file: MailTemplateAttachment): MailAttachmentInfo => ({ filename: file.filename, contentType: mailAttachmentType(file.filename), bytes: mailAttachmentBytes(file.contentBase64) });
 export const mailTemplateContentSchema = z.object({
   subject: z.string().trim().min(1).max(200),
   preheader: z.string().trim().max(200).default(""),
@@ -156,7 +180,9 @@ export const mailTemplateContentSchema = z.object({
   html: z.string().max(MAIL_TEMPLATE_HTML_MAX).default(""),
   /** Every campaign mail carries a plain-text part. */
   text: z.string().trim().min(1).max(50_000),
-  variables: z.array(mailTemplateVariableSchema).max(30).default([])
+  variables: z.array(mailTemplateVariableSchema).max(30).default([]),
+  /** Files every mail carries (multipart/mixed); empty: none. */
+  attachments: mailTemplateAttachmentsSchema.default([])
 }).strict();
 export type MailTemplateContent = z.infer<typeof mailTemplateContentSchema>;
 /** A change to a template: only the fields given (no defaults, so a missing field never resets one). */
@@ -165,7 +191,8 @@ export const mailTemplateContentPatchSchema = z.object({
   preheader: z.string().trim().max(200).optional(),
   html: z.string().max(MAIL_TEMPLATE_HTML_MAX).optional(),
   text: z.string().trim().min(1).max(50_000).optional(),
-  variables: z.array(mailTemplateVariableSchema).max(30).optional()
+  variables: z.array(mailTemplateVariableSchema).max(30).optional(),
+  attachments: mailTemplateAttachmentsSchema.optional()
 }).strict();
 
 export const mailTemplateVersionSchema = mailTemplateContentSchema.extend({
@@ -195,9 +222,11 @@ export const mailTemplateCreateSchema = mailTemplateContentSchema.extend({
 export type MailTemplateCreate = z.infer<typeof mailTemplateCreateSchema>;
 
 /** The canonical text a template version's fingerprint hashes (sha256 in the server): every field a recipient sees. */
-export function mailTemplateFingerprintInput(content: MailTemplateContent): string {
+export function mailTemplateFingerprintInput(content: Omit<MailTemplateContent, "attachments"> & { attachments?: MailTemplateAttachment[] }): string {
   return JSON.stringify(["mail-template/1", content.subject, content.preheader, content.html, content.text,
-    content.variables.map((variable) => [variable.name, variable.default, variable.required])]);
+    content.variables.map((variable) => [variable.name, variable.default, variable.required]),
+    // Only a version with files hashes them, so every fingerprint (and approval) made before attachments existed stays the same.
+    ...(content.attachments?.length ? [content.attachments.map((file) => [file.filename, file.contentBase64])] : [])]);
 }
 
 const VARIABLE_PATTERN = /\{\{\s*([a-z][a-zA-Z0-9_]{0,39})\s*\}\}/g;
@@ -213,7 +242,7 @@ const escapeHtml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g,
  * A template version with a recipient's values: `{{name}}` only, escaped in HTML, CR/LF dropped in the subject. A variable the template
  * uses but does not declare, or a required one without a value or default, is an error (nothing half-filled goes out).
  */
-export function renderMailTemplate(content: MailTemplateContent, values: Readonly<Record<string, string | null | undefined>>): { subject: string; preheader: string; html: string; text: string } {
+export function renderMailTemplate(content: Omit<MailTemplateContent, "attachments">, values: Readonly<Record<string, string | null | undefined>>): { subject: string; preheader: string; html: string; text: string } {
   const declared = new Map(content.variables.map((variable) => [variable.name, variable]));
   const value = (name: string) => {
     const variable = declared.get(name);
@@ -393,6 +422,8 @@ export const mailCampaignSchema = z.object({
   audience: z.object({ eligible: z.number().int().min(0), skipped: z.record(z.string(), z.number().int().min(0)) }).strict().nullable(),
   /** The owner's own mailboxes test copies go to (no approval needed). */
   testSeeds: z.array(z.string()),
+  /** Open tracking: each recipient's mail carries its own 1x1 pixel (added at send time, after approval). */
+  track: z.boolean(),
   pauseReason: z.string().max(500).nullable(),
   createdBy: z.string().max(200),
   createdAt: isoDateTime,
@@ -408,7 +439,8 @@ export const mailCampaignCreateSchema = z.object({
   listIds: z.array(mailListIdSchema).min(1),
   schedule: mailCampaignScheduleSchema.default({ startAt: null, timeZone: "Europe/Athens", days: [1, 2, 3, 4, 5], fromHour: 9, toHour: 18 }),
   pacing: mailCampaignPacingSchema.default({ perMinute: 1, perDay: 300 }),
-  testSeeds: z.array(mailAddressSchema).default([])
+  testSeeds: z.array(mailAddressSchema).default([]),
+  track: z.boolean().default(false)
 }).strict();
 export type MailCampaignCreate = z.infer<typeof mailCampaignCreateSchema>;
 /** A change to a draft campaign: only the fields given (no defaults, so a missing field never resets one). */
@@ -421,7 +453,8 @@ export const mailCampaignUpdateSchema = z.object({
   listIds: z.array(mailListIdSchema).min(1).optional(),
   schedule: mailCampaignScheduleSchema.optional(),
   pacing: mailCampaignPacingSchema.optional(),
-  testSeeds: z.array(mailAddressSchema).optional()
+  testSeeds: z.array(mailAddressSchema).optional(),
+  track: z.boolean().optional()
 }).strict();
 export type MailCampaignUpdate = z.infer<typeof mailCampaignUpdateSchema>;
 export const mailCampaignDecisionSchema = z.object({ decision: z.enum(["approve", "decline", "pause", "resume", "stop"]), note: z.string().trim().max(500).optional() }).strict();
@@ -429,12 +462,14 @@ export type MailCampaignDecision = z.infer<typeof mailCampaignDecisionSchema>;
 
 /** The canonical text a campaign's fingerprint hashes: everything the approval covers. */
 export function mailCampaignFingerprintInput(input: { templateFingerprint: string; sender: Pick<MailSender, "id" | "address" | "displayName" | "config">;
-  listIds: readonly string[]; eligible: number; schedule: MailCampaignSchedule; pacing: MailCampaignPacing; contentHash?: string }): string {
+  listIds: readonly string[]; eligible: number; schedule: MailCampaignSchedule; pacing: MailCampaignPacing; contentHash?: string; track?: boolean }): string {
   const { route } = input.sender.config;
   // List order is the send priority, so it counts; contentHash covers every recipient's rendered mail (what the operator browsed).
   return JSON.stringify(["mail-campaign/2", input.templateFingerprint, input.sender.id, input.sender.address, input.sender.displayName, route,
     [...input.listIds], input.eligible, input.schedule.startAt, input.schedule.timeZone, [...input.schedule.days].sort(), input.schedule.fromHour,
-    input.schedule.toHour, input.pacing.perMinute, input.pacing.perDay, input.pacing.intervalSeconds ?? null, input.pacing.maxHardBounces ?? null, input.contentHash ?? null]);
+    input.schedule.toHour, input.pacing.perMinute, input.pacing.perDay, input.pacing.intervalSeconds ?? null, input.pacing.maxHardBounces ?? null, input.contentHash ?? null,
+    // Only a tracked campaign adds the flag, so the fingerprints of untracked campaigns (and their approvals) stay as they were.
+    ...(input.track ? ["track"] : [])]);
 }
 
 export const MAIL_SEND_STATUSES = ["PENDING", "SENDING", "SENT", "SKIPPED", "FAILED", "UNKNOWN"] as const;
@@ -475,7 +510,7 @@ export type MailCampaignStats = z.infer<typeof mailCampaignStatsSchema>;
 
 // ---- deliverability checks and the feed ------------------------------------------------------------
 
-export const MAIL_CHECK_KINDS = ["DNS", "DNSBL", "LINT", "SPAMASSASSIN", "AUTH_VERIFIER", "SEED", "POSTMASTER"] as const;
+export const MAIL_CHECK_KINDS = ["DNS", "DNSBL", "LINT", "SPAMASSASSIN", "AUTH_VERIFIER", "SEED", "POSTMASTER", "DMARC_REPORT", "TLS_REPORT"] as const;
 export const mailCheckKindSchema = z.enum(MAIL_CHECK_KINDS);
 export type MailCheckKind = z.infer<typeof mailCheckKindSchema>;
 export const mailCheckStatusSchema = z.enum(["PASS", "WARN", "FAIL"]);
@@ -494,6 +529,17 @@ export const mailCampaignCheckSchema = z.object({
   createdAt: isoDateTime
 }).strict();
 export type MailCampaignCheck = z.infer<typeof mailCampaignCheckSchema>;
+
+/** One DMARC aggregate (RFC 7489) or TLS-RPT (RFC 8460) report as scripts/space-mail-dmarc.mjs parses it; stored as a DMARC_REPORT / TLS_REPORT check. */
+const reportText = z.string().max(500);
+export const mailDeliveryReportSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("dmarc"), org: reportText, id: reportText.min(1), domain: reportText, begin: z.number().int().min(0), end: z.number().int().min(0),
+    records: z.array(z.object({ ip: reportText, count: z.number().int().min(0), disposition: reportText, dkim: reportText, spf: reportText, headerFrom: reportText }).strict()).max(10_000) }).strict(),
+  z.object({ kind: z.literal("tls"), org: reportText, id: reportText.min(1),
+    policies: z.array(z.object({ domain: reportText, ok: z.number().int().min(0), failed: z.number().int().min(0),
+      failures: z.array(z.object({ result: reportText, mx: reportText, sessions: z.number().int().min(0) }).strict()).max(1000) }).strict()).max(100) }).strict()
+]);   // Technical: request body size (a report lists each sending IP once; Google's daily report for unboxexpert.com has 1-5)
+export type MailDeliveryReport = z.infer<typeof mailDeliveryReportSchema>;
 
 export const MAIL_CAMPAIGN_EVENT_TYPES = ["CREATED", "UPDATED", "TEST_SENT", "LAB", "REVIEW_REQUESTED", "APPROVED", "DECLINED", "BACK_TO_REVIEW",
   "STARTED", "PAUSED", "RESUMED", "STOPPED", "DONE", "AUTO_PAUSED", "SENDER", "LIST", "IMPORT", "SUPPRESSION", "HEALTH", "NOTE"] as const;
@@ -521,4 +567,26 @@ export interface MailCampaignPreview {
 export interface MailCampaignPreviewMail {
   fingerprint: string; index: number; total: number; previous: string | null; next: string | null; contactId: string; to: string; name: string; priority: number;
   from: string; replyTo: string | null; subject: string; preheader: string; html: string; text: string; renderHash: string;
+  /** The files this mail carries (the template version's). */
+  attachments: MailAttachmentInfo[];
+}
+
+// ---- open tracking (operator 22/11) --------------------------------------------------------------------
+
+/** One fetch of a tracked mail's 1x1 pixel (OPEN) or one click of a tracked link (CLICK, `url` the link's target). */
+export interface MailOpenHit {
+  kind: "OPEN" | "CLICK"; at: string; ip: string | null; userAgent: string | null; url: string | null;
+  /** From the user agent: the mail client or browser and the device; null until known. */
+  client: string | null; device: string | null;
+  /** The mail proxy that fetched instead of the reader (Google Image Proxy, Apple Mail Privacy, Outlook proxy, Yahoo proxy): its IP is not the reader's. */
+  proxy: string | null;
+  /** Reverse DNS, ISP (the network's owner) and rough geo (city, region, country) of the IP. */
+  rdns: string | null; isp: string | null; geo: string | null;
+}
+/** A tracked mail to one recipient with every open and click, oldest first; first and last are null until it is opened. */
+export interface MailTrackedMessage {
+  token: string; recipient: string; recipientName: string; subject: string; createdAt: string; links: string[];
+  /** The campaign that sent it; null for a Mail Copilot mail. */
+  campaignId: string | null;
+  count: number; firstOpenedAt: string | null; lastOpenedAt: string | null; opens: MailOpenHit[]; clicks: MailOpenHit[];
 }

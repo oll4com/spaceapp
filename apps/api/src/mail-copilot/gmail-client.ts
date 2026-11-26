@@ -58,7 +58,10 @@ export function createGmailClient(input: { accessToken: string; fetchImpl?: type
         signal: AbortSignal.timeout(20_000)
       });
       const text = await response.text();
-      const body = maskPasswordResetJson((text ? JSON.parse(text) : {}) as GmailJson);
+      let parsed: GmailJson = {};
+      // A front end may answer an error as HTML (a 502 page): it is still retried and reported by status, not thrown as a JSON SyntaxError.
+      try { parsed = text ? JSON.parse(text) as GmailJson : {}; } catch (error) { if (response.ok) throw error; }
+      const body = maskPasswordResetJson(parsed);
       if (response.ok) return body;
       const refusal = gmailRefusal(response.status, body);
       if ((refusal === "RATE_LIMIT" || response.status >= 500) && attempt < RETRIES) { await sleep(retryDelay * 2 ** attempt); continue; }

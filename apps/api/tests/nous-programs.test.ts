@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { InMemoryNousProgramsRepository } from "@space/db";
-import { createNousPrograms, registerNousProgramRoutes } from "../src/nous/programs.js";
+import { createNousPrograms, programLine, registerNousProgramRoutes } from "../src/nous/programs.js";
 import { createOperatorUpdates } from "../src/nous/operator-updates.js";
 import type { SpaceNotification } from "@space/contracts";
 import { NOUS_SUBAGENT_EXCLUDED } from "../src/nous/subagents.js";
@@ -85,6 +85,13 @@ it("imports affiliate-programs.json onto the Affiliate page with what each appro
   expect((await programs.list(owner, "startup")).map((program) => program.id)).toEqual(["nvidia-inception"]);
   expect(await programs.get(owner, "banggood-affiliate")).toMatchObject({ page: "affiliate", commitments: "No brand bidding",
     affiliate: { ...banggood.affiliate, couponFeed: null, payout: null } });
+  // 18/11 (nous_msg:38500dff): an update naming no page keeps the affiliate page; an affiliate program is refused on startup, by tool or file.
+  expect(await programs.upsert(owner, { id: "banggood-affiliate", nextAction: "Post the first link" })).toMatchObject({ program: { page: "affiliate", nextAction: "Post the first link" } });
+  expect(await programs.upsert(owner, { id: "banggood-affiliate", page: "startup" })).toMatchObject({ problem: expect.stringMatching(/^banggood-affiliate: an affiliate program/) });
+  expect(await programs.upsert(owner, { ...google, id: "unbox", project: "UnboxExpert (Oll4.com)" })).toMatchObject({ problem: expect.stringMatching(/goes on page affiliate/) });
+  const misfiled = await programs.importDocument(owner, "startup", { entries: [{ ...banggood, id: "misfiled", parent: "Misfiled" }] }, "2026-11-15T00:00:00Z");
+  expect(misfiled).toMatchObject({ written: 0, problems: [expect.stringMatching(/^misfiled: an affiliate program/)] });
+  expect((await programs.list(owner, "startup")).map((program) => program.id)).toEqual(["nvidia-inception"]);
 });
 
 it("refuses links that are not web addresses and thread ids that would break the Gmail link", async () => {
@@ -156,7 +163,15 @@ it("gives Nous space_programs to list with filters, read, upsert and add mails; 
   const mailed = await tools.execute("space_programs", { action: "add_mail", id: "microsoft-founders-hub", mail: { ...mail, to: ["foundershub@microsoft.com"] } }, ctx);
   expect(mailed).toMatchObject({ ok: true, display: "Updated Founders Hub" });
   expect((await programs.get(owner, "microsoft-founders-hub"))!.mails).toHaveLength(1);
-  expect((await tools.execute("space_programs", { action: "add_mail", id: "microsoft-founders-hub" }, ctx)).ok).toBe(false);
+  expect(await tools.execute("space_programs", { action: "add_mail", id: "microsoft-founders-hub" }, ctx)).toMatchObject({ ok: false, refused: true });
+  // 14/11 (14/11 01:37 "braintrust-startups: reapply.when: Not a date"): the entry's own problems save nothing and name the fix, a refusal.
+  const undated = await tools.execute("space_programs", { action: "upsert", entry: { id: "microsoft-founders-hub", reapply: { needed: true, when: "soon" } } }, ctx);
+  expect(undated).toMatchObject({ ok: false, refused: true, result: expect.stringMatching(/^microsoft-founders-hub: reapply\.when: .*Nothing saved: call again with that fixed\.$/) });
+  expect(await tools.execute("space_programs", { action: "upsert", entry: { id: "acme-credits" } }, ctx))
+    .toMatchObject({ ok: false, refused: true, result: "acme-credits: a new program needs parent, program and status. Nothing saved: call again with that fixed." });
+  expect(await tools.execute("space_programs", { action: "delete" }, ctx)).toMatchObject({ ok: false, refused: true });
+  // Slice 9: a mail for a guessed id is the same refusal as read and delete, so it counts as no error.
+  expect(await tools.execute("space_programs", { action: "add_mail", id: "fulcrum", mail }, ctx)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("No program fulcrum. Ids are listed with action list") });
   expect((await tools.execute("space_programs", { action: "delete", id: "google-cloud-startups" }, helper)).ok).toBe(false);
   expect(await tools.execute("space_programs", { action: "delete", id: "google-cloud-startups" }, ctx)).toMatchObject({ ok: true, display: "Deleted the program google-cloud-startups" });
   expect(await programs.get(owner, "google-cloud-startups")).toBeNull();
@@ -271,6 +286,18 @@ it("stores the files' tags; a row changed since the file takes them only when it
   const tools = createNousTools({ programs } as never);
   expect((await tools.execute("space_programs", { action: "read", id: "nvidia-inception" }, { owner, turnId: "turn:t", callId: "call:t", traceId: "trace:t" })).result)
     .toContain("Tags: ai-tokens, cash-grants");
+});
+
+it("adds a data file's sources to the stored ones and never drops a source only the registry has (14/11: 5 programs lost theirs)", async () => {
+  const programs = createNousPrograms({ repository: new InMemoryNousProgramsRepository(), now: () => Date.parse("2026-11-03T10:00:00Z") });
+  await programs.upsert(owner, { ...inception, sources: ["space_memory:abc123", "nous_msg:registry-only"] });
+  await programs.importDocument(owner, "startup", { generatedAt: "2026-11-03T12:00:00Z", entries: [{ ...inception, sources: ["space_memory:abc123", "gmail:19a0new"] }] }, "2026-11-03T12:00:00Z");
+  expect((await programs.get(owner, "nvidia-inception"))!.sources).toEqual(["space_memory:abc123", "nous_msg:registry-only", "gmail:19a0new"]);
+  // A file older than the row still adds its new source, like a mail.
+  await programs.importDocument(owner, "startup", { generatedAt: "2026-11-03T08:00:00Z", entries: [{ ...inception, sources: ["gmail:19a0older"] }] }, "2026-11-03T08:00:00Z");
+  expect((await programs.get(owner, "nvidia-inception"))!.sources).toEqual(["space_memory:abc123", "nous_msg:registry-only", "gmail:19a0new", "gmail:19a0older"]);
+  // space_programs writes its list as given (Nous fixes a wrong citation).
+  expect((await programs.upsert(owner, { id: "nvidia-inception", sources: ["space_memory:abc123"] }) as { program: { sources: string[] } }).program.sources).toEqual(["space_memory:abc123"]);
 });
 
 // R73 (operator 4/11 15:04 and 15:09 BKK): an approval reaches him from the registry itself, with what it is and how we use it; one program once.
@@ -418,6 +445,25 @@ it("takes a data file's approval without the use fields, asks Nous for them, and
   expect(raised.map((item) => item.title).at(-1)).toBe("Approved: GitHub › GitHub Sponsors");
 });
 
+it("tells Nous at the start which applied programs are past their reply date, marks them in the list, and asks for a date when one has none (14/11)", async () => {
+  const { programs, notices, updates } = updatesHarness("en");
+  const entry = (id: string, status: string, expectedReplyBy: string | null) => ({ id, page: "startup", parent: id, program: "Credits", status, appliedAt: "2026-10-20", expectedReplyBy });
+  const sosf = await programs.upsert(owner, entry("github-sosf", "APPLIED", "2026-11-03"));
+  expect(sosf).not.toHaveProperty("warning");
+  for (const [id, status, by] of [["koyeb", "IN_PROGRESS", "2026-11-01"], ["today", "APPLIED", "2026-11-04"], ["later", "APPLIED", "2099-01-01"], ["closed", "REJECTED", "2026-11-01"]] as const) {
+    await programs.upsert(owner, entry(id, status, by));
+  }
+  // Applied with no reply date: saved, and Nous is asked for one so its follow-up can come due.
+  expect(await programs.upsert(owner, entry("hetzner", "APPLIED", null))).toMatchObject({ program: { status: "APPLIED" }, warning: expect.stringContaining("hetzner is APPLIED with no expectedReplyBy") });
+  notices.length = 0;
+  await updates.sweep(owner, await programs.list(owner));
+  expect(notices).toEqual([expect.stringMatching(/^2 programs are past the date they were to answer by, with no decision: (github-sosf \(github-sosf › Credits, by 2026-11-03\)|koyeb \(koyeb › Credits, by 2026-11-01\)), /)]);
+  expect(notices[0]).toContain("koyeb (koyeb › Credits, by 2026-11-01)");
+  expect(notices[0]).not.toMatch(/today|later|closed|hetzner/);
+  expect(programLine((await programs.get(owner, "github-sosf"))!)).toContain("reply by 2026-11-03 · REPLY OVERDUE");
+  expect(programLine((await programs.get(owner, "later"))!)).not.toContain("OVERDUE");
+});
+
 it("gives Nous space_operator_update (once per title and body) and posts a program's report into the chat from space_programs", async () => {
   const { programs, raised, updates } = updatesHarness();
   const replies: string[] = [];
@@ -430,7 +476,10 @@ it("gives Nous space_operator_update (once per title and body) and posts a progr
   const note = { title: "Η αίτηση E2B στάλθηκε", body: "Έφυγε 14:53 από το crew@spaceapp.dev· περιμένουμε απάντηση.", links: [{ label: "Gmail", url: "https://mail.google.com/mail/u/?authuser=crew%40spaceapp.dev#all/1a1a58c446f7542d" }], refs: ["nous_msg:41668e5f"] };
   expect(await tools.execute("space_operator_update", note, ctx)).toMatchObject({ ok: true, display: "Posted to Updates: Η αίτηση E2B στάλθηκε" });
   expect(await tools.execute("space_operator_update", note, ctx)).toMatchObject({ ok: true, display: "Already in Updates" });
-  expect(raised.at(-1)).toMatchObject({ kind: "OPERATOR_UPDATE", title: note.title, payload: { report: `${note.body}\n\n(nous_msg:41668e5f)`, links: note.links } });
+  expect(raised.at(-1)).toMatchObject({ kind: "OPERATOR_UPDATE", title: note.title, payload: { report: `${note.body}\n\n(nous_msg:41668e5f)`, links: note.links, requestId: "nous_msg:41668e5f" } });
+  // Plan JD8EbQgQdRls §3: the plan it names goes with it, so the update lands on that request's Thread.
+  await tools.execute("space_operator_update", { title: "Step 2 is on dev", body: "The tabs are live.", refs: ["clipboard:JD8EbQgQdRls"] }, ctx);
+  expect(raised.at(-1)!.payload).toMatchObject({ planId: "clipboard:JD8EbQgQdRls" });
   expect((await tools.execute("space_operator_update", note, { ...ctx, turn: { reason: "HELPER" } } as never)).ok).toBe(false);
   expect(nousToolDefinitions({ copilots: false }).map((tool) => tool.name)).toContain("space_operator_update");
   expect(NOUS_SUBAGENT_EXCLUDED.has("space_operator_update")).toBe(true);
@@ -475,4 +524,50 @@ it("keeps a whole-file rewrite from a stale copy from undoing the registry: repl
   expect(await programs.upsert(owner, { id: upcloud.id, amount: upcloud.amount, sources: ["nous_msg:20:59", "gmail:upcloud-reply"] })).toMatchObject({ program: { amount: { value: 1000 } } });
   const journal = (await readFile(join(dir, "startup-programs.journal.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   expect(journal.filter((line) => line.id === upcloud.id && line.changed.amount).map((line) => [line.by, line.changed.amount.to.value])).toEqual([["file", 1000], ["tool", 5000], ["tool", 1000]]);
+});
+
+it("tells once that an entry still in the file stopped parsing, never that it left the file, and takes it when it parses again (14/11 02:48 Vultr, Neon, BlueDot)", async () => {
+  let clock = Date.parse("2026-11-14T02:00:00Z");
+  const repository = new InMemoryNousProgramsRepository(), alerts: string[] = [];
+  const programs = createNousPrograms({ repository, now: () => clock, journalDir: dir, kept: async (_owner, _key, text) => { alerts.push(text); } });
+  const file = async (at: string, entries: unknown[]) => {
+    clock = Date.parse(at);
+    await write("startup-programs.json", { generatedAt: at, entries });
+    await utimes(join(dir, "startup-programs.json"), new Date(), new Date(clock));
+    await programs.importFiles(owner, dir, join(dir, "usage.json"));
+  };
+  const vultr = { id: "vultr-cloud-startup", parent: "Vultr", program: "Vultr Cloud Startup Program", status: "APPLIED" };
+  await file("2026-11-14T02:00:00Z", [vultr]);
+  // A pane's edit writes words where a date belongs: the entry is in the file, only not valid.
+  const worded = { ...vultr, status: "REJECTED", reapply: { needed: false, why: "needs series funding", when: "after a series funding round" } };
+  await file("2026-11-14T02:48:20Z", [worded]);
+  await file("2026-11-14T02:51:18Z", [{ ...worded, notes: "rewritten" }]);
+  expect(alerts).toEqual([expect.stringMatching(/\nvultr-cloud-startup was not imported \(reapply\.when: Not a date\); the registry keeps its last value$/)]);
+  expect((await programs.get(owner, vultr.id))!.status).toBe("APPLIED");
+  await file("2026-11-14T03:00:00Z", [{ ...worded, reapply: { needed: false, why: "needs series funding; reapply after a series funding round", when: null } }]);
+  expect((await programs.get(owner, vultr.id))!.status).toBe("REJECTED");
+  expect(alerts).toHaveLength(1);
+});
+
+it("records the company that applied: an upsert's company or the notes' line, kept by later writes, and space_programs lists by it (operator 16/11, nous_msg:52aab269)", async () => {
+  const programs = createNousPrograms({ repository: new InMemoryNousProgramsRepository() });
+  await programs.upsert(owner, { ...inception, company: "Intratrade Single Member P.C." });
+  await programs.upsert(owner, { ...google, notes: "Εταιρεία αίτησης: TOP IMPORTS\nApplied through the console." });
+  await programs.upsert(owner, { id: "microsoft-founders-hub", page: "startup", parent: "Microsoft", program: "Founders Hub", status: "APPLIED" });
+  expect((await programs.get(owner, "nvidia-inception"))!.company).toBe("INTRATRADE");
+  expect((await programs.get(owner, "google-cloud-startups"))!.company).toBe("TOP IMPORTS");
+  expect((await programs.get(owner, "microsoft-founders-hub"))!.company).toBeNull();
+  // A later write without company keeps it; the same data file again neither drops nor changes it.
+  await programs.upsert(owner, { id: "nvidia-inception", nextAction: "Claim the credits" });
+  await programs.importDocument(owner, "startup", { generatedAt: "2026-11-03T12:00:00Z", entries: [inception] }, "2026-11-03T12:00:00Z");
+  expect((await programs.get(owner, "nvidia-inception"))!).toMatchObject({ company: "INTRATRADE", status: "APPROVED" });
+  const tools = createNousTools({ programs } as never);
+  const ctx = { owner, turnId: "turn:company", callId: "call:company", traceId: "trace:company" };
+  const listed = (await tools.execute("space_programs", { action: "list", company: "intratrade" }, ctx)).result;
+  expect(listed).toMatch(/^- \[nvidia-inception\] .* · by INTRATRADE/);
+  expect(listed.split("\n")).toHaveLength(1);
+  expect((await tools.execute("space_programs", { action: "read", id: "google-cloud-startups" }, ctx)).result).toContain("Applying company: TOP IMPORTS");
+  // null clears it.
+  await programs.upsert(owner, { id: "google-cloud-startups", company: null });
+  expect((await programs.get(owner, "google-cloud-startups"))!.company).toBeNull();
 });

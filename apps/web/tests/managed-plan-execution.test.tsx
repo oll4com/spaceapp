@@ -192,6 +192,36 @@ describe("shared event updates", () => {
   });
 });
 
+describe("visibility flips", () => {
+  it("keeps the empty state object, so a room switch renders a pane without a plan only once", async () => {
+    const api = backend(); api.panePlanExecution.mockResolvedValue(null);
+    let renders = 0;
+    const { result, rerender } = renderHook(({ visible }) => { renders += 1; return useManagedPlanExecution({ api, paneId: "pane:1", sessionId: "session:1", enabled: visible }); }, { initialProps: { visible: true } });
+    await act(async () => { await Promise.resolve(); });
+    const before = renders;
+    rerender({ visible: false }); rerender({ visible: true });
+    await act(async () => { await Promise.resolve(); });
+    expect(renders - before).toBe(2); expect(result.current.execution).toBeNull();
+  });
+});
+
+describe("warm reveal refetch (W2)", () => {
+  it("defers the first refetch off the switch commit and cancels it when the pane hides first", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = backend();
+      const { rerender } = renderHook(({ visible }) => useManagedPlanExecution({ api, paneId: "pane:1", sessionId: "session:1", enabled: visible }), { initialProps: { visible: true } });
+      expect(api.panePlanExecution).not.toHaveBeenCalled();
+      rerender({ visible: false });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(api.panePlanExecution).not.toHaveBeenCalled();
+      rerender({ visible: true });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(api.panePlanExecution).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
 describe("pane managed integration", () => {
   it.each([true, false])("returns before legacy progress/upload/prompt on a managed start (success=%s)", async success => {
     const api = backend(); const client = new ManagedPlanClient(api, "pane:1", "session:1");

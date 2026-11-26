@@ -1094,7 +1094,8 @@ export async function applyAgentTools(
             const existing = isJsonObject(currentObject[name]) ? (currentObject[name] as JsonObject) : {};
             rebuiltObject[name] = { ...existing, ...(entry.mcp.command ? { command: entry.mcp.command } : {}), ...(entry.mcp.args ? { args: entry.mcp.args } : {}) };
             if (runtimeLayout.runtimeId === "cli:opencode") {
-              const { command: _command, args: _args, env: _env, url: _url, type: _type, environment: _environment, ...preserved } = existing;
+              const replaced = new Set(["command", "args", "env", "url", "type", "environment"]);
+              const preserved = Object.fromEntries(Object.entries(existing).filter(([key]) => !replaced.has(key)));
               rebuiltObject[name] = entry.mcp.transport === "http"
                 ? { ...preserved, type: "remote", url: entry.mcp.url }
                 : { ...preserved, type: "local", command: [entry.mcp.command, ...(entry.mcp.args ?? [])], ...(entry.mcp.env ? { environment: entry.mcp.env } : {}) };

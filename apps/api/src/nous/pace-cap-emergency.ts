@@ -49,13 +49,16 @@ export function paceCapEmergencyText(entry: PaceCapEmergency, zone: string): str
 }
 
 export function createPaceCapEmergency(deps: {
-  notes: Pick<NousRepository, "listNotes" | "setNote">;
+  notes: Pick<NousRepository, "listNotes" | "setNote" | "getNote">;
   /** Sends the gateway the exemption list at once (else it goes with the next minute's send). */
   push(): Promise<void>;
   now?: () => number;
 }) {
   const now = deps.now ?? Date.now;
-  const read = async (owner: string) => parsePaceCapEmergency((await deps.notes.listNotes(owner)).find((note) => note.key === PACE_CAP_EMERGENCY_NOTE)?.text);
+  const read = async (owner: string) => {
+    const note = deps.notes.getNote ? await deps.notes.getNote(owner, PACE_CAP_EMERGENCY_NOTE) : (await deps.notes.listNotes(owner)).find((entry) => entry.key === PACE_CAP_EMERGENCY_NOTE);
+    return parsePaceCapEmergency(note?.text);
+  };
   return {
     /** The owner's emergency in force now, or null. */
     async active(owner: string): Promise<PaceCapEmergency | null> {

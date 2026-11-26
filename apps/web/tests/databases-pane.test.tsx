@@ -90,7 +90,7 @@ describe("DatabasesPane Component", () => {
   });
 
   it("renders connection list and loads internal space connection", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "databasesListConnections").mockResolvedValue({
       ok: true,
       connections: [mockConnection]
@@ -111,7 +111,7 @@ describe("DatabasesPane Component", () => {
           roomId: "room:test",
           title: "Databases 1",
           mode: "DATABASES"
-        } as any}
+        } as never}
       />
     );
 
@@ -121,7 +121,7 @@ describe("DatabasesPane Component", () => {
   });
 
   it("selects a connection and loads catalog tables", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "databasesListConnections").mockResolvedValue({
       ok: true,
       connections: [mockConnection]
@@ -142,7 +142,7 @@ describe("DatabasesPane Component", () => {
           roomId: "room:test",
           title: "Databases 1",
           mode: "DATABASES"
-        } as any}
+        } as never}
       />
     );
 
@@ -158,7 +158,7 @@ describe("DatabasesPane Component", () => {
   });
 
   it("switches tabs between Data, Structure, and SQL Editor", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "databasesListConnections").mockResolvedValue({
       ok: true,
       connections: [mockConnection]
@@ -179,7 +179,7 @@ describe("DatabasesPane Component", () => {
           roomId: "room:test",
           title: "Databases 1",
           mode: "DATABASES"
-        } as any}
+        } as never}
       />
     );
 
@@ -199,7 +199,7 @@ describe("DatabasesPane Component", () => {
   });
 
   it("toggles sidebar on mobile or narrow view", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "databasesListConnections").mockResolvedValue({
       ok: true,
       connections: [mockConnection]
@@ -213,7 +213,7 @@ describe("DatabasesPane Component", () => {
           roomId: "room:test",
           title: "Databases 1",
           mode: "DATABASES"
-        } as any}
+        } as never}
       />
     );
 
@@ -235,7 +235,7 @@ describe("DatabasesPane Component", () => {
   });
 
   it("defaults sidebar to closed on narrow screen and respects localStorage", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "databasesListConnections").mockResolvedValue({
       ok: true,
       connections: [mockConnection]
@@ -254,7 +254,7 @@ describe("DatabasesPane Component", () => {
             roomId: "room:test",
             title: "Databases 1",
             mode: "DATABASES"
-          } as any}
+          } as never}
         />
       );
 
@@ -274,7 +274,7 @@ describe("DatabasesPane Component", () => {
   });
 
   it("filters tables with data and excludes internal pg_toast/pg_temp schemas", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "databasesListConnections").mockResolvedValue({
       ok: true,
       connections: [mockConnection]
@@ -337,7 +337,7 @@ describe("DatabasesPane Component", () => {
           roomId: "room:test",
           title: "Databases 1",
           mode: "DATABASES"
-        } as any}
+        } as never}
       />
     );
 
@@ -366,7 +366,7 @@ describe("DatabasesPane Component", () => {
   });
 
   it("syncs totalRows into catalog table rowCount when table data loads", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "databasesListConnections").mockResolvedValue({
       ok: true,
       connections: [mockConnection]
@@ -430,7 +430,7 @@ describe("DatabasesPane Component", () => {
           roomId: "room:test",
           title: "Databases 1",
           mode: "DATABASES"
-        } as any}
+        } as never}
       />
     );
 
@@ -441,7 +441,7 @@ describe("DatabasesPane Component", () => {
   });
 
   it("does not re-fetch catalog when selecting a different table", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "databasesListConnections").mockResolvedValue({
       ok: true,
       connections: [mockConnection]
@@ -514,7 +514,7 @@ describe("DatabasesPane Component", () => {
           roomId: "room:test",
           title: "Databases 1",
           mode: "DATABASES"
-        } as any}
+        } as never}
       />
     );
 
@@ -535,7 +535,7 @@ describe("DatabasesPane Component", () => {
   });
 
   it("renders DatabaseOverviewTab with tables grid when connection breadcrumb is clicked to deselect table", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "databasesListConnections").mockResolvedValue({
       ok: true,
       connections: [mockConnection]
@@ -556,7 +556,7 @@ describe("DatabasesPane Component", () => {
           roomId: "room:test",
           title: "Databases 1",
           mode: "DATABASES"
-        } as any}
+        } as never}
       />
     );
 
@@ -589,7 +589,7 @@ describe("DatabasesPane Component", () => {
   });
 
   it("renders DatabaseConnectionsOverview when root Databases breadcrumb is clicked", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "databasesListConnections").mockResolvedValue({
       ok: true,
       connections: [mockConnection]
@@ -610,7 +610,7 @@ describe("DatabasesPane Component", () => {
           roomId: "room:test",
           title: "Databases 1",
           mode: "DATABASES"
-        } as any}
+        } as never}
       />
     );
 
@@ -640,7 +640,7 @@ describe("DatabasesPane Component", () => {
   });
 
   it("shows empty table prompt with Browse other tables button that returns to overview", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "databasesListConnections").mockResolvedValue({
       ok: true,
       connections: [mockConnection]
@@ -695,7 +695,7 @@ describe("DatabasesPane Component", () => {
           roomId: "room:test",
           title: "Databases 1",
           mode: "DATABASES"
-        } as any}
+        } as never}
       />
     );
 

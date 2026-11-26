@@ -192,7 +192,7 @@ function gramSlot(gram: string): number {
 const planesHi = new Int32Array(32);
 const planesLo = new Int32Array(32);
 const hasSurrogate = /[\ud800-\udfff]/;
-const nonAscii = /[^\u0000-\u007f]/;
+const nonAscii = /[\u0080-\uffff]/;
 
 /**
  * 64-bit SimHash over lowercase character 4-grams (MD5, first 8 bytes big-endian), as [hi, lo] words.

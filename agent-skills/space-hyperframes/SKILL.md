@@ -1,6 +1,6 @@
 ---
 name: space-hyperframes
-description: HyperFrames (heygen-com/hyperframes, CLI 0.8.156) for video written as HTML - compositions, animation, captions, audio, keyframes, slideshows, motion graphics, product launch, PR, music and faceless explainer videos and Remotion migration - rendered to MP4 with the pinned hyperframes CLI, the host's Chrome and ffmpeg. Use when the operator asks for a video, an animation or a motion piece.
+description: "Videos written as HTML (HyperFrames CLI): compositions, captions, motion graphics, explainers, rendered to MP4. Use when asked for a video or animation."
 metadata:
   category: WORKFLOW
 ---

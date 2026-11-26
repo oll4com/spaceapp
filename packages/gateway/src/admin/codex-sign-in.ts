@@ -27,6 +27,8 @@ interface BrowserFlow { kind: "browser"; verifier: string; state: string; expire
 export interface ProviderAccountActions {
   test(account: GatewayAccountRecord, body: unknown): Promise<Record<string, unknown>>;
   refreshUsage(account: GatewayAccountRecord): Promise<void>;
+  /** Spends one limit reset (Claude's grants), `requestId` keeping a repeat from spending another. */
+  resetCredit?(account: GatewayAccountRecord, requestId: string): Promise<{ outcome: string; windowsReset: string[] }>;
 }
 
 export interface CodexSignInOptions {
@@ -227,14 +229,16 @@ export function registerCodexSignInRoutes(app: FastifyInstance, options: CodexSi
     }
   });
 
-  /** Spends one weekly reset credit for the account, then reads usage again. */
+  /** Spends one weekly reset credit for the account (Codex) or one limit-reset grant (Claude), then reads usage again. */
   app.post("/__space-gateway/admin/accounts/:accountId/reset-credit", async (request, reply) => {
     if (!(await guard(request, reply))) return reply;
     const account = (await options.repository.listAccounts()).find((item) => item.id === (request.params as { accountId: string }).accountId);
-    if (!account || account.provider !== "CODEX") return reply.code(404).send({ error: { code: "not_found", message: "Account not found." } });
+    const other = account && account.provider !== "CODEX" ? options.otherProviders?.[account.provider]?.resetCredit : undefined;
+    if (!account || (account.provider !== "CODEX" && !other)) return reply.code(404).send({ error: { code: "not_found", message: "Account not found." } });
     const idempotencyKey = String((request.body as { idempotencyKey?: unknown } | null)?.idempotencyKey ?? "");
     if (!/^[A-Za-z0-9-]{8,80}$/.test(idempotencyKey)) return reply.code(422).send({ error: { code: "invalid_request", message: "An idempotency key is required." } });
     try {
+      if (other) return await other(account, idempotencyKey);
       const credentials = await options.pool.credentials(account);
       const result = await consumeResetCredit({ accessToken: credentials.accessToken, accountId: credentials.upstreamAccountId,
         redeemRequestId: idempotencyKey, fetchImpl: options.fetchImpl });

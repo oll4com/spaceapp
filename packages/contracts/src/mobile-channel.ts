@@ -13,6 +13,13 @@ const hex = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16)
 
 export const mobileScopeSchema = z.enum(["read", "act", "decide", "admin"]);
 export type MobileScope = z.infer<typeof mobileScopeSchema>;
+/** Space Link v2 (ADR-014 v2): what this SpaceApp's person grants a link beyond read and act, per link with step-up; never by pairing.
+ * `nous` needs `manage`. A link's welcome names only mobileScopeSchema's scopes (an older client parses it strictly); a ctl `scopes`
+ * frame then names them all. `ai` (plan step 6): this SpaceApp's CLI panes may use the linked SpaceApp's AI accounts through its Gateway.
+ * `vault` (plan clipboard:TcX66vjNuZDv step 2): the linked SpaceApp keeps this SpaceApp's Vault a copy of its own, sealed broker to broker.
+ * `sync` (step 3): the linked SpaceApp's person's settings and its Space Memory flow into this SpaceApp (only on the same commit). */
+export const linkGrantScopeSchema = z.enum(["manage", "upgrade", "nous", "ai", "vault", "sync"]);
+export type LinkGrantScope = z.infer<typeof linkGrantScopeSchema>;
 
 // ---- The pairing QR (design §2.1): plain text the app scans with its own camera, never a deep link. ----
 
@@ -118,12 +125,17 @@ const frameHeaderSchemas = {
     h: z.object({ "content-type": z.string().max(200).optional(), accept: z.string().max(200).optional(), range: z.string().max(100).optional(),
       "x-space-client": z.string().max(300).optional(),
       // A linked SpaceApp's id for one act, audited under the same trace on both sides (Space Link Λ4); lnk: never names this side's own req: ids.
-      "x-space-link-request": z.string().regex(/^lnk:[A-Za-z0-9_-]{16,64}$/).optional() }).strict().optional(),
+      "x-space-link-request": z.string().regex(/^lnk:[A-Za-z0-9_-]{16,64}$/).optional(),
+      // A model request a linked SpaceApp lends its Gateway for (plan step 6): the Anthropic API's own headers, never a key.
+      "anthropic-version": z.string().max(100).optional(), "anthropic-beta": z.string().max(1000).optional(),
+      // Other providers' model requests (plan clipboard:TcX66vjNuZDv step 4); B sends them only to a lender that named its providers.
+      "user-agent": z.string().max(300).optional(), "openai-beta": z.string().max(200).optional() }).strict().optional(),
     more: z.literal(true).optional(), sig: z.string().regex(/^[A-Za-z0-9_-]{64,200}$/).optional(),
     // A signed answer's Play Integrity token, requestHash mobileIntegrityRequestHash("decide", its signing input).
     int: integrityTokenSchema.optional() }).strict(),
   res: z.object({ id: z.number().int().nonnegative(), s: z.number().int().min(100).max(599),
-    h: z.object({ "content-type": z.string().max(200).optional(), "content-length": z.string().max(20).optional(), "content-range": z.string().max(100).optional() }).strict().optional(),
+    h: z.object({ "content-type": z.string().max(200).optional(), "content-length": z.string().max(20).optional(), "content-range": z.string().max(100).optional(),
+      "retry-after": z.string().max(40).optional() }).strict().optional(),
     more: z.literal(true).optional() }).strict(),
   chunk: z.object({ id: z.number().int().nonnegative(), seq: z.number().int().positive(), more: z.boolean() }).strict(),
   evt: z.object({ type: z.string().min(1).max(80), ids: z.record(z.string(), z.unknown()).optional() }).strict(),
@@ -167,9 +179,9 @@ export function mobileFrames(type: "req" | "res", header: Record<string, unknown
 
 // ---- What a phone may reach (design §6.2): the router's matched pattern, exactly. A route not listed is refused. ----
 
-export type MobileBodyRule = "settingsEnabledAndTabs" | "awayNoGrant" | "noAlways" | "linkInspect" | "linkExecute";
+export type MobileBodyRule = "settingsEnabledAndTabs" | "awayNoGrant" | "noAlways" | "linkInspect" | "linkExecute" | "startAsWas" | "paneContent" | "linkSchedule" | "linkScreenshot" | "planOnly" | "statusOnly";
 export type MobileRouteRule = {
-  scope: Exclude<MobileScope, "admin">;
+  scope: Exclude<MobileScope, "admin"> | LinkGrantScope;
   /** The route's own person check passes for a phone (review P0-1); everywhere else a phone is not the operator in person. */
   person?: true;
   /** Exact query values the request must carry (checked on the parsed query, review P2-3). */
@@ -177,14 +189,24 @@ export type MobileRouteRule = {
   body?: MobileBodyRule;
   /** The channel loads the artifact: Agent Files, or one a Nous message, decision or share names (review P1-4). */
   artifactById?: true;
+  /** The channel loads the clipboard item: a SpaceApp link changes plans only (security review 15/11: PATCH reached any item by id). */
+  planById?: true;
   /** A needs-you answer: a risky ask needs `decide` and the ask signature (review P1-2). */
   askRisk?: true;
   /** A decision answer: RELEASE, DESTRUCTIVE and EXTERNAL need the decide signature (design §7). */
   decisionSignature?: true;
+  /** A linked Nous's decision answered from the phone (step 9c): the same signature rule as decisionSignature, over the decision as shown here. */
+  linkedDecisionSignature?: true;
   /** A goal's delete: the decide signature over the goal's text (C9, internal MASVS review), a class-A delete. */
   goalSignature?: true;
   /** An ADMIN operation (Nous settings' ops, nous_msg:7f3a38f5): an ADMIN user and the decide signature over mobileAdminOpSigningInput. */
   adminSignature?: true;
+  /** Only the link whose Nous is this Nous's superior (POST /api/nous/link/superior, Space Link v2 step 9). */
+  superior?: true;
+  /** The superior's person-signed answer to a decision (step 9c): only A's person path sends it; space_remote refuses it (A's Nous never answers). */
+  superiorSignature?: true;
+  /** An inbox verb (Nik 15/11): each ask it answers or cancels keeps its own route's signature rule (askRisk, decisionSignature). */
+  inboxActSignature?: true;
 };
 const read: MobileRouteRule = { scope: "read" };
 const act: MobileRouteRule = { scope: "act" };
@@ -205,19 +227,48 @@ export const MOBILE_ROUTE_SCOPES: Readonly<Record<string, MobileRouteRule>> = {
   "POST /api/signatures": actPerson, "PATCH /api/signatures/:id": actPerson, "DELETE /api/signatures/:id": actPerson,
   "POST /api/signature-requests/:id/sign": actPerson, "POST /api/signature-requests/:id/cancel": act,
   "GET /api/tasks/runs": read,
+  // The Nous app's Appointments tab (plan clipboard:ZLZgTYU1O-RD): the list as the dock reads it, and Completed / Cancel / Restore only.
+  "GET /api/appointments": read, "PATCH /api/appointments/:id": { scope: "act", body: "statusOnly" },
   // Space Link's Remote mark in the Nous app (ADR-014 Λ9): read who manages this SpaceApp, and take management back (it only narrows).
-  "GET /api/instance-links/status": read, "POST /api/instance-links/status/take-back": actPerson,
+  "GET /api/instance-links/status": read, "GET /api/instance-links/load": read, "POST /api/instance-links/status/take-back": actPerson,
+  // "From linked SpaceApps" in the Nous app's Decisions (Nous 15/11, brief IpFBoESGYYJm): the linked Nous's open decisions, answered as the dock does.
+  "GET /api/instance-links/decisions": read,
+  "POST /api/instance-links/:id/decisions/:decisionId/answer": { scope: "decide", person: true, linkedDecisionSignature: true },
+  // Its password step-up (Approve/Answer above need one): the route itself admits only the Nous app of an ADMIN.
+  "POST /api/auth/step-up/password": { scope: "decide", person: true },
+  // Or Google first, in the phone's browser with a one-time ticket (operator 17/11: no password-only step-up in any Nous).
+  "POST /api/auth/app/step-up/start": { scope: "decide", person: true },
+  // The mailed-link step-up (dev 22b7c3c6c5) and canMail/hasPassword for its buttons: the routes admit only the Nous app of an ADMIN.
+  "POST /api/auth/step-up/mail/request": { scope: "decide", person: true }, "POST /api/auth/step-up/mail": { scope: "decide", person: true },
+  "GET /api/auth/password": read,
+  // «Εισερχόμενα» v2 (plan clipboard:aE7U1J_gU9OV): the Threads and their five verbs from the Nous app (Nik 15/11, contract v2/mobile-act-contract.md).
+  // An answer or a dismiss signs each ask it touches as that ask's own route does; Done and done-all touch no open ask (they skip one).
+  "GET /api/inbox": read, "GET /api/inbox/threads/:id": read,
+  "POST /api/inbox/threads/:id/act": { scope: "decide", person: true, body: "noAlways", inboxActSignature: true },
+  "POST /api/inbox/done-all": { scope: "decide", person: true },
   "GET /api/notifications": read, "GET /api/notifications/pending": read, "GET /api/notifications/:id": read,
   "GET /api/clipboard-items": { scope: "read", query: { source: "PLAN" } },
   "GET /api/artifacts": { scope: "read", query: { collection: "AGENT_FILES" } },
+  // The Nous app's Media pane plays the music library page by page (plan clipboard:SBll2Q0UViFo); a phone never writes links.
+  "GET /api/links": { scope: "read", query: { category: "MUSIC_LIBRARY" } },
   "GET /api/artifacts/:id/preview": artifact, "GET /api/artifacts/:id/file": artifact, "GET /api/artifacts/:id/metadata": artifact,
   // Agent Files upload from the Nous app (operator 13/11 nous_msg:0093b06f): pick the room, then send the file in pieces under the channel's body limit.
   "GET /api/rooms": read, "POST /api/rooms/:id/agent-files/chunks": act,
   "GET /api/admin/codex-usage-accounts": read, "GET /api/admin/claude-usage-accounts": read, "GET /api/admin/antigravity-usage-accounts": read,
   "GET /api/admin/api-provider-accounts": read, "GET /api/admin/deploy-queue/tickets/:id": read,
+  // The Nous app's Load and Resources views on a paired phone (Goal e803a663, plan clipboard:SBll2Q0UViFo); the admin routes keep their own ADMIN check.
+  "GET /api/system-health": read, "GET /api/nous/load": read, "GET /api/admin/host-memory": read, "GET /api/admin/cli-sessions": read,
+  // Nous Live (plan clipboard:f5TgJ4IIJF1m): the voice button's session and spoken turns, as the person, like a message.
+  "POST /api/nous/live/sessions": actPerson, "POST /api/nous/live/turns": actPerson,
+  // Its voice picker and realtime sessions (nous_msg:7f739948): the choice is read/saved directly or through PATCH /api/nous/settings `liveVoice`.
+  "GET /api/nous/live/voice": { scope: "read", person: true }, "PATCH /api/nous/live/voice": actPerson,
+  "POST /api/nous/live/realtime": actPerson, "POST /api/nous/live/realtime/tool": actPerson,
+  "POST /api/nous/live/realtime/exchange": actPerson,
   "POST /api/nous/messages": actPerson, "DELETE /api/nous/messages": act, "POST /api/nous/stop": act, "POST /api/nous/attachments": act,
   "DELETE /api/nous/attachments/:id": act,
   "POST /api/notifications/:id/answer": { scope: "act", person: true, body: "noAlways", askRisk: true },
+  // A paired phone registers its own FCM token (operator 17/11, nous_msg:e58363a2): the phone the operator opens again gets pushes on its own.
+  "POST /api/notifications/push-devices": act, "DELETE /api/notifications/push-devices": act,
   "POST /api/notifications/:id/read": act, "POST /api/notifications/:id/ack": act, "POST /api/notifications/read-all": act,
   "POST /api/nous/pane-board/:paneId/answer": { scope: "act", person: true, body: "noAlways" }, "POST /api/nous/pane-board/refresh": act,
   "POST /api/nous/decisions/:id/feedback": act,
@@ -227,6 +278,10 @@ export const MOBILE_ROUTE_SCOPES: Readonly<Record<string, MobileRouteRule>> = {
   "POST /api/panes/:id/browser/teleport/input": actPerson, "POST /api/panes/:id/browser/teleport/upload": actPerson,
   "POST /api/panes/:id/browser/control/acquire": actPerson, "POST /api/panes/:id/browser/control/heartbeat": actPerson,
   "POST /api/panes/:id/browser/control/release": actPerson,
+  // Go to pane from the phone (operator 14/11 nous_msg:8596b29a): a browser the idle reaper closed starts again as it was (its tabs), nothing else set.
+  "POST /api/panes/:id/browser/session": { scope: "act", person: true, body: "startAsWas" },
+  // Go to pane opens a CLI pane in the Nous app as SpaceApp Android does (operator 15/11 nous_msg:8f6f7226): its screen's text, one pane at a time.
+  "POST /api/control/v1/inspect": { scope: "read", body: "paneContent" },
   "POST /api/nous/goals": actPerson, "PATCH /api/nous/goals/:id": actPerson, "POST /api/nous/goals/reorder": actPerson,
   "DELETE /api/nous/shared-files/:shareId": act,
   "PATCH /api/nous/settings": { scope: "act", person: true, body: "settingsEnabledAndTabs" },
@@ -242,9 +297,9 @@ export const MOBILE_ROUTE_SCOPES: Readonly<Record<string, MobileRouteRule>> = {
   "POST /api/admin/releases/promote": { scope: "decide", person: true, adminSignature: true }
 };
 
-// ---- What a SpaceApp link may reach (ADR-014): another SpaceApp's Nous reads this one and runs Space Control here, nothing more. No
-// Vault, auth, settings, admin, mobile, Nous messages or releases; this instance's own gates stay its own. Screens (CONTENT,
-// TERMINAL_RENDER, screenshots) stay off. ----
+// ---- What a SpaceApp link may reach (ADR-014): another SpaceApp's Nous reads this one and runs Space Control here; with `manage` (v2)
+// also pane text, screenshots, notifications, plans, logs, queue status, CLI updates and files. Never auth, mobile, Nous's allowances or
+// releases; Vault and settings only through their own grants (vault, sync) and routes; this instance's own gates stay its own. ----
 
 /** Inspect sections a link reads: state and capacity, never screen text, the clipboard, files, audit, settings or the VPN. */
 export const LINK_INSPECT_SECTIONS: readonly string[] = ["STATE", "MODELS", "QUOTA", "RUNTIMES", "ROOMS", "SYSTEM_HEALTH", "TASKS", "SKILLS", "PLUGINS", "MODULES"];
@@ -252,12 +307,52 @@ export const LINK_INSPECT_SECTIONS: readonly string[] = ["STATE", "MODELS", "QUO
 export const LINK_EXECUTE_KINDS: readonly string[] = ["room", "pane", "configure", "layout", "resource"];
 export const LINK_RESOURCE_OPERATIONS: readonly string[] = ["panes.open", "panes.move", "panes.split", "panes.update", "rooms.reorder", "links.list",
   "skills.list", "skills.read", "tasks.list", "tasks.get", "tasks.create", "tasks.update", "models.list", "ops.status"];
+/** With `manage` (ADR-014 v2, plan step 3) a link also reads pane text, sanitized settings, the VPN and the control audit, reads logs and takes screenshots. */
+export const LINK_MANAGE_INSPECT_SECTIONS: readonly string[] = ["CONTENT", "TERMINAL_RENDER", "SETTINGS", "VPN", "AUDIT"];
+export const LINK_MANAGE_RESOURCE_OPERATIONS: readonly string[] = ["ops.logs"];
+const manage: MobileRouteRule = { scope: "manage" };
 export const LINK_ROUTE_SCOPES: Readonly<Record<string, MobileRouteRule>> = {
   "GET /api/auth/me": read, "GET /api/rooms": read,
   "GET /api/control/v1/capabilities": read, "GET /api/control/v1/layout/:roomId": read, "GET /api/control/v1/pane-types": read,
   "POST /api/control/v1/inspect": { scope: "read", body: "linkInspect" },
   "GET /api/nous/overview": read, "GET /api/nous/load": read, "GET /api/nous/score": read, "GET /api/nous/pane-board": read, "GET /api/nous/progress": read,
-  "POST /api/control/v1/commands": { scope: "act", body: "linkExecute" }, "POST /api/control/v1/operations": act
+  "POST /api/control/v1/commands": { scope: "act", body: "linkExecute" }, "POST /api/control/v1/operations": act,
+  // Version sync (nous_msg:2c4707988f754da5b0719dd5): what it runs, and (upgrade, plan step 4) the commit to run; its own script decides and may refuse.
+  "GET /api/version-sync": read, "POST /api/version-sync": { scope: "upgrade" },
+  // manage (plan step 3). Goal writes and Nous's own switch stay B's person's (their routes check the person); step 9's superior sets them under nous.
+  "GET /api/notifications": manage, "GET /api/notifications/pending": manage, "GET /api/notifications/:id": manage,
+  "POST /api/notifications/:id/read": manage, "POST /api/notifications/:id/ack": manage, "POST /api/notifications/read-all": manage,
+  "POST /api/nous/pane-board/:paneId/answer": { scope: "manage", body: "noAlways" }, "POST /api/nous/pane-board/refresh": manage,
+  "GET /api/nous/goals": manage, "GET /api/nous/goals/:id/history": manage, "GET /api/tasks/runs": manage,
+  // Plans only: the clipboard's copies and notes stay private (they can hold anything the person copied).
+  "GET /api/clipboard-items": { scope: "manage", query: { source: "PLAN" } }, "POST /api/clipboard-items": { scope: "manage", body: "planOnly" },
+  "PATCH /api/clipboard-items/:id": { scope: "manage", planById: true }, "PATCH /api/clipboard-items/:id/progress": { scope: "manage", planById: true },
+  "GET /api/admin/server-ops": manage, "GET /api/admin/deploy-queue": manage, "GET /api/admin/deploy-queue/tickets/:id": manage,
+  "POST /api/control/v1/screenshot": { scope: "manage", body: "linkScreenshot" }, "POST /api/control/v1/schedules": { scope: "manage", body: "linkSchedule" },
+  "GET /api/admin/cli-maintenance/update-all/detect": manage, "POST /api/admin/cli-maintenance/update-all/run": manage,
+  // Files (plan step 5): Agent Files and, for a link, SCREENSHOT artifacts by id with their bytes by Range; the agent workspace's files (realpath
+  // inside it or Nous's own folder, never a secret-looking path); an Agent File sent in resumable pieces with its sha256.
+  "GET /api/artifacts": { scope: "manage", query: { collection: "AGENT_FILES" } },
+  "GET /api/artifacts/:id/metadata": { scope: "manage", artifactById: true }, "GET /api/artifacts/:id/file": { scope: "manage", artifactById: true },
+  "GET /api/nous/files/stat": manage, "GET /api/nous/files/content": manage, "POST /api/rooms/:id/agent-files/chunks": manage,
+  // AI lending (plan step 6): the linked SpaceApp offers its Gateway over this link; this side's panes' model requests then go to it.
+  "POST /api/instance-link/ai": { scope: "ai" },
+  // Vault sync (plan clipboard:TcX66vjNuZDv step 2): this side's broker keys, then the linked Vault's envelopes sealed to this broker.
+  "GET /api/instance-link/vault": { scope: "vault" }, "POST /api/instance-link/vault": { scope: "vault" },
+  // Settings and Space Memory (step 3): this side's commit and digests, then the linked side's settings and the memory blocks this side lacks.
+  "GET /api/instance-link/sync": { scope: "sync" }, "POST /api/instance-link/sync": { scope: "sync" },
+  // Nous hierarchy (plan step 9): the linked SpaceApp's Nous names itself this Nous's superior, signed by its identity key, with its own chain.
+  "POST /api/nous/link/superior": { scope: "nous" },
+  // The superior's commands (an operator order in this Nous, the phone rule kept) and their reports, and this Nous's requests (step 9b).
+  "POST /api/nous/link/commands": { scope: "nous", superior: true }, "GET /api/nous/link/reports": { scope: "nous", superior: true },
+  "GET /api/nous/requests": { scope: "nous" },
+  // Step 9c: its RELEASE, DESTRUCTIVE, EXTERNAL and DIRECTION decisions, answered by the superior's person under the superior's signature.
+  "GET /api/nous/link/decisions": { scope: "nous", superior: true },
+  // Step 9d: the superior Nous sets goals, start and stop, turns an hour, the goal loop and the spend mode (plans go through manage's plan routes).
+  "PATCH /api/nous/link/settings": { scope: "nous", superior: true }, "POST /api/nous/stop": { scope: "nous", superior: true },
+  "POST /api/nous/link/goals": { scope: "nous", superior: true }, "PATCH /api/nous/link/goals/:id": { scope: "nous", superior: true },
+  "POST /api/nous/link/goals/reorder": { scope: "nous", superior: true },
+  "POST /api/nous/link/decisions/:id/answer": { scope: "nous", superior: true, superiorSignature: true }
 };
 
 /**
@@ -273,13 +368,29 @@ export function mobileRouteAllows(scopes: readonly string[], method: string, rou
 }
 
 /** The body rule's problem, or null. The channel checks the object it re-serializes and injects, never the client's bytes. */
-export function mobileBodyProblem(rule: MobileBodyRule, body: unknown): string | null {
+export function mobileBodyProblem(rule: MobileBodyRule, body: unknown, scopes: readonly string[] = []): string | null {
   const object = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : null;
   if (!object) return "A JSON object is required.";
-  // dockTabs only shows or hides the dock's tabs (operator nous_msg:5b21060a: the Nous app's Settings › Tabs); the route's schema checks its values.
-  if (rule === "settingsEnabledAndTabs") return Object.keys(object).every((key) => key === "enabled" || key === "dockTabs") ? null : "From a phone, Nous's settings take only enabled and dockTabs.";
+  // dockTabs only shows or hides the dock's tabs (operator nous_msg:5b21060a: the Nous app's Settings › Tabs); mediaPresets are the Media
+  // tab's YouTube chips (nous_msg:e90fdeaf). The route's schema checks their values.
+  // liveVoice is Nous Live's voice picker (nous_msg:7f739948).
+  if (rule === "settingsEnabledAndTabs") return Object.keys(object).every((key) => ["enabled", "dockTabs", "mediaPresets", "liveVoice"].includes(key)) ? null : "From a phone, Nous's settings take only enabled, dockTabs, mediaPresets and liveVoice.";
+  if (rule === "startAsWas") return Object.keys(object).length ? "From a phone a pane browser starts as it was; set its address by touch." : null;
+  if (rule === "paneContent") return object.section === "CONTENT" && typeof object.paneId === "string" ? null : "From a phone Space Control reads one pane's screen (section CONTENT, a paneId).";
   if (rule === "awayNoGrant") return "grant" in object ? "A grant widens what Nous may do; set it on a computer." : null;
-  if (rule === "linkInspect") return object.section === undefined || LINK_INSPECT_SECTIONS.includes(object.section as string) ? null : `A SpaceApp link reads only ${LINK_INSPECT_SECTIONS.join(", ")}.`;
+  const manages = scopes.includes("manage");
+  if (rule === "linkInspect") {
+    const sections = manages ? [...LINK_INSPECT_SECTIONS, ...LINK_MANAGE_INSPECT_SECTIONS] : LINK_INSPECT_SECTIONS;
+    return object.section === undefined || sections.includes(object.section as string) ? null : `A SpaceApp link reads only ${sections.join(", ")}.`;
+  }
+  if (rule === "planOnly") return object.source === "PLAN" ? null : "A SpaceApp link writes plans only (source PLAN).";
+  // A phone marks an appointment done, cancelled or upcoming again; its time, place and notes are changed on a computer. The route checks the value.
+  if (rule === "statusOnly") return Object.keys(object).length === 1 && "status" in object ? null : "From a phone an appointment takes only its status.";
+  // The clipboard dock shows what the person copied; every other view a capture names is one a manage link reads anyway.
+  if (rule === "linkScreenshot") return [object, ...(((object.video as { steps?: unknown[] } | undefined)?.steps) ?? [])].some((view) => (view as Record<string, unknown> | null)?.dock === "clipboard")
+    ? "A SpaceApp link does not capture the clipboard." : null;
+  // A schedule runs its command later, past this gate: it must pass now as a link's command would.
+  if (rule === "linkSchedule") return object.command === undefined ? null : mobileBodyProblem("linkExecute", object.command, scopes);
   if (rule === "linkExecute") {
     const actions = Array.isArray(object.actions) ? object.actions as Array<Record<string, unknown> | null> : null;
     if (!actions) return "actions is required.";
@@ -287,9 +398,12 @@ export function mobileBodyProblem(rule: MobileBodyRule, body: unknown): string |
     const approval = (action: Record<string, unknown>) => "confirm" in action || "approvalReason" in action || (typeof action.input === "object" && action.input !== null && ("confirm" in action.input || "confirmed" in action.input));
     if ("userExplicitlyAuthorized" in object || actions.some((action) => action && typeof action === "object" && approval(action))) return "A SpaceApp link cannot approve for this SpaceApp's operator; they approve here.";
     // A missing kind is a pane action (sanitizeControlExecute) or refused by the schema.
+    const operations = manages ? [...LINK_RESOURCE_OPERATIONS, ...LINK_MANAGE_RESOURCE_OPERATIONS] : LINK_RESOURCE_OPERATIONS;
     const refused = actions.find((action) => !action || typeof action !== "object" || (action.kind !== undefined && !LINK_EXECUTE_KINDS.includes(action.kind as string))
-      || (action.kind === "resource" && !LINK_RESOURCE_OPERATIONS.includes(action.operation as string)) || "captureScreenshot" in action || action.operation === "visual_audit" || action.action === "visual_audit");
-    return refused === undefined ? null : "A SpaceApp link runs rooms, panes, their models, layout and tasks only, without screenshots; the rest is set on this SpaceApp.";
+      || (action.kind === "resource" && !operations.includes(action.operation as string))
+      || (!manages && ("captureScreenshot" in action || action.operation === "visual_audit" || action.action === "visual_audit")));
+    return refused === undefined ? null : manages ? "A SpaceApp link runs rooms, panes, their models, layout, tasks, logs and screenshots only; the rest is set on this SpaceApp."
+      : "A SpaceApp link runs rooms, panes, their models, layout and tasks only, without screenshots; the rest is set on this SpaceApp.";
   }
   return "always" in object ? "Always answers are set on a computer." : null;
 }
@@ -337,6 +451,46 @@ const rotationBytes = (statement: MobileRotationStatement) => utf8(`spaceapp-rot
 /** The old identity key's signature over a routine rotation; the app checks it with the identity key it pinned. */
 export function signMobileRotation(statement: MobileRotationStatement, oldIdentityPrivate: Uint8Array): string {
   return vaultBase64url.encode(ed25519.sign(rotationBytes(statement), oldIdentityPrivate));
+}
+
+// ---- Nous hierarchy (Space Link v2 step 9): the superior SpaceApp's identity key signs who it is, the link it speaks over and its chain. ----
+
+/** `chain`: the identity keys above the superior, nearest first; the receiver refuses itself in it (a cycle). Bounded by the 64 KiB frame. */
+export const nousSuperiorStatementSchema = z.object({
+  v: z.literal(1), to: b64u(32), device: z.string().min(1).max(200), identity: b64u(32), label: z.string().min(1).max(200),
+  host: z.string().min(1).max(253), chain: z.array(b64u(32))
+}).strict();
+export type NousSuperiorStatement = z.infer<typeof nousSuperiorStatementSchema>;
+export const nousSuperiorRequestSchema = z.object({ statement: nousSuperiorStatementSchema, signature: z.string().min(1).max(200) }).strict();
+const superiorBytes = (statement: NousSuperiorStatement) => utf8(`spaceapp-nous-superior-v1\n${vaultCanonicalJson(nousSuperiorStatementSchema.parse(statement))}`);
+export function signNousSuperior(statement: NousSuperiorStatement, identityPrivate: Uint8Array): string {
+  return vaultBase64url.encode(ed25519.sign(superiorBytes(statement), identityPrivate));
+}
+/** Checked with the identity the statement names (it proves the sender holds it); the receiver also checks it came over the link it names. */
+export function verifyNousSuperior(statement: NousSuperiorStatement, signature: string): boolean {
+  try { return ed25519.verify(vaultBase64url.decode(signature), superiorBytes(statement), vaultBase64url.decode(statement.identity)); }
+  catch { return false; }
+}
+
+/** What this SpaceApp's Nous may send a link (space_remote): every link route but the superior person's signed answer. */
+export const LINK_REMOTE_ROUTES = Object.keys(LINK_ROUTE_SCOPES).filter((key) => !LINK_ROUTE_SCOPES[key]!.superiorSignature);
+/** Step 9c: the decision categories a superior's person answers for a linked SpaceApp (ADR-014 v2). */
+export const NOUS_LINK_DECISION_CATEGORIES = ["RELEASE", "DESTRUCTIVE", "EXTERNAL", "DIRECTION"] as const;
+/** A superior's person-signed answer: over the receiver's identity, the decision's content hash as the person saw it, the answer and the time. */
+export const nousLinkAnswerStatementSchema = z.object({
+  v: z.literal(1), to: b64u(32), decisionId: z.string().min(1).max(200), contentHash: z.string().min(1).max(200),
+  answer: z.enum(["APPROVE", "DECLINE", "ANSWER"]), text: z.string().trim().min(1).max(2_000).optional(), at: z.string().datetime()
+}).strict();
+export type NousLinkAnswerStatement = z.infer<typeof nousLinkAnswerStatementSchema>;
+export const nousLinkAnswerRequestSchema = z.object({ statement: nousLinkAnswerStatementSchema, signature: z.string().min(1).max(200) }).strict();
+const linkAnswerBytes = (statement: NousLinkAnswerStatement) => utf8(`spaceapp-nous-link-answer-v1\n${vaultCanonicalJson(nousLinkAnswerStatementSchema.parse(statement))}`);
+export function signNousLinkAnswer(statement: NousLinkAnswerStatement, identityPrivate: Uint8Array): string {
+  return vaultBase64url.encode(ed25519.sign(linkAnswerBytes(statement), identityPrivate));
+}
+/** Checked with the superior's identity key the receiver stored (POST /api/nous/link/superior), never one the statement names. */
+export function verifyNousLinkAnswer(statement: NousLinkAnswerStatement, signature: string, superiorIdentity: string): boolean {
+  try { return ed25519.verify(vaultBase64url.decode(signature), linkAnswerBytes(statement), vaultBase64url.decode(superiorIdentity)); }
+  catch { return false; }
 }
 
 // ---- The SpaceApp relay (design §5, oll4-cloud's relay): the instance's identity key signs its listen and each accept. ----

@@ -1,4 +1,5 @@
 import type { Room } from "@space/contracts";
+import "./room-share-view.css";
 
 // Toolbar and rail controls that change a room: new panes, its name, its layout, sticky notes.
 const roomWriteActions = new Set(["create", "rename-room", "pane-layout", "pane-span-all", "sticky-note"]);

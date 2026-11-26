@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { GATEWAY_FREE_ROUTES, NOUS_FREE_ROUTE_MODELS, NOUS_SPACE_ROUTES, NOUS_TURN_REASONS, nousFailureCause, nousModelLabel, nousModelMatchesProvider, nousSettingsSchema, nousSpaceModel } from "@space/contracts";
 import { nousTokenModel } from "../src/nous/tokens.js";
@@ -5,7 +8,7 @@ import { InMemoryNousRepository } from "@space/db";
 import { createNousProviderCatalog } from "../src/nous/providers.js";
 import { createNousService, type NousRunner } from "../src/nous/service.js";
 import { classifySpaceFailure, createSpaceRouter, nearestEffort, refusalResetAt, routeModel, spaceAttempts, SpaceRouteError, type SpaceRoute } from "../src/nous/space-provider.js";
-import { turnRunner, withEarlierAttempts } from "../src/nous/wiring.js";
+import { NOUS_PUBLIC_NOTE, turnRunner, withEarlierAttempts } from "../src/nous/wiring.js";
 
 const route = (name: SpaceRoute["route"], provider: SpaceRoute["provider"], prefix: string, models: SpaceRoute["models"], extra: Partial<SpaceRoute> = {}): SpaceRoute =>
   ({ route: name, name, runtime: provider, prefix, provider, enabled: true, available: true, reason: null, models, ...extra });
@@ -15,10 +18,10 @@ const codexModels = [{ id: "gpt-6-astra", label: "Astra", efforts: ["low", "medi
 const argonModels = [{ id: "gemini-4-argon-high", label: "Argon High", efforts: ["none"] }, { id: "gemini-4-argon", label: "Argon", efforts: ["none"] }];
 const geminiModels = [{ id: "gemini-3.8-flash-high", label: "Flash High", efforts: ["none"] }, { id: "gemini-3.8-flash-low", label: "Flash Low", efforts: ["none"] }];
 const antigravityClaudeModels = ["claude-opus-5-5-low", "claude-opus-5-5-high", "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium"].map((id) => ({ id, label: id, efforts: ["none"] }));
-// The operator's order: Claude, Codex, Claude via OpenCode, Gemini Argon, Gemini 3.8 Flash, Claude (Antigravity).
+// The operator's order: Claude, Codex, Claude via OpenCode, Gemini Argon, Claude (Antigravity), Gemini 3.8 Flash.
 const ROUTES = [route("CLAUDE", "claude", "claude", claudeModels), route("CODEX", "codex", "codex", codexModels),
   route("CLAUDE_OPENCODE", "opencode", "opencode-claude", claudeModels), route("ANTIGRAVITY", "gemini", "gemini", argonModels),
-  route("ANTIGRAVITY_FLASH", "gemini", "gemini-flash", geminiModels), route("ANTIGRAVITY_CLAUDE", "gemini", "antigravity-claude", antigravityClaudeModels)];
+  route("ANTIGRAVITY_CLAUDE", "gemini", "antigravity-claude", antigravityClaudeModels), route("ANTIGRAVITY_FLASH", "gemini", "gemini-flash", geminiModels)];
 
 describe("Space provider: ids, classes and efforts", () => {
   it("reads namespaced and auto ids without touching other providers' slashes", () => {
@@ -41,6 +44,8 @@ describe("Space provider: ids, classes and efforts", () => {
     expect(routeModel(claudeModels, 3)?.id).toBe("claude-opus-5-5");
     expect(routeModel(codexModels, 2)?.id).toBe("gpt-6.1-sol");
     expect(routeModel(argonModels, 3)?.id).toBe("gemini-4-argon-high");
+    // Operator 22/11 c74c7453: Neon over Argon when both are in the catalog.
+    expect(routeModel([...argonModels, { id: "gemini-4-neon-high", label: "Neon", efforts: ["none"] }], 3)?.id).toBe("gemini-4-neon-high");
     expect(routeModel(geminiModels, 1)?.id).toBe("gemini-3.8-flash-low");
     expect(([3, 2, 1] as const).map((tier) => routeModel(antigravityClaudeModels, tier)?.id)).toEqual(["claude-opus-5-5-high", "claude-sonnet-5-5-medium", "claude-sonnet-5-5-medium"]);
     expect(nearestEffort("max", ["low", "medium", "high", "xhigh"])).toBe("xhigh");
@@ -48,23 +53,23 @@ describe("Space provider: ids, classes and efforts", () => {
     const plan = spaceAttempts({ model: "auto", effort: "max" }, ROUTES);
     expect(plan.explicit).toBe(false);
     expect(plan.attempts.map((attempt) => `${attempt.id}#${attempt.effort}@${attempt.provider}`)).toEqual([
-      "claude:claude-opus-5-5#max@claude", "codex:gpt-6-astra#xhigh@codex", "opencode-claude:claude-opus-5-5#max@opencode", "gemini:gemini-4-argon-high#none@gemini", "gemini-flash:gemini-3.8-flash-high#none@gemini",
-      "antigravity-claude:claude-opus-5-5-high#none@gemini"]);
+      "claude:claude-opus-5-5#max@claude", "codex:gpt-6-astra#xhigh@codex", "opencode-claude:claude-opus-5-5#max@opencode", "gemini:gemini-4-argon-high#none@gemini", "antigravity-claude:claude-opus-5-5-high#none@gemini",
+      "gemini-flash:gemini-3.8-flash-high#none@gemini"]);
   });
 
   it("takes the free pools after the subscriptions only for background work, with the namespaced id the OpenCode runner needs (nous_msg:d9b67550)", () => {
     const free = route("INCEPTION", "opencode", "inception", [{ id: "mercury-3", label: "mercury-3", efforts: ["low", "medium", "high", "xhigh", "max"] }], { free: true });
     const routes = [...ROUTES, free];
     // The operator's own, a decision's and a goal turn (free not set) never reach a free pool.
-    expect(spaceAttempts({ model: "auto", effort: "high" }, routes).attempts.map((attempt) => attempt.route)).toEqual(["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_FLASH", "ANTIGRAVITY_CLAUDE"]);
+    expect(spaceAttempts({ model: "auto", effort: "high" }, routes).attempts.map((attempt) => attempt.route)).toEqual(["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_CLAUDE", "ANTIGRAVITY_FLASH"]);
     const background = spaceAttempts({ model: "auto-light", effort: "high", free: true }, routes).attempts;
-    expect(background.map((attempt) => attempt.route)).toEqual(["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_FLASH", "ANTIGRAVITY_CLAUDE", "INCEPTION"]);
+    expect(background.map((attempt) => attempt.route)).toEqual(["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_CLAUDE", "ANTIGRAVITY_FLASH", "INCEPTION"]);
     expect(background.at(-1)).toMatchObject({ id: "inception:mercury-3", provider: "opencode", free: true });
   });
 
   it("tries the routes of a pool with no room for Nous after those that have room (operator 8/11)", () => {
     expect(spaceAttempts({ model: "auto", effort: "high", noRoom: ["claude", "codex"] }, ROUTES).attempts.map((attempt) => attempt.route))
-      .toEqual(["CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_FLASH", "ANTIGRAVITY_CLAUDE", "CLAUDE", "CODEX"]);
+      .toEqual(["CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_CLAUDE", "ANTIGRAVITY_FLASH", "CLAUDE", "CODEX"]);
     // An explicit model keeps its route.
     expect(spaceAttempts({ model: "claude:claude-opus-5-5", effort: "high", noRoom: ["claude"] }, ROUTES).attempts.map((attempt) => attempt.route)).toEqual(["CLAUDE"]);
   });
@@ -72,14 +77,14 @@ describe("Space provider: ids, classes and efforts", () => {
   it("skips routes that are off or unavailable, and names why", () => {
     const routes = [ROUTES[0]!, { ...ROUTES[1]!, enabled: false }, { ...ROUTES[2]!, available: false, reason: "Today's share of the API budget is used", resetAt: "2026-11-04T00:00:00.000Z", models: [] }, ROUTES[3]!, ROUTES[4]!];
     const plan = spaceAttempts({ model: "auto-balanced", effort: "medium" }, routes);
-    expect(plan.attempts.map((attempt) => attempt.id)).toEqual(["claude:claude-sonnet-5-5", "gemini:gemini-4-argon-high", "gemini-flash:gemini-3.8-flash-high"]);
+    expect(plan.attempts.map((attempt) => attempt.id)).toEqual(["claude:claude-sonnet-5-5", "gemini:gemini-4-argon-high", "antigravity-claude:claude-sonnet-5-5-medium"]);
     expect(plan.skipped).toEqual([expect.objectContaining({ route: "CLAUDE_OPENCODE", kind: "skipped", resetAt: "2026-11-04T00:00:00.000Z" })]);
   });
 
   it("resolves Auto reasoning per route by the model's class (operator 8/11)", () => {
     expect(spaceAttempts({ model: "auto", effort: "auto" }, ROUTES).attempts.map((attempt) => `${attempt.id}#${attempt.effort}`)).toEqual([
-      "claude:claude-opus-5-5#xhigh", "codex:gpt-6-astra#xhigh", "opencode-claude:claude-opus-5-5#xhigh", "gemini:gemini-4-argon-high#none", "gemini-flash:gemini-3.8-flash-high#none",
-      "antigravity-claude:claude-opus-5-5-high#none"]);
+      "claude:claude-opus-5-5#xhigh", "codex:gpt-6-astra#xhigh", "opencode-claude:claude-opus-5-5#xhigh", "gemini:gemini-4-argon-high#none", "antigravity-claude:claude-opus-5-5-high#none",
+      "gemini-flash:gemini-3.8-flash-high#none"]);
     expect(spaceAttempts({ model: "auto-balanced", effort: "auto" }, ROUTES).attempts[0]).toMatchObject({ id: "claude:claude-sonnet-5-5", effort: "high" });
   });
 
@@ -95,10 +100,29 @@ describe("Space provider: ids, classes and efforts", () => {
     expect(spaceAttempts({ model: "antigravity-claude:claude-sonnet-5-5-medium", effort: "none" }, ROUTES).attempts.map((attempt) => attempt.id)).toEqual(["antigravity-claude:claude-sonnet-5-5-medium"]);
   });
 
+  it("automatically adds Gemini 4 Hydrogen failover before Flash when Gemini Argon is selected and route offers Hydrogen", () => {
+    const routesWithHydrogen = ROUTES.map((r) => r.route === "ANTIGRAVITY"
+      ? { ...r, models: [...argonModels, { id: "gemini-4-hydrogen-high", label: "Hydrogen High", efforts: ["none"] }] }
+      : r);
+    const plan = spaceAttempts({ model: "gemini:gemini-4-argon-high", effort: "high" }, routesWithHydrogen);
+    expect(plan.explicit).toBe(false);
+    expect(plan.attempts.map((attempt) => attempt.id)).toEqual(["gemini:gemini-4-argon-high", "gemini:gemini-4-hydrogen-high", "gemini-flash:gemini-3.8-flash-high"]);
+  });
+
   it("tells pool exhaustion, throttles, outages, refused credentials and the turn's own failures apart", () => {
     expect(classifySpaceFailure("All 4 Claude accounts in Space Gateway reached their usage limit. The first one is back in 2h 5m (at 12:40).")).toBe("quota");
     expect(classifySpaceFailure("Claude via OpenCode: quota exhausted (Space Gateway 429: DAILY_ALLOWANCE_REACHED).")).toBe("quota");
     expect(classifySpaceFailure("API Error: 429 rate_limit_error: Too many requests")).toBe("throttle");
+    // 17/11: Code Assist's 404 for a spent Argon model fails over to Gemini Flash instead of ending the turn.
+    expect(classifySpaceFailure("Gemini returned HTTP 404: this model is unavailable right now.")).toBe("unavailable");
+    // 18/11: a route's own fault (Claude on Antigravity 400, an empty answer, a tool outside Nous) fails over too.
+    expect(classifySpaceFailure("Claude Opus-5-5-high · Claude (Antigravity): Gemini returned HTTP 400.")).toBe("unavailable");
+    expect(classifySpaceFailure("Gemini returned an empty answer.")).toBe("unavailable");
+    expect(classifySpaceFailure("gemini-3.8-flash-high · Gemini 3.8 Flash (Antigravity): Gemini returned HTTP 403.")).toBe("unavailable");
+    expect(classifySpaceFailure("Claude: 403 Forbidden")).toBe("auth");
+    expect(classifySpaceFailure("OpenCode requested a tool outside Nous.")).toBe("unavailable");
+    // 23/11: the worker's first-reply stop (apps/worker/src/nous-turn.ts NOUS_FIRST_REPLY_MS) fails over, unlike the 20-minute stop.
+    expect(classifySpaceFailure("Claude sent no reply within 5 minutes of the start: the route was unavailable.")).toBe("unavailable");
     // 4/11 09:42Z: the gateway's fill-first refusal, before and after its text named each account, is a pool without room, not a throttle.
     expect(classifySpaceFailure('API Error: 429 {"error":{"message":"Space Gateway\'s other Claude accounts reached their 5-hour limit; the last one with room is kept '
       + 'for Nous\'s answers to the operator. Try again in a few minutes.","type":"rate_limit_error","code":"usage_limit_reached"}}')).toBe("quota");
@@ -108,7 +132,14 @@ describe("Space provider: ids, classes and efforts", () => {
     expect(classifySpaceFailure("Claude via OpenCode: API budget stop, quota exhausted (Space Gateway 429 DAILY_ALLOWANCE_REACHED: serves again after 00:00 UTC).")).toBe("quota");
     expect(classifySpaceFailure("Claude via OpenCode: quota exhausted (Space Gateway 429 usage_limit_reached: back in 2h 5m).")).toBe("quota");
     expect(classifySpaceFailure("API Error: Connection refused (ECONNREFUSED)")).toBe("unavailable");
+    expect(classifySpaceFailure("Claude Opus 5.5 · Claude via OpenCode: Waiting for the selected VPN connection...")).toBe("unavailable");
+    expect(classifySpaceFailure("The selected VPN route did not reach its verified egress from CLI runtimes.")).toBe("unavailable");
     expect(classifySpaceFailure("Gemini could not be reached.")).toBe("unavailable");
+    // 17/11: Gemini Argon's 404 (model not served on that route) ended 18 turns instead of failing over.
+    expect(classifySpaceFailure("gemini-4-argon-high · Gemini Neon (Antigravity): Gemini returned HTTP 404.")).toBe("unavailable");
+    // 22/11: Gemini Argon's expired sign-in ended 26 turns instead of failing over.
+    expect(classifySpaceFailure("gemini-4-argon-high · Gemini Neon (Antigravity): Gemini needs a new sign-in.")).toBe("unavailable");
+    expect(classifySpaceFailure("The Gemini sign-in file is unavailable.")).toBe("unavailable");
     expect(classifySpaceFailure("Gemini could not be reached, or the turn was stopped.")).toBe("unavailable");
     expect(classifySpaceFailure("The Gemini turn was stopped.")).toBe("other");
     expect(classifySpaceFailure("Claude via OpenCode: authentication refused by Space Gateway (401: invalid key).")).toBe("auth");
@@ -169,6 +200,11 @@ describe("Space provider router", () => {
     expect(next.attempt.route).toBe("CLAUDE_OPENCODE");
     expect(call).toHaveBeenCalledTimes(1);
     expect(next.failures.map((failure) => `${failure.route}:${failure.kind}`)).toEqual(["CLAUDE:skipped", "CODEX:skipped"]);
+    // Response time 18/11 #4 (307 s): an operator turn tries the cooling routes last instead of failing while one of them serves.
+    const down = vi.fn(async (attempt: { id: string; route: string }) => attempt.route === "CODEX" ? ok(attempt) : { text: "Claude via OpenCode: quota exhausted.", isError: true });
+    const operator = await router.run({ model: "auto", effort: "high", lastResort: true }, down);
+    expect(down.mock.calls.map(([attempt]) => attempt.route)).toEqual(["CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_CLAUDE", "ANTIGRAVITY_FLASH", "CLAUDE", "CODEX"]);
+    expect(operator.attempt.route).toBe("CODEX");
   });
 
   it("automatically fails over from Gemini Argon to Gemini 3.8 Flash on quota exhaustion and skips cooling Argon next turn", async () => {
@@ -189,6 +225,36 @@ describe("Space provider router", () => {
     expect(next.attempt.id).toBe("gemini-flash:gemini-3.8-flash-high");
     expect(next.failures.map((f) => `${f.route}:${f.kind}`)).toEqual(["ANTIGRAVITY:skipped"]);
     expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("automatically fails over from Gemini Argon to Gemini 4 Hydrogen on Argon quota exhaustion without cooling Hydrogen", async () => {
+    const routesWithHydrogen = ROUTES.map((r) => r.route === "ANTIGRAVITY"
+      ? { ...r, models: [...argonModels, { id: "gemini-4-hydrogen-high", label: "Hydrogen High", efforts: ["none"] }] }
+      : r);
+    const router = createSpaceRouter({ routes: async () => routesWithHydrogen });
+    const call = vi.fn(async (attempt: { id: string; route: string; model: string }) => {
+      if (attempt.model.includes("argon")) return { text: "Gemini Argon (Antigravity): Gemini has no available tokens/quota.", isError: true };
+      return ok(attempt);
+    });
+    const served = await router.run({ model: "gemini:gemini-4-argon-high", effort: "high" }, call);
+    expect(served.attempt.id).toBe("gemini:gemini-4-hydrogen-high");
+    expect(served.text).toBe("answered on gemini:gemini-4-hydrogen-high");
+    expect(served.failures.map((f) => `${f.route}:${f.kind}`)).toEqual(["ANTIGRAVITY:quota"]);
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips the whole Antigravity route after Argon's sign-in needs renewing, in the existing order (22/11 ×26 failed turns)", async () => {
+    const routesWithHydrogen = ROUTES.map((r) => r.route === "ANTIGRAVITY"
+      ? { ...r, models: [...argonModels, { id: "gemini-4-hydrogen-high", label: "Hydrogen High", efforts: ["none"] }] }
+      : r);
+    const router = createSpaceRouter({ routes: async () => routesWithHydrogen });
+    const call = vi.fn(async (attempt: { id: string; route: string; model: string }) => attempt.route === "ANTIGRAVITY"
+      ? { text: "gemini-4-argon-high · Gemini Neon (Antigravity): Gemini needs a new sign-in.", isError: true }
+      : ok(attempt));
+    const served = await router.run({ model: "gemini:gemini-4-argon-high", effort: "high" }, call);
+    expect(served.attempt.id).toBe("gemini-flash:gemini-3.8-flash-high");
+    expect(served.failures.map((f) => `${f.route}:${f.kind}`)).toEqual(["ANTIGRAVITY:unavailable", "ANTIGRAVITY:skipped"]);
+    expect(call).toHaveBeenCalledTimes(2);
   });
 
   it("never fails a pace-held Claude Max over to the paid API-key route, this turn or the next (operator 6/11)", async () => {
@@ -256,6 +322,26 @@ describe("Space provider router", () => {
     expect(actedCall).toHaveBeenCalledTimes(1);
   });
 
+  it("takes an operator turn past any route's own refusal to the route that serves, stopping only on the turn's own failure (Response time 17/11, 22/11)", async () => {
+    const order = [ROUTES[1]!, ROUTES[3]!, ROUTES[0]!];
+    for (const refusal of ["Gemini Argon (Antigravity): something new went wrong.", "authentication refused (401)"]) {
+      const router = createSpaceRouter({ routes: async () => order });
+      const call = vi.fn(async (attempt: { id: string; route: string }) => attempt.route === "CLAUDE" ? ok(attempt) : { text: refusal, isError: true });
+      const served = await router.run({ model: "auto", effort: "high", lastResort: true }, call);
+      expect(served.attempt.route).toBe("CLAUDE");
+      expect(served.failures.map((failure) => failure.route)).toEqual(["CODEX", "ANTIGRAVITY"]);
+      // A background turn still stops at the first such refusal.
+      await expect(createSpaceRouter({ routes: async () => order }).run({ model: "auto", effort: "high" }, call)).rejects.toThrow(refusal.slice(0, 20));
+    }
+    const own = vi.fn(async () => ({ text: "No answer within 15 minutes.", isError: true }));
+    await expect(createSpaceRouter({ routes: async () => order }).run({ model: "auto", effort: "high", lastResort: true }, own)).rejects.toThrow(/No answer within/);
+    expect(own).toHaveBeenCalledTimes(1);
+    // DEV3D-057: Claude Code's own step limit (nous-turn-stream's "error_max_turns") is the turn's failure too, not a reason to run it again on Codex.
+    const steps = vi.fn(async () => ({ text: "Claude Code stopped (error_max_turns).", isError: true }));
+    await expect(createSpaceRouter({ routes: async () => order }).run({ model: "auto", effort: "high", lastResort: true }, steps)).rejects.toThrow(/error_max_turns/);
+    expect(steps).toHaveBeenCalledTimes(1);
+  });
+
   it("puts no free or granted pool on any Nous turn kind, in any spend mode (operator rule 13/11 14:38 BKK)", () => {
     expect(NOUS_FREE_ROUTE_MODELS).toEqual({});
     const free = route("AZURE_OPENAI", "opencode", "azure", [{ id: "gpt-5-mini", label: "gpt-5-mini", efforts: ["low", "medium", "high", "xhigh", "max"] }], { free: true });
@@ -269,6 +355,14 @@ describe("Space provider router", () => {
       // Nous's choice never sets `free` (wiring.ts), so even a free route listed first is skipped.
       expect(spaceAttempts({ model, effort }, [free, ...ROUTES]).attempts.some((attempt) => attempt.free)).toBe(false);
     }
+  });
+
+  it("keeps the free Live pools to nous/live/* only (operator decision ab7b76db 15/11): no turn or helper file names them", () => {
+    const root = fileURLToPath(new URL("../src/", import.meta.url));
+    const users = readdirSync(root, { recursive: true, encoding: "utf8" }).filter((file) => /\.tsx?$/.test(file) && readFileSync(join(root, file), "utf8").includes("NOUS_LIVE_POOLS"))
+      .map((file) => file.split(sep).join("/")).sort();
+    expect(users.filter((file) => file !== "nous/space-provider.ts" && !file.startsWith("nous/live/"))).toEqual([]);
+    expect(users.some((file) => file.startsWith("nous/live/"))).toBe(true);
   });
 
   it("goes on to Claude when a free pool listed first refuses its key or fails (stable 13/11 14:31 BKK, Azure gpt-5-mini 401)", async () => {
@@ -288,7 +382,7 @@ describe("Space provider router", () => {
     const error = await router.run({ model: "auto", effort: "high" }, async () => ({ text: "usage limit reached", isError: true })).catch((caught: unknown) => caught as SpaceRouteError);
     expect(error).toBeInstanceOf(SpaceRouteError);
     expect(error.message).toMatch(/quota exhausted or unavailable on every enabled route/);
-    expect(error.failures.map((failure) => failure.route)).toEqual(["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_FLASH", "ANTIGRAVITY_CLAUDE"]);
+    expect(error.failures.map((failure) => failure.route)).toEqual(["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_CLAUDE", "ANTIGRAVITY_FLASH"]);
   });
 
   it("does not put Nous in WAITING_QUOTA when an earlier route lacked quota and the serving route failed for another reason", async () => {
@@ -324,17 +418,72 @@ describe("Space provider router", () => {
     await service.idle(owner);
     const state = await service.state(owner);
     expect(state.status).toBe("IDLE");
-    expect(state.lastError).toMatch(/^gemini-4-argon-high · Gemini Argon \(Antigravity\): Gemini could not be reached.*\(earlier: /);
+    expect(state.lastError).toMatch(/^gemini-4-argon-high · Gemini Neon \(Antigravity\): Gemini could not be reached.*\(earlier: /);
     // The earlier list names the routes that ran and failed, never the ones skipped without a try (12/11).
     expect(state.lastError).toMatch(/\(earlier: [^;]*no available tokens\/quota[^;]*\)$/);
     expect(state.lastError).not.toMatch(/paused or out of quota|API budget/);
     // The chat says the reason; the routes tried before it stay in lastError and the turn's facts.
     expect((await repository.listMessages(owner, 10)).filter((message) => message.kind === "ERROR").map((message) => message.content))
-      .toEqual(["The turn failed: gemini-4-argon-high · Gemini Argon (Antigravity): Gemini could not be reached, or the turn was stopped."]);
+      .toEqual(["The turn failed: gemini-4-argon-high · Gemini Neon (Antigravity): Gemini could not be reached, or the turn was stopped."]);
     expect(raise).not.toHaveBeenCalled();
     const [facts] = await repository.listTurnFacts(owner, "2000-01-01T00:00:00.000Z");
     expect(facts?.model).toBe("gemini:gemini-4-argon-high");
     expect(nousFailureCause(facts!)).toBe("other");
+  });
+
+  // Plan clipboard:VypZ4sl7NR04 (20/11): a background kind whose turn failed asks for the best class on its next turn, until one succeeds.
+  it("asks the model picker to escalate the next turn of a kind whose last turn failed", async () => {
+    const owner = "user:operator";
+    let runs = 0;
+    const selectModel = vi.fn(async () => ({ provider: "space" as const, model: "auto-balanced", effort: "medium" }));
+    const service = createNousService({
+      repository: new InMemoryNousRepository(),
+      runner: async () => { if ((runs += 1) === 1) throw new Error("The model stopped answering."); return { text: "NOTHING_NEW", model: "auto-balanced", effort: "medium" }; },
+      selectModel,
+      tools: { execute: vi.fn(async () => ({ ok: true, display: "ok", result: "ok" })) },
+      world: async () => ({ text: "# The world now", overview: { plans: [], needsHands: [], trains: "", planMap: null } }),
+      settings: async () => ({ enabled: true, maxTurnsPerHour: 20 }) as never,
+      saveSettings: async (_owner, value) => value,
+      notifications: { raise: vi.fn(async () => ({}) as never), resolve: vi.fn(async () => 0) } as never,
+      executeAction: vi.fn(async () => "ok"),
+      limits: { retryMs: 1 }
+    });
+    const turn = async () => { expect(await service.standing(owner, "STANDING", "# Standing orders")).toBe("STARTED"); await service.idle(owner); };
+    await turn();
+    // The failed standing turn runs once more by itself: that retry is the escalated turn.
+    await vi.waitFor(() => expect(selectModel).toHaveBeenCalledTimes(2));
+    await service.idle(owner);
+    await turn();
+    expect(selectModel.mock.calls.map((call) => (call as unknown[]).slice(1))).toEqual([["STANDING", false], ["STANDING", true], ["STANDING", false]]);
+  });
+
+  // 21/11 14:00-15:08Z (load 13-19 %): a turn that left the 90 % push unmet escalates its kind's next turn ("push": balanced class at high, tokens.ts), until one meets it.
+  it("escalates the next turn of a kind whose last turn left the utilization push unmet", async () => {
+    const owner = "user:operator";
+    const selectModel = vi.fn(async () => ({ provider: "space" as const, model: "auto-balanced", effort: "medium" }));
+    const service = createNousService({
+      repository: new InMemoryNousRepository(),
+      runner: async () => ({ text: "Sent saves.", model: "auto-balanced", effort: "medium" }),
+      selectModel,
+      tools: { execute: vi.fn(async () => ({ ok: true, display: "ok", result: "ok" })) },
+      world: async () => ({ text: "# The world now", overview: { plans: [], needsHands: [], trains: "", planMap: null } }),
+      settings: async () => ({ enabled: true, maxTurnsPerHour: 20 }) as never,
+      saveSettings: async (_owner, value) => value,
+      notifications: { raise: vi.fn(async () => ({}) as never), resolve: vi.fn(async () => 0) } as never,
+      executeAction: vi.fn(async () => "ok"),
+      limits: { retryMs: 1 }
+    });
+    const push = { key: "utilization", kind: "UTILIZATION" as const, line: "Load 15 %: 3 CLI panes are not working.", always: true };
+    const turn = async (items: typeof push[]) => { expect(await service.standing(owner, "STANDING", "# Standing orders", { items })).toBe("STARTED"); await service.idle(owner); };
+    await turn([push]);
+    await turn([]);
+    await turn([]);
+    // 22/11: an escalated turn that still leaves it unmet sends the next one back to balanced, not Opus for every push.
+    await turn([push]);
+    await turn([push]);
+    await turn([push]);
+    expect(selectModel.mock.calls.map((call) => (call as unknown[]).slice(1))).toEqual([["STANDING", false], ["STANDING", "push"], ["STANDING", false],
+      ["STANDING", false], ["STANDING", "push"], ["STANDING", false]]);
   });
 
   it("keeps the earlier attempt's calls inside the prompt's technical bound", () => {
@@ -354,16 +503,16 @@ describe("Space provider catalog", () => {
         { provider: "CODEX", status: "QUOTA_EXCEEDED", planType: "pro", primaryWindow: { resetAt: "2999-01-01T00:00:00.000Z" } }, { provider: "ANTIGRAVITY", status: "ACTIVE", planType: "pro" }] }),
       modelLoaders: { claude: loader(claudeModels.slice(1, 2)), codex: loader(codexModels), gemini: loader([...argonModels.slice(0, 1), ...geminiModels.slice(0, 1), ...antigravityClaudeModels.slice(3)]) },
       providerOrder: async () => [{ route: "CLAUDE", enabled: true }, { route: "CODEX", enabled: true }, { route: "CLAUDE_OPENCODE", enabled: true }, { route: "ANTIGRAVITY", enabled: true },
-        { route: "ANTIGRAVITY_FLASH", enabled: true }, { route: "ANTIGRAVITY_CLAUDE", enabled: true }]
+        { route: "ANTIGRAVITY_CLAUDE", enabled: true }, { route: "ANTIGRAVITY_FLASH", enabled: true }]
     });
     const space = (await catalog.list()).find((provider) => provider.id === "space")!;
     expect(space.available).toBe(true);
-    expect(space.models.map((model) => model.id)).toEqual(["auto", "auto-balanced", "auto-light", "claude:claude-opus-5-5", "gemini:gemini-4-argon-high", "gemini-flash:gemini-3.8-flash-high",
-      "antigravity-claude:claude-sonnet-5-5-medium"]);
+    expect(space.models.map((model) => model.id)).toEqual(["auto", "auto-balanced", "auto-light", "claude:claude-opus-5-5", "opencode-claude:claude-opus-5-5", "gemini:gemini-4-argon-high",
+      "antigravity-claude:claude-sonnet-5-5-medium", "gemini-flash:gemini-3.8-flash-high"]);
     // The Gemini provider itself keeps its Gemini models; Antigravity's Claude models are their own route.
     expect((await catalog.list()).find((provider) => provider.id === "gemini")!.models.map((model) => model.id)).toEqual(["gemini-4-argon-high", "gemini-3.8-flash-high"]);
-    expect(space.routes!.map((entry) => `${entry.route}:${entry.enabled}:${entry.available}`)).toEqual(["CLAUDE:true:true", "CODEX:true:false", "CLAUDE_OPENCODE:true:false",
-      "ANTIGRAVITY:true:true", "ANTIGRAVITY_FLASH:true:true", "ANTIGRAVITY_CLAUDE:true:true"]);
+    expect(space.routes!.map((entry) => `${entry.route}:${entry.enabled}:${entry.available}`)).toEqual(["CLAUDE:true:true", "CODEX:true:false", "CLAUDE_OPENCODE:true:true",
+      "ANTIGRAVITY:true:true", "ANTIGRAVITY_CLAUDE:true:true", "ANTIGRAVITY_FLASH:true:true"]);
     expect(space.routes![1]).toMatchObject({ reason: expect.stringContaining("out of quota"), resetAt: "2999-01-01T00:00:00.000Z" });
     await expect(catalog.validate({ provider: "space", model: "auto", effort: "high" })).resolves.toBeUndefined();
     await expect(catalog.validate({ provider: "space", model: "codex:gpt-6-astra", effort: "high" })).rejects.toThrow(/not available/);
@@ -385,15 +534,18 @@ describe("Space provider catalog", () => {
     expect((await catalog.routes())[0]!.available).toBe(false);
   });
 
-  it("keeps the Claude via OpenCode route off for Nous even with an active API key (operator decision 8/11)", async () => {
+  // Operator 17/11 (nous_msg:35d3e36f8d414784bde8e43f) supersedes the 8/11 decision: the route is a normal one, Max first, the key after.
+  it("offers Nous the Claude via OpenCode route with an active API key", async () => {
     const claude = vi.fn(async () => claudeModels);
     const catalog = createNousProviderCatalog({
       listAccounts: async () => ({ data: [{ provider: "CLAUDE", status: "ACTIVE", planType: "api" }] }),
       modelLoaders: { claude }
     });
     const routes = await catalog.routes();
-    expect(routes.find((entry) => entry.route === "CLAUDE_OPENCODE")).toMatchObject({ available: false, models: [], reason: expect.stringContaining("never spent by Nous") });
-    expect(claude).not.toHaveBeenCalled();
+    expect(routes.find((entry) => entry.route === "CLAUDE_OPENCODE")).toMatchObject({ available: true, reason: null });
+    expect(routes.find((entry) => entry.route === "CLAUDE_OPENCODE")?.models.length).toBeGreaterThan(0);
+    // The Claude Code route still needs a Max account: the key never serves Claude Code (27/10).
+    expect(routes.find((entry) => entry.route === "CLAUDE")).toMatchObject({ available: false });
   });
 });
 
@@ -493,6 +645,13 @@ describe("R54-a: an operator turn never dies on one pool or on its step limit (3
     const spaceQuota = backendOf([{ text: "Codex: quota exhausted.", isError: true }, { text: "Answered on Claude via OpenCode.", isError: false }]);
     expect(await turnRunner(options, spaceQuota.backend, spacePick as never, async () => false, async () => false, router())(turn("OPERATOR"), new AbortController().signal))
       .toMatchObject({ text: "Answered on Claude via OpenCode.", model: "opencode-claude:claude-opus-5-5" });
+    // Response time 18/11 #1-2 (33 min): an explicit model whose route waits for its VPN moves to auto too, not only on quota.
+    const vpn = backendOf([{ text: "Claude Opus 5.5 · Claude via OpenCode: Waiting for the selected VPN connection...", isError: true }, { text: "Answered on Codex.", isError: false }]);
+    const vpnPick = async () => ({ provider: "space" as const, model: "opencode-claude:claude-opus-5-5", effort: "high", fallbackModel: null });
+    expect(await turnRunner(options, vpn.backend, vpnPick as never, async () => false, async () => false, router())(turn("OPERATOR"), new AbortController().signal))
+      .toMatchObject({ text: "Answered on Codex.", model: "codex:gpt-6-astra" });
+    await expect(turnRunner(options, backendOf([{ text: "Waiting for the selected VPN connection...", isError: true }]).backend, vpnPick as never, async () => false, async () => false, router())(turn("INBOX"), new AbortController().signal))
+      .rejects.toThrow("explicit model");
   });
 
   it("an operator turn that used its steps goes on once on the same route with what it did; a standing turn does not", async () => {
@@ -556,5 +715,21 @@ describe("R54-a: an operator turn never dies on one pool or on its step limit (3
     await expect(turnRunner(options, { run: actedRun, unavailable: async () => null } as never, pick as never, async () => false)(
       { ...(turn("INBOX") as object), acted: () => true } as never, new AbortController().signal)).rejects.toThrow("BROKER_FAILED");
     expect(actedRun).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a self-hosted install's Nous never promises the tools it hides (clean-install lab 23/11)", () => {
+  it("adds the public note to the system text only on a public install", async () => {
+    const pick = async () => ({ provider: "claude" as const, model: "claude-opus-5-5", effort: "high", fallbackModel: null });
+    const turn = { owner: "user:operator", turnId: "nous_turn:0123456789abcdef01234567", reason: "OPERATOR", system: "You are Nous.", prompt: "Hi.", acted: () => false } as never;
+    const systemOf = async (publicDistribution: boolean) => {
+      const run = vi.fn<(request: { system: string }) => Promise<{ text: string; isError: boolean; costUsd: null; tokens: null }>>(async () => ({ text: "Hello.", isError: false, costUsd: null, tokens: null }));
+      const options = { config: { publicDistribution }, apiBaseUrl: "https://space.example:4911", auth: { sessionSecret: "s".repeat(64) } } as never;
+      await turnRunner(options, { run, unavailable: async () => null } as never, pick as never, async () => false)(turn, new AbortController().signal);
+      return run.mock.calls[0]![0].system;
+    };
+    expect(await systemOf(true)).toBe(`You are Nous.\n\n${NOUS_PUBLIC_NOTE}`);
+    expect(await systemOf(false)).toBe("You are Nous.");
+    expect(NOUS_PUBLIC_NOTE).toMatch(/no web search, no source repository, merge queue or release trains/);
   });
 });

@@ -229,6 +229,8 @@ export interface JobApplyRepository {
   /** Adds a JobApplyTargetMiss code to the day's list (once). */
   addTargetMiss(owner: string, day: string, code: string): Promise<void>;
   listApplications(owner: string, filter: { status?: string; /** No limit: every application. */ limit?: number }): Promise<JobApplicationRecord[]>;
+  /** Moves whenever an application of the owner is added, removed or written (every write sets updated_at): a poll compares it instead of reading them all. */
+  applicationsVersion(owner: string): Promise<string>;
   getApplication(owner: string, id: string): Promise<JobApplicationRecord | null>;
   getApplicationByUrl(owner: string, url: string): Promise<JobApplicationRecord | null>;
   createApplication(input: JobApplicationCreateRecord): Promise<JobApplicationRecord>;
@@ -388,6 +390,11 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
       : (await this.pool.query<Record<string, unknown>>(`SELECT ${applicationColumns} FROM job_applications WHERE owner_user_id=$1 ORDER BY updated_at DESC LIMIT $2`, [owner, filter.limit ?? null])).rows;
     return rows.map(applicationRecord);
   }
+  async applicationsVersion(owner: string) {
+    // The count and the sum of updated_at in µs: a write that commits after a later one still moves the sum, max(updated_at) would not.
+    return (await this.pool.query<{ version: string }>(`SELECT count(*) || ':' || COALESCE(sum((extract(epoch FROM updated_at) * 1000000)::bigint), 0) AS version
+      FROM job_applications WHERE owner_user_id=$1`, [owner])).rows[0]!.version;
+  }
   async getApplication(owner: string, id: string) {
     const row = (await this.pool.query<Record<string, unknown>>(`SELECT ${applicationColumns} FROM job_applications WHERE owner_user_id=$1 AND id=$2`, [owner, id])).rows[0];
     return row ? applicationRecord(row) : null;
@@ -487,7 +494,7 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
       ORDER BY key_hit DESC, pinned DESC, rank DESC, (site IS NOT NULL) DESC, (company IS NOT NULL) DESC, uses DESC, updated_at DESC
       LIMIT $8`, [owner, text, keys, kinds, query.site ?? null, query.company ?? null, query.pinnedOnly === true, query.limit ?? null])).rows;
     // rank and key_hit only order the rows; a memory carrying them fails the strict memory schema.
-    return rows.map(({ rank: _rank, key_hit: _keyHit, ...row }) => memoryRecord(row));
+    return rows.map((row) => { delete row.rank; delete row.key_hit; return memoryRecord(row); });
   }
   async getMemory(owner: string, id: string) {
     const row = (await this.pool.query<Record<string, unknown>>(`SELECT ${memoryColumns} FROM job_apply_memory WHERE owner_user_id=$1 AND id=$2`, [owner, id])).rows[0];

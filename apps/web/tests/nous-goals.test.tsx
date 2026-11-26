@@ -11,7 +11,7 @@ import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 // left the same day: no option twice), the Goals view (add, edit, reorder, pause, drop, delete), /goal and /goals in the composer, and the loop's Settings rows.
 const at = "2026-10-27T08:00:00.000Z";
 const settings = (patch: Partial<NousState["settings"]> = {}): NousState["settings"] => ({
-  enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, askOwnHostChanges: false, maySend: false, mayDeleteOwn: false, mayPublish: false, mayRestartHosts: false, neverRefuse: false, shell: false,
+  enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, askOwnHostChanges: false, maySend: false, mayDeleteOwn: false, mayPublish: false, mayRestartHosts: false, neverBuy: false, mayCleanSystem: false, neverRefuse: false, shell: false,
   alwaysApprove: [], paneBoard: nousPaneBoardSettingsSchema.parse({}), standingOrders: nousStandingOrdersSettingsSchema.parse({}), models: nousModelsSettingsSchema.parse({}), fallbackModel: "none",
   telegramInbound: false, copilotQuestionsNousFirst: true, goals: nousGoalsSettingsSchema.parse({}), ...patch
 });
@@ -106,10 +106,8 @@ describe("Nous goals in the dock", () => {
     expect(within(first).getByText(/^By .*(2026|Dec)/)).toBeTruthy();
     expect(first.querySelector(".nous-goal-bar")).not.toBeNull();
     expect([...first.querySelectorAll(".nous-goal-facts dt")].slice(0, 2).map((dt) => dt.textContent)).toEqual(["Limit", "Criteria"]);
-    // Masked shots blur only the goal's own words: the status, percent, bar and Limit row stay readable.
-    const masked = (element: Element | null) => Boolean(element?.closest('[data-sensitive-masked="manual"]'));
-    for (const selector of [".nous-goal-status", ".nous-goal-percent", ".nous-goal-bar", ".nous-goal-facts dd"]) expect(masked(first.querySelector(selector))).toBe(false);
-    for (const selector of [".nous-goal-line", ".nous-goal-text", ".nous-goal-facts dd:nth-of-type(2)"]) expect(masked(first.querySelector(selector))).toBe(true);
+    // "Hide sensitive data" blurs only private values, never a goal's own words (plan clipboard:1NF6u6gcCwtj step 14).
+    expect(first.querySelector("[data-sensitive-masked]")).toBeNull();
     // Operator 1/11 03:39 BKK: a goal without a limit shows no percentage, collapsed or open.
     const unlimited = screen.getByRole("article", { name: "Get the Job Copilot an interview a week" });
     expect(within(unlimited).queryByText("25%")).toBeNull();

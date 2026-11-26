@@ -235,6 +235,33 @@ describe("Monitoring Copilot with no pane open (Nous 2026-10-28)", () => {
     expect(kickoffs).toEqual([]);
   });
 
+  it("says when no pane watches the collector: one error log and one card per ADMIN, closed when a pane is back (Nous 15/11, 38331)", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Cleo", initialPaneCount: 0 });
+    (room as { ownerUserId?: string }).ownerUserId = "user:operator";
+    const raised: NotificationRaiseInput[] = [];
+    const resolved: string[] = [];
+    const errors: string[] = [];
+    const { collector } = fakeCollector();
+    const options = { repository: new InMemoryMonitoringCopilotRepository(), collector, admins: async () => ["user:operator"], log: { error: (_details: unknown, message: string) => { errors.push(message); } },
+      store: { updateMonitoringCopilotMetadata: (paneId: string, metadata: never) => store.updateMonitoringCopilotMetadata(paneId, metadata), listRooms: () => [room], listPanes: (roomId: string, includeClosed?: boolean) => store.listPanes(roomId, includeClosed) },
+      notifications: { raise: async (input: unknown) => { raised.push(input as NotificationRaiseInput); return {} as never; }, resolve: async (_owner: string, key: string) => { resolved.push(key); return 1; } } };
+    const service = createMonitoringCopilotService({ ...options, collectorConfig: COLLECTOR });
+    await service.watch();
+    await service.watch();
+    expect(errors).toEqual(["Monitoring Copilot: no pane watches the collector, its alerts reach no one"]);
+    expect(raised).toEqual([expect.objectContaining({ ownerUserId: "user:operator", source: "MONITORING_COPILOT", kind: "MONITORING_UNWATCHED", severity: "ATTENTION", dedupeKey: "monitoring:unwatched" })]);
+    const pane = store.createPane({ roomId: room.id, title: "Monitoring Copilot", mode: "MONITORING_COPILOT", terminalRuntimeId: "cli:claude" });
+    store.updatePane(pane.id, { isClosed: true });
+    expect(await service.watch()).toMatchObject({ owners: 1 });
+    expect(resolved).toEqual(["monitoring:unwatched"]);
+    // An installation without a collector of its own (a fresh public install) is told nothing.
+    const bare = createMonitoringCopilotService({ ...options, collectorConfig: { network: null, defaults: null }, store: { ...options.store, listPanes: () => [] } });
+    raised.length = 0;
+    await bare.watch();
+    expect(raised).toEqual([]);
+  });
+
   it("reopens the newest closed pane when a playbook brief waits, at most once per 10 minutes, never a paused one", async () => {
     const reopened: string[] = [];
     const notices: string[] = [];
@@ -430,6 +457,28 @@ describe("Monitoring Copilot self-healing gate", () => {
     await service.addBrief(owner, pane, "Clear the LiteSpeed cache on vm100", "NOUS");
     await service.next(owner, pane);
     expect((await service.beginAction(owner, pane, begin([], { kind: "CACHE_CLEAR" }))).gate).toBe("GO");
+  });
+
+  it("runs a config change on the operator's own hosts with a backup and a rollback, firing alert or not; restarts and reboots still ask (f360b58c)", async () => {
+    // 24/11 deadlock: a ct210 Prometheus rule fix for a resolved NodeActiveSwapping was held, and Nous may not ask the operator about it.
+    const fixture = serviceFixture(undefined, false);
+    const { service, owner } = fixture;
+    const alertId = await firing(fixture, "OpenwrtHttpsProbeDown");
+    fixture.state.alerts = [];
+    await service.watch();
+    const pane = fixture.store.getPane(fixture.pane.id);
+    const config = { kind: "CONFIG_CHANGE", target: "ct210", backup: "/etc/prometheus/alerts/swap_alerts.yml.bak", rollback: "cp the .bak back; reload prometheus" };
+    for (const alertIds of [[], [alertId]]) {
+      const go = await service.beginAction(owner, pane, begin(alertIds, config));
+      expect(go.gate).toBe("GO");
+      await service.finishAction(owner, pane, go.actionId, { status: "VERIFIED", verification: "promtool ok, rule loaded" });
+    }
+    expect(await service.beginAction(owner, pane, begin([]))).toMatchObject({ gate: "ASK", reason: expect.stringContaining("Assist") });
+    expect(await service.beginAction(owner, pane, begin([alertId], { kind: "HOST_REBOOT", target: "ct210" }))).toMatchObject({ gate: "ASK" });
+    expect(await service.beginAction(owner, pane, begin([], { kind: "DATA_DELETE", target: "ct211" }))).toMatchObject({ gate: "ASK" });
+    // "Ask me before changes on my own hosts" on: the same config change waits for a person.
+    const asking = serviceFixture(undefined, true);
+    expect(await asking.service.beginAction(asking.owner, asking.store.getPane(asking.pane.id), begin([], config))).toMatchObject({ gate: "ASK" });
   });
 
   it("holds every change on Assist until a person approves it, then lets the agent start and verify it", async () => {

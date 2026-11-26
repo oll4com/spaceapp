@@ -2,7 +2,8 @@ import { isCopilotQuestion, needsYou, type NousDecision, type NousTurnFacts, typ
 import type { NousLedgerRow, RailDecisionCount } from "@space/db";
 import { NOUS_GENERAL_NOTICE_KEY, NOUS_PANE_NOTICE_PREFIX, sameCardSubject } from "./pane-notices.js";
 import { cardAnswerMatched, predictionAccuracy, predictionText, textPrediction } from "./predictions.js";
-import { coordinationOf, coordinationText, failureCauses, failureCausesText, NOUS_CLI_CLOSED_MS, NOUS_TOOL_ERROR_SAMPLES, operatorAsksText, toolErrorSamples, type OperatorAsksDay, waitCloser, waitQuestion } from "./progress.js";
+import { heldToolFailures, historicalToolHold } from "./tool-holds.js";
+import { coordinationOf, coordinationText, failureCauses, failureCausesText, NOUS_CLI_CLOSED_MS, operatorAsksText, toolErrorSamples, type OperatorAsksDay, waitCloser, waitQuestion } from "./progress.js";
 
 /**
  * Nous's daily self-review (operator decision 2026-10-24): Space itself brings Nous, once a day at the operator's chosen hour, the
@@ -88,30 +89,54 @@ const DEFERRAL_HOLDS: Array<[string, RegExp]> = [
   ["a real date", /\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\/\d{1,2}\b|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|deadline|\bdue (?:on|by|at)\b|προθεσμ/i],
   // Queue items 846 + 915 (goal 35813e48): a fixed window ("reboot window 04:30-05:00") and a running job's ETA are real holds too.
   ["a fixed time window", /\b\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}\b|\b(?:maintenance|reboot|backup|release|change) window\b/i],
+  // Queue 10/11 REVIEW (5 "held only by your reason" on scheduled timer waits): a timer, cron or scheduled run at a clock time is a fixed time.
+  ["a scheduled time", /\b(?:timers?|cron|scheduled|space-task)\b[^.\n]{0,60}?\b\d{1,2}:\d{2}\b|\b\d{1,2}:\d{2}\b[^.\n]{0,40}?\b(?:timers?|cron)\b/i],
   // 14/11 REVIEW item 6 (plan bpqbhztxAFG3: "Bob's battery measurement owns it until ~19:57 UTC"): another job holding the slot is one too.
-  [RUNNING_JOB_HOLD, /\beta\b|\b(?:finish|complet|end)(?:es|s)? (?:at|by|around)\b|still running|\b(?:owns|holds|occupies) (?:it|the \w+) until\b|\bbusy until\b/i],
+  // 14/11 02:51 (refused: "once pve-az public-host restic/vzdump backup finishes (~04:15 UTC)"): an approximate time after the verb is an ETA too.
+  [RUNNING_JOB_HOLD, /\beta\b|\b(?:finish|complet|end)(?:es|s)? (?:(?:at|by|around)\b|\(?~\s*\d)|still running|\b(?:owns|holds|occupies) (?:it|the \w+) until\b|\bbusy until\b/i],
   // 5/11 (3 of 5 refusals: a goal's next pendings list at its own «ανά 3 ώρες» rhythm): a set cadence is a real hold.
   ["a set cadence", /\bevery \d+ (?:min|hour|day|week)|(?:ανά|κάθε) \d+ (?:λεπτ|ώρ|μέρ|ημέρ|εβδομ)/i]
 ];
+/**
+ * Queue 10/11 REVIEW ("verify X post once Marketing Copilot resumes" set on a time): a wait on something that ends by itself at no known time
+ * (a pane or service resuming, coming back, finishing) is not a time; tools.ts refuses it on a follow-up unless a hold above names its time.
+ */
+export const OPEN_ENDED_WAIT = /\b(?:once|when(?:ever)?|until|after|as soon as)\b[^.\n]{0,60}?\b(?:resum|is back|comes? back|returns?\b|recover|restart|reopen|unblock|is (?:free|idle|ready|up|online)\b|finish|complet|ends?\b|is done\b)/i;
 /** The reason tools.ts appends to a wait the run-now gate let through on it: "(wait reason: …)" on a follow-up, "(reason: …)" on a plan or goal. */
 const WAIT_REASON = /\((?:wait )?reason: [^]+\)\s*$/;
 /** The hold a deferral's words name (R22-5's heuristic), undefined when none: then it could run the same day. */
 export const deferralHold = (what: string) => DEFERRAL_HOLDS.find(([, words]) => words.test(what))?.[0];
+/** Every hold a deferral's words name. */
+export const deferralHolds = (what: string) => DEFERRAL_HOLDS.filter(([, words]) => words.test(what)).map(([hold]) => hold);
+
+/** 16/11 REVIEW (nous_msg:a6bd8d9a ×8 follow-ups): an operator request or plan a wait's words name; one is the same by its first 8 characters (short or full id). */
+export const REQUEST_IDS = /\b(?:nous_msg|clipboard):[A-Za-z0-9_-]{6,80}/g;
+export const requestKey = (id: string) => id.slice(0, id.indexOf(":") + 9);
 
 /** R22-5 (goal 35813e48, operator «Μην αφήνεις για αύριο ότι μπορείς να κάνεις σήμερα τώρα!!»): each deferral of the day, justified or not, then the misses. */
 export function deferralLines(deferrals: NousDeferral[], since: string): string[] {
-  const day = deferrals.filter((item) => item.at >= since && (!item.until || Date.parse(item.until) - Date.parse(item.at) > DEFERRAL_FOLLOWUP_MIN_MS))
+  const sorted = deferrals.filter((item) => item.at >= since && (!item.until || Date.parse(item.until) - Date.parse(item.at) > DEFERRAL_FOLLOWUP_MIN_MS))
     .sort((left, right) => left.at.localeCompare(right.at));
+  // 16/11 REVIEW: the waits of one request are one line (its newest), with how many there were.
+  const groups = new Map<string, NousDeferral[]>();
+  for (const item of sorted) {
+    const named = item.what.match(REQUEST_IDS)?.[0];
+    const key = named ? requestKey(named) : item.id;
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+  const day = [...groups.values()].sort((left, right) => left.at(-1)!.at.localeCompare(right.at(-1)!.at));
   let missed = 0;
   let reasoned = 0;
-  const lines = day.map((item) => {
+  const lines = day.map((items) => {
+    const item = items.at(-1)!;
+    const times = items.length > 1 ? ` (×${items.length}: ${items.map((each) => each.id).join(", ")})` : "";
     const hold = deferralHold(item.what);
     // Daily self-upgrade 5/11 (2026-11-05 REVIEW item 5, 7 of 138): the run-now gate already refused every such wait without a reason, so a
     // wait whose words name no hold passed on the reason Nous gave (tools.ts runNowProblem); that is Nous's judgment to check, not a code item.
     const reason = !hold && WAIT_REASON.test(item.what);
     if (reason) reasoned += 1;
     else if (!hold) missed += 1;
-    return `- ${item.at.slice(0, 16).replace("T", " ")} UTC ${item.kind.toLowerCase()} ${item.id} until ${item.until ?? "no time"}: "${item.what.replace(/\s+/g, " ").trim()}" → ${hold ? `justified (${hold})` : reason ? "HELD ONLY BY YOUR REASON" : "COULD HAVE RUN TODAY"}`;
+    return `- ${item.at.slice(0, 16).replace("T", " ")} UTC ${item.kind.toLowerCase()} ${item.id}${times} until ${item.until ?? "no time"}: "${item.what.replace(/\s+/g, " ").trim()}" → ${hold ? `justified (${hold})` : reason ? "HELD ONLY BY YOUR REASON" : "COULD HAVE RUN TODAY"}`;
   });
   return [...(lines.length ? lines : ["- none"]),
     `- Could have run today: ${missed} of ${day.length}${missed ? " (each one is a miss: run it in this turn, or record what really holds it)" : ""}`,
@@ -259,8 +284,9 @@ export function renderDailyReview({ facts, decisions, cards = [], rails, ledger,
   for (const turn of window) {
     for (const [name, counts] of Object.entries(turn.tools)) {
       const entry = tools.get(name) ?? { calls: 0, failed: 0, refused: 0, errors: new Map() };
-      entry.calls += counts.calls; entry.failed += counts.failed; entry.refused += counts.refused;
-      for (const error of toolErrorSamples(counts)) entry.errors.set(error, (entry.errors.get(error) ?? 0) + 1);
+      // Slice 9 (14/11): a recorded cause today's rules hold is a gate here as in the score (tool-holds.ts).
+      entry.calls += counts.calls; entry.failed += counts.failed; entry.refused += counts.refused + heldToolFailures(name, counts);
+      for (const error of toolErrorSamples(counts).filter((text) => !historicalToolHold(name, text))) entry.errors.set(error, (entry.errors.get(error) ?? 0) + 1);
       tools.set(name, entry);
     }
   }
@@ -303,8 +329,8 @@ export function renderDailyReview({ facts, decisions, cards = [], rails, ledger,
       + (failedTurns ? ` (failures by cause: ${failureCausesText(failureCauses(window))})` : ""),
     `- Tool calls: ${totals.calls}; mistakes (failed calls that were not a gate holding back): ${totals.failed - totals.refused}; held by a gate: ${totals.refused}`,
     `- Tools that failed most: ${mistakes.length ? mistakes.map((entry) => `${entry.name} ${entry.mistakes} of ${entry.calls}`).join(", ") : "none"}`,
-    // 2/11 REVIEW: each tool's mistakes of each turn (the first one before 8/11, up to 3 since), so a cause is named, not only counted.
-    ...(mistakes.some((entry) => entry.errors.size) ? [`- Error samples (up to ${NOUS_TOOL_ERROR_SAMPLES} per tool per turn): ${mistakes.filter((entry) => entry.errors.size).map((entry) => `${entry.name}: ${[...entry.errors.entries()]
+    // 2/11 REVIEW: each tool's mistakes of each turn (the first one before 8/11, up to 3 until 14/11, every one since), so a cause is named, not only counted.
+    ...(mistakes.some((entry) => entry.errors.size) ? [`- Error samples (each failed call's first line): ${mistakes.filter((entry) => entry.errors.size).map((entry) => `${entry.name}: ${[...entry.errors.entries()]
       .sort((a, b) => b[1] - a[1]).map(([text, turns]) => `"${text}"${turns > 1 ? ` ×${turns}` : ""}`).join("; ")}`).join("; ")}`] : []),
     `- Decisions the operator answered: ${answered.length} (approved ${count("APPROVED")}, declined ${count("DECLINED")}, in words ${count("ANSWERED")}); "you could have decided this": ${answered.filter((decision) => decision.couldHaveDecided === true).length}`,
     `- Corrections by the operator: ${corrections.length}${corrections.length ? `: ${corrections.map((summary) => `"${summary}"`).join("; ")}` : ""}`,

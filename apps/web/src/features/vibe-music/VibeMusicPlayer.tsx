@@ -117,7 +117,7 @@ function truncateCodePoints(value: string, limit: number): string {
 function normalizeMetadataText(value: unknown, limit: number): string | null {
   if (typeof value !== "string") return null;
   const normalized = value
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/\p{Cc}/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!normalized) return null;
@@ -1307,7 +1307,7 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
         navigator.mediaSession.setActionHandler("pause", null);
         navigator.mediaSession.setActionHandler("previoustrack", null);
         navigator.mediaSession.setActionHandler("nexttrack", null);
-      } catch {}
+      } catch { /* Media Session unsupported: nothing to clear */ }
     };
   }, [
     armPlaylistConnectionTimer,

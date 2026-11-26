@@ -1,6 +1,6 @@
 ---
 name: space-app-diagnostics
-description: Inspect retained Space APP_DEBUG captures, recorder state, and fixed authenticated diagnostics proofs on public-host. Load for Space capture investigations, not ordinary browser checks.
+description: "Space APP_DEBUG captures, recorder state and authenticated diagnostics proofs on public-host; not for ordinary browser checks."
 metadata:
   category: DOMAIN_POLICY
 ---

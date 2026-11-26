@@ -2,15 +2,17 @@ import { randomBytes } from "node:crypto";
 import { constants as fsConstants, existsSync } from "node:fs";
 import { access, chmod, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import type { z } from "zod";
 import type {
-  CreateWorktreeInput,
+  createWorktreeSchema,
   MergeWorktreeInput,
   SpaceWorktree,
   WorktreeOperationResult,
   WorktreeStatus
 } from "@space/contracts";
-import { GIT_NOT_FOUND_EXIT_CODE, spawnGroupWritableGit } from "../group-writable-git.js";
+import { GIT_NOT_FOUND_EXIT_CODE, execGroupWritableGit, spawnGroupWritableGit } from "../group-writable-git.js";
 
+import { defaultWorktreeBaseBranch } from "./default-base-branch.js";
 import { WorktreeError } from "./worktree-error.js";
 import { assertRemovableWorktreePath } from "./worktree-removal-guard.js";
 
@@ -53,7 +55,7 @@ export function execGit(root: string, args: string[], timeoutMs = 25000): Promis
       GIT_CONFIG_GLOBAL: "/dev/null"
     };
     const ownProcessGroup = process.platform !== "win32";
-    const child = spawnGroupWritableGit([
+    const gitArgs = [
       "--no-optional-locks",
       "-c", `safe.directory=*`,
       "-c", "credential.helper=",
@@ -61,7 +63,20 @@ export function execGit(root: string, args: string[], timeoutMs = 25000): Promis
       "-c", "core.untrackedCache=false",
       "-C", root,
       ...args
-    ], env);
+    ];
+    // Git is over half of the API's commands: the exec helper runs it without forking this process, with the same outcomes.
+    const viaHelper = execGroupWritableGit(gitArgs, env, timeoutMs);
+    if (viaHelper) {
+      void viaHelper.then(({ error, stdout, stderr, timedOut }) => {
+        if (timedOut) return reject(new WorktreeError("GIT_TIMEOUT", "Git command timed out.", 504));
+        const code = error ? error.code : 0;
+        if (typeof code === "string") return reject(new WorktreeError("GIT_UNAVAILABLE", `Git failed to spawn: ${error!.message}`, 503));
+        if (code === GIT_NOT_FOUND_EXIT_CODE) return reject(new WorktreeError("GIT_UNAVAILABLE", "Git failed to spawn: git not found", 503));
+        resolveResult({ stdout: String(stdout), stderr: String(stderr), code: code ?? 0 });
+      });
+      return;
+    }
+    const child = spawnGroupWritableGit(gitArgs, env);
 
     let stdout = "";
     let stderr = "";
@@ -71,7 +86,7 @@ export function execGit(root: string, args: string[], timeoutMs = 25000): Promis
       try {
         if (ownProcessGroup && child.pid) process.kill(-child.pid, "SIGKILL");
         else child.kill("SIGKILL");
-      } catch {}
+      } catch { /* the child already exited */ }
     };
 
     const timer = setTimeout(() => {
@@ -138,6 +153,9 @@ const registryUpdates = new Map<string, Promise<void>>();
 const repositoryInitializations = new Map<string, Promise<void>>();
 
 const registryReads = new Map<string, { version: string; data: WorktreeRegistryData }>();
+
+export const WORKTREE_LIST_CACHE_TTL_MS = 20_000;
+const worktreeListCache = new Map<string, { expiresAt: number; value: Promise<SpaceWorktree[]> }>();
 
 /** The record `recordWorktree` writes for both of its registry keys. */
 function recordUpdate(reg: WorktreeRegistryData, record: Partial<WorktreeRecord> & { worktreePath: string }) {
@@ -209,7 +227,7 @@ export class WorktreeService {
       if (parsed && typeof parsed.worktrees === "object") {
         return parsed as WorktreeRegistryData;
       }
-    } catch {}
+    } catch { /* unreadable registry: start empty below */ }
     return { version: 1, worktrees: {} };
   }
 
@@ -259,7 +277,7 @@ export class WorktreeService {
       reg.worktrees[normPath] = updated;
       reg.worktrees[wtId] = updated;
       await this.writeRegistry(reg);
-    } catch {}
+    } catch { /* the registry record is best effort */ }
   }
 
   async getRecordedWorktree(worktreePath: string): Promise<WorktreeRecord | null> {
@@ -295,7 +313,8 @@ export class WorktreeService {
     return toplevel.stdout.trim() || root;
   }
 
-  async createWorktree(input: CreateWorktreeInput): Promise<SpaceWorktree> {
+  // Schema input: baseBranch is optional here, and only an explicit base is refused for an existing branch.
+  async createWorktree(input: z.input<typeof createWorktreeSchema>): Promise<SpaceWorktree> {
     const repoRoot = await this.validateGitRepository(input.repoPath);
     const repoSlug = slugify(basename(repoRoot)) || "repo";
     const worktreeId = `wt-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
@@ -321,7 +340,8 @@ export class WorktreeService {
     }
 
     // Determine base branch (fallback to current branch if specified base does not exist)
-    let baseBranch = input.baseBranch?.trim() || "main";
+    const explicitBase = input.baseBranch?.trim();
+    let baseBranch = explicitBase || defaultWorktreeBaseBranch(repoRoot);
     const baseBranchRefCheck = await execGit(repoRoot, ["show-ref", "--verify", `refs/heads/${baseBranch}`]);
     if (baseBranchRefCheck.code !== 0) {
       const currentBranchCheck = await execGit(repoRoot, ["branch", "--show-current"]);
@@ -338,26 +358,25 @@ export class WorktreeService {
     await mkdir(dirname(targetDir), { recursive: true, mode: 0o775 });
     await chmod(dirname(targetDir), 0o775).catch(() => {});
 
-    // Check if branch already exists in repo
-    const branchCheck = await execGit(repoRoot, ["show-ref", "--verify", `refs/heads/${branchName}`]);
+    const branchCheck = await execGit(repoRoot, ["show-ref", "--verify", "--hash", `refs/heads/${branchName}`]);
     const branchExists = branchCheck.code === 0;
-
-    // Check if branch is already checked out elsewhere
     if (branchExists) {
+      // An existing branch is checked out as is; an explicit base would be silently ignored (23/11: a reused
+      // sweep branch started a worktree from day-old code), so say so instead.
+      if (explicitBase) {
+        throw new WorktreeError(
+          "BRANCH_EXISTS",
+          `Branch ${branchName} exists (at ${branchCheck.stdout.trim().slice(0, 10)}); --base is ignored for existing branches: drop --base or use a new branch name.`,
+          409
+        );
+      }
       const listCheck = await execGit(repoRoot, ["worktree", "list", "--porcelain"]);
       if (listCheck.stdout.includes(`refs/heads/${branchName}`)) {
-        throw new WorktreeError(
-          "BRANCH_ALREADY_CHECKED_OUT",
-          `Branch ${branchName} is already checked out in another worktree.`
-        );
+        throw new WorktreeError("BRANCH_ALREADY_CHECKED_OUT", `Branch ${branchName} is already checked out in another worktree.`);
       }
     }
 
-    // Run git worktree add
-    const addArgs = branchExists
-      ? ["worktree", "add", targetDir, branchName]
-      : ["worktree", "add", targetDir, "-b", branchName, baseBranch];
-
+    const addArgs = branchExists ? ["worktree", "add", targetDir, branchName] : ["worktree", "add", targetDir, "-b", branchName, baseBranch];
     const result = await execGit(repoRoot, addArgs);
     if (result.code !== 0) {
       throw new WorktreeError("WORKTREE_ADD_FAILED", `Failed to add worktree: ${result.stderr.trim()}`);
@@ -387,6 +406,8 @@ export class WorktreeService {
       createdAt: now
     });
 
+    this.invalidateWorktreeListCache(repoRoot);
+
     return {
       id: worktreeId,
       repoPath: repoRoot,
@@ -403,6 +424,37 @@ export class WorktreeService {
       createdAt: now,
       updatedAt: now
     };
+  }
+
+  /**
+   * Checks a removed worktree out again at its recorded path and branch. Disk retention and "clean" reclaim a closed
+   * pane's merged worktree while the pane keeps its cwd; reopened, its CLI died at chdir or ran in an empty folder
+   * (2026-11-24, room Alex). False, never an error, when the path is not a recorded worktree that is now missing or empty.
+   */
+  async restoreWorktree(worktreePath: string): Promise<boolean> {
+    const target = resolve(worktreePath);
+    if (!target.startsWith(`${resolve(this.baseStorageDir)}/`)) return false;
+    try {
+      if ((await readdir(target).catch(() => [])).length > 0) return false;
+      const recorded = await this.getRecordedWorktree(target);
+      if (recorded?.worktreePath !== target) return false;
+      const repoRoot = recorded.repoPath;
+      const branch = recorded.branch.startsWith("detached") ? `space/${basename(target)}` : recorded.branch;
+      await execGit(repoRoot, ["worktree", "prune"]);
+      const branchExists = (await execGit(repoRoot, ["show-ref", "--verify", `refs/heads/${branch}`])).code === 0;
+      // A branch deleted with its merged worktree starts again from the base new worktrees get: its work is in there.
+      const added = await execGit(repoRoot, branchExists
+        ? ["worktree", "add", target, branch]
+        : ["worktree", "add", target, "-b", branch, defaultWorktreeBaseBranch(repoRoot)]);
+      if (added.code !== 0) return false;
+      await chmod(target, 0o775).catch(() => {});
+      await this.linkDependenciesAndConfig(repoRoot, target).catch(() => {});
+      await this.recordWorktree({ worktreePath: target, branch, status: "ACTIVE" });
+      this.invalidateWorktreeListCache(repoRoot);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -462,7 +514,7 @@ export class WorktreeService {
       try {
         await mkdir(dirname(target), { recursive: true });
         await WorktreeService.linkNodeModulesOverlay(source, target);
-      } catch {}
+      } catch { /* no node_modules overlay; the worktree still works */ }
     }
   }
 
@@ -498,114 +550,153 @@ export class WorktreeService {
           const content = await readFile(src);
           await writeFile(dst, content);
         }
-      } catch {}
+      } catch { /* optional dev config copy */ }
     }
   }
 
-  async listWorktrees(repoPath: string): Promise<SpaceWorktree[]> {
-    const repoRoot = await this.validateGitRepository(repoPath);
-    const listResult = await execGit(repoRoot, ["worktree", "list", "--porcelain"]);
-    if (listResult.code !== 0) {
-      throw new WorktreeError("WORKTREE_LIST_FAILED", `Failed to list worktrees: ${listResult.stderr.trim()}`);
-    }
-
-    const blocks = listResult.stdout.split("\n\n").filter(Boolean);
-    // Every branch's ahead/behind main in one git run: one `git rev-list` per worktree made the Source Control dock's
-    // list ~600 sequential git spawns on the API's loop (stable 4/11, 299 worktrees: 51-68 s, loop 98 % busy).
-    const aheadBehind = new Map<string, [number, number]>();
-    const refs = await execGit(repoRoot, ["for-each-ref", "--format=%(refname:lstrip=2)%00%(ahead-behind:main)", "refs/heads/"]);
-    if (refs.code === 0) {
-      for (const line of refs.stdout.split("\n")) {
-        const [name, counts = ""] = line.split("\0");
-        const [ahead = 0, behind = 0] = counts.split(" ").map((count) => Number.parseInt(count, 10) || 0);
-        if (name) aheadBehind.set(name, [ahead, behind]);
+  invalidateWorktreeListCache(repoPath?: string): void {
+    if (repoPath) {
+      try {
+        const key = `${this.baseStorageDir}:${resolve(repoPath)}`;
+        worktreeListCache.delete(key);
+      } catch {
+        worktreeListCache.clear();
       }
-    }
-    const entries: Array<{ wtPath: string; headSha: string; branch: string }> = [];
-
-    for (const block of blocks) {
-      const lines = block.split("\n");
-      let wtPath = "";
-      let headSha = "";
-      let branch = "";
-
-      for (const line of lines) {
-        if (line.startsWith("worktree ")) {
-          wtPath = line.substring(9).trim();
-        } else if (line.startsWith("HEAD ")) {
-          headSha = line.substring(5).trim();
-        } else if (line.startsWith("branch refs/heads/")) {
-          branch = line.substring(18).trim();
-        } else if (line.startsWith("detached")) {
-          branch = `detached-${headSha.slice(0, 8)}`;
+    } else {
+      for (const k of worktreeListCache.keys()) {
+        if (k.startsWith(`${this.baseStorageDir}:`)) {
+          worktreeListCache.delete(k);
         }
       }
+    }
+  }
 
-      if (!wtPath) continue;
-      if (!existsSync(wtPath)) continue;
-      entries.push({ wtPath, headSha, branch });
+  async listWorktrees(repoPath: string, options?: { fresh?: boolean }): Promise<SpaceWorktree[]> {
+    const repoRoot = await this.validateGitRepository(repoPath);
+    const cacheKey = `${this.baseStorageDir}:${resolve(repoRoot)}`;
+    if (!options?.fresh) {
+      const cached = worktreeListCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        return cached.value;
+      }
     }
 
-    const describe = async ({ wtPath, headSha, branch }: { wtPath: string; headSha: string; branch: string }): Promise<SpaceWorktree> => {
-      // Skip the main repository itself from the worktrees list if desired, or mark it as root
-      const isRoot = wtPath === repoRoot;
-      const id = isRoot ? "wt:root" : `wt:${basename(wtPath)}`;
+    const value = (async () => {
+      const listResult = await execGit(repoRoot, ["worktree", "list", "--porcelain"]);
+      if (listResult.code !== 0) {
+        throw new WorktreeError("WORKTREE_LIST_FAILED", `Failed to list worktrees: ${listResult.stderr.trim()}`);
+      }
 
-      // Check dirty status and ahead/behind
-      let isDirty = false;
-      let status: WorktreeStatus = "ACTIVE";
-      const [aheadCount, behindCount] = branch && !branch.startsWith("detached") ? aheadBehind.get(branch) ?? [0, 0] : [0, 0];
+      const blocks = listResult.stdout.split("\n\n").filter(Boolean);
+      // Every branch's ahead/behind main in one git run: one `git rev-list` per worktree made the Source Control dock's
+      // list ~600 sequential git spawns on the API's loop (stable 4/11, 299 worktrees: 51-68 s, loop 98 % busy).
+      const aheadBehind = new Map<string, [number, number]>();
+      const refs = await execGit(repoRoot, ["for-each-ref", "--format=%(refname:lstrip=2)%00%(ahead-behind:main)", "refs/heads/"]);
+      if (refs.code === 0) {
+        for (const line of refs.stdout.split("\n")) {
+          const [name, counts = ""] = line.split("\0");
+          const [ahead = 0, behind = 0] = counts.split(" ").map((count) => Number.parseInt(count, 10) || 0);
+          if (name) aheadBehind.set(name, [ahead, behind]);
+        }
+      }
+      const entries: Array<{ wtPath: string; headSha: string; branch: string }> = [];
 
-      try {
-        const statusResult = await execGit(wtPath, ["status", "--porcelain"], 5000);
-        isDirty = statusResult.code === 0 && statusResult.stdout.trim().length > 0;
-        status = isDirty ? "DIRTY" : "ACTIVE";
-      } catch {}
+      for (const block of blocks) {
+        const lines = block.split("\n");
+        let wtPath = "";
+        let headSha = "";
+        let branch = "";
 
-      const now = new Date().toISOString();
-      if (!isRoot) {
-        void this.recordWorktree({
-          worktreePath: wtPath,
+        for (const line of lines) {
+          if (line.startsWith("worktree ")) {
+            wtPath = line.substring(9).trim();
+          } else if (line.startsWith("HEAD ")) {
+            headSha = line.substring(5).trim();
+          } else if (line.startsWith("branch refs/heads/")) {
+            branch = line.substring(18).trim();
+          } else if (line.startsWith("detached")) {
+            branch = `detached-${headSha.slice(0, 8)}`;
+          }
+        }
+
+        if (!wtPath) continue;
+        if (!existsSync(wtPath)) continue;
+        entries.push({ wtPath, headSha, branch });
+      }
+
+      const describe = async ({ wtPath, headSha, branch }: { wtPath: string; headSha: string; branch: string }): Promise<SpaceWorktree> => {
+        // Skip the main repository itself from the worktrees list if desired, or mark it as root
+        const isRoot = wtPath === repoRoot;
+        const id = isRoot ? "wt:root" : `wt:${basename(wtPath)}`;
+
+        // Check dirty status and ahead/behind
+        let isDirty = false;
+        let status: WorktreeStatus = "ACTIVE";
+        const [aheadCount, behindCount] = branch && !branch.startsWith("detached") ? aheadBehind.get(branch) ?? [0, 0] : [0, 0];
+
+        try {
+          const statusResult = await execGit(wtPath, ["status", "--porcelain"], 5000);
+          isDirty = statusResult.code === 0 && statusResult.stdout.trim().length > 0;
+          status = isDirty ? "DIRTY" : "ACTIVE";
+        } catch { /* status stays as read */ }
+
+        const now = new Date().toISOString();
+        if (!isRoot) {
+          void this.recordWorktree({
+            worktreePath: wtPath,
+            repoPath: repoRoot,
+            branch,
+            baseBranch: "main",
+            baseCommit: headSha,
+            status
+          });
+        }
+
+        return {
+          id,
           repoPath: repoRoot,
+          worktreePath: wtPath,
           branch,
           baseBranch: "main",
           baseCommit: headSha,
-          status
-        });
-      }
-
-      return {
-        id,
-        repoPath: repoRoot,
-        worktreePath: wtPath,
-        branch,
-        baseBranch: "main",
-        baseCommit: headSha,
-        roomId: "",
-        paneId: null,
-        status,
-        isDirty,
-        aheadCount,
-        behindCount,
-        createdAt: now,
-        updatedAt: now
+          roomId: "",
+          paneId: null,
+          status,
+          isDirty,
+          aheadCount,
+          behindCount,
+          createdAt: now,
+          updatedAt: now
+        };
       };
-    };
 
-    // Technical bound: 8 `git status` at a time keeps the list quick without ~300 git processes at once on a busy host.
-    const worktrees = new Array<SpaceWorktree>(entries.length);
-    let next = 0;
-    await Promise.all(Array.from({ length: Math.min(8, entries.length) }, async () => {
-      while (next < entries.length) {
-        const index = next++;
-        worktrees[index] = await describe(entries[index]!);
-      }
-    }));
-    return worktrees;
+      // Technical bound: 8 `git status` at a time keeps the list quick without ~300 git processes at once on a busy host.
+      const worktrees = new Array<SpaceWorktree>(entries.length);
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(8, entries.length) }, async () => {
+        while (next < entries.length) {
+          const index = next++;
+          worktrees[index] = await describe(entries[index]!);
+        }
+      }));
+      return worktrees;
+    })();
+
+    worktreeListCache.set(cacheKey, {
+      expiresAt: Date.now() + WORKTREE_LIST_CACHE_TTL_MS,
+      value
+    });
+
+    try {
+      return await value;
+    } catch (err) {
+      worktreeListCache.delete(cacheKey);
+      throw err;
+    }
   }
 
   async getWorktree(worktreePath: string): Promise<SpaceWorktree | null> {
-    let realPath = "";
+    let realPath: string;
     try {
       realPath = await realpath(worktreePath);
     } catch {
@@ -676,7 +767,7 @@ export class WorktreeService {
           updatedAt: now
         };
       }
-    } catch {}
+    } catch { /* not a git checkout: the registry record below */ }
 
     // 1. Check registry if worktree directory was cleaned/deleted
     const recorded = await this.getRecordedWorktree(worktreePath);
@@ -828,7 +919,7 @@ export class WorktreeService {
       if (input.deleteBranchAfter) {
         try {
           await this.removeWorktree(worktreePath, true);
-        } catch {}
+        } catch { /* removing the merged worktree is best effort */ }
         if (await this.removalAllowed(worktreePath)) await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
       }
       const shaRes = await execGit(repoRoot, ["rev-parse", "HEAD"]);
@@ -885,7 +976,7 @@ export class WorktreeService {
       if (input.deleteBranchAfter) {
         try {
           await this.removeWorktree(worktreePath, true);
-        } catch {}
+        } catch { /* removing the merged worktree is best effort */ }
         if (await this.removalAllowed(worktreePath)) await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
       }
       const shaRes = await execGit(repoRoot, ["rev-parse", "HEAD"]);
@@ -931,7 +1022,7 @@ export class WorktreeService {
     if (input.deleteBranchAfter) {
       try {
         await this.removeWorktree(worktreePath, true);
-      } catch {}
+      } catch { /* removing the merged worktree is best effort */ }
     }
 
     if (input.deleteBranchAfter && branch && !branch.startsWith("detached-") && branch !== "main") {
@@ -948,6 +1039,8 @@ export class WorktreeService {
       status: "MERGED",
       mergeCommitSha: commitSha
     });
+
+    this.invalidateWorktreeListCache(repoRoot);
 
     return {
       ok: true,
@@ -987,7 +1080,7 @@ export class WorktreeService {
       let realPath = worktreePath;
       try {
         realPath = await realpath(worktreePath);
-      } catch {}
+      } catch { /* keep the path as given */ }
 
       // Discover repository root from the worktree
       const toplevel = await execGit(realPath, ["rev-parse", "--git-common-dir"]);
@@ -1012,6 +1105,8 @@ export class WorktreeService {
         throw new WorktreeError("REMOVE_FAILED", `Failed to remove worktree: ${(err as Error).message}`);
       }
       await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+    } finally {
+      this.invalidateWorktreeListCache();
     }
   }
 
@@ -1028,7 +1123,8 @@ export class WorktreeService {
   }> {
     const repoRoot = await this.validateGitRepository(repoPath);
     await execGit(repoRoot, ["worktree", "prune"], 5000).catch(() => null);
-    const worktrees = await this.listWorktrees(repoRoot);
+    // DEV3D-006: fresh, never the dock's cached list: a worktree dirtied since would be force-deleted with its work.
+    const worktrees = await this.listWorktrees(repoRoot, { fresh: true });
 
     const cleaned: Array<{ path: string; branch: string; reason: string }> = [];
     const preserved: Array<{ path: string; branch: string; reason: string }> = [];
@@ -1038,13 +1134,13 @@ export class WorktreeService {
     resolvedExcludes.add(resolve(repoRoot));
     try {
       resolvedExcludes.add(await realpath(repoRoot));
-    } catch {}
+    } catch { /* missing path: the resolved form stays excluded */ }
 
     const cwd = process.cwd();
     resolvedExcludes.add(resolve(cwd));
     try {
       resolvedExcludes.add(await realpath(cwd));
-    } catch {}
+    } catch { /* missing path: the resolved form stays excluded */ }
 
     if (Array.isArray(options.excludePaths)) {
       for (const p of options.excludePaths) {
@@ -1052,7 +1148,7 @@ export class WorktreeService {
         resolvedExcludes.add(resolve(p));
         try {
           resolvedExcludes.add(await realpath(p));
-        } catch {}
+        } catch { /* missing path: the resolved form stays excluded */ }
       }
     }
 
@@ -1061,7 +1157,7 @@ export class WorktreeService {
       let realWtPath = resolvedPath;
       try {
         realWtPath = await realpath(resolvedPath);
-      } catch {}
+      } catch { /* keep the path as given */ }
 
       // Skip root repo
       if (resolvedPath === resolve(repoRoot) || realWtPath === resolve(repoRoot)) {
@@ -1086,7 +1182,7 @@ export class WorktreeService {
             if (diffStat.code === 0 && diffStat.stdout.includes("0 insertions(+), 0 deletions(-)")) {
               isOnlyChmod = true;
             }
-          } catch {}
+          } catch { /* not proven chmod-only: the dirty worktree is kept */ }
         }
         if (!isOnlyChmod) {
           preserved.push({ path: wt.worktreePath, branch: wt.branch, reason: "uncommitted changes (dirty)" });
@@ -1148,6 +1244,7 @@ export class WorktreeService {
     }
 
     await execGit(repoRoot, ["worktree", "prune"], 5000).catch(() => null);
+    this.invalidateWorktreeListCache(repoRoot);
 
     return { cleaned, preserved };
   }

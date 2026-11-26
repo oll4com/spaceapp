@@ -21,17 +21,25 @@ export const PANE_DUE_WORKING_MS = 60 * MINUTE;
  * sentence saying something waits for the operator, or null. Negated ones ("δεν σε περιμένει τίποτα", "nothing waits for you") say none.
  * Here, not in service.ts, because tools.ts uses it too (service.ts imports tools.ts).
  */
+// Score 15/11 (nous_msg:549e67fc, 5 outcomes 03:37-06:53 UTC): "waits on the owner's 6-scope grant" and "waits on operator decision" are the same wait.
 // Operator 13/11 14:39 BKK: decisions or answers left to the operator ("Οι αποφάσεις Α–ΣΤ που είναι δικές σου") wait on them too.
-const WAITS_ON_OPERATOR = /(?<!\p{L})(?:περιμεν(?:ει|ουν) (?:εσενα|δικες σου|τα χερια σου|απο ε?σενα|τον (?:operator|χειριστη))|σε περιμεν(?:ει|ουν)|αποφασ(?:η|εις)[^.;!?\n]{0,60}δικες σου|δικες σου αποφασεις|(?:περιμενω|χρειαζ(?:ομαι|εται|ονται)) (?:την |τις )?(?:αποφαση|αποφασεις|απαντηση|απαντησεις) σου)(?!\p{L})|\bwait(?:s|ing)? (?:for|on) (?:your?|the operator)\b|\bneeds? (?:your (?:hands|actions?|answers?|decisions?)|the operator)\b|\b(?:pending|outstanding) operator decisions?\b|\boperator decisions? (?:pending|needed|required|left)\b|\bdecisions? (?:for|left to|up to) (?:you|the operator)\b|\bawaiting your (?:answers?|decisions?)\b/gu;
+const WAITS_ON_OPERATOR = /(?<!\p{L})(?:περιμεν(?:ει|ουν|ω) (?:εσενα|δικες σου|τα χερια σου|απο ε?σενα|τον (?:operator|χειριστη))|σε περιμεν(?:ει|ουν)|αποφασ(?:η|εις)[^.;!?\n]{0,60}δικες σου|δικες σου αποφασεις|(?:περιμενω|χρειαζ(?:ομαι|εται|ονται)) (?:την |τις )?(?:αποφαση|αποφασεις|απαντηση|απαντησεις) σου)(?!\p{L})|\bwait(?:s|ing)? (?:for|on) (?:your?|(?:the )?operator|(?:the )?owner's)\b|\bneeds? (?:your (?:hands|actions?|answers?|decisions?)|the operator|the owner's)\b|\b(?:pending|outstanding) operator decisions?\b|\boperator decisions? (?:pending|needed|required|left)\b|\bdecisions? (?:for|left to|up to) (?:you|the operator)\b|\bawaiting your (?:answers?|decisions?)\b/gu;
 // Daily Nous errors 13/11 (corrections 188, 190; «Η κάρτα για τον κωδικό είναι ήδη στο Needs you» 4 times 11:45-11:49 UTC while Space held it for Nous):
 // a card said to be in Needs you, or visible to the operator, is a claim the operator's Needs you list must back too.
 const IN_NEEDS_YOU = /(?<!\p{L})(?:ειναι|μπηκ\p{L}*|ανεβηκ\p{L}*|βρισκ\p{L}*|εμφανιζ\p{L}*)(?: (?!δεν |οχι )\S+){0,6}? (?:στ(?:ο|α|ις)|σε) needs you\b|(?<!\p{L})(?:ειναι|εγιν\p{L}*) (?:\S+ )?ορατ\p{L}* (?:σε σενα|σου|στον χειριστη)|\b(?:is|are|'s|'re|sits?|shows?|showing)(?: (?!not\b|never\b|no\b)\S+){0,4}? (?:in|on) (?:your |the )?needs you\b|\bvisible to (?:you|the operator)\b/gu;
-const NOT_WAITING = /(?:^|\s)(?:δεν|μην|ουτε|τιποτα|nothing|no|not|never|doesn't|don't|isn't)(?: \S+){0,2} $/u;
+// Daily Nous errors 16/11 («… δεν σήμαινε ότι κάτι περιμένει εσένα»): a negation up to 6 words earlier in the same clause, or "δεν … ότι/that"
+// before it, says none; a clause ends at , ; : ( — or at και/and/αλλά/but, so "το build δεν πέρασε και περιμένει εσένα" is still a claim.
+const NEGATION = String.raw`(?:^|\s)(?:δεν|μην|ουτε|τιποτα|κανεν\p{L}*|κανεις|nothing|none|no|not|never|doesn't|don't|didn't|isn't|wasn't)`;
+const NOT_WAITING = new RegExp(`${NEGATION}(?: \\S+){0,6} $|${NEGATION} .*\\s(?:οτι|πως|that) `, "u");
+const CLAUSE_BREAK = /^.*(?:[,;:(—–]|\s(?:και|and|αλλα|but|ομως)\s)/su;
+// A screen label is not a claim: «quoted», "quoted", `code` or two+ words in capitals (ΣΕ ΠΕΡΙΜΕΝΟΥΝ, WAITING FOR YOU; Eva/Andy 16/11 08:41 BKK)
+// is blanked before folding, which would lowercase it and drop its backticks.
+const SCREEN_LABEL = /«[^»]*»|"[^"]*"|“[^”]*”|`[^`]*`|(?<!\p{L})\p{Lu}{2,}(?:[ \t]+\p{Lu}{2,})+(?!\p{L})/gu;
 function firstClaim(text: string, pattern: RegExp): string | null {
   const fold = (value: string) => value.normalize("NFD").replace(/\p{M}/gu, "").replace(/’/g, "'").replace(/[*_`]/g, "").toLowerCase();
   return text.split(/(?<=[.!?;…])\s+|\n+/).map((sentence) => sentence.trim()).find((sentence) => {
-    const plain = fold(sentence);
-    return [...plain.matchAll(pattern)].some((match) => !NOT_WAITING.test(plain.slice(0, match.index)));
+    const plain = fold(sentence.replace(SCREEN_LABEL, " "));
+    return [...plain.matchAll(pattern)].some((match) => !NOT_WAITING.test(plain.slice(0, match.index).replace(CLAUSE_BREAK, " ")));
   }) ?? null;
 }
 export const waitsOnOperatorClaim = (text: string) => firstClaim(text, WAITS_ON_OPERATOR);

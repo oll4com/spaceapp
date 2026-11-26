@@ -11,7 +11,8 @@ export const MCP_TEXT_MAX_CHARS = 40_000;
  * whole answer is written to a private file the agent reads with its own file tools, and the text names it.
  */
 export function mcpText(payload, dir = join(tmpdir(), "space-mcp-results")) {
-  const text = JSON.stringify(payload, null, 2);
+  // Compact (plan clipboard:nsWKwUFhUFWA slice 2): indentation was ~25-35% of every answer's tokens; the model reads compact JSON the same.
+  const text = JSON.stringify(payload);
   if (text.length <= MCP_TEXT_MAX_CHARS) return text;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.json`);

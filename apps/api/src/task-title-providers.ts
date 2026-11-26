@@ -1,9 +1,3 @@
-import {
-  OpenCodeTitleModelRetired,
-  generateNativeOpenCodeTitle,
-  resolveNativeOpenCodeRuntime,
-  nativeOpenCodeModelCatalog,
-} from "./task-title-opencode.js";
 import { readFile } from "node:fs/promises";
 import { taskImageMimeType } from "./task-title-images.js";
 import type {
@@ -13,21 +7,23 @@ import type {
 } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
 import type { TaskTitleRepository } from "@space/db";
-import {
-  resolveOpenCodeTitleFallbackControl,
-  openCodeServerBaseUrl,
-  type OpenCodeServerControl,
-} from "@space/opencode-control";
 import type { SpaceApiConfig } from "./config.js";
 import { gatewayRequestIdHeader } from "./gateway-request-id.js";
-import { SPACE_INSTALL_ROOT } from "@space/contracts";
+import { YOUTUBE_SUMMARY_MODELS } from "@space/contracts";
+import { geminiCostUsd, inputPrices } from "@space/gateway";
+import { CLAUDE_GATEWAY_PROFILE } from "./claude-limit-move.js";
+import { createWorkerCliMoveRunner, type CliMoveRunner } from "./chess/chess-cli.js";
 
 export interface TitleCandidate extends TaskTitleCandidateStatus {
   /** `images` are validated files the model may see (vision candidates only); `traceId` names the gateway row (OBS-006). */
   generate(prompt: string, signal: AbortSignal, images?: readonly string[], traceId?: string): Promise<string>;
 }
-/** Written daily by scripts/space-opencode-free-model-picker.mjs after a real tool call. */
-export const freeModelPickerStatePath = `${SPACE_INSTALL_ROOT}/var/space-opencode-free-model.json`;
+/**
+ * Operator 22/11: no free models; only the cheap model of each main provider, as Space Gateway's light route
+ * (packages/gateway/src/nous/routing.ts `light`): Claude Haiku, Codex Luna and Antigravity's Gemini Flash models.
+ */
+export const TITLE_CODEX_MODEL = "gpt-5.6-luna";
+export const TITLE_CLAUDE_MODEL = "claude-haiku-5-5";
 export class TitleProviderFailure extends Error {
   constructor(
     readonly status: number,
@@ -46,18 +42,23 @@ export const titleSystem = [
   "summary: one or two plain sentences (at most 280 characters) saying what the user wants. Do not claim work is completed.",
   "Write title and summary in the language of the latest request.",
 ].join("\n");
-/** Native catalog (`capabilities`) or models.dev (`modalities`/`attachment`) shape. */
-export function openCodeModelSeesImages(model: any): boolean {
-  if (model?.capabilities) return model.capabilities.input?.image === true && model.capabilities.attachment === true;
-  return Array.isArray(model?.modalities?.input) && model.modalities.input.includes("image") && model.attachment === true;
+/** List price per 1M input tokens, so the cheapest model goes first; an unpriced model goes last. */
+export function titleModelPrice(candidate: Pick<TaskTitleCandidateStatus, "modelId">): number {
+  const model = candidate.modelId.replace(/-tiered$/, "");
+  return inputPrices(model, "")?.input ?? geminiCostUsd({ promptTokens: 1e6, cachedTokens: 0, outputTokens: 0, thoughtsTokens: 0 }, model) ?? Infinity;
 }
-function textResponse(body: any): string {
+type ProviderTextBody = {
+  output_text?: string;
+  choices?: { message?: { content?: string } }[];
+  output?: { content?: { text?: unknown }[] }[];
+} | null | undefined;
+function textResponse(body: ProviderTextBody): string {
   return (
     body?.output_text ??
     body?.choices?.[0]?.message?.content ??
     body?.output
-      ?.flatMap((x: any) => x.content ?? [])
-      .find((x: any) => typeof x.text === "string")?.text ??
+      ?.flatMap((x) => x.content ?? [])
+      .find((x): x is { text: string } => typeof x.text === "string")?.text ??
     ""
   );
 }
@@ -70,12 +71,6 @@ async function checked(response: Response) {
   }
   return response.json();
 }
-function auth(control: OpenCodeServerControl) {
-  return {
-    authorization: `Basic ${Buffer.from(`${control.serverUsername}:${control.serverPassword}`).toString("base64")}`,
-    "content-type": "application/json",
-  };
-}
 export class TaskTitleProviders {
   private candidates: TitleCandidate[] = [];
   private refreshAt = 0;
@@ -85,13 +80,17 @@ export class TaskTitleProviders {
       store: SpaceStore;
       config: SpaceApiConfig;
       repository: TaskTitleRepository;
-      opencodeCommand?: string;
-      opencodeStateRoot?: string;
       usage: () => Promise<CodexUsageAccountList>;
       fetchImpl?: typeof fetch;
-      freeModelStatePath?: string;
+      /** Headless Claude Code with no tools (Claude's subscription answers only Claude Code); absent where no worker runs it. */
+      runClaude?: CliMoveRunner;
     },
-  ) {}
+  ) {
+    // shortcut: Haiku titles only where the worker runs Claude Code (stable), as Nous's pane board; dev and public installs use Codex and Gemini.
+    this.runClaude = "runClaude" in options ? options.runClaude
+      : options.config.publicDistribution || options.config.instance !== "stable" || process.env.VITEST === "true" ? undefined : createWorkerCliMoveRunner();
+  }
+  private runClaude: CliMoveRunner | undefined;
   private fetch = (input: string | URL, init?: RequestInit) =>
     (this.options.fetchImpl ?? fetch)(input, init);
   async refresh(force = false): Promise<void> {
@@ -106,88 +105,6 @@ export class TaskTitleProviders {
     const policy = await this.options.repository.getSettings();
     const candidates: TitleCandidate[] = [];
     const now = new Date().toISOString();
-    // The daily picker proves its free model with a real call; prefer it.
-    const pickerModel = await readFile(this.options.freeModelStatePath ?? freeModelPickerStatePath, "utf8")
-      .then((raw) => {
-        const state = JSON.parse(raw);
-        return state?.healthy === true && typeof state.rawModelId === "string" ? state.rawModelId as string : null;
-      })
-      .catch(() => null);
-    // Read metadata only. No credential smoke/model prompts in availability checks.
-    try {
-      const control = await resolveOpenCodeTitleFallbackControl(
-        this.options.opencodeStateRoot,
-      );
-      const command = await resolveNativeOpenCodeRuntime(
-        this.options.opencodeCommand,
-        this.options.config.cliCommandPath,
-      );
-      if (command) {
-        let catalog: any = null;
-        if (control) {
-          try {
-            const base = openCodeServerBaseUrl(
-              control.serverPort,
-              control.serverHost,
-            );
-            catalog = await checked(
-              await this.fetch(`${base}/config/providers`, {
-                headers: auth(control),
-                signal: AbortSignal.timeout(5000),
-              }),
-            );
-          } catch {}
-        }
-        catalog ??= await nativeOpenCodeModelCatalog(command);
-        for (const provider of catalog.providers ?? []) {
-          if (typeof provider.id !== "string") continue;
-          for (const [key, raw] of Object.entries(provider.models ?? {})) {
-            const model = raw as any;
-            if (model.status === "deprecated") continue;
-            const free = model.cost?.input === 0 && model.cost?.output === 0;
-            // Free OpenCode models are invoked by their native runtime, in an
-            // isolated one-step session with all tools denied and output capped.
-            if (!free || provider.id !== "opencode") continue;
-            const modelId = model.id ?? key;
-            if (
-              typeof modelId !== "string" ||
-              !/^[A-Za-z0-9._-]{1,200}$/.test(modelId) ||
-              modelId.includes("contributor")
-            )
-              continue;
-            const id = `opencode:${provider.id}:${modelId}`;
-            candidates.push({
-              id,
-              providerId: provider.id,
-              modelId,
-              displayName: model.name ?? modelId,
-              billing: "free",
-              availability: "unknown",
-              remainingPercent: null,
-              checkedAt: now,
-              cooldownUntil: null,
-              vision: openCodeModelSeesImages(model),
-              pickerVerified: pickerModel === modelId,
-              generate: (prompt, signal, images) =>
-                generateNativeOpenCodeTitle({
-                  command,
-                  modelId,
-                  system: titleSystem,
-                  prompt,
-                  signal,
-                  images: openCodeModelSeesImages(model) ? images : undefined,
-                }).catch((error: unknown) => {
-                  // The catalog can list a model the service already retired.
-                  if (error instanceof OpenCodeTitleModelRetired) throw new TitleProviderFailure(410, 86_400);
-                  throw error;
-                }),
-            });
-          }
-        }
-      }
-    } catch {
-      /* Independent routes remain eligible; never log provider response bodies. */
-    }
     try {
       const [providers, models, usage] = await Promise.all([
         this.options.store.listProviders(),
@@ -228,7 +145,7 @@ export class TaskTitleProviders {
         )
           continue;
         for (const model of models.filter(
-          (m) => m.providerId === provider.id && m.status === "VERIFIED",
+          (m) => m.providerId === provider.id && m.status === "VERIFIED" && (m.runtimeId ?? m.id) === TITLE_CODEX_MODEL,
         )) {
           const modelId = model.runtimeId ?? model.id;
           candidates.push({
@@ -303,6 +220,54 @@ export class TaskTitleProviders {
     } catch {
       /* No speculative calls when account availability cannot be inspected. */
     }
+    // Space Gateway's Antigravity Gemini Flash models (Antigravity subscription quota), with the same dedicated internal key.
+    const gatewayRoot = this.options.config.codexLbBaseUrl?.replace(/\/$/, "").replace(/\/v1$/, "");
+    const keyPath = this.options.config.codexLbKeyFile;
+    if (gatewayRoot && keyPath && this.options.config.codexLbKeyName?.startsWith("space-")) {
+      for (const { id: modelId, label } of YOUTUBE_SUMMARY_MODELS) {
+        candidates.push({
+          id: `gateway:antigravity:${modelId}`,
+          providerId: "gateway-antigravity",
+          modelId,
+          displayName: label,
+          billing: "subscription",
+          availability: "unknown",
+          remainingPercent: null,
+          checkedAt: now,
+          cooldownUntil: null,
+          vision: false,
+          // Text only; the prompt (titlePromptMaxBytes) plus titleSystem stays under the route's 8000 characters.
+          generate: async (prompt, signal, _images, traceId) => {
+            const key = (await readFile(keyPath, "utf8")).trim();
+            if (!key) throw new Error("Dedicated title credential unavailable");
+            const body = await checked(await this.fetch(`${gatewayRoot}/gemini/v1/generate`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${key}`, "content-type": "application/json", ...gatewayRequestIdHeader(traceId) },
+              signal,
+              body: JSON.stringify({ model: modelId, prompt: `${titleSystem}\n\n${prompt}` }),
+            }));
+            return String(body?.text ?? "");
+          },
+        });
+      }
+    }
+    const runClaude = this.runClaude;
+    if (runClaude)
+      candidates.push({
+        id: `claude:${TITLE_CLAUDE_MODEL}`,
+        providerId: "claude",
+        modelId: TITLE_CLAUDE_MODEL,
+        displayName: "Claude Haiku 5.5",
+        billing: "subscription",
+        availability: "unknown",
+        remainingPercent: null,
+        checkedAt: now,
+        cooldownUntil: null,
+        vision: false,
+        generate: (prompt, signal, _images, traceId) =>
+          runClaude({ runtimeId: "cli:claude", model: TITLE_CLAUDE_MODEL, effort: null, claudeProfile: CLAUDE_GATEWAY_PROFILE,
+            prompt: `${titleSystem}\n\n${prompt}`, signal, traceId }),
+      });
     this.candidates = candidates.map((candidate) => ({
       ...candidate,
       generate: async (prompt, signal, images, traceId) => {
@@ -352,9 +317,10 @@ export class TaskTitleProviders {
           !policy.subscriptionProviderIds.length ||
           policy.subscriptionProviderIds.includes(c.providerId),
       )
+      // The Codex accounts' quota reserve; Claude and Antigravity rest on their own 429s.
       .filter(
         (c) =>
-          c.billing !== "subscription" ||
+          !c.id.startsWith("codex-lb:") ||
           (c.remainingPercent !== null &&
             c.remainingPercent > policy.subscriptionReservePercent),
       )
@@ -362,19 +328,16 @@ export class TaskTitleProviders {
         const score = (c: TitleCandidate) =>
           // A request with images goes to a model that can see them first.
           (options.images && c.vision ? 100000 : 0) +
-          (c.billing === "free" ? 10000 : 0) +
           (c.availability === "available" ? 1000 : 0) +
-          (preferred.includes(c.id) ? 500 - preferred.indexOf(c.id) : 0) +
-          (c.pickerVerified ? 100 : 0) +
-          (/flash|nano|mini|haiku|lite|small/i.test(c.modelId) ? 10 : 0);
-        return score(b) - score(a) || a.id.localeCompare(b.id);
+          (preferred.includes(c.id) ? 500 - preferred.indexOf(c.id) : 0);
+        return score(b) - score(a) || titleModelPrice(a) - titleModelPrice(b) || a.id.localeCompare(b.id);
       });
   }
   async status(): Promise<TaskTitleCandidateStatus[]> {
     const cooldowns = await this.options.repository.cooldowns(
       new Date().toISOString(),
     );
-    return this.candidates.map(({ generate: _, pickerVerified: _verified, ...c }) => ({
+    return this.candidates.map(({ generate: _, ...c }) => ({
       ...c,
       availability:
         cooldowns[c.id] || cooldowns[`provider:${c.providerId}`]

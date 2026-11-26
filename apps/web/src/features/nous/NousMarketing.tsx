@@ -50,7 +50,7 @@ export function NousMarketing({ active }: { active: boolean }) {
   const { totals } = report;
   const tile = (label: string, value: string, tone = "") => <li className={tone}><span>{t(label)}</span><strong>{value}</strong></li>;
   return (
-    <div className="nous-decisions nous-programs nous-report" data-sensitive-masked="manual">
+    <div className="nous-decisions nous-programs nous-report">
       <ul className="nous-marketing-tiles" aria-label={t("Marketing performance")}>
         {tile("Marketing score", report.score === null ? "–" : `${report.score}/100`, "is-main")}
         {tile("7 days", signed(report.trend7), report.trend7 !== null && report.trend7 < 0 ? "is-down" : "")}
@@ -97,11 +97,11 @@ export function NousMarketing({ active }: { active: boolean }) {
       ) : null}
       {report.funnelByRef?.length ? (
         <details className="nous-report-section">
-          <summary>{t("Installs by channel (--ref)")} <span>{report.funnelByRef.length}</span></summary>
+          <summary>{t("Funnel by channel (utm_source / --ref)")} <span>{report.funnelByRef.length}</span></summary>
           <div className="nous-report-table"><table>
-            <thead><tr>{["Channel", "Launcher started", "Install completed", "First CLI pane", "Active a second day"].map((label) => <th key={label} scope="col">{t(label)}</th>)}</tr></thead>
+            <thead><tr>{["Channel", "Site views", "Install interest", "Launcher started", "Install completed", "First CLI pane", "Active a second day"].map((label) => <th key={label} scope="col">{t(label)}</th>)}</tr></thead>
             <tbody>{report.funnelByRef.map((row) => (
-              <tr key={row.ref}><th scope="row">{row.ref === "none" ? t("No channel") : row.ref}</th>{[row.started, row.completed, row.firstCli, row.activeSecondDay].map((value, index) => <td key={index}>{value}</td>)}</tr>
+              <tr key={row.ref}><th scope="row">{row.ref === "none" ? t("No channel") : row.ref}</th>{[row.views ?? "–", row.installIntent ?? "–", row.started, row.completed, row.firstCli, row.activeSecondDay].map((value, index) => <td key={index}>{value}</td>)}</tr>
             ))}</tbody>
           </table></div>
         </details>

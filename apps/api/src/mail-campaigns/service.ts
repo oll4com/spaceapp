@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { consumerMailDomain, mailAddressDomain, mailTemplateContentSchema, mailTemplateFingerprintInput, mailTemplateVariablesUsed, renderMailTemplate,
-  type MailCampaignEvent, type MailCampaignEventType, type MailListCreate, type MailMadeBy, type MailSenderCreate, type MailSenderUpdate, type MailSuppressionInput,
+import { consumerMailDomain, mailAddressDomain, mailAttachmentInfo, mailTemplateContentSchema, mailTemplateFingerprintInput, mailTemplateVariablesUsed, renderMailTemplate,
+  type MailCampaignEvent, type MailCampaignEventType, type MailDeliveryReport, type MailListCreate, type MailMadeBy, type MailSenderCreate, type MailSenderUpdate, type MailSuppressionInput,
   type MailTemplateContent, type MailTemplateCreate } from "@space/contracts";
 import type { MailCampaignsRepository, MailListPatch } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
@@ -29,7 +29,7 @@ export interface MailCampaignsServiceOptions {
   /** The room stream learns that the owner's campaign data changed (ids only). */
   changed?(owner: string, event: MailCampaignEvent): void;
   /** Campaigns: review cards, the Mail Copilot pane they show in, the owner's own seed mailboxes, unsubscribe tokens. */
-  campaigns?: Pick<CampaignEngineDeps, "notify" | "mailPane" | "ownMailboxes" | "unsubscribeKey" | "unsubscribeBase" | "dns" | "seedMessage" | "coversApproval">;
+  campaigns?: Pick<CampaignEngineDeps, "notify" | "mailPane" | "ownMailboxes" | "unsubscribeKey" | "unsubscribeBase" | "unsubscribeBases" | "dns" | "seedMessage" | "coversApproval" | "trackingRelay" | "trackingRelays">;
 }
 
 export type ImportSource = { csv: string; overwrite?: boolean } | { text: string } | { rows: Array<{ address: string; name?: string; attributes?: Record<string, string> }>; overwrite?: boolean }
@@ -218,7 +218,8 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
     const content = await repository.getTemplateVersion(owner, id, version ?? row.currentVersion);
     if (!content) throw new SpaceNotFoundError(`Version ${version} of mail template ${id} was not found.`);
     const versions = (await repository.listTemplateVersions(owner, id)).map(({ version: number, fingerprint, madeBy, createdAt }) => ({ version: number, fingerprint, madeBy, createdAt }));
-    return { template: row, version: content, versions };
+    // Readers get each file's name, type and size; the bytes stay on the server (they can be most of a megabyte).
+    return { template: row, version: { ...content, attachments: content.attachments.map(mailAttachmentInfo) }, versions };
   }
   function parse(source: ImportSource): ParsedContacts | null {
     try {
@@ -232,6 +233,24 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
   const api = {
     ...engine,
     signals,
+    /** DMARC aggregate and TLS-RPT reports (plan vxtgxdSGE586 step 6a/6b) that scripts/space-mail-dmarc.mjs --save read on public-host: class-B checks, each report once. */
+    async deliveryReports(owner: string, reports: MailDeliveryReport[]) {
+      const known = new Set((await repository.listChecks(owner, {})).map((check) => check.fingerprint));
+      let stored = 0;
+      for (const report of reports) {
+        const fingerprint = createHash("sha256").update(`${report.kind}|${report.org}|${report.id}`).digest("hex");
+        if (known.has(fingerprint)) continue;
+        known.add(fingerprint);
+        // DMARC: messages that passed neither aligned DKIM nor SPF; TLS: failed sessions.
+        const [total, failed] = report.kind === "dmarc"
+          ? [report.records.reduce((n, r) => n + r.count, 0), report.records.reduce((n, r) => n + (r.dkim !== "pass" && r.spf !== "pass" ? r.count : 0), 0)]
+          : [report.policies.reduce((n, p) => n + p.ok + p.failed, 0), report.policies.reduce((n, p) => n + p.failed, 0)];
+        await repository.addCheck({ ownerUserId: owner, campaignId: null, senderId: null, kind: report.kind === "dmarc" ? "DMARC_REPORT" : "TLS_REPORT",
+          status: failed ? "FAIL" : "PASS", score: total ? Math.round(100 * (total - failed) / total) : null, details: report, fingerprint });
+        stored++;
+      }
+      return { received: reports.length, stored };
+    },
     /** Check now: a list's members, given contacts, or (default) the owner's 200 checked longest ago (the rest follow on the job's passes). */
     async checkHealth(owner: string, scope: { listId?: string; contactIds?: string[] }) {
       const contacts = scope.listId ? await repository.listContacts(owner, { listId: scope.listId })
@@ -267,8 +286,10 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
      */
     async unsubscribe(tokens: string[], source: string) {
       let done = 0;
+      let invalid = 0;
       for (const token of tokens) {
         const parsed = readUnsubscribeToken(options.campaigns?.unsubscribeKey ?? Buffer.alloc(32), token);
+        if (!parsed) invalid++;
         const owner = parsed ? await repository.campaignOwner(parsed.campaignId) : null;
         const contact = owner && parsed ? await repository.getContact(owner, parsed.contactId) : null;
         if (!owner || !parsed || !contact) continue;
@@ -280,7 +301,8 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
         await event(owner, "SUPPRESSION", `${contact.address} unsubscribed (${source}).`, { contactId: contact.id }, parsed.campaignId);
         done++;
       }
-      return { unsubscribed: done, ignored: tokens.length - done };
+      // invalid: not signed by this instance's key (forged, changed, or the other instance's: dev and stable keys differ).
+      return { unsubscribed: done, ignored: tokens.length - done, invalid };
     },
     // ---- templates ----------------------------------------------------------------------------------
     async templates(owner: string, includeArchived = false) {
@@ -296,7 +318,7 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
       const { content, fingerprint } = prepareTemplate(raw);
       const created = await repository.createTemplate({ ownerUserId: owner, name, language, paneId, content, fingerprint, madeBy });
       await event(owner, "NOTE", `Template "${name}" created (version 1).`, { templateId: created.template.id, fingerprint });
-      return created;
+      return { ...created, version: { ...created.version, attachments: created.version.attachments.map(mailAttachmentInfo) } };
     },
     /** A change to what recipients see is a new version (the old ones stay, a campaign keeps the one it names); a rename is not. */
     async updateTemplate(owner: string, id: string, patch: Partial<MailTemplateContent> & { name?: string }, madeBy: MailMadeBy) {
@@ -306,7 +328,8 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
       if (name && name !== row.name) await repository.updateTemplate(owner, id, { name });
       const current = (await repository.getTemplateVersion(owner, id, row.currentVersion))!;
       if (!Object.keys(contentPatch).length) return templateView(owner, id);
-      const { content, fingerprint } = prepareTemplate({ subject: current.subject, preheader: current.preheader, html: current.html, text: current.text, variables: current.variables, ...contentPatch });
+      const { content, fingerprint } = prepareTemplate({ subject: current.subject, preheader: current.preheader, html: current.html, text: current.text, variables: current.variables,
+        attachments: current.attachments, ...contentPatch });
       if (fingerprint === current.fingerprint) return templateView(owner, id);
       const added = (await repository.addTemplateVersion(owner, id, { content, fingerprint, madeBy }))!;
       await event(owner, "NOTE", `Template "${added.template.name}" changed: version ${added.version.version}.`, { templateId: id, version: added.version.version, fingerprint });
@@ -320,7 +343,7 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
     async previewTemplate(owner: string, id: string, version: number | undefined, values: Record<string, string>) {
       const { version: content } = await templateView(owner, id, version);
       const filled = Object.fromEntries(content.variables.map((variable) => [variable.name, values[variable.name] ?? variable.default ?? `[${variable.name}]`]));
-      return { version: content.version, fingerprint: content.fingerprint, ...renderMailTemplate(content, filled) };
+      return { version: content.version, fingerprint: content.fingerprint, ...renderMailTemplate(content, filled), attachments: content.attachments };
     },
 
     // ---- lists and contacts -------------------------------------------------------------------------
@@ -429,6 +452,10 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
     },
     /** One transactional mail the server itself writes (a sign-in password reset), outside campaigns and their review: only through an
      *  ACTIVE sender of `owner`, 7-bit plain text so the mail readers' masking sees the text as written. */
+    /** Whether sendTransactional could send through this sender at all (the SMTP server may still refuse it). */
+    async canSendTransactional(owner: string, senderId: string) {
+      return Boolean(options.transports) && (await repository.getSender(owner, senderId))?.status === "ACTIVE";
+    },
     async sendTransactional(owner: string, senderId: string, input: { to: string; subject: string; text: string }) {
       const sender = await repository.getSender(owner, senderId);
       if (sender?.status !== "ACTIVE" || !options.transports) throw new SpaceConflictError(`Sender ${senderId} cannot send on this server.`);
@@ -438,16 +465,29 @@ export function createMailCampaignsService(options: MailCampaignsServiceOptions)
         "Content-Transfer-Encoding: 7bit", "", ...input.text.split("\n")].join("\r\n"), "ascii");
       await options.transports.for(owner, sender).send(raw, { from: sender.address, to: input.to });
     },
-    /** Name, reply-to, footer, caps, pause or disable; ACTIVE again only through a passing check. */
+    /** Name, reply-to, footer, caps, DKIM, its Vault key, pause or disable; ACTIVE again only through a passing check. */
     async updateSender(owner: string, id: string, patch: MailSenderUpdate) {
       const sender = await repository.getSender(owner, id);
       if (!sender) throw new SpaceNotFoundError(`Sender ${id} was not found.`);
       if (patch.status === "ACTIVE" && sender.status !== "ACTIVE") throw new SpaceConflictError("Run the sender's check to make it active.");
-      const { dkim, ...rest } = patch;
-      if (dkim === undefined) return repository.updateSender(owner, id, rest);
-      if (sender.config.route !== "SMTP") throw new SpaceConflictError("Space signs only SMTP senders' mail; Gmail signs its own.");
-      const { dkim: _old, ...config } = sender.config;
-      return repository.updateSender(owner, id, { ...rest, config: dkim ? { ...config, dkim } : config });
+      const { dkim, vaultKeyId, ...rest } = patch;
+      let config = sender.config;
+      if (vaultKeyId !== undefined) {
+        if (config.route === "GMAIL_CONNECTOR") throw new SpaceConflictError("A Gmail connector sender keeps no Vault key.");
+        config = { ...config, vaultKeyId };
+      }
+      if (dkim !== undefined) {
+        if (config.route !== "SMTP") throw new SpaceConflictError("Space signs only SMTP senders' mail; Gmail signs its own.");
+        const unsigned = { ...config };
+        delete unsigned.dkim;
+        config = dkim ? { ...unsigned, dkim } : unsigned;
+      }
+      const rebound = vaultKeyId !== undefined && sender.config.route !== "GMAIL_CONNECTOR" && vaultKeyId !== sender.config.vaultKeyId;
+      // The new key is unproven: an ACTIVE sender is SETUP (its campaigns pause) until its check passes.
+      const status = rebound && (rest.status ?? sender.status) === "ACTIVE" ? "SETUP" : rest.status;
+      const updated = await repository.updateSender(owner, id, { ...rest, ...(config === sender.config ? {} : { config }), ...(status ? { status } : {}) });
+      if (rebound) await event(owner, "SENDER", `Vault key of ${sender.address} changed to ${vaultKeyId}; run its check.`, { senderId: id, vaultKeyId });
+      return updated;
     },
     /** An established mailbox may start above the first warm-up stage; `by` is who set it (operator, a pane, Nous). */
     async setSenderWarmup(owner: string, id: string, stage: number, by = "operator") {

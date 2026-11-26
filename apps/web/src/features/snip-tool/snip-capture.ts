@@ -51,8 +51,21 @@ async function freshFrame(video: HTMLVideoElement, signal: AbortSignal, frameSin
   }
   if (!video.videoWidth || !video.videoHeight) throw new Error("The capture source has no image. Please retry.");
 }
+/** The desktop and Android shells' capture bridges. */
+type CaptureWindow = Window & {
+  spaceDesktop?: {
+    capturePage?: () => Promise<{ success?: boolean; dataUrl?: string; reason?: string } | null>;
+    getWindowMediaSourceId?: () => Promise<{ success?: boolean; sourceId?: string } | null>;
+  };
+  SpaceNative?: { requestPageCapture?: (x: number, y: number, width: number, height: number, id: string) => void; getCapturedData?: (id: string) => string | null };
+  __spaceNativeCaptureCallbacks?: Record<string, (success: boolean, message?: string) => void>;
+  __onSpaceNativeCapture?: (id: string, success: boolean, message?: string) => void;
+};
+// The Capture Handle API (Chromium) is not in TypeScript's DOM types.
+type HandleDevices = MediaDevices & { setCaptureHandleConfig?: (config: { handle: string; exposeOrigin: boolean; permittedOrigins: string[] }) => void };
+const trackHandle = (stream: MediaStream) => (stream.getVideoTracks()[0] as (MediaStreamTrack & { getCaptureHandle?: () => { handle?: string } | null }) | undefined)?.getCaptureHandle?.()?.handle;
 function mobileImage(signal: AbortSignal): Promise<string> {
-  const w = window as any;
+  const w = window as CaptureWindow;
   const callbacks = w.__spaceNativeCaptureCallbacks ??= {};
   w.__onSpaceNativeCapture ??= (id: string, success: boolean, message?: string) => {
     const callback = callbacks[id]; delete callbacks[id]; callback?.(success, message);
@@ -61,12 +74,12 @@ function mobileImage(signal: AbortSignal): Promise<string> {
   return abortable(new Promise<string>((resolve, reject) => {
     callbacks[id] = (success: boolean, message?: string) => {
       try {
-        const data = w.SpaceNative.getCapturedData?.(id);
+        const data = w.SpaceNative!.getCapturedData?.(id);
         if (!success || !data) reject(new Error(message || "Mobile screen capture failed."));
         else resolve(data);
       } catch (error) { reject(error); }
     };
-    w.SpaceNative.requestPageCapture(0, 0, 0, 0, id);
+    w.SpaceNative!.requestPageCapture!(0, 0, 0, 0, id);
   }), signal, 8000).finally(() => { delete callbacks[id]; });
 }
 function dataUrlBlob(url: string): Blob {
@@ -94,28 +107,28 @@ export function assertCaptureAllowed() {
 }
 /** True when the desktop or Android shell captures the page itself (no browser source picker). */
 export function hasNativeCapture(): boolean {
-  const w = window as any;
+  const w = window as CaptureWindow;
   return typeof w.spaceDesktop?.capturePage === "function" || typeof w.SpaceNative?.requestPageCapture === "function";
 }
 /** Video recording uses MediaRecorder on SpaceApp's own window (desktop) or tab (browser); Android captures stills only. */
 export function canRecordScreen(): boolean {
-  return typeof (window as any).SpaceNative?.requestPageCapture !== "function" && typeof MediaRecorder !== "undefined" && getSpaceRuntime().platform.displayMediaSupported;
+  return typeof (window as CaptureWindow).SpaceNative?.requestPageCapture !== "function" && typeof MediaRecorder !== "undefined" && getSpaceRuntime().platform.displayMediaSupported;
 }
 export interface SnipRecording { stop: () => void; done: Promise<File>; cropped: boolean }
 /** SpaceApp itself: its window in the desktop app (no picker), this tab in a browser when its capture handle proves it. */
 async function pageStream(handle: string): Promise<{ stream: MediaStream; page: "window" | "tab" | null }> {
-  const w = window as any;
+  const w = window as CaptureWindow;
   const source = await w.spaceDesktop?.getWindowMediaSourceId?.().catch(() => null);
   if (source?.success && source.sourceId) {
     try {
       // No size cap, so the window arrives at device pixels.
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: { chromeMediaSource: "desktop", chromeMediaSourceId: source.sourceId, maxWidth: 8192, maxHeight: 8192 } } as any });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: { chromeMediaSource: "desktop", chromeMediaSourceId: source.sourceId, maxWidth: 8192, maxHeight: 8192 } } as MediaTrackConstraints });
       return { stream, page: "window" };
     } catch { /* The display-media handler records the screen instead. */ }
   }
-  try { (navigator.mediaDevices as any)?.setCaptureHandleConfig?.({ handle, exposeOrigin: false, permittedOrigins: [location.origin] }); } catch { /* Unsupported: recorded whole. */ }
-  const stream = await getSpaceRuntime().platform.getDisplayMedia({ video: true, audio: false, preferCurrentTab: true, selfBrowserSurface: "include" } as any);
-  return { stream, page: (stream.getVideoTracks()[0] as any)?.getCaptureHandle?.()?.handle === handle ? "tab" : null };
+  try { (navigator.mediaDevices as HandleDevices | undefined)?.setCaptureHandleConfig?.({ handle, exposeOrigin: false, permittedOrigins: [location.origin] }); } catch { /* Unsupported: recorded whole. */ }
+  const stream = await getSpaceRuntime().platform.getDisplayMedia({ video: true, audio: false, preferCurrentTab: true, selfBrowserSurface: "include" } as DisplayMediaStreamOptions);
+  return { stream, page: trackHandle(stream) === handle ? "tab" : null };
 }
 /** Draws each new frame's region (viewport pixels) into a canvas, whose stream is what gets recorded. */
 async function cropStream(source: MediaStream, region: Rect, page: "window" | "tab") {
@@ -184,7 +197,7 @@ export async function captureSnipFrame(overlay: HTMLElement, signal: AbortSignal
 async function grab(overlay: HTMLElement, signal: AbortSignal, options?: SnipCaptureOptions): Promise<{ blob?: Blob; canvas?: HTMLCanvasElement }> {
   const runtime = getSpaceRuntime();
   if (runtime.kind === "demo") throw new Error("Screen capture is disabled in demo mode.");
-  const w = window as any;
+  const w = window as CaptureWindow;
   let stream: MediaStream | null = null;
   let video: HTMLVideoElement | null = null;
   const previous = overlay.style.opacity;
@@ -202,13 +215,14 @@ async function grab(overlay: HTMLElement, signal: AbortSignal, options?: SnipCap
         const handle = session?.handle ?? `space-snip-${crypto.randomUUID()}`;
         // A browser surface alone cannot distinguish this tab from another tab.
         // Only crop viewport coordinates when the captured tab proves its identity.
-        try { (navigator.mediaDevices as any)?.setCaptureHandleConfig?.({ handle, exposeOrigin: false, permittedOrigins: [location.origin] }); } catch { /* Unsupported: use source preview. */ }
+        try { (navigator.mediaDevices as HandleDevices | undefined)?.setCaptureHandleConfig?.({ handle, exposeOrigin: false, permittedOrigins: [location.origin] }); } catch { /* Unsupported: use source preview. */ }
         const pending = (async () => {
           try {
-            return await runtime.platform.getDisplayMedia({ video: true, audio: false, preferCurrentTab: true, selfBrowserSurface: "include", systemAudio: "exclude" } as any);
-          } catch (error: any) {
+            return await runtime.platform.getDisplayMedia({ video: true, audio: false, preferCurrentTab: true, selfBrowserSurface: "include", systemAudio: "exclude" } as DisplayMediaStreamOptions);
+          } catch (error) {
             checkAbort(signal);
-            if (error?.name !== "TypeError" && error?.name !== "NotSupportedError") throw error;
+            const name = (error as Error | null)?.name;
+            if (name !== "TypeError" && name !== "NotSupportedError") throw error;
             return runtime.platform.getDisplayMedia({ video: true, audio: false });
           }
         })();
@@ -220,9 +234,9 @@ async function grab(overlay: HTMLElement, signal: AbortSignal, options?: SnipCap
         video = document.createElement("video"); video.muted = true; video.playsInline = true; video.srcObject = stream;
         await abortable(video.play(), signal);
         if (session) { session.stream = stream; session.video = video; }
-        else options?.onSource?.((stream.getVideoTracks()[0] as any)?.getCaptureHandle?.()?.handle === handle);
+        else options?.onSource?.(trackHandle(stream) === handle);
       }
-      if (session) options?.onSource?.((stream!.getVideoTracks()[0] as any)?.getCaptureHandle?.()?.handle === session.handle);
+      if (session) options?.onSource?.(trackHandle(stream!) === session.handle);
     }
     // Keep the transparent overlay hit-testable so clicks cannot reach panes during capture.
     if (native) options?.onSource?.(true);
@@ -233,7 +247,7 @@ async function grab(overlay: HTMLElement, signal: AbortSignal, options?: SnipCap
     try { await painted(signal); } catch (error) { frames?.stop(); throw error; }
     let shot: { blob?: Blob; canvas?: HTMLCanvasElement };
     if (typeof w.spaceDesktop?.capturePage === "function") {
-      const result = await abortable<any>(w.spaceDesktop.capturePage(), signal);
+      const result = await abortable(w.spaceDesktop!.capturePage!(), signal);
       if (!result?.success || !result.dataUrl) throw new Error(result?.reason || "Desktop capture failed. Please retry.");
       shot = { blob: dataUrlBlob(result.dataUrl) };
     } else if (typeof w.SpaceNative?.requestPageCapture === "function") {

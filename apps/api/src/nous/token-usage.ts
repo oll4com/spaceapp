@@ -117,8 +117,8 @@ export async function tokenUsageBreakdown(sources: TokenUsageSources, owner: str
     if (!key || key === "client:Other") return { key: "", label: "Other (unattributed)", kind: "other" };
     return { key, label: key, kind: "other" };
   };
-  const categories = new Map<string, Category>();
-  for (const key of new Set([...current.keys(), ...previous.keys()])) categories.set(key, await categoryOf(key));
+  const keys = [...new Set([...current.keys(), ...previous.keys()])];
+  const categories = new Map<string, Category>(await Promise.all(keys.map(async (key) => [key, await categoryOf(key)] as const)));
   const group = (figures: Map<string, TokenUsageFigures>) => {
     const out = new Map<string, Omit<Category, "part"> & { figures: TokenUsageFigures; panes: number; parts: Map<string, TokenUsageFigures> }>();
     for (const [key, row] of figures) {
@@ -178,7 +178,7 @@ export function tokenUsageWorldLines(today: TokenUsageBreakdown, week: TokenUsag
 }
 
 /** One answer per owner and period for a minute: the dock refreshes, Nous reads it each turn, and a month reads two months of request logs. */
-export function cachedTokenUsage(read: (owner: string, period: TokenUsagePeriod, provider?: string) => Promise<TokenUsageBreakdown>, ttlMs = 60_000, now = () => Date.now()) {
+export function cachedTokenUsage(read: (owner: string, period: TokenUsagePeriod, provider?: string) => Promise<TokenUsageBreakdown>, ttlMs = 60_000, now = () => Date.now(), serveStale = false) {
   const cache = new Map<string, { at: number; value: Promise<TokenUsageBreakdown> }>();
   return (owner: string, period: TokenUsagePeriod, provider?: string) => {
     const key = `${owner}\0${period}\0${provider ?? ""}`;
@@ -187,7 +187,8 @@ export function cachedTokenUsage(read: (owner: string, period: TokenUsagePeriod,
     const value = read(owner, period, provider);
     cache.set(key, { at: now(), value });
     value.catch(() => cache.delete(key));
-    return value;
+    // public-host lag 14/11: Nous's turns come about every 5 minutes, so nearly each one waited 0.7-1.1 s for this read; it takes the last answer instead.
+    return serveStale && hit ? hit.value : value;
   };
 }
 

@@ -65,9 +65,9 @@ export interface ChannelsRepository {
 const hash = (code: string) => createHash("sha256").update(`space-channel-link:${code}`).digest("hex");
 const id = (prefix: string) => `${prefix}:${randomUUID().replace(/-/g, "")}`;
 const iso = (value: unknown) => new Date(value as string).toISOString();
-const identityColumns = `identity_id AS "identityId", provider, tenant_id AS "tenantId", external_user_id AS "externalUserId", owner_user_id AS "ownerUserId",
+const identityColumns = `identity_id AS "identityId", provider, provider_tenant_id AS "tenantId", external_user_id AS "externalUserId", owner_user_id AS "ownerUserId",
   display_name AS "displayName", reply_address AS "replyAddress", created_at AS "createdAt"`;
-const threadColumns = `thread_id AS "threadId", provider, tenant_id AS "tenantId", conversation_id AS "conversationId", thread_key AS "threadKey",
+const threadColumns = `thread_id AS "threadId", provider, provider_tenant_id AS "tenantId", conversation_id AS "conversationId", thread_key AS "threadKey",
   conversation_kind AS "conversationKind", identity_id AS "identityId", owner_user_id AS "ownerUserId", dot_id AS "dotId", session_id AS "sessionId",
   pane_id AS "paneId", service_url AS "serviceUrl", reply_in_thread AS "replyInThread", last_delivered_run_id AS "lastDeliveredRunId",
   created_at AS "createdAt", updated_at AS "updatedAt"`;
@@ -90,8 +90,8 @@ export class PostgresChannelsRepository implements ChannelsRepository {
     const used = (await this.pool.query<{ owner: string }>(`UPDATE channel_link_codes SET used_at=now()
       WHERE code_hash=$1 AND used_at IS NULL AND expires_at > now() RETURNING owner_user_id AS owner`, [hash(code)])).rows[0];
     if (!used) return null;
-    const row = (await this.pool.query<ChannelIdentityRecord>(`INSERT INTO channel_identities(identity_id, provider, tenant_id, external_user_id, owner_user_id,
-      display_name, reply_address) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (provider, tenant_id, external_user_id)
+    const row = (await this.pool.query<ChannelIdentityRecord>(`INSERT INTO channel_identities(identity_id, provider, provider_tenant_id, external_user_id, owner_user_id,
+      display_name, reply_address) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (provider, provider_tenant_id, external_user_id)
       DO UPDATE SET display_name=EXCLUDED.display_name, reply_address=EXCLUDED.reply_address
       WHERE channel_identities.owner_user_id=EXCLUDED.owner_user_id RETURNING ${identityColumns}`,
       [id("channel_identity"), identity.provider, identity.tenantId, identity.externalUserId, used.owner, identity.displayName?.slice(0, 200) ?? null,
@@ -102,7 +102,7 @@ export class PostgresChannelsRepository implements ChannelsRepository {
     await this.pool.query(`UPDATE channel_link_codes SET used_at=now() WHERE code_hash=$1 AND used_at IS NULL`, [hash(code)]);
   }
   async identity(provider: ChannelProvider, tenantId: string, externalUserId: string) {
-    const row = (await this.pool.query<ChannelIdentityRecord>(`SELECT ${identityColumns} FROM channel_identities WHERE provider=$1 AND tenant_id=$2 AND external_user_id=$3`,
+    const row = (await this.pool.query<ChannelIdentityRecord>(`SELECT ${identityColumns} FROM channel_identities WHERE provider=$1 AND provider_tenant_id=$2 AND external_user_id=$3`,
       [provider, tenantId, externalUserId])).rows[0];
     return row ? mapIdentity(row) : null;
   }
@@ -124,15 +124,15 @@ export class PostgresChannelsRepository implements ChannelsRepository {
       [provider, eventId.slice(0, 300)])).rows.length === 1;
   }
   async thread(provider: ChannelProvider, tenantId: string, conversationId: string, threadKey: string) {
-    const row = (await this.pool.query<ChannelThreadRecord>(`SELECT ${threadColumns} FROM channel_threads WHERE provider=$1 AND tenant_id=$2 AND conversation_id=$3 AND thread_key=$4`,
+    const row = (await this.pool.query<ChannelThreadRecord>(`SELECT ${threadColumns} FROM channel_threads WHERE provider=$1 AND provider_tenant_id=$2 AND conversation_id=$3 AND thread_key=$4`,
       [provider, tenantId, conversationId, threadKey])).rows[0];
     return row ? mapThread(row) : null;
   }
   async createThread(input: Parameters<ChannelsRepository["createThread"]>[0]) {
     // Two first messages at once create one thread; the second reads the first's row.
-    const row = (await this.pool.query<ChannelThreadRecord>(`INSERT INTO channel_threads(thread_id, provider, tenant_id, conversation_id, thread_key, conversation_kind,
+    const row = (await this.pool.query<ChannelThreadRecord>(`INSERT INTO channel_threads(thread_id, provider, provider_tenant_id, conversation_id, thread_key, conversation_kind,
       identity_id, owner_user_id, dot_id, session_id, pane_id, service_url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-      ON CONFLICT (provider, tenant_id, conversation_id, thread_key) DO NOTHING RETURNING ${threadColumns}`,
+      ON CONFLICT (provider, provider_tenant_id, conversation_id, thread_key) DO NOTHING RETURNING ${threadColumns}`,
       [id("channel_thread"), input.provider, input.tenantId, input.conversationId, input.threadKey, input.conversationKind, input.identityId, input.ownerUserId,
         input.dotId, input.sessionId, input.paneId, input.serviceUrl])).rows[0];
     return row ? mapThread(row) : (await this.thread(input.provider, input.tenantId, input.conversationId, input.threadKey))!;

@@ -18,7 +18,7 @@ describe('site sign-in account: which Google account a tab uses', () => {
   it('reads the site and the named account through Google sign-in and OAuth addresses', () => {
     const oauth = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x&redirect_uri=https%3A%2F%2Fhimalayas.app%2Fauth%2Fgoogle';
     const signIn = `https://accounts.google.com/v3/signin/identifier?continue=${encodeURIComponent(oauth)}&flowName=GlifWebSignIn`;
-    expect(signinTarget(signIn)).toEqual({ site: 'himalayas.app', hintEmail: null, destination: oauth });
+    expect(signinTarget(signIn)).toEqual({ site: 'himalayas.app', hintEmail: null, destination: oauth, oauthReturnHost: 'himalayas.app' });
     expect(signinTarget('https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmail.google.com%2Fmail%2F&Email=NtheoGR%40gmail.com'))
       .toEqual({ site: 'google.com', hintEmail: 'ntheogr@gmail.com', destination: 'https://mail.google.com/mail/' });
     expect(signinTarget('https://mail.google.com/mail/u/?authuser=ntheogr@gmail.com')).toMatchObject({ site: 'google.com', hintEmail: 'ntheogr@gmail.com' });
@@ -53,7 +53,7 @@ describe('site sign-in account: which Google account a tab uses', () => {
   });
 
   it('names the wanted account and the tab\'s account in one line', () => {
-    const base = { site: 'himalayas.app', activePageId: 'page:one', paneProfileId: 'google_account:primary',
+    const base = { site: 'himalayas.app', accounts: [], activePageId: 'page:one', paneProfileId: 'google_account:primary',
       pane: { profileId: 'google_account:primary', email: 'operator@example.invalid', byDefault: true },
       tab: { profileId: 'google_account:primary', email: 'operator@example.invalid', byDefault: true } };
     const wanted = { email: 'ntheogr@gmail.com', profileId: 'nth', signedIn: false, source: 'recipe' as const };
@@ -189,6 +189,16 @@ describe('site sign-in account through the CLI bridge', () => {
     expect(start).not.toHaveBeenCalled();
   });
 
+  it('keeps Space\'s own Google sign-in in the tab\'s browser, where its OAuth state cookies are (15/11 Cleo/Nik)', async () => {
+    start.mockClear(); action.mockClear();
+    const google = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x&login_hint=nth%40gemini.example.test'
+      + '&redirect_uri=http%3A%2F%2F127.0.0.1%2Fapi%2Fauth%2Fgoogle%2Fcallback';
+    const stayed = await navigate(google);
+    expect(stayed.statusCode, stayed.body).toBe(200);
+    expect(start).not.toHaveBeenCalled();
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
   it('opens a new tab for the site straight in that account', async () => {
     start.mockClear();
     const created = await command({ type: 'CREATE_PAGE', url: 'https://himalayas.app/jobs' });
@@ -228,11 +238,59 @@ describe('site sign-in account through the CLI bridge', () => {
     expect(store.listBrowserHandoffRequests(room.id)).toHaveLength(1);
   });
 
+  it('keeps the browser and its form open for a handoff in the operator\'s quiet hours, its page on the card (Nous goal 91e45be1)', async () => {
+    const hhmm = (offsetMin: number) => new Date(Date.now() + offsetMin * 60_000).toISOString().slice(11, 16);
+    await store.updateUserSettings(user.id, { dateTime: { timeZone: 'UTC' }, notifications: { quietHours: { enabled: true, start: hhmm(-60), end: hhmm(60) } } as never });
+    const { currentUrl } = store.getActivePaneBrowserSession(job.id)!;
+    store.updatePaneBrowserSession(session.sessionId, { currentUrl: 'https://example.org/checkout' });
+    const before = store.listBrowserHandoffRequests(room.id).length;
+    const asked = await command({ type: 'REQUEST_HANDOFF', kind: 'CAPTCHA', reason: 'Complete the verification challenge; shipping form filled' });
+    expect(asked.statusCode, asked.body).toBe(200);
+    expect(asked.json()).toMatchObject({ message: expect.stringContaining('this browser stays open on this page with what you filled in'),
+      handoff: { reason: expect.stringMatching(/shipping form filled\nHeld for the morning; the browser keeps it open on https:\/\/example\.org\/checkout\.$/) } });
+    expect(asked.json()).not.toHaveProperty('browserClosed');
+    expect(manager.stopPane).not.toHaveBeenCalled();
+    expect(store.listBrowserHandoffRequests(room.id)).toHaveLength(before + 1);
+    expect((await command({ type: 'CANCEL_HANDOFF' })).statusCode).toBe(200);
+    await store.updateUserSettings(user.id, { notifications: null });
+    store.updatePaneBrowserSession(session.sessionId, { currentUrl });
+  });
+
   it('reports the account per browser session in the bridge context', async () => {
     const context = await app.inject({ url: '/api/cli/browser/context', headers: headers() });
     expect(context.statusCode).toBe(200);
     expect(context.json().browserSessions[0]).toMatchObject({ signin: { site: 'himalayas.app', googleAccountEmail: 'nth@gemini.example.test' },
       signinAccount: expect.stringContaining('Google account nth@gemini.example.test'),
       tabAccounts: [{ pageId: 'page:one', isActive: true, google: "operator7@example.test (the pane's default: no account was chosen)" }] });
+  });
+
+  it('keeps a tab in any of the site\'s sign-ins and never moves it into the first one (15/11: Leo landed in the operator\'s personal Reddit)', async () => {
+    const record = (payload: Record<string, unknown>) => app.inject({ method: 'POST', url: '/api/cli/site-signins', headers: headers(), payload: { method: 'GOOGLE', outcome: 'SUCCESS', ...payload } });
+    // reddit.com: "main" in another profile (the operator's personal account), "info-olla" in the account this tab already runs in.
+    for (const payload of [{ site: 'reddit.com', googleAccountEmail: 'nth@gemini.example.test' }, { site: 'reddit.com', accountLabel: 'info-olla', googleAccountEmail: 'operator7@example.test' },
+      { site: 'lobste.rs', googleAccountEmail: 'nth@gemini.example.test' }, { site: 'lobste.rs', accountLabel: 'other', googleAccountEmail: 'other@example.test' }]) {
+      const recorded = await record(payload);
+      expect(recorded.statusCode, recorded.body).toBe(200);
+    }
+    start.mockClear(); action.mockClear();
+    const stays = await navigate('https://old.reddit.com/r/selfhosted');
+    expect(stays.statusCode, stays.body).toBe(200);
+    expect(start).not.toHaveBeenCalled();
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(stays.json().results[0].statusReason).toContain('Google account operator7@example.test (site sign-in recipe for reddit.com)');
+    expect(stays.json().results[0].statusReason).toContain('this tab runs in it');
+    const created = await command({ type: 'CREATE_PAGE', url: 'https://www.reddit.com/' });
+    expect(created.statusCode, created.body).toBe(200);
+    expect(start).not.toHaveBeenCalled();
+
+    // The tab in none of a site's several sign-ins: it stays where it is and the line names them all.
+    action.mockClear();
+    const ambiguous = await navigate('https://lobste.rs/');
+    expect(ambiguous.statusCode, ambiguous.body).toBe(200);
+    expect(start).not.toHaveBeenCalled();
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(ambiguous.json().results[0].statusReason).toContain('lobste.rs has site sign-in recipes in nth@gemini.example.test, other@example.test');
+    expect((await command({ type: 'CREATE_PAGE', url: 'https://lobste.rs/' })).json().siteAccount).toContain('none of them');
+    expect(start).not.toHaveBeenCalled();
   });
 });

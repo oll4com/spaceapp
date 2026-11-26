@@ -287,7 +287,7 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
       interrupt: vi.fn(async () => ({ interrupted: true }))
     };
 
-    const service = createSpaceControl({
+    createSpaceControl({
       store,
       repository,
       controller,
@@ -385,7 +385,7 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
       interrupt: vi.fn(async () => ({ interrupted: true }))
     };
 
-    const service = createSpaceControl({
+    createSpaceControl({
       store, repository, controller,
       publish: vi.fn(async () => {}),
       publishEvent: (e) => publishedEvents.push(e),

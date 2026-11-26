@@ -1,11 +1,11 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { CliHostClient, CliHostSessionRegistry, createCliHostServer, spawnNodePty } from "@space/cli-host";
 import { InMemorySpaceStore } from "@space/runtime";
 import { InMemoryGatewayRepository } from "@space/db";
+import { mkdtempShort } from "./support/short-tmp.js";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
@@ -29,7 +29,7 @@ const headers = () => {
 };
 
 async function setup(options: { busy?: boolean; mode?: "TERMINAL" | "DESIGN"; gatewayReady?: boolean } = {}) {
-  const root = await mkdtemp(join(tmpdir(), "space-claude-account-switch-"));
+  const root = await mkdtempShort("space-claude-account-switch-");
   roots.push(root);
   if (options.busy) await writeFile(join(root, "busy"), "", "utf8");
   // The stub CLI prints its arguments, then Claude's idle prompt, or its spinner while a "busy" marker exists; it keeps running.
@@ -37,7 +37,7 @@ async function setup(options: { busy?: boolean; mode?: "TERMINAL" | "DESIGN"; ga
     + `if [ -f '${join(root, "busy")}' ]; then printf '\\342\\234\\242 Nesting\\342\\200\\246\\n'; else printf '\\342\\235\\257 \\n'; fi\nexec sleep 60\n`, "utf8");
   await chmod(join(root, "claude-vscode-parity"), 0o755);
   const socketPath = join(root, "pane-host.sock");
-  // Unix socket paths hold about 104-107 bytes: a long TMPDIR fails here, not later as ENOENT or EADDRINUSE (1.1.7 review).
+  // Unix socket paths hold about 104-107 bytes: the root is short (support/short-tmp.ts) even under a deep CI TMPDIR; the check names any overflow left.
   if (socketPath.length > 103) throw new Error(`TMPDIR is too long for a Unix socket path (${socketPath.length} bytes); use a short TMPDIR such as /tmp/s.`);
   const host = await createCliHostServer({ socketPath, registry: new CliHostSessionRegistry({ spawn: spawnNodePty }) });
   const store = new InMemorySpaceStore();

@@ -218,7 +218,7 @@ export class ChatStreamTranslator {
       this.buffer = this.buffer.slice(boundary).replace(/^\r?\n\r?\n/, "");
       const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
       if (!data || data === "[DONE]") continue;
-      let event: Json | null = null;
+      let event: Json | null;
       try { event = obj(JSON.parse(data)); } catch { continue; }
       if (event) out += this.handle(event);
     }

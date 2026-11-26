@@ -4,6 +4,8 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { CliBridgeClaims } from "./mail-copilot/agent-routes.js";
 import { withoutNegatedRelease } from "./nous/guardrails.js";
+import type { Pane } from "@space/contracts";
+import { isCliPane } from "./pane-guards.js";
 import { lastSpacePromptAt } from "./space-prompts.js";
 
 /**
@@ -103,6 +105,7 @@ const PROMOTE_WORD = /\bpromote\b|προ[ωώ]θ/i;
 const NEGATION = /\b(no|not|never|don['’]?t|wait)\b|(?:^|[\s,.!;:?"'«»()])(μη|μην|όχι|οχι|δεν|ποτέ|ποτε|περίμενε|περιμενε)(?=[\s,.!;:?"'«»()]|$)/i;
 // Escape sequences (bracketed paste markers, arrows) and command flags are not words of the sentence: the Promote
 // shortcut's own text ends "(space-queue promote --wait)", and "--wait" withheld every grant it asked for (2026-10-21).
+// eslint-disable-next-line no-control-regex -- matching terminal escape and control characters is the point
 const TERMINAL_CONTROL = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
 const COMMAND_FLAG = /(^|\s)--[a-z][\w-]*/gi;
 
@@ -142,10 +145,14 @@ export function noteOperatorPromoteLine(paneId: string, line: string, source: Op
  */
 export const OPERATOR_TURN_GRACE_MS = 5 * 60_000;
 const operatorLineAt = new Map<string, number>();
+// Panes whose first prompt was the operator's line, before any of Space's (operatorPaneReason).
+const operatorFirst = new Set<string>();
 const operatorLineListeners = new Set<() => void>();
 function noteOperatorLine(paneId: string, nowMs: number): void {
   // Only a pane's first line in a minute pushes the list again (each Enter would otherwise).
   const fresh = nowMs - (operatorLineAt.get(paneId) ?? -Infinity) >= 60_000;
+  if (lastSpacePromptAt(paneId) === -Infinity) operatorFirst.add(paneId);
+  if (operatorFirst.size > 1000) operatorFirst.delete(operatorFirst.values().next().value!);
   operatorLineAt.delete(paneId);
   operatorLineAt.set(paneId, nowMs);
   if (operatorLineAt.size > 1000) operatorLineAt.delete(operatorLineAt.keys().next().value!);
@@ -158,6 +165,21 @@ export const operatorPromptedLast = (paneId: string): boolean => (operatorLineAt
 export const operatorHeldPanes = (nowMs = Date.now()): string[] => [...operatorLineAt].filter(([, at]) => nowMs - at < OPERATOR_TURN_GRACE_MS).map(([paneId]) => paneId);
 /** When this pane last got a prompt from anyone (the operator in person or Space), -Infinity when none since the API started. */
 export const lastPromptAt = (paneId: string): number => Math.max(operatorLineAt.get(paneId) ?? -Infinity, lastSpacePromptAt(paneId));
+/** A CLI pane Space never prompted is the operator's this long after it opened (operatorPaneReason). */
+export const OPERATOR_FRESH_PANE_MS = 30 * 60_000;
+/**
+ * Operator 21/11 23:27 BKK nous_msg:63896af5 («σταματα ν αμου κλεινεις πραθυρα antigravity που δουλευω εγω στο room dino»: Dino/Finn closed 75 s after
+ * the operator opened it, at "Needs input"): why this pane is the operator's own and never Nous's to close or list as finished, null when it is not.
+ * shortcut: the prompt marks live in the API's memory, so after a restart only the fresh-pane rule holds; persist them if an operator's pane is closed again.
+ */
+export function operatorPaneReason(pane: Pick<Pane, "id" | "mode" | "createdAt">, nowMs = Date.now(), afterOperatorGrace = false): string | null {
+  // afterOperatorGrace: the load hand-out (nous_msg:694ff0a9) may give work to a pane the operator prompted once their turn's grace passed.
+  if (!afterOperatorGrace && operatorPromptedLast(pane.id)) return "the operator prompted it last";
+  if (!afterOperatorGrace && operatorFirst.has(pane.id)) return "the operator gave it its first prompt";
+  const age = nowMs - Date.parse(pane.createdAt);
+  if (isCliPane(pane) && lastSpacePromptAt(pane.id) === -Infinity && age < OPERATOR_FRESH_PANE_MS) return `opened ${Math.max(0, Math.round(age / 60_000))} min ago and Space never prompted it`;
+  return null;
+}
 /** Called when a pane gets the operator's first line in a minute (Nous pushes the priority panes at once); returns the unsubscribe. */
 export function onOperatorLine(listener: () => void): () => void {
   operatorLineListeners.add(listener);

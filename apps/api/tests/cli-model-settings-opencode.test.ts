@@ -469,6 +469,32 @@ describe("OpenCode live model settings routes", () => {
     await new Promise<void>((resolve) => mock.server.close(() => resolve()));
   });
 
+  it("refuses a turn abort for a CLI session that is not OpenCode", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Codex room abort", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Codex", mode: "TERMINAL", terminalRuntimeId: "cli:codex", cwd: "/etc" });
+    store.createPaneCliSession({
+      paneId: pane.id, roomId: room.id, runtimeId: "cli:codex", providerId: "openai", agentId: "codex", modelId: null,
+      reasoningEffort: "default", cwd: "/etc", status: "RUNNING", statusReason: "Codex test session", isActive: true
+    });
+    const app = await createApp({
+      store,
+      config: getApiConfig({}),
+      auth: { sessionSecret, devLogin: false, secureCookies: false },
+      opencodeStateRoot: stateRoot
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/panes/${encodeURIComponent(pane.id)}/cli/turn-abort`,
+      headers: authHeaders("ADMIN")
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.message).toContain("only available for OpenCode");
+  });
+
   it("rejects an OpenCode model that is not advertised by the runtime", async () => {
     const store = new InMemorySpaceStore();
     const { pane, session } = paneCliSessionFixture(store, "reject");

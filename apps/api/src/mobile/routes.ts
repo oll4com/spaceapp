@@ -8,6 +8,7 @@ import { sendApiError } from "../http-errors.js";
 import { recordAudit } from "../request-audit.js";
 import { createMobileInstanceKeys } from "./instance-key.js";
 import { createMobileOffers } from "./pairing.js";
+import { STEP_UP_ROUTES } from "../step-up.js";
 
 // Settings > Mobile app (plan clipboard:kTV3y2lwO-99 phase 1b, ADR-013): a person only. The device-session check refuses proof, automation
 // and broker sessions; a phone's own session (the `app` claim) is refused too, except an ADMIN's SpaceApp Android session (R10, SpaceApp
@@ -22,7 +23,7 @@ const requestOrigin = (request: FastifyRequest) => new URL(`${header(request.hea
 export function registerMobileRoutes(app: FastifyInstance, options: {
   store: Pick<SpaceStore, "recordAuditEvent" | "upsertUser" | "getOwnerCredentials">; crypto: ConnectorCrypto; databaseUrl: string | null | undefined;
   routeOptions: Pick<RouteShorthandOptions, "config">; assertPerson: (request: FastifyRequest) => void;
-  /** A fresh Google sign-in or SpaceApp password for this web session (security review P1-5): set up and pairing need it. */
+  /** A fresh Google sign-in, mailed link or SpaceApp password for this web session (security review P1-5): set up and pairing need it. */
   stepUp: { fresh(request: FastifyRequest): boolean };
   /** Revokes every user's paired phones and closes their channels; answers their ids (C3). */
   revokePaired: () => Promise<string[]>;
@@ -46,8 +47,8 @@ export function registerMobileRoutes(app: FastifyInstance, options: {
       sendApiError(reply, 403, "STEP_UP_REQUIRED", "Confirm it is you: sign in to Google in the app again, then pair the phone within 5 minutes.",
         { stepUpUrl: "/api/auth/app/step-up" });
     } else {
-      sendApiError(reply, 401, "STEP_UP_REQUIRED", "Confirm it is you with your SpaceApp password or a new Google sign-in, then pair the phone within 5 minutes.",
-        { stepUpUrl: "/api/auth/google/start?stepUp=mobile", passwordUrl: "/api/auth/step-up/password" });
+      sendApiError(reply, 401, "STEP_UP_REQUIRED", "Confirm it is you with Google or a link by mail, then pair the phone within 5 minutes.",
+        STEP_UP_ROUTES);
     }
     return false;
   };

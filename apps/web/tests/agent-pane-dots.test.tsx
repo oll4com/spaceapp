@@ -36,101 +36,80 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 const threadLoading = () => document.querySelector(".dots-feed-scroll")?.getAttribute("data-thread-loading");
-const dotTrigger = () => screen.getByRole("button", { name: /^Choose Dot/ }) as HTMLButtonElement;
+const newConversation = () => screen.getByRole("button", { name: "New conversation" }) as HTMLButtonElement;
 async function setup() {
   const rendered = render(<AgentPane pane={pane} codexEnvironment={null} workspaceTextSize={14} />);
-  await waitFor(() => expect(dotTrigger().disabled).toBe(false));
+  await waitFor(() => expect(newConversation().disabled).toBe(false));
   return rendered;
 }
-/** Stage 8: Dots are chosen from the menu on the Dot's name. */
-function selectDot(name: string) {
-  fireEvent.click(dotTrigger());
-  fireEvent.click(screen.getByRole("menuitemradio", { name: `Select ${name}` }));
-}
 describe("Stage2 actual AgentPane integration", () => {
-  it("snapshots the final character before the composer debounce and restores separate Dot drafts", async () => {
-    await setup(); const text = screen.getByRole("textbox") as HTMLTextAreaElement;
-    fireEvent.change(text, { target: { value: "Orbit final!" } });
-    selectDot("Nova");
-    await waitFor(() => expect(active.dotId).toBe(dots[1]!.dotId));
-    await waitFor(() => expect(text.value).toBe(""));
-    expect(readDotDraft(pane.id, dots[0]!).prompt).toBe("Orbit final!");
-    fireEvent.change(text, { target: { value: "Nova draft" } });
-    selectDot("Orbit");
-    await waitFor(() => expect(text.value).toBe("Orbit final!"));
-    expect(readDotDraft(pane.id, dots[1]!).prompt).toBe("Nova draft");
+  it("keeps the chat surface plain: no Dot switcher, details panel or goal strip", async () => {
+    await setup();
+    expect(screen.queryByRole("button", { name: /^Choose Dot/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Orbit details" })).toBeNull();
+    expect(document.querySelector(".dots-goal-strip, .dots-info-card")).toBeNull();
+    expect(screen.getAllByText("Orbit").length).toBeGreaterThan(0);
   });
-  it("New task retains the selected Dot and only resets its draft after success", async () => {
-    await setup(); selectDot("Nova");
-    await waitFor(() => expect(active.dotId).toBe(dots[1]!.dotId));
+  it("New conversation retains the Dot and only resets its draft after success", async () => {
+    await setup();
     const text = screen.getByRole("textbox") as HTMLTextAreaElement;
-    await waitFor(() => expect((screen.getByRole("button", { name: "New conversation" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.change(text, { target: { value: "Keep on failure" } });
     mock.createAgentSession.mockRejectedValueOnce(Error("Rejected"));
-    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
-    await waitFor(() => expect((screen.getByRole("button", { name: "New conversation" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(newConversation());
+    await waitFor(() => expect(newConversation().disabled).toBe(false));
     expect(text.value).toBe("Keep on failure");
-    mock.createAgentSession.mockImplementationOnce(async (_: string, input: { dotId: string }) => { active = session(input.dotId, "agent_session:nova-new"); return active; });
-    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    mock.createAgentSession.mockImplementationOnce(async (_: string, input: { dotId: string }) => { active = session(input.dotId, "agent_session:orbit-new"); return active; });
+    fireEvent.click(newConversation());
     await waitFor(() => expect(text.value).toBe(""));
-    expect(mock.createAgentSession).toHaveBeenLastCalledWith(pane.id, expect.objectContaining({ dotId: dots[1]!.dotId, sessionId: null, threadId: null }));
+    expect(mock.createAgentSession).toHaveBeenLastCalledWith(pane.id, expect.objectContaining({ dotId: dots[0]!.dotId, sessionId: null, threadId: null }));
   });
-  it("locks sending after a lost switch response until authoritative reconciliation succeeds", async () => {
-    await setup(); const text = screen.getByRole("textbox") as HTMLTextAreaElement;
-    fireEvent.change(text, { target: { value: "Orbit survives" } });
-    mock.createAgentSession.mockImplementationOnce(async () => { active = session(dots[1]!.dotId, "agent_session:nova"); throw Error("Lost response"); });
+  it("locks sending after a lost session response until authoritative reconciliation succeeds", async () => {
+    await setup();
+    mock.createAgentSession.mockImplementationOnce(async () => { active = session(dots[0]!.dotId, "agent_session:orbit-new"); throw Error("Lost response"); });
     mock.agentSession.mockRejectedValueOnce(Error("Read unavailable"));
-    selectDot("Nova");
+    fireEvent.click(newConversation());
     await screen.findByText("Session selection is unconfirmed. Reconnect before sending.");
     expect((screen.getByRole("button", { name: "Send Dots test" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(readDotDraft(pane.id, dots[0]!).prompt).toBe("Orbit survives");
     fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
-    await waitFor(() => expect(dotTrigger().disabled).toBe(false));
-    expect(text.value).toBe(""); expect(active.dotId).toBe(dots[1]!.dotId);
+    await waitFor(() => expect(newConversation().disabled).toBe(false));
+    expect(active.binding?.sessionId).toBe("agent_session:orbit-new");
   });
-  it("blocks switches during upload and ignores a late upload after pane teardown", async () => {
+  it("blocks new conversations during upload and ignores a late upload after pane teardown", async () => {
     const mounted = await setup(); let resolve!: (value: unknown) => void;
     mock.uploadPaneFiles.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
     fireEvent.change(document.querySelector('input[name="agent-files-pane:dots-test"]')!, { target: { files: [new File(["x"], "file.txt")] } });
-    await waitFor(() => expect(dotTrigger().disabled).toBe(true));
+    await waitFor(() => expect(newConversation().disabled).toBe(true));
     mounted.unmount();
     await act(async () => { resolve({ artifacts: [{ id: "artifact:late" }] }); });
     expect(readDotDraft(pane.id, dots[0]!).attachments).toEqual([]);
   });
-  it("guards late voice callbacks after cancellation and a Dot switch", async () => {
+  it("guards late voice callbacks after cancellation and a new conversation", async () => {
     let target!: { onTranscriptDelta: (s: string) => void; onTranscriptComplete: (s: string) => Promise<void> };
     voice.start.mockImplementation(async (input: typeof target) => { target = input; voice.ownerId = `chat:${pane.id}`; voice.status = "recording"; });
     const mounted = await setup(); fireEvent.click(screen.getByRole("button", { name: /Voice.*Dots test|Dictate.*Dots test|Start voice input Dots test/ }));
     await waitFor(() => expect(voice.start).toHaveBeenCalledOnce());
-    await waitFor(() => expect(dotTrigger().disabled).toBe(true));
+    await waitFor(() => expect(newConversation().disabled).toBe(true));
     voice.ownerId = null; voice.status = "idle";
     mounted.rerender(<AgentPane pane={pane} codexEnvironment={null} workspaceTextSize={14} />);
-    selectDot("Nova");
-    await waitFor(() => expect(active.dotId).toBe(dots[1]!.dotId));
+    await waitFor(() => expect(newConversation().disabled).toBe(false));
+    fireEvent.click(newConversation());
+    await waitFor(() => expect(mock.createAgentSession).toHaveBeenCalled());
     await act(async () => { target.onTranscriptDelta("old voice"); await target.onTranscriptComplete("old voice"); });
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(""); expect(mock.sendAgentMessage).not.toHaveBeenCalled();
   });
 });
 
-it("keeps the draft while the Dot's details open and close, and ignores a delayed session read after selecting another Dot", async () => {
-  await setup(); const text = screen.getByRole("textbox") as HTMLTextAreaElement;
-  fireEvent.change(text, { target: { value: "Retained draft" } });
-  expect(screen.queryByRole("tab")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Orbit details" }));
-  expect(screen.getByRole("complementary", { name: "Orbit details" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Close details" }));
-  expect(screen.queryByRole("complementary", { name: "Orbit details" })).toBeNull();
-  expect(screen.getByRole("textbox")).toBe(text); expect(text.value).toBe("Retained draft");
+it("ignores a delayed session read after a new conversation", async () => {
+  await setup();
   let resolve!: (s: AgentPaneSession) => void; const old = active;
   mock.agentSession.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
   act(() => { window.dispatchEvent(new CustomEvent(AGENT_PANE_ACTION_EVENT, { detail: { paneId: pane.id, action: "reconnect" } })); });
   // Invoke the same current session refresh through the existing pane action.
   await waitFor(() => expect(mock.agentSession).toHaveBeenCalledTimes(2));
-  selectDot("Nova");
-  await waitFor(() => expect(active.dotId).toBe(dots[1]!.dotId));
+  fireEvent.click(newConversation());
+  await waitFor(() => expect(active.binding?.sessionId).toBe(`agent_session:${dots[0]!.dotId}`));
   await act(async () => { resolve(old); });
-  expect(dotTrigger().getAttribute("aria-label")).toBe("Choose Dot (Nova)");
-  expect(text.value).toBe("");
+  expect(screen.queryByText("Session selection is unconfirmed. Reconnect before sending.")).toBeNull();
 });
 
 it("allocates the contained transcript inside the local flex shell and prevents composer shrink", async () => {
@@ -144,8 +123,7 @@ it("allocates the contained transcript inside the local flex shell and prevents 
     const shell = getComputedStyle(document.querySelector(".dots-chat-shell")!);
     const main = getComputedStyle(document.querySelector(".dots-home-main")!);
     const transcript = getComputedStyle(document.querySelector(".chat-transcript-region")!);
-    // Stage 8: the conversation column sits beside the Dot's details card.
-    expect(shell.display).toBe("flex"); expect(shell.flexDirection).toBe("row");
+    expect(shell.display).toBe("flex");
     expect(main.display).toBe("flex"); expect(main.flexDirection).toBe("column");
     expect(shell.overflow).toBe("hidden");
     expect(transcript.flexGrow).toBe("1"); expect(transcript.minHeight).toBe("0");
@@ -153,12 +131,12 @@ it("allocates the contained transcript inside the local flex shell and prevents 
   } finally { style.remove(); }
 });
 
-it("clears obsolete transcript loading when switching to a threadless Dot", async () => {
+it("clears obsolete transcript loading when a new conversation has no thread", async () => {
   active = { ...session(), threadId: "thread:old" };
   let reject!: (error: Error) => void;
   mock.codexThread.mockImplementationOnce(() => new Promise((_, r) => { reject = r; }));
   await setup(); await waitFor(() => expect(threadLoading()).toBe("true"));
-  selectDot("Nova");
+  fireEvent.click(newConversation());
   await waitFor(() => expect(threadLoading()).toBe("false"));
   await act(async () => { reject(Error("Obsolete thread failure")); });
   expect(screen.queryByText("Obsolete thread failure")).toBeNull();
@@ -170,7 +148,7 @@ it("clears a previous transcript error when publishing a different session", asy
   mock.codexThread.mockRejectedValueOnce(Error("Old transcript unavailable"));
   await setup(); fireEvent.click(await screen.findByRole("button", { name: "Details" }));
   await screen.findByText("Old transcript unavailable");
-  selectDot("Nova");
+  fireEvent.click(newConversation());
   await waitFor(() => expect(screen.queryByText("Old transcript unavailable")).toBeNull());
 });
 
@@ -181,9 +159,9 @@ it("does not let an obsolete fetch finally clear the replacement transcript load
     .mockImplementationOnce(() => new Promise((_, reject) => { rejectNew = reject; }));
   await setup(); await waitFor(() => expect(threadLoading()).toBe("true"));
   mock.createAgentSession.mockImplementationOnce(async () => {
-    active = { ...session(dots[1]!.dotId, "agent_session:nova"), threadId: "thread:new" }; return active;
+    active = { ...session(dots[0]!.dotId, "agent_session:orbit-new"), threadId: "thread:new" }; return active;
   });
-  selectDot("Nova");
+  fireEvent.click(newConversation());
   await waitFor(() => expect(mock.codexThread).toHaveBeenCalledWith("thread:new", "chat"));
   await act(async () => { rejectOld(Error("Obsolete failure")); });
   expect(threadLoading()).toBe("true");
@@ -205,6 +183,14 @@ it("offers only +, message, mic and send: the Dot's model and permissions come f
   expect(screen.getByRole("button", { name: "Add files or set a goal" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Start voice input Dots test" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Send Dots test" })).toBeTruthy();
+});
+
+it("shows the Dot composer while the session is still loading, never the legacy one", async () => {
+  mock.agentSession.mockImplementation(() => new Promise(() => {}));
+  render(<AgentPane pane={pane} codexEnvironment={null} workspaceTextSize={14} />);
+  await waitFor(() => expect(document.querySelector(".codex-composer")).toBeTruthy());
+  expect(document.querySelector(".codex-composer")!.getAttribute("data-variant")).toBe("dot");
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).placeholder).toBe("Send a message");
 });
 
 describe("Dot Chat lost acknowledgement recovery", () => {

@@ -37,7 +37,9 @@ export const VAULT_AUDIT_ACTIONS = [
   "ENROLL", "UNLOCK", "LOCK", "PASSWORD_ROTATE", "RECOVERY_SET", "RECOVERY_USE", "ITEM_SAVE", "ITEM_DELETE",
   "DELEGATE", "REVOKE", "FILL", "APPROVAL", "EPOCH_BUMP", "AGENT_LIST", "GENERATE", "SIGNUP_GRANT", "INBOX_SET", "KEY_HANDOFF",
   // A host-to-host transfer re-sealing the server share and the active delegation (scripts/space-transfer.mjs, 2026-11-11).
-  "RESEAL", "MOVE_OUT", "MOVE_IN"
+  "RESEAL", "MOVE_OUT", "MOVE_IN",
+  // Space Link Vault sync (plan clipboard:TcX66vjNuZDv step 2): a linked SpaceApp's Vault copied here, or this one's sent to a link.
+  "LINK_SYNC"
 ] as const;
 export const VAULT_NONCE_PURPOSES = ["UNLOCK_CHALLENGE", "FILL_USE", "REQUEST"] as const;
 /**
@@ -270,7 +272,9 @@ export const vaultAgentResultSchema = z.object({ status: z.enum(VAULT_AGENT_STAT
   /** R20-7: a fill typed into a fresh document after a reload; the page's other fields and steps are gone and need redoing. */
   reloaded: z.literal(true).optional(),
   /** SIGNIN_WORKS: Space's own sentence (the stored sign-in's last SUCCESS and method), never page text. */
-  message: z.string().max(400).optional() }).strict();
+  message: z.string().max(400).optional(),
+  /** save_totp_from_qr: Space's own next step (SAVED: confirm the swap; QR_NOT_FOUND: wait for the QR, call again), never page text. */
+  next: z.string().max(400).optional() }).strict();
 export type VaultAgentResult = z.infer<typeof vaultAgentResultSchema>;
 
 /** Audit payload: ids, enums and short codes only, so no secret or page text can be written into it. */
@@ -298,6 +302,8 @@ export const vaultAgentFillRequestSchema = z.object({
 /** A card at a checkout: the broker fills number, expiry, CVC and name in the page and its payment frames, never presses Pay. */
 export const vaultAgentCardFillRequestSchema = z.object({ handle: vaultItemIdSchema, targetPaneId }).strict();
 export const vaultAgentTotpRequestSchema = z.object({ handle: vaultItemIdSchema, submit: z.boolean().default(false), targetPaneId }).strict();
+/** The authenticator key of an existing item, read by the Browser Host from the setup QR in the pane's page; the agent never sees it. */
+export const vaultAgentOtpSaveRequestSchema = z.object({ handle: vaultItemIdSchema, targetPaneId }).strict();
 /** Generate a password inside the fill path and fill it; the agent learns only the handle of the (PENDING) item. */
 export const vaultAgentGenerateRequestSchema = z.object({
   purpose: z.enum(["NEW_ACCOUNT", "CHANGE_PASSWORD"]),
@@ -448,20 +454,38 @@ export const vaultInboxKeySetRequestSchema = vaultInboxKeyRequestSchema.extend({
 // password or recovery envelope, or delete logins. The API verifies against the enrolled unlock public key, as the broker
 // does for delegations; the signed body names the current epoch, so a lock, revoke or password change voids older signatures.
 // "key-reveal": showing a kept password or key in the dock (operator request 2026-11-12), so a session cookie alone reads none.
-export const VAULT_OPERATOR_SIGNED_KINDS = ["inbox", "password", "recovery", "item-delete", "key-reveal"] as const;
+// "link-sync": the Vault copied to a linked SpaceApp's broker (plan clipboard:TcX66vjNuZDv step 2); its body names no epoch, so it
+// lasts until a password change replaces the unlock key (the toggle is then turned off and on again).
+export const VAULT_OPERATOR_SIGNED_KINDS = ["inbox", "password", "recovery", "item-delete", "key-reveal", "link-sync"] as const;
 export type VaultOperatorSignedKind = (typeof VAULT_OPERATOR_SIGNED_KINDS)[number];
 /** The bytes the unlock key signs: the kind, owner and vault, and the request body without its signature, as canonical JSON. */
 export function vaultOperatorRequestMessage(kind: VaultOperatorSignedKind, input: { ownerUserId: string; vaultId: string } & Record<string, unknown>): Uint8Array {
-  const { operatorSignature: _signature, ...body } = input;
+  const body: Partial<typeof input> = { ...input };
+  delete body.operatorSignature;
   return new TextEncoder().encode(vaultCanonicalJson({ v: 1, kind: `space-vault-${kind}`, ...body }));
 }
 
+/**
+ * The operator's consent to copy the Vault to one linked SpaceApp (vaultOperatorRequestMessage "link-sync" over every field but the
+ * signature): `transportKey` is the receiving broker's (the only key the sending broker seals to), `signingKey` the sending broker's (the
+ * only key whose delegation the receiving broker signs again). Both brokers check it against the enrolled unlock key.
+ * Without `operatorSignature` it is a pinned consent (operator rule 4d47dcab: no unlock for sync): each broker accepts it only when root
+ * pinned the same link, owner and peer keys on its own host (space-transfer.mjs vault-link-pin, docs/agents/space-transfer.md).
+ */
+export const vaultLinkSyncSchema = z.object({
+  linkId: z.string().regex(/^link:[A-Za-z0-9_-]{8,64}$/), transportKey: b64url(40, 80), signingKey: b64url(40, 80), issuedAt: isoDate,
+  operatorSignature: b64url(86, 86).optional()
+}).strict();
+export type VaultLinkSync = z.infer<typeof vaultLinkSyncSchema>;
+
 /** A login an agent saved or a password it generated in a fill: fillable at once through the delegation; the dock files it as an item when next unlocked. */
 export const vaultPendingSecretSchema = z.object({
-  id: id("vault_pending"), kind: z.enum(["NEW_ACCOUNT", "CHANGE_PASSWORD"]), handle: vaultItemIdSchema, label: z.string().max(80), origin: canonicalOrigin,
+  id: id("vault_pending"), kind: z.enum(["NEW_ACCOUNT", "CHANGE_PASSWORD", "SET_OTP"]), handle: vaultItemIdSchema, label: z.string().max(80), origin: canonicalOrigin,
   sealedUsername: vaultTransportEnvelopeSchema.nullable(), sealedPassword: vaultTransportEnvelopeSchema.nullable(), paneId: z.string().max(200).nullable(), createdAt: isoDate,
   /** A new login's login page (on its origin), filed with it; a set by handle before the dock files it lands here too. */
-  loginPage: loginPageField.nullable().default(null)
+  loginPage: loginPageField.nullable().default(null),
+  /** SET_OTP: the authenticator key (vaultOtpStoredValue) an agent read from a setup QR, sealed like the password. */
+  sealedOtp: vaultTransportEnvelopeSchema.nullable().default(null)
 }).strict();
 export type VaultPendingSecret = z.infer<typeof vaultPendingSecretSchema>;
 

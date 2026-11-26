@@ -27,7 +27,8 @@ export class ForgeAdapter extends AdapterBase implements RepositoryProviderAdapt
     const params = { [this.provider === "github" ? "per_page" : "limit"]: 50 }, context = [input.targetId ?? null, input.query ?? ""];
     const owner = input.targetId?.startsWith("user:") ? text((await this.user()).login).toLowerCase() : null;
     const needle = input.query?.toLowerCase();
-    let request: { page?: number; cursor?: string } = { page: input.page, cursor: input.cursor }, data: GitRemoteRepository[] = [];
+    let request: { page?: number; cursor?: string } = { page: input.page, cursor: input.cursor };
+    const data: GitRemoteRepository[] = [];
     let page: Awaited<ReturnType<AdapterBase["page"]>> | undefined;
     for (let scanned = 0; scanned < (needle ? 10 : 1); scanned++) {
       page = await this.page(path, params, request, context, "array", alternates);

@@ -81,6 +81,10 @@ export class InMemoryJobApplyRepository implements JobApplyRepository {
     this.profiles.set(owner, { ...this.profiles.get(owner)!, campaignStartedAt: startedAt });
     return startedAt;
   }
+  async applicationsVersion(owner: string) {
+    const rows = [...this.applications.values()].filter((row) => row.ownerUserId === owner);
+    return `${rows.length}:${rows.reduce((sum, row) => sum + Date.parse(row.updatedAt), 0)}`;
+  }
   async listApplications(owner: string, filter: { status?: string; limit?: number }) {
     return [...this.applications.values()]
       .filter((row) => row.ownerUserId === owner && (!filter.status || row.status === filter.status))

@@ -45,7 +45,7 @@ export function watchTerminalPaint(
   let lastEdgeLeakEmitAt: number | null = null;
   const eligible = () => !disposed && isVisible() && host.isConnected && document.visibilityState !== "hidden";
   const recordEdgeLeak = () => {
-    let counters = null;
+    let counters: ReturnType<typeof scanTerminalEdgeLeak>;
     try {
       counters = scanTerminalEdgeLeak(terminal, host);
     } catch {

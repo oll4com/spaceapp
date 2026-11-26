@@ -59,7 +59,7 @@ export function registerSecurityCopilot(app: FastifyInstance, deps: SecurityCopi
     if (!session) throw new SpaceConflictError("Open the Security Copilot terminal first: the pane has no running CLI session.");
     const traceId = `security-copilot:${makeSpaceId("kickoff")}`;
     await terminal.runSerializedTerminalMutation(session.sessionId, async () => {
-      await submitCliPrompt(terminal, session.sessionId, SECURITY_KICKOFF, traceId, `${traceId}:kickoff`);
+      await submitCliPrompt(terminal, session.sessionId, SECURITY_KICKOFF, traceId, `${traceId}:kickoff`, { paneId: session.paneId });
     });
   });
   const service = createSecurityCopilotService({

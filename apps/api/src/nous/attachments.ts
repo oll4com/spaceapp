@@ -87,7 +87,8 @@ export function createNousAttachments(deps: {
   const ffmpeg = deps.ffmpegPath ?? "/usr/bin/ffmpeg";
   const ownerDir = (owner: string) => join(deps.root, "nous-uploads", safeStorageSegment(owner));
   const viewPath = (record: NousAttachmentRecord) => join(ownerDir(record.ownerUserId), ".views", `${safeStorageSegment(record.id)}.jpg`);
-  const shown = ({ ownerUserId: _owner, sha256: _sha, storagePath: _path, meta: _meta, ...attachment }: NousAttachmentRecord): NousAttachment => attachment;
+  const hidden = new Set(["ownerUserId", "sha256", "storagePath", "meta"]);
+  const shown = (record: NousAttachmentRecord) => Object.fromEntries(Object.entries(record).filter(([key]) => !hidden.has(key))) as NousAttachment;
 
   async function probe(path: string): Promise<{ width: number | null; height: number | null; durationSeconds: number | null } | null> {
     try {

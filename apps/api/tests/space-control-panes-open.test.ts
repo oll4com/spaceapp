@@ -9,24 +9,26 @@ const { createSpaceControlPanesOpen, paneCountsByName } = await import("../src/s
 
 function fixture(options: { open?: number; paneCap?: number; enabled?: string[]; registry?: { read(): Promise<unknown>; readFresh(): Promise<unknown> } } = {}) {
   const execute = vi.fn(async (_roomId: string, _actorId: string, command: { action: { counts: Record<string, number> } }) =>
-    ({ data: Object.entries(command.action.counts).flatMap(([typeId, count]) => Array.from({ length: count }, (_, i) => ({ id: `pane:${typeId}-${i}`, mode: "TERMINAL" }))) }));
+    ({ data: Object.entries(command.action.counts).flatMap(([typeId, count]) => Array.from({ length: count }, (_, i) => ({ id: `pane:${typeId}-${i}`, mode: "TERMINAL", terminalRuntimeId: `cli:${typeId}` }))) }));
+  const controlSend = vi.fn(async () => ({ submitted: true }));
+  const ensurePaneControlReady = vi.fn(async () => ({ sessionId: "session:one" }));
   const { openControlPanes } = createSpaceControlPanesOpen({
     store: {
       getRoom: async () => ({ id: "room:one", paneCap: options.paneCap ?? 4 }),
       listPanes: async () => Array.from({ length: options.open ?? 0 }, (_, i) => ({ id: `pane:open-${i}`, isClosed: false }))
     } as never,
-    cliTerminalManager: {} as never,
+    cliTerminalManager: { ensurePaneControlReady } as never,
     cliRuntimeRegistryCache: (options.registry ?? { read: async () => ({ data: [{ id: "cli:codex", adapterStatus: "ENABLED", authState: "READY", status: "ENABLED" }] }) }) as never,
     cliRuntimeVisibility: { enabledRuntimeIds: async () => options.enabled ?? ["cli:codex"] },
     gatewayCliAccounts: { openProfileId: async () => null } as never,
     antigravityUsageProvider: async () => ({ data: [] }) as never,
     roomPaneCommands: { execute } as never,
     youtubePlaybackStore: { save: vi.fn() } as never,
-    controlSend: vi.fn() as never
+    controlSend: controlSend as never
   });
   const open = (counts: Record<string, number>, input: Record<string, unknown> = {}) =>
     openControlPanes({ id: "user:operator" } as never, "room:one", { kind: "resource", operation: "panes.open", input: { counts, ...input } } as never);
-  return { open, execute };
+  return { open, execute, controlSend, ensurePaneControlReady };
 }
 
 describe("Space Control panes.open", () => {
@@ -54,6 +56,10 @@ describe("Space Control panes.open", () => {
     expect(execute.mock.calls[0]![2].action.counts).toEqual({ codex: 1 });
   });
 
+  it("refuses a count out of range with the shape counts take and the pane types (Daily Nous errors 14/11, zod's raw issue list ×5)", async () => {
+    await expect(fixture().open({ opencode: 40 })).rejects.toThrow(/^panes\.open counts must be \{"<pane type>": n\}.*\(opencode: .*\)\. Pane types: .*codex/);
+  });
+
   it("refuses a full room, or answers its incident report with debug on", async () => {
     await expect(fixture({ open: 4 }).open({ browser: 1 })).rejects.toThrow("Room capacity exceeded: room currently has 4 open panes, maximum capacity is 4 panes.");
     const debug = await fixture({ open: 4 }).open({ browser: 1 }, { debug: true }) as Record<string, unknown>;
@@ -68,5 +74,19 @@ describe("Space Control panes.open", () => {
     const { open, execute } = fixture();
     await open({ Codex: 1 });
     expect(execute.mock.calls[0]![2].action.counts).toEqual({ codex: 1 });
+  });
+
+  it("types the task prompt into a new non-Gemini CLI pane once (24/11: only Gemini got it, a Codex pane dropped it silently)", async () => {
+    const { open, controlSend, ensurePaneControlReady } = fixture();
+    const result = await open({ codex: 2 }, { prompt: "Fix the login test" }) as Record<string, unknown>;
+    expect(ensurePaneControlReady).toHaveBeenCalledOnce();
+    expect(controlSend).toHaveBeenCalledOnce();
+    expect((controlSend.mock.calls[0] as unknown[])[0]).toMatchObject({ id: "pane:codex-0" });
+    expect((controlSend.mock.calls[0] as unknown[])[1]).toBe("Fix the login test");
+    expect(result).toMatchObject({ taskDelivered: true, promptResult: { submitted: true } });
+    controlSend.mockRejectedValueOnce(new Error("CLI already has an active turn."));
+    expect(await open({ codex: 1 }, { taskPrompt: "Again" })).toMatchObject({ taskDelivered: false, promptResult: { paneId: "pane:codex-0", error: "CLI already has an active turn." } });
+    const plain = await fixture().open({ codex: 1 }) as Record<string, unknown>;
+    expect(plain).not.toHaveProperty("taskDelivered");
   });
 });

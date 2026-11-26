@@ -35,9 +35,6 @@ export function NousSettingsToggles({ settings, onChange, className }: {
       <SpaceToggle className={className} label="Ask me before changes on my own hosts" ariaLabel="Ask me before changes on my own hosts"
         help="On: the Security and Monitoring Copilots ask you before changing your own hosts. Off: they run upgrades, restarts, config, firewall, container, guest-start and cache changes with a backup and a rollback; reboots, deletes and changes that end your sessions always ask."
         checked={Boolean(settings?.askOwnHostChanges)} disabled={!settings} onChange={(askOwnHostChanges) => onChange({ askOwnHostChanges })} />
-      <SpaceToggle className={className} label="Spend Codex reset credits by itself" ariaLabel="Spend Codex reset credits by itself"
-        help="When a Codex account has used up its week, its own reset is more than 6 hours away and Codex work is waiting, Space spends one of its weekly reset credits. Never two on one week."
-        checked={settings?.autoResetCredits !== false} disabled={!settings} onChange={(autoResetCredits) => onChange({ autoResetCredits })} />
       <SpaceToggle className={className} label="May send to third parties" ariaLabel="Nous may send to third parties"
         help="A send to a third party goes out as soon as Nous asks, without asking you, as long as the files it sends are the ones it named."
         checked={Boolean(settings?.maySend)} disabled={!settings} onChange={(maySend) => onChange({ maySend })} />
@@ -50,6 +47,12 @@ export function NousSettingsToggles({ settings, onChange, className }: {
       <SpaceToggle className={className} label="May run guarded host restarts" ariaLabel="Nous may run guarded host restarts"
         help="A guarded Browser Host or pane host restart runs without asking you once both merge queues are idle, no browser holds a handoff, a lease or a Vault fence and, for the pane host, no CLI pane is in a turn."
         checked={Boolean(settings?.mayRestartHosts)} disabled={!settings} onChange={(mayRestartHosts) => onChange({ mayRestartHosts })} />
+      <SpaceToggle className={className} label="Never buy: take the free route" ariaLabel="Nous never asks you to buy, it takes the free route"
+        help="A question whether to buy, top up, subscribe to or renew something paid (Connects, credits, a licence, a subscription) never reaches you: Space answers no purchase at once and the task takes the free route."
+        checked={Boolean(settings?.neverBuy)} disabled={!settings} onChange={(neverBuy) => onChange({ neverBuy })} />
+      <SpaceToggle className={className} label="May clean regenerable system files" ariaLabel="Nous may clean regenerable system files without asking"
+        help="A disk cleanup that removes only Space's temporary folders (/tmp/space-*, /tmp/tmp.*), unused docker images or the docker build cache runs at once. Worktrees, snapshots, VMs, volumes, named images and anything else still come to you."
+        checked={Boolean(settings?.mayCleanSystem)} disabled={!settings} onChange={(mayCleanSystem) => onChange({ mayCleanSystem })} />
       <SpaceToggle className={className} label="Never refuse my requests" ariaLabel="Nous never refuses my requests"
         help="Nous carries out every task you ask without refusing, narrowing or questioning it. Security is the exception (secrets, the Vault, sign-ins, your hosts, Space's own gates), and releases, deletes and third parties still come to you as decisions."
         checked={Boolean(settings?.neverRefuse)} disabled={!settings} onChange={(neverRefuse) => onChange({ neverRefuse })} />
@@ -265,9 +268,9 @@ function NousModelsRows({ settings, providers, loading, pending, onChange, class
   const catalog = selected?.models ?? [];
   const changeProvider = (id: string, effort: NousModelChoice["effort"] = "high") => {
     const next = providers.find((item) => item.id === id);
-    if (!settings || !next?.available || !next.models.length) return;
+    if (!settings || !next?.available) return;
     const provider = id as NousProvider;
-    const preferred: Record<NousProvider, string> = { space: "auto", codex: "gpt-6-astra", claude: "claude-opus-5-5", gemini: "gemini-3.8-flash-high" };
+    const preferred: Record<NousProvider, string> = { space: "auto", codex: "gpt-6-astra", claude: "claude-opus-5-5", gemini: "gemini-4-neon-high" };
     const normal = pickCatalogModel(next.models, { model: preferred[provider] ?? "auto", effort });
     const low = pickCatalogModel(next.models, nousCheaperModel(provider));
     const critical = pickCatalogModel(next.models, nousCheaperModel(provider, true), true);
@@ -290,20 +293,20 @@ function NousModelsRows({ settings, providers, loading, pending, onChange, class
     {/* Operator 8/11: one click for Auto model and Auto reasoning on every turn kind; the per-kind choices below stay. */}
     <div className={className}>
       <SettingsLabel label="All automatic" help="Space provider, Auto model and Auto reasoning for every kind of turn; low-spend turns use the Auto balanced and light models. You can still change any of them below." />
-      <DockButton aria-label="Set Nous to Auto model and Auto reasoning" disabled={!settings || pending || !providers.find((item) => item.id === "space")?.available}
+      <DockButton aria-label="Set Nous to Auto model and Auto reasoning" disabled={!settings || pending || !providers.find((item) => item.id === "space")?.models.length}
         onClick={() => changeProvider("space", "auto")}>Auto</DockButton>
     </div>
     {provider === "space" && selected?.routes && <div className={className}>
       <SettingsLabel label="Space routes" help="Auto models try these in order (Space Gateway → Settings → Routing) and each turn names the route that served it. A model with a route in its name runs only there." />
       <ol className="nous-space-routes" aria-label="Space provider routes">
         {selected.routes.map((route) => <li key={route.route} data-route={route.route}>
-          <strong>{route.name}</strong> <small>{route.runtime}{!route.enabled ? " · off in the order" : route.available ? " · ready" : ` · ${route.reason ?? "unavailable"}`}{route.resetAt ? ` · back ${cliResetWhen(route.resetAt, Date.now())}` : ""}</small>
+          <strong>{route.name}</strong> <small>{route.runtime}{!route.enabled ? " · off in the order" : route.available && !route.reason ? " · ready" : ` · ${route.reason ?? "unavailable"}`}{route.resetAt ? ` · back ${cliResetWhen(route.resetAt, Date.now())}` : ""}</small>
         </li>)}
       </ol>
     </div>}
     {NOUS_TURN_KINDS.map((kind) => <div key={kind} className={className}>
       <SettingsLabel label={TURN_KIND_LABELS[kind].label} help={TURN_KIND_LABELS[kind].help} />
-      <NousModelFields choice={models[kind]} models={catalog} label={`Nous model for ${kind} turns`} disabled={!settings || pending || !selected?.available} loading={loading}
+      <NousModelFields choice={models[kind]} models={catalog} label={`Nous model for ${kind} turns`} disabled={!settings || pending || (!selected?.available && !catalog.length)} loading={loading}
         onChange={(choice) => onChange({ models: { ...models, [kind]: choice } })} />
     </div>)}
     {provider === "claude" && <div className={className}>
@@ -419,7 +422,7 @@ export function NousSettingsCard({ sharedMemoryAdmin = false }: { sharedMemoryAd
       <NousSettingsToggles settings={settings} onChange={save} className="settings-flat-row settings-flat-toggle-row" />
       <div role="group" aria-label="Dock tabs">
         <div className="settings-flat-subheading"><SettingsLabel label="Dock tabs" help="Choose which tabs appear in Nous on every device. Conversation always stays on." /></div>
-        {([["needs", "Needs you"], ["done", "Done"], ["updates", "Updates"], ["requests", "Requests"], ["shared", "Shared"], ["decisions", "Decisions"], ["overview", "Overview"],
+        {([["shared", "Shared"], ["overview", "Overview"],
           ["panes", "Panes"], ["plans", "Plans"], ["goals", "Goals"], ["startup", "Startup programs"], ["affiliate", "Affiliate"], ["jobs", "Job applications"], ["crypto", "Crypto"], ["marketing", "Marketing"], ["quotas", "Quotas"], ["load", "Load"], ["score", "Score"],
           ["taskRuns", "Task runs"]] as const).map(([id, label]) => (
           <SpaceToggle key={id} className="settings-flat-row settings-flat-toggle-row" label={label} ariaLabel={`Show ${label} tab`} help="Shows this tab in the Nous dock on every device."

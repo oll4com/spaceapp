@@ -268,6 +268,11 @@ rl.on("line", (line) => {
       }), 400);
       return;
     }
+    if (mode === "call-error") {
+      send({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "Service is not allowlisted." }],
+        structuredContent: { ok: false, code: "SPACE_TOOL_FAILED", message: "Service is not allowlisted." }, isError: true } });
+      return;
+    }
     if (mode === "call-ok" || mode === "call-ok-count-start" || mode === "env-check" || mode === "stateful-counter" || mode === "catalog-list-change" || mode === "close-after-call-count-start" || mode === "close-on-live-list-count-start") {
       statefulCounter += 1;
       send({

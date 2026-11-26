@@ -65,7 +65,7 @@ export async function captureLiveVisual(source: "camera" | "screen", signal: Abo
   } finally {
     // Also runs after cancellation, missing canvas, video.play errors and late
     // permission resolution after unmount. Stop every track, not only video[0].
-    stream?.getTracks().forEach(track => { try { track.stop(); } catch {} });
-    if (video) { try { video.pause(); } catch {} video.srcObject = null; }
+    stream?.getTracks().forEach(track => { try { track.stop(); } catch { /* best-effort: nothing to do if it fails */ } });
+    if (video) { try { video.pause(); } catch { /* best-effort: nothing to do if it fails */ } video.srcObject = null; }
   }
 }

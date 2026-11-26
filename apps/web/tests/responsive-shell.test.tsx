@@ -20,7 +20,7 @@ import {
 import { LiveSpaceApp as App } from "../src/live/LiveSpaceApp.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { CODE_RADIO_METADATA_URL, CODE_RADIO_PRIMARY_STREAM_URL } from "../src/features/vibe-music/VibeMusicPlayer.js";
-import { readLifecycleDebugSnapshot } from "../src/lifecycle-debug.js";
+import { clearLifecycleDebugEvents, readLifecycleDebugSnapshot } from "../src/lifecycle-debug.js";
 import { publishCliVpnRoutingStatus, resetCliVpnRoutingStatusForTests } from "../src/cli-vpn-routing.js";
 import { api as liveApi } from "../src/live-api.js";
 
@@ -264,6 +264,8 @@ describe("Space responsive shell", () => {
   beforeEach(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
+    // Lifecycle records are written at idle time; a previous test's unwritten records must not leak in.
+    clearLifecycleDebugEvents();
     window.history.replaceState({}, "", "/");
     window.localStorage.setItem("space.uiTheme.v1", "classic");
     setWarmRoomTelemetry({ hardwareConcurrency: 4 });

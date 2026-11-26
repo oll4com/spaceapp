@@ -8,8 +8,7 @@ import {
   createVoiceRealtimeCall,
   delegatedReasoningEffort,
   getLiveAudioProvidersStatus,
-  LOCAL_SENSEVOICE_DOWN,
-  resolveLiveAudioCredentials
+  LOCAL_SENSEVOICE_DOWN
 } from "../src/voice-transcription.js";
 import { clearDelegatedModelVerdicts } from "../src/live-openai-model-fallback.js";
 

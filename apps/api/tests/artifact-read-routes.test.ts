@@ -115,6 +115,29 @@ it("preserves plain text preview and forced Agent File download", async () => {
   expect(download.body).toBe("content");
 });
 
+it("serves an Agent Files HTML file whole as a sandboxed page on request, its text otherwise (operator nous_msg:709c40fa)", async () => {
+  const file = artifact("rating-trial.html", "text/html", true);
+  const directory = join(root, "agent-files", "room_fixture", "pane_fixture", "session_fixture", "2026-10-03");
+  await mkdir(directory, { recursive: true });
+  const page = `<script>${"x".repeat(600 * 1024)}</script>`;
+  await writeFile(join(directory, "rating-trial.html"), page);
+  const url = `/api/artifacts/${encodeURIComponent(file.id)}/preview`;
+  const shown = await app.inject(`${url}?view=page`);
+  expect([shown.statusCode, shown.headers["content-type"], shown.headers["content-disposition"], shown.body.length])
+    .toEqual([200, "text/html; charset=utf-8", "inline", page.length]);
+  // Its own CSP: the page runs scripts in an opaque origin, never Space's, and only Space may frame it.
+  const csp = String(shown.headers["content-security-policy"]);
+  expect(csp).toMatch(/^sandbox allow-scripts allow-forms allow-downloads allow-modals;/);
+  expect(csp).not.toContain("allow-same-origin");
+  expect(csp).toContain("frame-ancestors 'self'");
+  const source = await app.inject(url);
+  expect([source.headers["content-type"], source.headers["x-space-preview-truncated"]]).toEqual(["text/plain; charset=utf-8", "true"]);
+  // Only an HTML file runs: a text file asked as a page is still its text.
+  const note = artifact("note.txt", "text/plain", true);
+  await writeFile(join(directory, "note.txt"), "<script>1</script>");
+  expect((await app.inject(`/api/artifacts/${encodeURIComponent(note.id)}/preview?view=page`)).headers["content-type"]).toContain("text/plain");
+});
+
 it("serves an Agent File download in resumable byte ranges, so a phone's dropped 69 MB download picks up where it stopped (13/11)", async () => {
   const file = artifact("nous.apk", "application/vnd.android.package-archive", true);
   const directory = join(root, "agent-files", "room_fixture", "pane_fixture", "session_fixture", "2026-10-03");

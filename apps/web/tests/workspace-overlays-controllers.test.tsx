@@ -10,11 +10,12 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock("../src/api.js", () => ({ api }));
 const refreshCliVpnRoutingStatus = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock("../src/cli-vpn-routing.js", () => ({ CLI_VPN_ROUTING_STATUS_EVENT: "space:cli-vpn-routing-status", refreshCliVpnRoutingStatus }));
+vi.mock("../src/cli-vpn-routing.js", async (original) => ({ ...await original<typeof import("../src/cli-vpn-routing.js")>(), refreshCliVpnRoutingStatus }));
 
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 import { useToolbarVpn } from "../src/features/toolbar-vpn/useToolbarVpn.js";
+import { publishCliVpnRoutingStatus, resetCliVpnRoutingStatusForTests } from "../src/cli-vpn-routing.js";
 import { useAppNotices } from "../src/features/app-notices/useAppNotices.js";
 import { AppNoticeBanners, LiveDebugToastView } from "../src/features/app-notices/AppNoticeBanners.js";
 import { LiveRailButton, LiveRailMenu, useLiveRail } from "../src/features/live-pane/useLiveRail.js";
@@ -30,6 +31,7 @@ describe("useToolbarVpn", () => {
   beforeEach(() => {
     for (const fn of Object.values(api)) fn.mockReset();
     refreshCliVpnRoutingStatus.mockClear();
+    resetCliVpnRoutingStatusForTests();
   });
   afterEach(() => {
     cleanup();
@@ -47,8 +49,14 @@ describe("useToolbarVpn", () => {
     await flush();
     expect(result.current.toolbarVpnRoute).toBe("nord");
     expect(onRuntimeSettings).toHaveBeenCalledWith({ settings: [] });
-    act(() => { window.dispatchEvent(new Event("space:cli-vpn-routing-status")); });
+    // A published status answers the event's read (it was a second request each time, 22/11); an event without one reads again.
+    act(() => { publishCliVpnRoutingStatus({ selectedRoute: "mullvad" } as never); });
     await flush();
+    expect(result.current.toolbarVpnRoute).toBe("mullvad");
+    expect(api.cliVpnRoutingStatus).toHaveBeenCalledTimes(1);
+    act(() => { publishCliVpnRoutingStatus(); });
+    await flush();
+    expect(result.current.toolbarVpnRoute).toBe("nord");
     expect(api.cliVpnRoutingStatus).toHaveBeenCalledTimes(2);
     rerender({ authenticated: false });
     expect(result.current.toolbarVpnRoute).toBeNull();

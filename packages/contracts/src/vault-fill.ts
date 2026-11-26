@@ -45,6 +45,15 @@ export const vaultHostSignupRequestSchema = z.object({
 }).strict();
 export type VaultHostSignupRequest = z.infer<typeof vaultHostSignupRequestSchema>;
 
+/**
+ * OTP_QR: the host reads the setup QR on this pane's live page (bound like a sign-up to its target, frame and exact origin) and
+ * answers the authenticator key only sealed to the inbox key, in `sealedGenerated`; it never leaves the host in plaintext.
+ */
+export const vaultHostOtpQrRequestSchema = z.object({
+  mode: z.literal("OTP_QR"), ownerUserId: z.string().min(1).max(200), vaultId: z.string().regex(/^vault:[A-Za-z0-9_-]{16,64}$/), paneId: z.string().min(1).max(200),
+  targetId: z.string().min(1).max(128), frameId: z.string().min(1).max(128), origin: z.string().max(300), inboxPublicKey: z.string().regex(/^[A-Za-z0-9_-]{40,80}$/)
+}).strict();
+
 export const vaultHostFillResultSchema = z.object({
   status: z.enum(VAULT_AGENT_STATUSES), reason: code.nullable(), sealedGenerated: vaultTransportEnvelopeSchema.nullable(),
   /** True once a value entered the page, whatever happened after: the API then keeps the fence (absent from hosts before 2026-10-22). */
@@ -66,7 +75,9 @@ export const vaultHostTargetSchema = z.object({
   /** True from a host that takes a generate `policy` (queue item 37, after its guarded restart); the API sends one only then. */
   generatePolicy: z.boolean().optional(),
   /** True from a host that fills cards (mode CARD, payment frames included); the API sends a card fill only then. */
-  cards: z.boolean().optional()
+  cards: z.boolean().optional(),
+  /** True from a host that reads a setup QR (mode OTP_QR); the API asks only then. */
+  otpQr: z.boolean().optional()
 }).strict();
 export type VaultHostTarget = z.infer<typeof vaultHostTargetSchema>;
 
@@ -86,13 +97,51 @@ export function decodeVaultBase32(input: string): Uint8Array | null {
   return new Uint8Array(bytes);
 }
 
+export const VAULT_OTP_ALGORITHMS = { SHA1: "SHA-1", SHA256: "SHA-256", SHA512: "SHA-512" } as const;
+export interface VaultOtp { secret: Uint8Array; digits: number; periodSeconds: number; algorithm: keyof typeof VAULT_OTP_ALGORITHMS; issuer: string | null; account: string | null }
+
+/**
+ * An authenticator key as stored in a Vault item's OTP field: a base32 key, or an otpauth://totp/ URI (Google Authenticator's
+ * Key URI format: secret, issuer, digits 6-8, period, algorithm SHA1/SHA256/SHA512). Null when it is neither, or HOTP.
+ */
+export function parseVaultOtp(value: string): VaultOtp | null {
+  const text = value.trim();
+  if (!/^otpauth:/i.test(text)) {
+    const secret = decodeVaultBase32(text);
+    return secret?.length ? { secret, digits: 6, periodSeconds: 30, algorithm: "SHA1", issuer: null, account: null } : null;
+  }
+  let url: URL;
+  try { url = new URL(text); } catch { return null; }
+  if (url.host.toLowerCase() !== "totp") return null;
+  const query = url.searchParams;
+  const secret = decodeVaultBase32(query.get("secret") ?? "");
+  const digits = Number(query.get("digits") ?? 6);
+  const periodSeconds = Number(query.get("period") ?? 30);
+  const algorithm = (query.get("algorithm") ?? "SHA1").toUpperCase();
+  if (!secret?.length || ![6, 7, 8].includes(digits) || !Number.isInteger(periodSeconds) || periodSeconds < 1 || periodSeconds > 3600 || !(algorithm in VAULT_OTP_ALGORITHMS)) return null;
+  let label: string;
+  try { label = decodeURIComponent(url.pathname.replace(/^\/+/, "")); } catch { return null; }
+  const colon = label.indexOf(":");
+  return { secret, digits, periodSeconds, algorithm: algorithm as VaultOtp["algorithm"], issuer: query.get("issuer") || (colon > 0 ? label.slice(0, colon).trim() : null),
+    account: (colon >= 0 ? label.slice(colon + 1) : label).trim() || null };
+}
+
+/** What the OTP field keeps: the bare key when the URI asks for the defaults (every Browser Host reads that), else the URI itself. */
+export function vaultOtpStoredValue(value: string): string | null {
+  const otp = parseVaultOtp(value);
+  if (!otp) return null;
+  if (!/^otpauth:/i.test(value.trim())) return value.replace(/[\s=]/g, "").toUpperCase();
+  const defaults = otp.digits === 6 && otp.periodSeconds === 30 && otp.algorithm === "SHA1";
+  return defaults ? new URL(value.trim()).searchParams.get("secret")!.replace(/[\s=]/g, "").toUpperCase() : value.trim();
+}
+
 /** RFC 6238 TOTP (HMAC-SHA1, 30 s, 6 digits by default), computed where it is filled and never returned. */
-export async function vaultTotp(secret: Uint8Array, at: Date, options: { digits?: number; periodSeconds?: number } = {}): Promise<string> {
+export async function vaultTotp(secret: Uint8Array, at: Date, options: { digits?: number; periodSeconds?: number; algorithm?: VaultOtp["algorithm"] } = {}): Promise<string> {
   const digits = options.digits ?? 6;
   const counter = Math.floor(at.getTime() / 1000 / (options.periodSeconds ?? 30));
   const message = new Uint8Array(8);
   new DataView(message.buffer).setBigUint64(0, BigInt(counter));
-  const key = await globalThis.crypto.subtle.importKey("raw", new Uint8Array(secret), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const key = await globalThis.crypto.subtle.importKey("raw", new Uint8Array(secret), { name: "HMAC", hash: VAULT_OTP_ALGORITHMS[options.algorithm ?? "SHA1"] }, false, ["sign"]);
   const mac = new Uint8Array(await globalThis.crypto.subtle.sign("HMAC", key, message));
   const offset = mac[mac.length - 1]! & 0x0f;
   const binary = ((mac[offset]! & 0x7f) << 24) | (mac[offset + 1]! << 16) | (mac[offset + 2]! << 8) | mac[offset + 3]!;

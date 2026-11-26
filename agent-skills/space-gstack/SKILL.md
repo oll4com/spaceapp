@@ -1,6 +1,6 @@
 ---
 name: space-gstack
-description: Six workflow skills from Garry Tan's gstack. Use office-hours for product office hours before any code is written (is this worth building, design doc); plan-ceo-review for a CEO-level plan review (premise, scope expansion or reduction); plan-eng-review for an engineering plan review (architecture, data flow, edge cases, tests, performance) before implementation; retro for a weekly engineering retrospective from git history; test-audit for a test-suite value audit (low-value or duplicate tests); document-release for a release documentation audit after a change and before shipping.
+description: "gstack workflows: office-hours (is it worth building), CEO and engineering plan reviews, weekly retro from git, test-suite audit, release documentation audit."
 metadata:
   category: WORKFLOW
 ---

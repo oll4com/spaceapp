@@ -3,6 +3,7 @@ import {
   nousDecisionSchema, nousMessageSchema, nousTurnFactsError, nousTurnFactsSchema, nousTurnOutcomeSchema, withoutAccountFacts,
   type NousDecision, type NousDecisionStatus, type NousMessage, type NousMessageKind, type NousMessageStatus, type NousTurnFacts, type NousTurnOutcome
 } from "@space/contracts";
+import { keptRead } from "./kept-read.js";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 
 // Nous, the mind of SpaceApp (migration 0211): its conversation, the critical decisions it asks the operator and its
@@ -32,7 +33,8 @@ export interface NousRepository {
   listMessages(owner: string, limit: number, tools?: number, page?: NousMessagePage): Promise<NousMessage[]>;
   /** Every OPERATOR message, cleared ones too, oldest first (the dock's "Go to my last message" walks them past the loaded page). */
   /** `person`: a person wrote it (meta.person), not a proof or automation session; a copilot's operatorOrder needs it. */
-  listOperatorMessageRefs(owner: string): Promise<Array<{ id: string; createdAt: string; person: boolean }>>;
+  /** `superior`: the link device whose superior Nous sent it (Space Link v2 step 9b). */
+  listOperatorMessageRefs(owner: string): Promise<Array<{ id: string; createdAt: string; person: boolean; superior?: string }>>;
   /** The OPERATOR message a client stored under its outbox id (meta.clientId), or null. */
   operatorMessageByClientId(owner: string, clientId: string): Promise<NousMessage | null>;
   /** The Requests tab (plan clipboard:2NOOFNJDUIMO): OPERATOR messages newest first, older than the `before` message; Clear never hides them. */
@@ -62,8 +64,12 @@ export interface NousRepository {
   /** The operator's feedback on an answered decision; null when it does not exist or is still open. */
   setDecisionFeedback(owner: string, id: string, couldHaveDecided: boolean): Promise<NousDecision | null>;
   listNotes(owner: string): Promise<NousNote[]>;
+  /** Single-key lookup without scanning the owner's full notes list on a cold cache. */
+  getNote?(owner: string, key: string): Promise<NousNote | null>;
   /** Null text deletes the note. */
   setNote(owner: string, key: string, text: string | null): Promise<void>;
+  /** Newest message timestamp whose meta holds a string value under `metaKey` (replaces 3,000-row JS scans). */
+  latestMessageMetaAt?(owner: string, metaKey: string): Promise<string | null>;
   /** Turns run inside the API process: rows a stopped process left RUNNING become FAILED. */
   failRunning(note: string): Promise<number>;
   /** One row per turn; clearing the conversation keeps them. */
@@ -176,7 +182,8 @@ export class InMemoryNousRepository implements NousRepository {
     return found ? structuredClone(found) : null;
   }
   async listOperatorMessageRefs(owner: string) {
-    return this.messages.filter((message) => message.ownerUserId === owner && message.kind === "OPERATOR").map(({ id, createdAt, meta }) => ({ id, createdAt, person: meta.person === true }));
+    return this.messages.filter((message) => message.ownerUserId === owner && message.kind === "OPERATOR").map(({ id, createdAt, meta }) => ({ id, createdAt, person: meta.person === true,
+      ...(typeof (meta.superior as { device?: unknown } | undefined)?.device === "string" ? { superior: (meta.superior as { device: string }).device } : {}) }));
   }
   async listOperatorMessages(owner: string, options: { before?: string; since?: string; limit: number }) {
     const mine = this.messages.filter((message) => message.ownerUserId === owner && message.kind === "OPERATOR" && (options.since === undefined || message.createdAt >= options.since));
@@ -238,9 +245,16 @@ export class InMemoryNousRepository implements NousRepository {
     return [...this.notes.entries()].filter(([key]) => key.startsWith(`${owner}\u0000`)).map(([, note]) => ({ ...note }))
       .sort((left, right) => left.key.localeCompare(right.key));
   }
+  async getNote(owner: string, key: string) {
+    const note = this.notes.get(`${owner}\u0000${key}`);
+    return note ? { ...note } : null;
+  }
   async setNote(owner: string, key: string, text: string | null) {
     if (text === null) this.notes.delete(`${owner}\u0000${key}`);
     else { const at = now(); this.notes.set(`${owner}\u0000${key}`, { key, text, updatedAt: at, createdAt: this.notes.get(`${owner}\u0000${key}`)?.createdAt ?? at }); }
+  }
+  async latestMessageMetaAt(owner: string, metaKey: string) {
+    return this.messages.filter((message) => message.ownerUserId === owner && typeof message.meta[metaKey] === "string").at(-1)?.createdAt ?? null;
   }
   async failRunning(note: string) {
     let count = 0;
@@ -340,24 +354,128 @@ const rowCount = (result: unknown) => (result as { rowCount?: number | null }).r
 // One array schema for every row (CPU report 12/11: building it per row tripled the Requests derive's 2,765 outcome parses).
 const turnOutcomesSchema = nousTurnOutcomeSchema.array();
 const outcomesOf = (value: unknown) => turnOutcomesSchema.safeParse(value).data ?? [];
+/** A final answer saved without its model: readMessages gives it its turn's, once that turn's facts are written. */
+const modelFromTurn = (message: NousMessage) => message.kind === "ANSWER" && !message.meta.model && !message.meta.interim && Boolean(message.turnId);
+/** A kept conversation page (`shape`: listMessages' limit, tools, cursor) after `message` was inserted, as readMessages answers it; null where
+ *  the kept rows cannot tell. */
+function pageWith(rows: NousMessage[], message: NousMessage, shape: string): NousMessage[] | null {
+  const [limit, tools, before] = JSON.parse(shape) as [number, number, string | null];
+  // An answer that waits for its turn's model is read again after every write, as before.
+  if ([...rows, message].some(modelFromTurn)) return null;
+  // An older page ends before its cursor row; a read that began during the write may hold the row already.
+  // shortcut: a clock set back behind the cursor row's time is not seen (its row misses an older page for the kept minute), compare with the cursor row's time then.
+  if (before || rows.some((row) => row.id === message.id)) return rows;
+  // The table orders by microsecond: a row of the same millisecond (or of a clock that went back) has no known place here.
+  if ((rows.at(-1)?.createdAt ?? "") >= message.createdAt) return null;
+  const page = [...rows, message];
+  const leave = (old: NousMessage[], most: number) => { if (old.length > most) page.splice(page.indexOf(old[0]!), 1); };
+  leave(page.filter((row) => row.kind !== "TOOL"), limit);
+  // Tool rows older than the oldest dialogue row are not on the page.
+  const first = page.findIndex((row) => row.kind !== "TOOL");
+  if (first > 0 && page[first - 1]!.createdAt === page[first]!.createdAt) return null;
+  if (first > 0) page.splice(0, first);
+  leave(page.filter((row) => row.kind === "TOOL"), tools);
+  return page;
+}
+/** How far before the last read a kept turn facts read looks again: six times the 20 minutes a turn may run. */
+const TURN_FACTS_REREAD_MS = 2 * 3_600_000;
+/** Rows the kept reads hold together (see `trim`): the dock page (1,700), a review's 6,000-row lookback and a history page (2,000) fit. */
+const KEPT_ROWS_MAX = 8_000;
 
 export class PostgresNousRepository implements NousRepository {
-  constructor(private readonly pool: PgPoolLike) {}
+  // Speed audit 21/11: every setNote dropped the owner's ~4,800-row notes cache (9.08M rows/24h); patch in place via keptRead with 1 h TTL by default.
+  // shortcut: a note written outside this process (a restore, manual SQL) shows after notesTtlMs; LISTEN/NOTIFY if a second writer appears.
+  private readonly notesCache: ReturnType<typeof keptRead<NousNote[]>>;
+  private readonly notesCachedOwners = new Set<string>();
+  // The dock asks for the conversation page and the decisions every 1.5-3 s while Nous thinks: 159 page reads (127,774 rows) and 300 decision
+  // reads (4.7 s of Postgres) in 150 s against 61 message writes and a few decisions an hour (stable 14/11). Kept like the notes, per owner
+  // and call shape, until this instance writes that owner's messages or decisions.
+  // shortcut: a row written outside this process shows after notesCacheMs; LISTEN/NOTIFY if a second writer appears.
+  private readonly kept = new Map<string, { at: number; rows: Promise<object[]>; got?: object[] }>();
+  // Writes in flight and writes ever started: one that no other overlapped knows the order the table took them in.
+  private writing = 0;
+  private writes = 0;
+  constructor(private readonly pool: PgPoolLike, private readonly notesCacheMs = 60_000, private readonly keptRowsMax = KEPT_ROWS_MAX) {
+    const notesTtlMs = notesCacheMs === 60_000 ? 3_600_000 : notesCacheMs;
+    this.notesCache = keptRead((owner) => {
+      this.notesCachedOwners.add(owner);
+      return this.readNotes(owner).catch((error) => { this.notesCachedOwners.delete(owner); throw error; });
+    }, notesTtlMs);
+  }
+  private async keep<T extends object>(key: string, read: () => Promise<T[]>): Promise<T[]> {
+    let cached = this.kept.get(key);
+    if (!cached || Date.now() - cached.at >= this.notesCacheMs) {
+      const entry: { at: number; rows: Promise<object[]>; got?: object[] } = { at: Date.now(), rows: read() };
+      const forget = () => { if (this.kept.get(key) === entry) this.kept.delete(key); };
+      entry.rows.then((rows) => { entry.got = rows; this.trim(); }, forget);
+      // Memory: a read nobody repeats (a 3,000-row lookback) leaves when its time is over.
+      setTimeout(forget, this.notesCacheMs).unref();
+      cached = entry;
+    }
+    // Most recently read last, so `trim` lets the longest unread one go first.
+    this.kept.delete(key);
+    this.kept.set(key, cached);
+    // Callers sort and edit what they get.
+    return ((await cached.rows) as T[]).map((row) => ({ ...row }));
+  }
+  /**
+   * Technical memory bound (stable API out of memory 15/11 08:40Z, heap 1.5 GB): every call shape and every history cursor kept its own copy of the
+   * same rows for a minute, as many as were asked (about 10 MB of heap for each 500-row history page, 6,000 rows for a review's lookback).
+   * The rows held by all kept reads stay under `keptRowsMax`; the one read longest ago leaves first and is read from Postgres again if asked.
+   */
+  private trim() {
+    let held = 0;
+    for (const entry of this.kept.values()) held += entry.got?.length ?? 0;
+    for (const [key, entry] of this.kept) {
+      if (held <= this.keptRowsMax) return;
+      held -= entry.got?.length ?? 0;
+      this.kept.delete(key);
+    }
+  }
+  /**
+   * After a write (also a failed one: it may have reached the table) the kept reads under `prefix` are read again. With `patch`, a read that
+   * has answered takes the written row instead (stable 14/11: the dock read its 770-row page again after each of Nous's message writes, 39
+   * reads for 39 writes in 120 s), unless another write overlapped this one or `patch` cannot tell (null). Its age stays the read's.
+   */
+  private async wrote<T>(prefix: string, write: Promise<T>, patch?: (rows: object[], written: T, shape: string) => object[] | null): Promise<T> {
+    const alone = this.writing === 0;
+    const mine = ++this.writes;
+    this.writing += 1;
+    let written: [T] | undefined;
+    try { written = [await write]; return written[0]; } finally {
+      this.writing -= 1;
+      for (const [key, entry] of this.kept) {
+        if (!key.startsWith(prefix)) continue;
+        const rows = patch && written && alone && mine === this.writes && entry.got ? patch(entry.got, written[0], key.slice(prefix.length)) : null;
+        if (rows) { entry.got = rows; entry.rows = Promise.resolve(rows); } else this.kept.delete(key);
+      }
+    }
+  }
   static fromConnectionString(url: string) { return new PostgresNousRepository(createSpacePgPool(url, { max: 2 })); }
 
   async addMessage(input: NewNousMessage) {
-    const result = await this.pool.query<MessageRow>(`INSERT INTO nous_messages (id, owner_user_id, turn_id, kind, status, content, meta)
+    const result = await this.wrote(`messages\n${input.ownerUserId}\n`, this.pool.query<MessageRow>(`INSERT INTO nous_messages (id, owner_user_id, turn_id, kind, status, content, meta)
       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb) RETURNING ${messageColumns}`,
-    [newId("nous_msg"), input.ownerUserId, input.turnId, input.kind, input.status, input.content, metaJson(input.meta ?? {})]);
+    [newId("nous_msg"), input.ownerUserId, input.turnId, input.kind, input.status, input.content, metaJson(input.meta ?? {})]),
+    (rows, written, shape) => pageWith(rows as NousMessage[], messageOf(written.rows[0]!), shape));
     return messageOf(result.rows[0]!);
   }
   async updateMessage(owner: string, id: string, patch: { status?: NousMessageStatus; content?: string; meta?: Record<string, unknown> }) {
-    const result = await this.pool.query<MessageRow>(`UPDATE nous_messages SET status = COALESCE($3, status), content = COALESCE($4, content),
+    const result = await this.wrote(`messages\n${owner}\n`, this.pool.query<MessageRow>(`UPDATE nous_messages SET status = COALESCE($3, status), content = COALESCE($4, content),
       meta = COALESCE($5::jsonb, meta), updated_at = now() WHERE owner_user_id = $1 AND id = $2 RETURNING ${messageColumns}`,
-    [owner, id, patch.status ?? null, patch.content === undefined ? null : patch.content, patch.meta === undefined ? null : metaJson(patch.meta)]);
+    [owner, id, patch.status ?? null, patch.content === undefined ? null : patch.content, patch.meta === undefined ? null : metaJson(patch.meta)]),
+    // An update moves no row: its place (created_at, id) and its kind stay.
+    (rows, written) => {
+      const row = written.rows[0] ? messageOf(written.rows[0]) : null;
+      const page = (rows as NousMessage[]).map((old) => (row && old.id === row.id ? row : old));
+      return page.some(modelFromTurn) ? null : page;
+    });
     return result.rows[0] ? messageOf(result.rows[0]) : null;
   }
-  async listMessages(owner: string, limit: number, tools = NOUS_TOOL_ROWS, page: NousMessagePage = {}) {
+  listMessages(owner: string, limit: number, tools = NOUS_TOOL_ROWS, page: NousMessagePage = {}) {
+    return this.keep(`messages\n${owner}\n${JSON.stringify([limit, tools, page.before ?? null, Boolean(page.sinceClear)])}`, () => this.readMessages(owner, limit, tools, page));
+  }
+  private async readMessages(owner: string, limit: number, tools: number, page: NousMessagePage) {
     // $4: the cursor row (an unknown id matches nothing); $5: only rows after the owner's last Clear conversation.
     const shown = `owner_user_id = $1 AND ($4::text IS NULL OR (created_at, id) < (SELECT created_at, id FROM nous_messages WHERE owner_user_id = $1 AND id = $4))
       AND (NOT $5 OR created_at > COALESCE((SELECT cleared_at FROM nous_conversation_marks WHERE owner_user_id = $1), '-infinity'))`;
@@ -368,13 +486,13 @@ export class PostgresNousRepository implements NousRepository {
     [owner, limit, tools, page.before ?? null, Boolean(page.sinceClear)]);
     const messages = result.rows.map(messageOf);
     // Older final answers predate message-level provenance; recover only their exact completed turn, never an interim from a failed attempt.
-    const ids = messages.filter((message) => message.kind === "ANSWER" && !message.meta.model && !message.meta.interim && message.turnId).map((message) => message.turnId!);
+    const ids = messages.filter(modelFromTurn).map((message) => message.turnId!);
     if (ids.length) {
       const facts = await this.pool.query<{ turnId: string; model: string; effort: string | null }>(
         `SELECT turn_id AS "turnId", model, effort FROM nous_turn_facts WHERE owner_user_id = $1 AND turn_id = ANY($2::text[]) AND status = 'DONE' AND model IS NOT NULL`, [owner, ids]);
       const byTurn = new Map(facts.rows.map((turn) => [turn.turnId, turn]));
       for (const message of messages) {
-        const turn = message.turnId && ids.includes(message.turnId) && !message.meta.model && !message.meta.interim ? byTurn.get(message.turnId) : null;
+        const turn = modelFromTurn(message) ? byTurn.get(message.turnId!) : null;
         if (turn) message.meta = { ...message.meta, model: turn.model, effort: turn.effort };
       }
     }
@@ -386,9 +504,9 @@ export class PostgresNousRepository implements NousRepository {
     return result.rows[0] ? messageOf(result.rows[0]) : null;
   }
   async listOperatorMessageRefs(owner: string) {
-    const result = await this.pool.query<{ id: string; createdAt: Date | string; person: boolean }>(`SELECT id, created_at AS "createdAt",
-      COALESCE(meta->>'person', 'false') = 'true' AS person FROM nous_messages WHERE owner_user_id = $1 AND kind = 'OPERATOR' ORDER BY created_at, id`, [owner]);
-    return result.rows.map((row) => ({ id: row.id, createdAt: iso(row.createdAt), person: row.person }));
+    const result = await this.pool.query<{ id: string; createdAt: Date | string; person: boolean; superior: string | null }>(`SELECT id, created_at AS "createdAt",
+      COALESCE(meta->>'person', 'false') = 'true' AS person, meta->'superior'->>'device' AS superior FROM nous_messages WHERE owner_user_id = $1 AND kind = 'OPERATOR' ORDER BY created_at, id`, [owner]);
+    return result.rows.map((row) => ({ id: row.id, createdAt: iso(row.createdAt), person: row.person, ...(row.superior ? { superior: row.superior } : {}) }));
   }
   async listOperatorMessages(owner: string, options: { before?: string; since?: string; limit: number }) {
     const result = await this.pool.query<MessageRow>(`SELECT ${messageColumns} FROM nous_messages WHERE owner_user_id = $1 AND kind = 'OPERATOR'
@@ -417,9 +535,9 @@ export class PostgresNousRepository implements NousRepository {
     return result.rows.map(messageOf);
   }
   async clearMessages(owner: string) {
-    const result = await this.pool.query<{ count: number }>(`WITH mark AS (INSERT INTO nous_conversation_marks (owner_user_id) VALUES ($1)
+    const result = await this.wrote(`messages\n${owner}\n`, this.pool.query<{ count: number }>(`WITH mark AS (INSERT INTO nous_conversation_marks (owner_user_id) VALUES ($1)
       ON CONFLICT (owner_user_id) DO UPDATE SET cleared_at = now() RETURNING cleared_at)
-      SELECT count(*)::int AS count FROM nous_messages WHERE owner_user_id = $1 AND created_at <= (SELECT cleared_at FROM mark)`, [owner]);
+      SELECT count(*)::int AS count FROM nous_messages WHERE owner_user_id = $1 AND created_at <= (SELECT cleared_at FROM mark)`, [owner]));
     return result.rows[0]?.count ?? 0;
   }
   async conversationClearedAt(owner: string) {
@@ -427,48 +545,93 @@ export class PostgresNousRepository implements NousRepository {
     return result.rows[0] ? iso(result.rows[0].clearedAt) : null;
   }
   async createDecision(input: NewNousDecision) {
-    const result = await this.pool.query<DecisionRow>(`INSERT INTO nous_decisions (id, owner_user_id, category, title, body, options, recommendation, refs, action, status)
+    const result = await this.wrote(`decisions\n${input.ownerUserId}\n`, this.pool.query<DecisionRow>(`INSERT INTO nous_decisions (id, owner_user_id, category, title, body, options, recommendation, refs, action, status)
       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $9::jsonb, 'OPEN') RETURNING ${decisionColumns}`,
     [newId("nous_decision"), input.ownerUserId, input.category, input.title, input.body, JSON.stringify(input.options), input.recommendation,
-      JSON.stringify(input.refs), input.action === null ? null : JSON.stringify(input.action)]);
+      JSON.stringify(input.refs), input.action === null ? null : JSON.stringify(input.action)]));
     return decisionOf(result.rows[0]!);
   }
   async getDecision(owner: string, id: string) {
     const result = await this.pool.query<DecisionRow>(`SELECT ${decisionColumns} FROM nous_decisions WHERE owner_user_id = $1 AND id = $2`, [owner, id]);
     return result.rows[0] ? decisionOf(result.rows[0]) : null;
   }
-  async listDecisions(owner: string, options: { statuses?: NousDecisionStatus[]; limit?: number; before?: string }) {
-    const result = await this.pool.query<DecisionRow>(`SELECT ${decisionColumns} FROM nous_decisions WHERE owner_user_id = $1
-      AND ($2::text[] IS NULL OR status = ANY($2::text[])) AND ($4::timestamptz IS NULL OR created_at < $4) ORDER BY created_at DESC, id DESC LIMIT $3`,
-      [owner, options.statuses ?? null, options.limit ?? null, options.before ?? null]);
-    return result.rows.map(decisionOf);
+  listDecisions(owner: string, options: { statuses?: NousDecisionStatus[]; limit?: number; before?: string }) {
+    const asked = [owner, options.statuses ?? null, options.limit ?? null, options.before ?? null];
+    return this.keep(`decisions\n${owner}\n${JSON.stringify(asked)}`, async () => (await this.pool.query<DecisionRow>(`SELECT ${decisionColumns} FROM nous_decisions WHERE owner_user_id = $1
+      AND ($2::text[] IS NULL OR status = ANY($2::text[])) AND ($4::timestamptz IS NULL OR created_at < $4) ORDER BY created_at DESC, id DESC LIMIT $3`, asked)).rows.map(decisionOf));
   }
   async answerDecision(owner: string, id: string, patch: { status: Exclude<NousDecisionStatus, "OPEN">; answer: string | null }) {
-    const result = await this.pool.query<DecisionRow>(`UPDATE nous_decisions SET status = $3, answer = $4, answered_at = now()
-      WHERE owner_user_id = $1 AND id = $2 AND status = 'OPEN' RETURNING ${decisionColumns}`, [owner, id, patch.status, patch.answer]);
+    const result = await this.wrote(`decisions\n${owner}\n`, this.pool.query<DecisionRow>(`UPDATE nous_decisions SET status = $3, answer = $4, answered_at = now()
+      WHERE owner_user_id = $1 AND id = $2 AND status = 'OPEN' RETURNING ${decisionColumns}`, [owner, id, patch.status, patch.answer]));
     return result.rows[0] ? decisionOf(result.rows[0]) : null;
   }
   async setDecisionOutcome(owner: string, id: string, outcome: string) {
-    await this.pool.query("UPDATE nous_decisions SET outcome = $3 WHERE owner_user_id = $1 AND id = $2", [owner, id, clip(outcome, 2_000)]);
+    await this.wrote(`decisions\n${owner}\n`, this.pool.query("UPDATE nous_decisions SET outcome = $3 WHERE owner_user_id = $1 AND id = $2", [owner, id, clip(outcome, 2_000)]));
   }
   async setDecisionFeedback(owner: string, id: string, couldHaveDecided: boolean) {
-    const result = await this.pool.query<DecisionRow>(`UPDATE nous_decisions SET could_have_decided = $3 WHERE owner_user_id = $1 AND id = $2 AND status <> 'OPEN'
-      RETURNING ${decisionColumns}`, [owner, id, couldHaveDecided]);
+    const result = await this.wrote(`decisions\n${owner}\n`, this.pool.query<DecisionRow>(`UPDATE nous_decisions SET could_have_decided = $3 WHERE owner_user_id = $1 AND id = $2 AND status <> 'OPEN'
+      RETURNING ${decisionColumns}`, [owner, id, couldHaveDecided]));
     return result.rows[0] ? decisionOf(result.rows[0]) : null;
   }
   async listNotes(owner: string) {
+    // Callers sort and edit what they get.
+    return (await this.notesCache.get(owner)).map((note) => ({ ...note }));
+  }
+  async getNote(owner: string, key: string) {
+    if (this.notesCachedOwners.has(owner)) {
+      const hit = (await this.notesCache.get(owner)).find((note) => note.key === key);
+      return hit ? { ...hit } : null;
+    }
+    const result = await this.pool.query<{ key: string; text: string; updatedAt: Date | string; createdAt: Date | string | null }>(
+      `SELECT key, text, updated_at AS "updatedAt", created_at AS "createdAt" FROM nous_notes WHERE owner_user_id = $1 AND key = $2`, [owner, key]);
+    const row = result.rows[0];
+    return row ? { key: row.key, text: row.text, updatedAt: iso(row.updatedAt), createdAt: row.createdAt === null ? null : iso(row.createdAt) } : null;
+  }
+  private async readNotes(owner: string): Promise<NousNote[]> {
     const result = await this.pool.query<{ key: string; text: string; updatedAt: Date | string; createdAt: Date | string | null }>(
       `SELECT key, text, updated_at AS "updatedAt", created_at AS "createdAt" FROM nous_notes WHERE owner_user_id = $1 ORDER BY key`, [owner]);
     return result.rows.map((row) => ({ key: row.key, text: row.text, updatedAt: iso(row.updatedAt), createdAt: row.createdAt === null ? null : iso(row.createdAt) }));
   }
   async setNote(owner: string, key: string, text: string | null) {
-    if (text === null) await this.pool.query("DELETE FROM nous_notes WHERE owner_user_id = $1 AND key = $2", [owner, key]);
-    else await this.pool.query(`INSERT INTO nous_notes (owner_user_id, key, text, updated_at) VALUES ($1, $2, $3, now())
-      ON CONFLICT (owner_user_id, key) DO UPDATE SET text = EXCLUDED.text, updated_at = now()`, [owner, key, text]);
+    try {
+      if (text === null) {
+        await this.pool.query("DELETE FROM nous_notes WHERE owner_user_id = $1 AND key = $2", [owner, key]);
+        this.notesCache.patch(owner, (rows) => rows.filter((note) => note.key !== key));
+      } else {
+        const result = await this.pool.query<{ key: string; text: string; updatedAt: Date | string; createdAt: Date | string | null }>(
+          `INSERT INTO nous_notes (owner_user_id, key, text, updated_at) VALUES ($1, $2, $3, now())
+           ON CONFLICT (owner_user_id, key) DO UPDATE SET text = EXCLUDED.text, updated_at = now()
+           RETURNING key, text, updated_at AS "updatedAt", created_at AS "createdAt"`, [owner, key, text]);
+        const returned = result.rows[0];
+        this.notesCache.patch(owner, (rows) => {
+          const existing = rows.find((note) => note.key === key);
+          const at = new Date().toISOString();
+          const next: NousNote = returned
+            ? { key: returned.key, text: returned.text, updatedAt: iso(returned.updatedAt), createdAt: returned.createdAt === null ? null : iso(returned.createdAt) }
+            : { key, text, updatedAt: at, createdAt: existing?.createdAt ?? at };
+          // DEV3D-013: an overlapping write landed first; updated_at is now() at transaction start, so only the table knows which won.
+          if (existing && existing.updatedAt > next.updatedAt) { this.notesCachedOwners.delete(owner); this.notesCache.drop(owner); return rows; }
+          const filtered = rows.filter((note) => note.key !== key);
+          filtered.push(next);
+          return filtered.sort((left, right) => left.key.localeCompare(right.key));
+        });
+      }
+    } catch (error) {
+      // After a failure: the write may have reached the table.
+      this.notesCachedOwners.delete(owner);
+      this.notesCache.drop(owner);
+      throw error;
+    }
+  }
+  async latestMessageMetaAt(owner: string, metaKey: string) {
+    const result = await this.pool.query<{ createdAt: Date | string }>(
+      `SELECT created_at AS "createdAt" FROM nous_messages WHERE owner_user_id = $1 AND jsonb_typeof(meta->$2) = 'string'
+       ORDER BY created_at DESC, id DESC LIMIT 1`, [owner, metaKey]);
+    return result.rows[0] ? iso(result.rows[0].createdAt) : null;
   }
   async failRunning(note: string) {
-    return rowCount(await this.pool.query(`UPDATE nous_messages SET status = 'FAILED', content = left(content || E'\\n' || $1, 20000), updated_at = now()
-      WHERE status = 'RUNNING'`, [note]));
+    return rowCount(await this.wrote("messages\n", this.pool.query(`UPDATE nous_messages SET status = 'FAILED', content = left(content || E'\\n' || $1, 20000), updated_at = now()
+      WHERE status = 'RUNNING'`, [note])));
   }
   async addTurnFacts(facts: NousTurnFacts) {
     const turn = nousTurnFactsSchema.parse(facts);
@@ -476,6 +639,8 @@ export class PostgresNousRepository implements NousRepository {
       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14, $15) ON CONFLICT (turn_id) DO NOTHING`,
     [turn.turnId, turn.ownerUserId, turn.reason, turn.status, JSON.stringify(turn.tools), turn.planPoints, JSON.stringify(turn.outcomes), turn.startedAt, turn.endedAt,
       turn.model, turn.effort, turn.costUsd, turn.tokens === null ? null : JSON.stringify(turn.tokens), turn.goalId, nousTurnFactsError(turn)]);
+    // A turn older than the tail a kept read fetches again (a backfill): its owner's facts are read whole next time.
+    if (Date.parse(turn.startedAt) < Date.now() - TURN_FACTS_REREAD_MS) this.turnFacts.delete(turn.ownerUserId);
   }
   async latestServedTurn(owner: string) {
     const result = await this.pool.query<TurnFactsRow>(`SELECT ${turnFactsColumns} FROM nous_turn_facts
@@ -483,10 +648,29 @@ export class PostgresNousRepository implements NousRepository {
     const row = result.rows[0];
     return row ? nousTurnFactsSchema.parse({ ...row, startedAt: iso(row.startedAt), endedAt: iso(row.endedAt) }) : null;
   }
+  // Speed audit 14/11: a turn's facts never change once written (one INSERT ... ON CONFLICT DO NOTHING at its end; no update, no delete), yet the
+  // Score, the Goals and the cost reads parsed their whole window again: 19 reads, 90,014 rows and 2.5 s of Postgres in 150 s on stable, every row
+  // through zod on the main thread (30 days: 15,671 rows, ~17 MB of JSON). Each owner's stay here, oldest first, from the earliest `since` asked.
+  // shortcut: a turn written more than TURN_FACTS_REREAD_MS after it started is missed until the API restarts (a turn is stopped at 20 minutes);
+  // read by ended_at with an (owner_user_id, ended_at) index if turns may run longer.
+  private readonly turnFacts = new Map<string, { since: string; readAt: number; rows: NousTurnFacts[] }>();
   async listTurnFacts(owner: string, since: string) {
+    const asked = iso(since);
+    const kept = this.turnFacts.get(owner);
+    const covered = kept && kept.since <= asked ? kept : null;
+    const readAt = Date.now();
+    // A turn is written when it ends: one that started before the last read may have been written after it.
+    const back = covered ? new Date(covered.readAt - TURN_FACTS_REREAD_MS).toISOString() : asked;
+    const from = covered && covered.since > back ? covered.since : back;
     const result = await this.pool.query<TurnFactsRow>(`SELECT ${turnFactsColumns} FROM nous_turn_facts WHERE owner_user_id = $1 AND started_at >= $2
-      ORDER BY started_at ASC, turn_id ASC`, [owner, since]);
-    return result.rows.map((row) => nousTurnFactsSchema.parse({ ...row, startedAt: iso(row.startedAt), endedAt: iso(row.endedAt) }));
+      ORDER BY started_at ASC, turn_id ASC`, [owner, from]);
+    const read = result.rows.map((row) => nousTurnFactsSchema.parse({ ...row, startedAt: iso(row.startedAt), endedAt: iso(row.endedAt) }));
+    const entry = { since: covered?.since ?? asked, readAt, rows: covered ? [...covered.rows.filter((row) => row.startedAt < from), ...read] : read };
+    // A wider window read meanwhile stays: its next read fetches what this one found.
+    const now = this.turnFacts.get(owner);
+    if (!now || now.since >= entry.since) this.turnFacts.set(owner, entry);
+    // Callers sort and edit what they get.
+    return entry.rows.filter((row) => row.startedAt >= asked).map((row) => ({ ...row }));
   }
   async appendLedger(row: NewNousLedgerRow) {
     const entry = ledgerRow(row);

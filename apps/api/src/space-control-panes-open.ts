@@ -1,5 +1,5 @@
 import { appendFile, mkdir } from "node:fs/promises";
-import { PANE_CATALOG_VERSION, paneCountsSchema, PANE_TYPES, isAgentRuntimeReady, type AntigravityUsageAccountList, type Pane } from "@space/contracts";
+import { PANE_CATALOG_VERSION, SPACE_INSTALL_ROOT, paneCountsSchema, PANE_TYPES, isAgentRuntimeReady, type AntigravityUsageAccountList, type Pane } from "@space/contracts";
 import { SpaceConflictError, makeSpaceId, type SpaceStore } from "@space/runtime";
 import type { createCliSessionAccounts } from "./cli-session-account-profile.js";
 import type { CliRuntimeVisibilityPolicy } from "./cli-runtime-visibility.js";
@@ -43,7 +43,7 @@ type SpaceControlPanesOpenDeps = {
 /**
  * Space Control's panes.open: the requested pane counts checked against the catalog and the room's free slots (clipped in
  * catalog order to fit), unavailable CLI types dropped, a Gemini pane bound to the Google account with the most quota left
- * (or the one asked for) and given the task prompt, YouTube panes given their video; with debug on, every refusal answers
+ * (or the one asked for), the task prompt typed into one new CLI pane (a bound Gemini pane first), YouTube panes given their video; with debug on, every refusal answers
  * an incident report (also kept in the live voice logs) instead of an error.
  */
 export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
@@ -52,7 +52,7 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
   async function openControlPanes(actor: ControlActor, roomId: string, action: ResourceAction) {
     const recordDebugIncident = async (incident: Record<string, unknown>) => {
       try {
-        const dir = "/opt/spaceapp/var/live-voice-logs";
+        const dir = `${SPACE_INSTALL_ROOT}/var/live-voice-logs`;
         await mkdir(dir, { recursive: true });
         await appendFile(`${dir}/debug-incidents.jsonl`, JSON.stringify(incident) + "\n", "utf8");
       } catch (err) {
@@ -60,11 +60,15 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
       }
     };
 
-    const isDebug = Boolean((action.input as any)?.debug);
-    const originalCounts = paneCountsSchema.parse(paneCountsByName(action.input.counts));
-    const supportedTypeIds = new Set(PANE_TYPES.map(t => t.typeId));
+    const isDebug = Boolean(action.input?.debug);
+    // Daily Nous errors 14/11 ("FAILED panes.open: [" ×5 in 7 d, zod's raw issue list): a bad count names the shape counts take.
+    const counted = paneCountsSchema.safeParse(paneCountsByName(action.input.counts));
+    if (!counted.success) throw new SpaceConflictError(`panes.open counts must be {"<pane type>": n}, each n a whole number from 1 to 16 and 1 to 16 panes in total `
+      + `(${counted.error.issues.map(issue => `${issue.path.join(".") || "counts"}: ${issue.message}`).join("; ")}). Pane types: ${PANE_TYPES.map(type => type.typeId).join(", ")}`);
+    const originalCounts = counted.data;
+    const supportedTypeIds = new Set<string>(PANE_TYPES.map(t => t.typeId));
     for(const [id,count] of Object.entries(originalCounts)) {
-      if(count>0&&!supportedTypeIds.has(id as any)) {
+      if(count>0&&!supportedTypeIds.has(id)) {
         const err = `Unsupported pane runtime requested: '${id}'. Supported types: ${Array.from(supportedTypeIds).join(', ')}`;
         if (isDebug) {
           const incidentId = `dbg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -147,7 +151,7 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
       return !!runtime && !isAgentRuntimeReady(runtime);
     });
     if (notReady(registry.data)) registry = await cliRuntimeRegistryCache.readFresh().catch(() => registry);
-    const runtimesMap = new Map(registry.data.map((r: any) => [r.id, r]));
+    const runtimesMap = new Map(registry.data.map((r) => [r.id, r]));
     const droppedUnavailable: Array<{ typeId: string; label: string; reason: string }> = [];
 
     for (const [id, count] of Object.entries(counts)) {
@@ -166,7 +170,7 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
       throw new SpaceConflictError(`Nothing to open: all requested pane types are currently unavailable.`);
     }
 
-    const geminiGateway = counts.gemini ? await gatewayCliAccounts.openProfileId("cli:gemini", (action.input as any)?.accountProfileId) : null;
+    const geminiGateway = counts.gemini ? await gatewayCliAccounts.openProfileId("cli:gemini", action.input?.accountProfileId) : null;
     let selectedGeminiAccount: { id: string; email: string | null; remainingPercent: number | null } | null = geminiGateway ? { id: geminiGateway, email: null, remainingPercent: null } : null;
     if (!geminiGateway && counts.gemini && counts.gemini > 0) {
       const usageList = await antigravityUsageProvider().catch(() => ({ data: [] }));
@@ -176,7 +180,7 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
         const remWeekly = acc.gemini?.weeklyRemainingPercent ?? 0;
         return isConnected && rem5h > 0 && remWeekly > 0;
       });
-      const requestedProfileId = typeof (action.input as any)?.accountProfileId === "string" ? (action.input as any).accountProfileId : null;
+      const requestedProfileId = typeof action.input?.accountProfileId === "string" ? action.input.accountProfileId : null;
       if (requestedProfileId) {
         const match = availableAccounts.find((a) => a.id === requestedProfileId);
         if (!match) {
@@ -231,11 +235,11 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
       }
     }
 
-    let batchResult: any;
+    let batchResult: Awaited<ReturnType<typeof roomPaneCommands.execute>>;
     try {
       batchResult = await roomPaneCommands.execute(roomId,actor.id,{requestId:makeSpaceId("control_open"),catalogVersion:PANE_CATALOG_VERSION,action:{type:"OPEN_PANES",counts}},makeSpaceId("trace"));
-    } catch (err: any) {
-      const errDetail = err?.message || String(err);
+    } catch (err) {
+      const errDetail = (err as Error)?.message || String(err);
       const incidentId = `dbg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
       const diagnosis = {
         incidentId,
@@ -260,8 +264,8 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
       throw err;
     }
 
-    const taskPrompt = typeof (action.input as any)?.taskPrompt === "string" ? (action.input as any).taskPrompt :
-      typeof (action.input as any)?.prompt === "string" ? (action.input as any).prompt : null;
+    const taskPrompt = typeof action.input?.taskPrompt === "string" ? action.input.taskPrompt :
+      typeof action.input?.prompt === "string" ? action.input.prompt : null;
     let taskDelivered = false;
     let promptResult: unknown = null;
     if (selectedGeminiAccount && batchResult?.data) {
@@ -279,13 +283,15 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
               return { paneId: p.id, ok: false, error: (err as Error)?.message ?? String(err) };
             }
           }));
-          const firstOk = bindings.find((b: any) => b?.ok);
+          const firstOk = bindings.find((b) => b.ok);
           if (firstOk) {
             try {
-              const target = geminiPanes.find((p: Pane) => p.id === (firstOk as any).paneId) ?? geminiPanes[0]!;
+              const target = geminiPanes.find((p: Pane) => p.id === firstOk.paneId) ?? geminiPanes[0]!;
               promptResult = await controlSend(target, taskPrompt, makeSpaceId("trace"));
               taskDelivered = true;
-            } catch {}
+            } catch {
+              // Not delivered: taskDelivered stays false and the result says so.
+            }
           }
         } else {
           // Fast visible path: do not block MCP response on CLI spawn. Bind lazily in background.
@@ -294,7 +300,9 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
               try {
                 const cliSession = await cliTerminalManager.ensurePaneControlReady(p, makeSpaceId("trace"), { accountProfileId: selectedGeminiAccount.id });
                 await store.updatePaneCliSession(cliSession.sessionId, { accountProfileId: selectedGeminiAccount.id }, makeSpaceId("trace"));
-              } catch {}
+              } catch {
+                // Best-effort background bind: the panes are already open and the reply has gone.
+              }
             }));
           })().catch(() => {});
         }
@@ -302,8 +310,20 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
     }
 
     const createdPanes = Array.isArray(batchResult?.data) ? batchResult.data : [];
-    const rawYoutubeUrl = typeof (action.input as any)?.youtubeUrl === "string" ? (action.input as any).youtubeUrl.trim() : null;
-    const rawVideoTitle = typeof (action.input as any)?.videoTitle === "string" ? (action.input as any).videoTitle.trim() : null;
+    // 24/11 (goal e803a663): the task prompt reached only a Gemini pane; any other new CLI pane dropped it without a word.
+    const cliTarget = taskPrompt && !taskDelivered
+      ? createdPanes.find((p: Pane) => p.mode === "TERMINAL" && p.terminalRuntimeId && p.terminalRuntimeId !== "cli:gemini" && p.terminalRuntimeId !== "cli:root") : undefined;
+    if (taskPrompt && cliTarget) {
+      try {
+        await cliTerminalManager.ensurePaneControlReady(cliTarget, makeSpaceId("trace"));
+        promptResult = await controlSend(cliTarget, taskPrompt, makeSpaceId("trace"));
+        taskDelivered = true;
+      } catch (err) {
+        promptResult = { paneId: cliTarget.id, error: (err as Error)?.message ?? String(err) };
+      }
+    }
+    const rawYoutubeUrl = typeof action.input?.youtubeUrl === "string" ? action.input.youtubeUrl.trim() : null;
+    const rawVideoTitle = typeof action.input?.videoTitle === "string" ? action.input.videoTitle.trim() : null;
     if (rawYoutubeUrl && createdPanes.length > 0) {
       const ytPanes = createdPanes.filter((p: Pane) => p.mode === "YOUTUBE");
       if (ytPanes.length > 0) {
@@ -315,12 +335,16 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
               const ypRoom = await store.getRoom(yp.roomId);
               const ownerId = ypRoom.kind === "AGENT_PROOF" ? `${actor.id}:proof:${yp.roomId}` : actor.id;
               await youtubePlaybackStore.save(ownerId, yp.id, pb);
-            } catch {}
+            } catch {
+              // Best-effort: the YouTube pane opens without the saved playback.
+            }
           }
           if (rawVideoTitle) {
             try {
               await store.updatePane(yp.id, { title: rawVideoTitle.slice(0, 100) }, makeSpaceId("trace"));
-            } catch {}
+            } catch {
+              // Best-effort: the pane keeps its default title.
+            }
           }
         }));
       }
@@ -330,7 +354,8 @@ export function createSpaceControlPanesOpen(deps: SpaceControlPanesOpenDeps) {
     return {
       ...batchResult,
       skipped: [...(Array.isArray(batchResult?.skipped) ? batchResult.skipped : []), ...droppedUnavailable],
-      ...(selectedGeminiAccount ? { selectedGoogleAccount: selectedGeminiAccount, taskDelivered, promptResult } : {}),
+      ...(selectedGeminiAccount ? { selectedGoogleAccount: selectedGeminiAccount } : {}),
+      ...(selectedGeminiAccount || taskPrompt ? { taskDelivered, promptResult } : {}),
       fill: {
         requested: totalRequested,
         opened: totalOpened,

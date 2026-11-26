@@ -1,6 +1,6 @@
 ---
 name: space-impeccable
-description: Impeccable (pbakaus/impeccable) for frontend design quality - shaping new surfaces, redesigns, critique and audits, polish, typography, color, layout, motion, UX copy, hardening, accessibility and live browser iteration on UI elements. Use for design, UI/UX, mockup, redesign or design-review tasks; the operator's design policy uses it first for structure and quality gates and last for the final polish and audit, with space-huashu-design for the high-fidelity execution and variants in between. Not for backend-only work.
+description: "Frontend design quality: shape, critique, audit and polish UI (typography, color, layout, motion, UX copy, accessibility). First and last step of design work, with space-huashu-design."
 metadata:
   category: WORKFLOW
 ---

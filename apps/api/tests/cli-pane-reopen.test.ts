@@ -1,11 +1,11 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { CliHostClient, CliHostSessionRegistry, createCliHostServer, spawnNodePty } from "@space/cli-host";
 import type { Pane } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
+import { mkdtempShort } from "./support/short-tmp.js";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession } from "../src/auth.js";
 import { createCliPaneReopener } from "../src/cli-pane-reopen.js";
@@ -28,14 +28,14 @@ function adminHeaders() {
 }
 
 async function setup(store: InMemorySpaceStore) {
-  const root = await mkdtemp(join(tmpdir(), "space-cli-pane-reopen-"));
+  const root = await mkdtempShort("space-cli-pane-reopen-");
   roots.push(root);
   const commandPath = join(root, "claude-vscode-parity");
   await writeFile(commandPath, "#!/bin/sh\nprintf 'claude-args:%s\\n' \"$*\"\n", "utf8");
   await chmod(commandPath, 0o755);
   // An owned pane host; the operator's live host is never contacted.
   const socketPath = join(root, "pane-host.sock");
-  // Unix socket paths hold about 104-107 bytes: a long TMPDIR fails here, not later as ENOENT or EADDRINUSE (1.1.7 review).
+  // Unix socket paths hold about 104-107 bytes: the root is short (support/short-tmp.ts) even under a deep CI TMPDIR; the check names any overflow left.
   if (socketPath.length > 103) throw new Error(`TMPDIR is too long for a Unix socket path (${socketPath.length} bytes); use a short TMPDIR such as /tmp/s.`);
   const cliHostServer = await createCliHostServer({ socketPath, registry: new CliHostSessionRegistry({ spawn: spawnNodePty }) });
   const app = await createApp({
@@ -119,6 +119,28 @@ describe("reopening a CLI pane", () => {
     expect(reopened.statusCode).toBe(200);
     expect(store.getPane(pane.id).isClosed).toBe(false);
     expect(store.getActivePaneCliSession(pane.id)).toBeNull();
+  });
+
+  it("starts a Claude copilot on its type's model and effort unless the pane names a Claude model (plan clipboard:VypZ4sl7NR04)", async () => {
+    const store = new InMemorySpaceStore();
+    const cases = [
+      [{ mode: "MAIL_COPILOT", modelId: "gemini-3.8-flash", reasoningEffort: "xhigh" }, { modelId: "claude:sonnet", reasoningEffort: "high" }],
+      [{ mode: "JOB_APPLY", modelId: null, reasoningEffort: null }, { modelId: "claude:sonnet", reasoningEffort: "medium" }],
+      [{ mode: "APP_STUDIO", modelId: null, reasoningEffort: null }, { modelId: "claude:opus", reasoningEffort: "high" }],
+      [{ mode: "MAIL_COPILOT", modelId: "claude-opus-5-5", reasoningEffort: "xhigh" }, { modelId: "claude-opus-5-5" }],
+      [{ mode: "FREELANCE_COPILOT", modelId: "claude:haiku", reasoningEffort: "low" }, { modelId: "claude:haiku" }],
+      [{ mode: "TERMINAL", modelId: null, reasoningEffort: null }, {}]
+    ] as const;
+    const room = store.createRoom({ name: "Copilots", initialPaneCount: 0 });
+    const panes = cases.map(([fields]) => store.createPane({ roomId: room.id, title: fields.mode, terminalRuntimeId: "cli:claude", cwd: "/etc", ...fields }));
+    const app = await setup(store);
+    for (const [index, pane] of panes.entries()) {
+      const started = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/cli/session`, headers: adminHeaders(), payload: { runtimeId: "cli:claude", includeTranscript: false } });
+      expect(started.statusCode, started.body).toBe(200);
+      expect(store.getActivePaneCliSession(pane.id), cases[index][0].mode).toMatchObject(cases[index][1]);
+    }
+    // A plain terminal keeps the runtime default: no copilot class is forced on it.
+    expect(store.getActivePaneCliSession(panes.at(-1)!.id)?.modelId).not.toMatch(/^claude:/);
   });
 });
 

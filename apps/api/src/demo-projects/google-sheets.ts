@@ -227,7 +227,7 @@ export class GoogleSheetsApi {
     });
     const text = await response.text().catch(() => "");
     if (!response.ok) {
-      let payload: unknown = null;
+      let payload: unknown;
       try {
         payload = JSON.parse(text);
       } catch {

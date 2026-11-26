@@ -16,8 +16,8 @@ global.ResizeObserver = class ResizeObserver {
 describe("FilesPane Component", () => {
   it("starts mobile with the sidebar closed without changing desktop preference", async () => {
     localStorage.setItem("space_fm_sidebar", "true");
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
-    vi.spyOn(liveRuntime.api, "filesList").mockResolvedValue({ currentPath: "/opt/spaceapp", parentPath: null, canGoUp: false, workspaceRoot: "/opt/spaceapp", entries: [] } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
+    vi.spyOn(liveRuntime.api, "filesList").mockResolvedValue({ currentPath: "/opt/spaceapp", parentPath: null, canGoUp: false, workspaceRoot: "/opt/spaceapp", entries: [] } as never);
     render(<FilesPane mobile />);
     expect(await screen.findByRole("button", { name: "Show sidebar" })).toBeTruthy();
     expect(localStorage.getItem("space_fm_sidebar")).toBe("true");
@@ -28,7 +28,7 @@ describe("FilesPane Component", () => {
   });
 
   it("renders without crashing with minimal props", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "filesList").mockResolvedValue({
       currentPath: "/opt/spaceapp",
       parentPath: "/",
@@ -59,7 +59,7 @@ describe("FilesPane Component", () => {
           mimeType: "text/plain"
         }
       ]
-    } as any);
+    } as never);
 
     const { container } = render(
       <FilesPane
@@ -79,7 +79,7 @@ describe("FilesPane Component", () => {
           split: { size: null, parentId: null, direction: null },
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
-        } as any}
+        } as never}
       />
     );
 
@@ -91,13 +91,13 @@ describe("FilesPane Component", () => {
   });
 
   it("renders a huge folder in pages of 500 rows", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     const entries = Array.from({ length: 1200 }, (_, i) => ({
       name: `f${i}.txt`, path: `/opt/spaceapp/big/f${i}.txt`, isDirectory: false, size: 1,
       mtime: "2026-09-21T12:00:00.000Z", permissions: "rw-r--r--", octalPermissions: "644", mimeType: "text/plain"
     }));
-    vi.spyOn(liveRuntime.api, "filesList").mockResolvedValue({ currentPath: "/opt/spaceapp/big", parentPath: null, canGoUp: false, workspaceRoot: "/opt/spaceapp", entries } as any);
-    const { container } = render(<FilesPane pane={{ id: "pane:big", roomId: "room:test", title: "Files", mode: "FILES" } as any} />);
+    vi.spyOn(liveRuntime.api, "filesList").mockResolvedValue({ currentPath: "/opt/spaceapp/big", parentPath: null, canGoUp: false, workspaceRoot: "/opt/spaceapp", entries } as never);
+    const { container } = render(<FilesPane pane={{ id: "pane:big", roomId: "room:test", title: "Files", mode: "FILES" } as never} />);
     const rows = () => container.querySelectorAll("tr[data-file-entry-path]").length;
     await waitFor(() => expect(rows()).toBe(500));
     const more = () => container.querySelector("tbody td[colspan] button") as HTMLButtonElement;
@@ -108,14 +108,14 @@ describe("FilesPane Component", () => {
   });
 
   it("handles empty entries safely", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "filesList").mockResolvedValue({
       currentPath: "/opt/spaceapp",
       parentPath: null,
       canGoUp: false,
       workspaceRoot: "/opt/spaceapp",
       entries: []
-    } as any);
+    } as never);
 
     render(
       <FilesPane
@@ -124,7 +124,7 @@ describe("FilesPane Component", () => {
           roomId: "room:test",
           title: "Files 5",
           mode: "FILES"
-        } as any}
+        } as never}
       />
     );
 
@@ -134,14 +134,14 @@ describe("FilesPane Component", () => {
   });
 
   it("handles undefined entries gracefully", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as never);
     vi.spyOn(liveRuntime.api, "filesList").mockResolvedValue({
       currentPath: "/opt/spaceapp",
       parentPath: null,
       canGoUp: false,
       workspaceRoot: "/opt/spaceapp",
-      entries: undefined as any
-    } as any);
+      entries: undefined as never
+    } as never);
 
     render(
       <FilesPane
@@ -150,7 +150,7 @@ describe("FilesPane Component", () => {
           roomId: "room:test",
           title: "Files 5",
           mode: "FILES"
-        } as any}
+        } as never}
       />
     );
 
@@ -170,7 +170,7 @@ describe("FilesPane Component", () => {
           roomId: "room:test",
           title: "Files 5",
           mode: "FILES"
-        } as any}
+        } as never}
       />
     );
 
@@ -180,7 +180,7 @@ describe("FilesPane Component", () => {
   });
 
   it("verifies action buttons render with type=button and fm-action-btn class", async () => {
-    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "USER" } } as any);
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "USER" } } as never);
     vi.spyOn(liveRuntime.api, "filesList").mockResolvedValue({
       currentPath: "/opt/spaceapp",
       parentPath: "/",
@@ -197,7 +197,7 @@ describe("FilesPane Component", () => {
           mimeType: "text/plain"
         }
       ]
-    } as any);
+    } as never);
 
     const { container } = render(
       <FilesPane
@@ -206,7 +206,7 @@ describe("FilesPane Component", () => {
           roomId: "room:test",
           title: "Files 11",
           mode: "FILES"
-        } as any}
+        } as never}
       />
     );
 

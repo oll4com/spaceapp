@@ -30,6 +30,12 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, 50).map((item) => item.slice(0, 300)) : [];
 }
 
+/** True when `pid` is a live space-queue.mjs process; reading its cmdline also rules out a reused pid. */
+export async function queueDaemonAlive(pid: unknown): Promise<boolean> {
+  if (!Number.isSafeInteger(pid) || (pid as number) <= 0) return false;
+  return readFile(`/proc/${pid}/cmdline`, "utf8").then((cmdline) => cmdline.includes("space-queue.mjs"), () => false);
+}
+
 async function readJson(path: string): Promise<JsonRecord | null> {
   try { return record(JSON.parse(await readFile(path, "utf8"))); } catch { return null; }
 }
@@ -150,7 +156,9 @@ async function readTicketFile(path: string): Promise<DeployQueueTicket | null> {
   return hit.ticket && { ...hit.ticket };
 }
 
-export async function readDeployQueue(root = defaultDeployQueueRoot, now = Date.now(), names?: DeployQueueNameLookup): Promise<DeployQueueReport> {
+export async function readDeployQueue(
+  root = defaultDeployQueueRoot, now = Date.now(), names?: DeployQueueNameLookup, daemonAlive = queueDaemonAlive
+): Promise<DeployQueueReport> {
   const state = await readJson(join(root, "state.json"));
   let fileNames: string[];
   try {
@@ -171,10 +179,12 @@ export async function readDeployQueue(root = defaultDeployQueueRoot, now = Date.
   // The newest 30 finished tickets are the report's window; any other ticket reads whole with readDeployQueueTicket.
   const recent = tickets.filter((ticket) => !ACTIVE.has(ticket.status)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 30);
   if (names) await nameSubmitters([...active, ...recent], names);
+  // The daemon writes a heartbeat every poll; a busy batch keeps state.current set. On a host stalled in reclaim the
+  // heartbeat freezes for minutes while the daemon lives (2026-11-14, load 166), so its live pid also counts.
+  const fresh = Number.isFinite(heartbeatMs) && (now - heartbeatMs < HEARTBEAT_STALE_MS || current !== null);
   return deployQueueReportSchema.parse({
     available: true,
-    // The daemon writes a heartbeat every poll; a busy batch keeps state.current set.
-    daemonRunning: Number.isFinite(heartbeatMs) && (now - heartbeatMs < HEARTBEAT_STALE_MS || current !== null),
+    daemonRunning: fresh || await daemonAlive(record(state?.daemon)?.pid),
     heartbeatAt,
     paused: paused ? { reason: text(paused.reason, 500), at: text(paused.at, 40) } : null,
     current: toBatch(current, byId),

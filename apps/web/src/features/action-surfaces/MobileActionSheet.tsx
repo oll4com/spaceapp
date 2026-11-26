@@ -45,6 +45,7 @@ export function MobileActionSheet({
   useEffect(() => {
     const dialog = dialogRef.current;
     if (dialog) enabledButtons(dialog)[0]?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- focus returns to the trigger mounted at close time, on purpose
     return () => restorePopupTriggerFocus(dialog, triggerRef.current, closeIntentRef.current);
   }, [triggerRef]);
 

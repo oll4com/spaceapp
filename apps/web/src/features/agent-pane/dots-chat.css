@@ -61,7 +61,10 @@
 .dots-bubble-tag svg, .dots-bubble-link svg { width: 12px; height: 12px; }
 .dots-bubble-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; font-size: .8rem; color: var(--room-accent); }
 .dots-bubble-actions { display: flex; gap: 2px; height: 0; overflow: visible; opacity: 0; transition: opacity .15s ease; }
-.dots-bubble:hover .dots-bubble-actions, .dots-bubble:focus-within .dots-bubble-actions { height: auto; margin-top: 6px; opacity: 1; }
+/* Hover shows no Copy row (operator 23/11: double-click copies); keyboard focus still reaches it, hover still shows Details. */
+.dots-bubble:focus-within .dots-bubble-actions, .dots-bubble:hover .dots-bubble-actions:has([data-task-details-run]) { height: auto; margin-top: 6px; opacity: 1; }
+@media (hover: hover) { .dots-bubble:not(:focus-within) .dots-bubble-actions .chat-copy-control { display: none; } }
+.dots-bubble-copied { display: block; margin-top: 4px; color: var(--room-muted); font-size: .72rem; }
 @media (hover: none) { .dots-bubble-actions { height: auto; margin-top: 6px; opacity: 1; } }
 .dots-chat-shell .dots-bubble-actions button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; color: var(--room-muted); background: transparent; border: 0; border-radius: 6px; font: inherit; font-size: .72rem; cursor: pointer; }
 .dots-chat-shell .dots-bubble-actions button:hover { color: var(--room-text); background: color-mix(in srgb, var(--room-text) 8%, transparent); }
@@ -355,6 +358,8 @@
 .dots-settings-field, .dots-settings-form label { display: grid; gap: 4px; font-size: .8rem; }
 .dots-settings-field small, .dots-settings-form small { color: var(--room-muted, inherit); font-size: .72rem; opacity: .78; }
 .dots-settings select, .dots-settings input:not([type="checkbox"]), .dots-settings textarea { min-height: 32px; padding: 4px 8px; color: var(--room-text, inherit); background: var(--room-surface, transparent); border: 1px solid var(--room-border, currentColor); border-radius: 8px; font: inherit; }
+/* A select is as wide as its longest option; a % max-width lets it shrink so narrow docks do not clip the card. */
+.dots-settings :is(select, input, textarea) { min-width: 0; max-width: 100%; }
 .dots-settings select:focus-visible, .dots-settings input:focus-visible, .dots-settings textarea:focus-visible, .dots-settings button:focus-visible { outline: 2px solid var(--room-accent, currentColor); outline-offset: 2px; }
 .dots-settings-form { display: grid; gap: 10px; }
 .dots-settings-actions { display: flex; justify-content: flex-end; }
@@ -419,3 +424,52 @@
 .dots-expression { display: grid; justify-items: center; gap: 4px; width: 100%; padding: 8px 4px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: inherit; font: inherit; font-size: .72rem; cursor: pointer; }
 .dots-expression:is(:hover, :focus-visible) { background: color-mix(in srgb, currentColor 7%, transparent); outline: none; }
 .dots-expression[aria-pressed="true"] { border-color: var(--room-accent, currentColor); background: var(--room-accent-soft, transparent); }
+
+/* Operator 22/11: a modern, futuristic Chat surface: soft aurora, glass header and composer, glowing accent. Theme colours only, so light themes follow. */
+.codex-chat-shell.dots-chat-shell {
+  --dots-glow: color-mix(in srgb, var(--room-accent) 38%, transparent);
+  --dots-glass: color-mix(in srgb, var(--room-surface) 72%, transparent);
+  --dots-edge: color-mix(in srgb, var(--room-accent) 22%, var(--room-border));
+  background:
+    radial-gradient(120% 70% at 0% 0%, color-mix(in srgb, var(--room-accent) 13%, transparent), transparent 60%),
+    radial-gradient(90% 60% at 100% 100%, color-mix(in srgb, #7c5cff 12%, transparent), transparent 62%),
+    var(--room-surface);
+}
+.dots-chat-shell .dots-header {
+  margin: 8px 10px 0; border: 1px solid var(--dots-edge); border-radius: 18px; background: var(--dots-glass);
+  backdrop-filter: blur(14px) saturate(140%); box-shadow: 0 8px 28px color-mix(in srgb, #000 18%, transparent), inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
+}
+.dots-chat-shell .dots-identity { cursor: default; }
+.dots-chat-shell .dots-identity-text strong { letter-spacing: .02em; }
+.dots-chat-shell .dots-status[data-status="ready"]::before, .dots-chat-shell .dots-status[data-status="working"]::before { box-shadow: 0 0 10px var(--dots-glow); }
+.dots-chat-shell .dots-icon-button { border-radius: 12px; transition: background .18s ease, color .18s ease, box-shadow .18s ease; }
+.dots-chat-shell .dots-icon-button:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--dots-edge), 0 0 14px var(--dots-glow); }
+.dots-chat-shell .dots-bubble { border-radius: 20px; animation: dots-bubble-in .22s ease-out both; }
+.dots-chat-shell .dots-bubble.dot {
+  border: 1px solid var(--dots-edge); border-top-left-radius: 6px; background: var(--dots-glass);
+  backdrop-filter: blur(10px); box-shadow: 0 4px 18px color-mix(in srgb, #000 12%, transparent);
+}
+.dots-chat-shell .dots-bubble.user {
+  border-top-right-radius: 6px; color: var(--room-text);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--room-accent) 30%, var(--room-surface)), color-mix(in srgb, #7c5cff 24%, var(--room-surface)));
+  box-shadow: 0 6px 22px color-mix(in srgb, var(--room-accent) 20%, transparent);
+}
+.dots-chat-shell .dots-feed-welcome .dot-avatar { filter: drop-shadow(0 0 22px var(--dots-glow)); }
+.dots-chat-shell .dots-feed-welcome h2 {
+  font-size: 1.35rem; font-weight: 650; letter-spacing: -.01em;
+  background: linear-gradient(90deg, var(--room-text), color-mix(in srgb, var(--room-accent) 70%, var(--room-text))); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.dots-chat-shell .codex-composer[data-variant="dot"] {
+  margin: 0 10px 10px; border: 1px solid var(--dots-edge); border-radius: 22px; background: var(--dots-glass);
+  backdrop-filter: blur(14px) saturate(140%); box-shadow: 0 10px 30px color-mix(in srgb, #000 20%, transparent); transition: border-color .2s ease, box-shadow .2s ease;
+}
+.dots-chat-shell .codex-composer[data-variant="dot"]:focus-within {
+  border-color: color-mix(in srgb, var(--room-accent) 60%, var(--room-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--room-accent) 16%, transparent), 0 0 26px var(--dots-glow);
+}
+.dots-chat-shell .codex-composer[data-variant="dot"] .codex-send:not(:disabled) {
+  background: linear-gradient(135deg, var(--room-accent), color-mix(in srgb, #7c5cff 70%, var(--room-accent))); box-shadow: 0 0 16px var(--dots-glow);
+}
+@keyframes dots-bubble-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .dots-chat-shell .dots-bubble { animation: none; } .dots-chat-shell .dots-icon-button, .dots-chat-shell .codex-composer[data-variant="dot"] { transition: none; } }
+@media (prefers-reduced-transparency: reduce) { .dots-chat-shell .dots-header, .dots-chat-shell .dots-bubble.dot, .dots-chat-shell .codex-composer[data-variant="dot"] { backdrop-filter: none; background: var(--room-surface); } }

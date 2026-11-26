@@ -6,6 +6,55 @@ import {
 } from "@space/contracts";
 import { api } from "../../api.js";
 
+const genericPlaceholderTitle =
+  /^(?:(?:cli|terminal|bash|zsh|task|untitled|new session|child session|Job Copilot|Mail Copilot|Marketing Copilot|Freelance Copilot|Monitoring Copilot|Security Copilot|App Studio|Video|Design|Browser|Code|Review|Swarm|YouTube|VNC|Harness|Live|Files|Databases|Demo Projects|T3 Code|Appointments|Chat)(?:\s+\d+)?)$/i;
+
+export function isGenericTaskTitle(title: string | null | undefined): boolean {
+  if (!title) return true;
+  const trimmed = title.trim();
+  return !trimmed || genericPlaceholderTitle.test(trimmed);
+}
+
+export function hasTaskTitlePopoverContent(
+  pane: Pane,
+  displayTitle = pane.title,
+): boolean {
+  const metadata = pane.taskMetadata;
+  if (
+    metadata &&
+    (metadata.generationStatus === "pending" ||
+      (metadata.topics && metadata.topics.length > 0) ||
+      Boolean(metadata.description && metadata.description.trim()) ||
+      Boolean(metadata.nativeTitle && metadata.nativeTitle.trim()) ||
+      (metadata.steps && metadata.steps.length > 0))
+  ) {
+    return true;
+  }
+  const taskPane =
+    ["CHAT", "TERMINAL", "HARNESS"].includes(pane.mode) &&
+    pane.terminalRuntimeId !== "cli:root";
+  const candidate =
+    taskPane && pane.titleSource !== "manual"
+      ? shortTaskTitle(pane.title, "")
+      : pane.title || displayTitle;
+  const trimmed = candidate.trim();
+  if (!trimmed) return false;
+  if (
+    pane.paneName &&
+    trimmed.toLowerCase() === pane.paneName.trim().toLowerCase()
+  ) {
+    return false;
+  }
+  if (
+    isGenericTaskTitle(trimmed) &&
+    pane.titleSource !== "ai" &&
+    pane.titleSource !== "manual"
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function TaskTitleDetails({
   pane,
   displayTitle = pane.title,
@@ -33,6 +82,10 @@ export function TaskTitleDetails({
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const taskPane = ["CHAT", "TERMINAL", "HARNESS"].includes(pane.mode) &&
     pane.terminalRuntimeId !== "cli:root";
+  const rawTaskTitle =
+    taskPane && pane.titleSource !== "manual"
+      ? shortTaskTitle(pane.title, "")
+      : pane.title || displayTitle;
   const title =
     taskPane && pane.titleSource !== "manual"
       ? shortTaskTitle(pane.title, "Task")
@@ -41,7 +94,21 @@ export function TaskTitleDetails({
   const metadata = pane.taskMetadata;
   const topics = metadata?.topics ?? [];
   const summarizing = metadata?.generationStatus === "pending";
-  const fullHeading = pane.paneName && pane.paneName !== title ? `${pane.paneName} · ${title}` : (pane.paneName || title);
+  const hasTitle = hasTaskTitlePopoverContent(pane, displayTitle);
+  const popoverTitle =
+    rawTaskTitle &&
+    (!pane.paneName ||
+      rawTaskTitle.trim().toLowerCase() !== pane.paneName.trim().toLowerCase()) &&
+    (!isGenericTaskTitle(rawTaskTitle) ||
+      pane.titleSource === "ai" ||
+      pane.titleSource === "manual")
+      ? rawTaskTitle
+      : topics.at(-1)?.title || metadata?.nativeTitle || title;
+  useEffect(() => {
+    if (!hasTitle && open) {
+      close();
+    }
+  }, [hasTitle, open]);
   useEffect(() => {
     const handleGlobalDragStart = () => {
       close();
@@ -53,7 +120,7 @@ export function TaskTitleDetails({
     };
   }, []);
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open || !hasTitle) return;
     const popover = popoverRef.current;
     if (!popover) return;
     // The native top layer escapes pane overflow without moving or remounting
@@ -67,10 +134,17 @@ export function TaskTitleDetails({
       const height = viewport?.height ?? window.innerHeight;
       const left = viewport?.offsetLeft ?? 0;
       const top = viewport?.offsetTop ?? 0;
-      const popoverWidth = Math.min(520, width - 32);
+      const maxWidth = Math.min(520, width - 32);
       const maxHeight = Math.min(560, height - 32);
+      popover.style.width = "max-content";
+      popover.style.maxWidth = `${maxWidth}px`;
+      popover.style.maxHeight = `${maxHeight}px`;
+      const measuredWidth = Math.ceil(popover.getBoundingClientRect().width || 0);
+      const popoverWidth =
+        measuredWidth > 0 ? Math.min(measuredWidth, maxWidth) : maxWidth;
       Object.assign(popover.style, {
-        width: `${popoverWidth}px`,
+        width: "max-content",
+        maxWidth: `${maxWidth}px`,
         maxHeight: `${maxHeight}px`,
         left: `${Math.max(left + 16, Math.min(anchor.left, left + width - popoverWidth - 16))}px`,
         top: `${Math.max(top + 16, Math.min(anchor.bottom + 8, top + height - Math.min(popover.scrollHeight, maxHeight) - 16))}px`,
@@ -86,7 +160,7 @@ export function TaskTitleDetails({
       window.visualViewport?.removeEventListener("resize", position);
       popover.hidePopover?.();
     };
-  }, [open, preferencesOpen, pane.taskMetadata]);
+  }, [open, hasTitle, preferencesOpen, pane.taskMetadata]);
   function cancelTimer() {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
@@ -114,10 +188,18 @@ export function TaskTitleDetails({
     <details
       ref={detailsRef}
       className="pane-title-details"
+      data-has-title={hasTitle ? "true" : "false"}
       onToggle={(event) => {
-        if (event.target === event.currentTarget) setOpen(event.currentTarget.open);
+        if (event.target !== event.currentTarget) return;
+        if (!hasTitle) {
+          event.currentTarget.open = false;
+          setOpen(false);
+          return;
+        }
+        setOpen(event.currentTarget.open);
       }}
       onPointerEnter={(event) => {
+        if (!hasTitle) return;
         if (event.pointerType === "touch") return;
         if (event.buttons !== 0) return;
         if (detailsRef.current?.closest(".pane-card")?.classList.contains("is-dragging")) return;
@@ -130,6 +212,7 @@ export function TaskTitleDetails({
         cancelTimer();
       }}
       onPointerLeave={() => {
+        if (!hasTitle) return;
         cancelTimer();
         timer.current = setTimeout(() => {
           if (!detailsRef.current?.contains(document.activeElement)) close();
@@ -151,14 +234,21 @@ export function TaskTitleDetails({
       }}
     >
       <summary
-        aria-label={`Show task details ${pane.paneName ? `${pane.paneName} - ${title}` : title}`}
+        tabIndex={hasTitle ? undefined : -1}
+        aria-label={
+          hasTitle
+            ? `Show task details ${pane.paneName ? `${pane.paneName} - ${popoverTitle}` : popoverTitle}`
+            : undefined
+        }
         onClick={(event) => {
           event.preventDefault();
+          if (!hasTitle) return;
           if (detailsRef.current?.closest(".pane-card")?.classList.contains("is-dragging")) return;
           if (detailsRef.current) detailsRef.current.open = true;
           setOpen(true);
         }}
         onFocus={() => {
+          if (!hasTitle) return;
           if (detailsRef.current) detailsRef.current.open = true;
         }}
       >
@@ -166,7 +256,7 @@ export function TaskTitleDetails({
           {headerText}
         </strong>
       </summary>
-      {open ? (
+      {hasTitle && open ? (
         <div
           ref={popoverRef}
           popover={typeof HTMLElement !== "undefined" && "showPopover" in HTMLElement.prototype ? "manual" : undefined}
@@ -176,7 +266,10 @@ export function TaskTitleDetails({
           onPointerEnter={cancelTimer}
         >
           <div className="task-title-body">
-            <p className="task-title-heading">{fullHeading}</p>
+            {/* The title lines already name it; a heading would repeat it. */}
+            {topics.some((topic) => topic.title.trim().toLowerCase() === popoverTitle.trim().toLowerCase()) ? null : (
+              <p className="task-title-heading">{popoverTitle}</p>
+            )}
             {metadata?.nativeTitle ? (
               <p className="task-title-native">
                 <span className="task-title-native-label">
@@ -207,12 +300,12 @@ export function TaskTitleDetails({
               </ol>
             ) : summarizing && !metadata?.description ? null : (
               <>
-                <p className="task-title-description">
-                  {metadata?.description ||
-                    (taskPane
-                      ? "Task details will appear after a request is submitted."
-                      : displayTitle)}
-                </p>
+                {metadata?.description || taskPane ? (
+                  <p className="task-title-description">
+                    {metadata?.description ||
+                      "Task details will appear after a request is submitted."}
+                  </p>
+                ) : null}
                 {metadata?.steps.length ? (
                   <ol>
                     {metadata.steps.map((step, index) => (

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClipboardItem, NousDecision, NousOverview, SpaceNotification } from "@space/contracts";
 import { NousNeedsYou, PlanNeedsYou } from "../src/features/nous/NousNeedsYou.js";
+import { formatUserTime } from "../src/features/date-time-settings/date-time-settings.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 
@@ -31,7 +32,9 @@ const plans = [row("planColour01", "Colour plan", { hold: { kind: "OPERATOR", wh
   row("planMail0001", "Mail cleanup", { room: "Cleo", pane: "Emma", paneId: "pane:emma00000001" })];
 const board = { rooms: [
   { roomId: alex, name: "Alex", panes: [{ paneId: "pane:andy00000001", name: "Andy" }, { paneId: "pane:bob000000001", name: "Bob" }] },
-  { roomId: cleo, name: "Cleo", panes: [{ paneId: "pane:emma00000001", name: "Emma" }] }
+  { roomId: cleo, name: "Cleo", panes: [{ paneId: "pane:emma00000001", name: "Emma" }] },
+  { roomId: "room:felix0000001", name: "Felix", panes: [{ paneId: "pane:cody00000001", name: "Cody", mode: "TERMINAL",
+    report: { at: "2026-11-14T00:30:00.000Z", status: "NEEDS_YOU", summary: "The sender still fails its check." }, summary: { source: "FALLBACK", line: "", generatedAt: at(0) } }] }
 ], paused: null, callsToday: 0, settings: {}, generatedAt: at(0) };
 const renderDecision = (item: NousDecision) => <article aria-label={item.title}>{item.title}</article>;
 const shown = () => screen.getAllByRole("article").map((article) => article.getAttribute("aria-label"));
@@ -62,6 +65,28 @@ describe("Needs you list (plan clipboard:PHmjUTRmWM6C; no filters since operator
     await waitFor(() => expect(calls.some((call) => call.url === "/api/nous/pane-board")).toBe(true));
     expect(screen.queryAllByRole("combobox")).toHaveLength(0);
     expect(screen.queryByRole("button", { name: "Clear the filters" })).toBeNull();
+  });
+
+  it("says only the plan a card names as what it unblocks, never its pane's other plan, and times it by its own question (nous_msg:832a500e, Felix/Cody)", async () => {
+    // One record per pane, refreshed per ask: createdAt is the pane's first ask (13/11), alertAt this question's.
+    const ask = { question: "Edit the Vault key?", options: ["Done"], answer: { kind: "PANE" } };
+    const sender = card("cody", 1, { roomId: "room:felix0000001", paneId: "pane:cody00000001", title: "Cody needs you", createdAt: "2026-11-13T06:00:00.000Z",
+      payload: { alertAt: "2026-11-14T00:30:00.000Z", ask } });
+    const startup = row("planStart001", "Startup programs", { room: "Felix", pane: "Cody", paneId: "pane:cody00000001", dueAt: "2026-11-20T09:00:00.000Z" });
+    const { unmount } = render(<NousNeedsYou requests={[sender]} plans={[startup]} />);
+    const article = screen.getByRole("article", { name: "Cody needs you" });
+    expect(article.querySelector(".ny-meta")?.textContent).toContain(formatUserTime("2026-11-14T00:30:00.000Z"));
+    expect(article.querySelector(".ny-meta")?.textContent).not.toMatch(/Due/);
+    await waitFor(() => expect(article.querySelector(".ny-meta")?.textContent).toContain("Felix · Cody"));
+    fireEvent.click(within(article).getByRole("button", { name: "Details" }));
+    expect(within(article).queryByText("Unblocks")).toBeNull();
+    // The pane's report that asked it is not news since the question.
+    expect(within(article).queryByText("Since then")).toBeNull();
+    unmount();
+    render(<NousNeedsYou requests={[{ ...sender, payload: { ...sender.payload, planId: startup.id } }]} plans={[startup]} />);
+    const named = screen.getByRole("article", { name: "Cody needs you" });
+    fireEvent.click(within(named).getByRole("button", { name: "Details" }));
+    expect(within(named).getByText("Unblocks").nextElementSibling?.textContent).toBe("Startup programs");
   });
 
   it("says so when nothing waits", () => {

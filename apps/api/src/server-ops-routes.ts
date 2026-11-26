@@ -48,9 +48,9 @@ class OpRefusal extends Error {
 }
 
 export function registerServerOpsRoutes(app: FastifyInstance, deps: {
-  store: Pick<SpaceStore, "upsertUser" | "recordAuditEvent" | "listRooms" | "listPanes">; managedHere: boolean; queueRoot: string; routeOptions: RouteShorthandOptions; runner?: ServerOpsRunner;
+  store: Pick<SpaceStore, "upsertUser" | "recordAuditEvent" | "listRooms" | "listPanes">; managedHere: boolean; queueRoot: string; routeOptions: RouteShorthandOptions; runner?: ServerOpsRunner; deployRemotesLog?: string;
 }) {
-  const { store, managedHere, queueRoot, routeOptions, runner = hostServerOpsRunner } = deps;
+  const { store, managedHere, queueRoot, routeOptions, runner = hostServerOpsRunner, deployRemotesLog = DEPLOY_REMOTES_LOG } = deps;
   const unitState = async (unit: string) => {
     const out = await runner.run(SYSTEMCTL, ["show", unit, "--property=ActiveState,Result,ExecMainStartTimestamp,ExecMainExitTimestamp", "--timestamp=unix"]).catch(() => "");
     const props = Object.fromEntries(out.split("\n").map((line) => line.split("=", 2) as [string, string]).filter(([, v]) => v !== undefined));
@@ -65,7 +65,7 @@ export function registerServerOpsRoutes(app: FastifyInstance, deps: {
   // A hotfix waiting for the operator's approval is not work in progress.
   const queueActive = async () => (await readDeployQueue(queueRoot)).active.some((ticket) => ticket.status !== "AWAITING_APPROVAL");
   // Only the ✓/❌ summary lines: stderr is not in the log and the lines name a remote and a branch, never a URL.
-  const remoteLines = async () => stripVTControlCharacters(await readFile(DEPLOY_REMOTES_LOG, "utf8").catch(() => ""))
+  const remoteLines = async () => stripVTControlCharacters(await readFile(deployRemotesLog, "utf8").catch(() => ""))
     .split("\n").map((line) => line.trim()).filter((line) => /^[✓❌]/u.test(line));
 
   const operation = (action: string, run: (request: FastifyRequest) => Promise<{ code: number; body: Record<string, unknown> }>) =>

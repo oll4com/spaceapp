@@ -11,7 +11,7 @@ import { createMonitoringCopilotService } from "../src/monitoring-copilot/servic
 import type { MonitoringCollector } from "../src/monitoring-copilot/collector.js";
 
 const collector: MonitoringCollector = {
-  alerts: async () => [{ fingerprint: "0f6830bc2f489a7d", labels: { alertname: "OpenwrtHttpsProbeDown", severity: "critical", instance: "192.168.10.1:443" }, annotations: {}, startsAt: "2026-10-25T10:00:00Z" }],
+  alerts: async () => [{ fingerprint: "0f6830bc2f489a7d", labels: { alertname: "OpenwrtHttpsProbeDown", severity: "critical", instance: "192.168.88.1:443" }, annotations: {}, startsAt: "2026-10-25T10:00:00Z" }],
   guardian: async () => [], promQuery: async () => ({ resultType: "vector", series: [], truncated: false }), lokiQuery: async () => ({ resultType: "vector", series: [], truncated: false }), targets: async () => []
 };
 
@@ -20,7 +20,7 @@ function fixture() {
   const room = store.createRoom({ name: "Monitoring", initialPaneCount: 0 }, "trace:room", "user:operator");
   const pane = store.createPane({ roomId: room.id, title: "Monitoring Copilot", mode: "MONITORING_COPILOT", terminalRuntimeId: "cli:claude" });
   const monitoring = createMonitoringCopilotService({ repository: new InMemoryMonitoringCopilotRepository(), collector,
-    collectorConfig: { network: null, defaults: monitoringCollectorDefaults("192.168.10.5") },
+    collectorConfig: { network: null, defaults: monitoringCollectorDefaults("192.168.88.5") },
     store: { updateMonitoringCopilotMetadata: (id, metadata) => store.updateMonitoringCopilotMetadata(id, metadata), listRooms: () => [{ id: room.id, ownerUserId: "user:operator" }], listPanes: (roomId, includeClosed) => store.listPanes(roomId, includeClosed) } });
   const deps = copilotDeps({ copilots: { monitoring }, store } as never, async (_owner, mode) => mode === "MONITORING_COPILOT" ? [pane] : [])!;
   return { store, pane, monitoring, deps };
@@ -38,7 +38,7 @@ describe("Nous and the Monitoring Copilot", () => {
       expect.objectContaining({ copilot: "MONITORING", kind: "BRIEF_PENDING", title: "Why does OpenWrt TH fail its HTTPS probe since 10:00?" })]));
     const state = JSON.parse(await deps.state("user:operator", pane));
     expect(state).toMatchObject({ run: { openQuestions: 1, pendingBriefs: 1 }, summary: { firing: { CRITICAL: 1 }, collector: { reachable: true } } });
-    expect(state.summary.top[0]).toMatchObject({ alertname: "OpenwrtHttpsProbeDown", instance: "192.168.10.1:443" });
+    expect(state.summary.top[0]).toMatchObject({ alertname: "OpenwrtHttpsProbeDown", instance: "192.168.88.1:443" });
     await deps.answerQuestion("user:operator", { copilot: "MONITORING", questionId: question.id, paneId: null, answer: "Closed until Monday" });
     expect((await monitoring.items("user:operator", pane)).questions).toEqual([]);
     await expect(deps.answerQuestion("user:operator", { copilot: "MONITORING", questionId: question.id, paneId: null, answer: "again" })).rejects.toThrow(/not waiting/);

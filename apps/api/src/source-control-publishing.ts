@@ -88,7 +88,7 @@ async function executeBroker(command: string, args: string[], stdin: string): Pr
     child.stderr.on("data", (chunk: string) => {
       if (stderr.length < 4_096) stderr += chunk.slice(0, 4_096 - stderr.length);
     });
-    child.on("error", (error) => {
+    child.on("error", () => {
       clearTimeout(timer);
       reject(new SourceControlPublishingError("BROKER_FAILED", "The protected credential broker could not start.", 503));
     });

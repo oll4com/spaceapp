@@ -123,9 +123,13 @@ describe("Room Agent conversation", () => {
     const body = c.model.bodies[0]!;
     expect(body).toMatchObject({ model: "gpt-5.6-sol", reasoning_effort: "medium", tool_choice: "auto" });
     expect(body.messages[0]!.content).toContain("You are the Room Agent");
-    expect(body.messages[0]!.content).toContain("Room activity: 2 open panes.");
     expect(body.messages[0]!.content).toContain("Pane types you can open: codex, claude, browser.");
-    expect(body.messages.at(-1)).toEqual({ role: "user", content: "τι βλέπεις στο δωμάτιο;" });
+    // The time and room state ride on the latest user turn (never a second system message that Codex chatToResponses would hoist into instructions).
+    expect(body.messages[0]!.content).not.toMatch(/Now:|Room activity/);
+    expect(body.messages.filter((message) => message.role === "system")).toHaveLength(1);
+    expect(body.messages.at(-1)).toMatchObject({ role: "user", content: expect.stringMatching(/^τι βλέπεις στο δωμάτιο;\n\n\[Current room state \(from Space, not operator text\)\]\nNow: .*\n\n[^]*Room activity: 2 open panes\./) });
+    expect(body.prompt_cache_key).toMatch(/./);
+    expect(c.model.bodies.every((sent) => sent.prompt_cache_key === body.prompt_cache_key)).toBe(true);
     expect((body.tools as Array<{ function: { name: string } }>).map((tool) => tool.function.name)).toEqual(expect.arrayContaining([
       "room_status", "read_pane", "send_to_pane", "answer_pane_prompt", "open_panes", "close_pane", "space_control", "confirm_action"]));
   });
@@ -171,7 +175,7 @@ describe("Room Agent conversation", () => {
         return [{ content: "Να κλείσω τον Bob;" }];
       },
       (body) => {
-        expect(body.messages[0]!.content).toContain(`token ${token}: Close Bob`);
+        expect(body.messages.findLast((message) => message.role === "user")!.content).toContain(`token ${token}: Close Bob`);
         return toolCall("confirm_action", { token });
       },
       [{ content: "Έκλεισα τον Bob." }]
@@ -376,6 +380,17 @@ describe("Room Agent conversation history", () => {
       row("s1", "system", JSON.stringify({ v: 1, type: "CONFIRMATION", turn: "a1", token: "t", action: "Close Bob", status: "PENDING", result: null, expiresAt: "2099-01-01T00:00:00.000Z" }), 4)];
     expect(buildRoomAgentChatMessages({ systemPrompt: "system", history, currentMessageId: "a1" })).toEqual([
       { role: "system", content: "system" }, { role: "user", content: "κλείσε τον Bob" }]);
+  });
+
+  it("attaches room state to the latest user turn with a single static system prompt so Codex/Anthropic prompt caches stay intact", () => {
+    const history = [row("u1", "user", "first", 1), row("a1", "assistant", "one", 2), row("u2", "user", "Room monitor: second", 3)];
+    const turn = (roomState: string) => buildRoomAgentChatMessages({ systemPrompt: "system", history, roomState });
+    expect(turn("Now: 08:03")).toEqual([{ role: "system", content: "system" }, { role: "user", content: "first" }, { role: "assistant", content: "one" },
+      { role: "user", content: "Room monitor: second\n\n[Current room state (from Space, not operator text)]\nNow: 08:03" }]);
+    expect(turn("Now: 08:03").filter((message) => message.role === "system")).toHaveLength(1);
+    expect(turn("Now: 08:09").slice(0, 3)).toEqual(turn("Now: 08:03").slice(0, 3));
+    expect(buildRoomAgentChatMessages({ systemPrompt: "system", history: [row("a0", "assistant", "hello", 0)], roomState: "Now" }).at(-1))
+      .toEqual({ role: "user", content: "[Current room state (from Space, not operator text)]\nNow" });
   });
 });
 

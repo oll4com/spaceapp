@@ -9,7 +9,7 @@ export function useBrowserFullscreen(): boolean {
   const [isBrowserFullscreen, setIsBrowserFullscreen] = useState(() => isDocumentFullscreen());
 
   useEffect(() => {
-    const bridge = (window as any).spaceDesktop;
+    const bridge = (window as unknown as { spaceDesktop?: { isFullscreen?: () => Promise<boolean>; onFullscreenChange?: (listener: (fullscreen: boolean) => void) => unknown } }).spaceDesktop;
     let disposed = false;
     const handleFullscreenChange = () => {
       if (typeof bridge?.isFullscreen === "function") {

@@ -6,6 +6,7 @@
  */
 export type LosslessKind = "log" | "search" | "paths" | "diff" | "text" | "config";
 
+// eslint-disable-next-line no-control-regex -- strips ANSI SGR escape sequences on purpose
 const ANSI = /\x1b\[[0-9;]*m/g;
 const RUN_MARKER = /^\.\.\. \(repeated (\d+) times\)$/;
 const BLOCK_MARKER = /^\.\.\. \(repeats (\d+) lines from (\d+) lines back\)$/;

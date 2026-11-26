@@ -74,7 +74,7 @@ export function registerArtifactRoutes(app: FastifyInstance, deps: {
     });
     return artifact;
   });
-  app.delete("/api/artifacts/:id", defaultRouteRateLimitOptions, async (request, reply) => {
+  app.delete("/api/artifacts/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseBody(idParamSchema, request.params);
     const artifact = await store.getArtifact(params.id);
     const deleted = await permanentlyDeleteLocalArtifact({ store, artifactRoot: config.browserEvidenceArtifactRoot, artifact });

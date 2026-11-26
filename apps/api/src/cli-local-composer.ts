@@ -6,12 +6,14 @@ import { SpaceConflictError } from "@space/runtime";
 
 // Only text, tabs and newlines can enter a bracketed paste. In particular an
 // embedded ESC must never terminate the paste and turn the remainder into keys.
+// eslint-disable-next-line no-control-regex -- these control characters are what the paste refuses
 const unsafeTextControl = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 export const cliLocalComposerSubmissionSchema = z.object({
   submissionId: z.string().uuid(),
   expectedSessionId: idSchema,
   text: z.string().max(200_000).refine(value => !unsafeTextControl.test(value), "The text contains terminal control characters."),
   imagePaths: z.array(z.string().min(2).max(1_000).startsWith("/")
+    // eslint-disable-next-line no-control-regex -- control characters are what an image path refuses
     .refine(value => !/[\u0000-\u001f\u007f-\u009f]/.test(value), "An image path contains control characters.")).max(8).optional(),
   /** Where each image goes in the text; without it the images go first. */
   imageOffsets: z.array(z.number().int().min(0)).max(8).optional()

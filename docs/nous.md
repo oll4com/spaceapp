@@ -6,6 +6,10 @@ instead of its screen, so it knows what every agent works on and what it waits
 for. You talk to Nous in its dock instead of to every agent: it does the
 routine work itself and brings you only the decisions that need you.
 
+<p align="center">
+  <img src="images/nous-orchestration-hero.gif" alt="Nous takes a goal, a Claude Code pane adds GET /health with a test, and Nous asks before the push to origin" width="760" />
+</p>
+
 This page is for developers who run SpaceApp themselves: what Nous does, how
 goals work, what it may do alone, which tools it has and how to switch it on
 in a self-hosted install. Nous is **off** on a new install.

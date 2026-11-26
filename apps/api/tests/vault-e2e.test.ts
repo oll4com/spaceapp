@@ -18,6 +18,7 @@ import { fixture } from "./support/vault-fakes.js";
 // password and credential only.
 const SENTINEL = "SYNTHETIC-e2e-credential";
 const PASSWORD = "SYNTHETIC e2e master password";
+const OTP_SEED = "SYNTHETICOTPSEEDAAAAAAAAAAAAAAAA";
 const b64 = vaultBase64url;
 const owner = "user:alice";
 const roots: string[] = [];
@@ -365,9 +366,9 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       const listed = (await agent("list", {})).items as Array<{ handle: string; label: string; origins: string[] }>;
       expect(listed.map((item) => item.label)).toEqual(["Synthetic login", "Synthetic new site", "Synthetic new site"]);
       expect(listed[2]!.origins).toEqual(["https://new.example"]);
-      const fillOf = async (itemHandle: string, origin: string) => {
+      const fillOf = async (itemHandle: string, origin: string, fields = ["PASSWORD"]) => {
         const active = (await harness.repository.getActiveDelegation(owner))!;
-        const use = await core.handle("POST", "/v1/use", { ownerUserId: owner, vaultId, certificate: active.certificate, epoch: 1, handle: itemHandle, fields: ["PASSWORD"], submit: false,
+        const use = await core.handle("POST", "/v1/use", { ownerUserId: owner, vaultId, certificate: active.certificate, epoch: 1, handle: itemHandle, fields, submit: false,
           paneId: pane.id, targetId: "t", pageId: "t", frameId: "f", origin });
         if (use.status !== 200) return use.body;
         const host = await generateVaultTransportKey();
@@ -383,9 +384,14 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       // A hand-over that failed (the broker restarting) joins on the agent's next call, with the Vault still locked (31/10).
       restarting = true;
       expect(await agent("save", { site: "https://later.example", username: "agent@example.com", password: "SYNTHETIC-agent-saved-3", label: "Saved while restarting" })).toMatchObject({ status: "SAVED" });
+      // An authenticator key for a login the delegation already holds, whose hand-over failed (14/11: the 13/11 broker refused sealedOtp), joins on the same call.
+      await harness.repository.addPending(owner, { id: newVaultHandle("vault_pending"), kind: "SET_OTP", handle, label: "Synthetic login", origin: "https://login.example", sealedUsername: null,
+        sealedPassword: null, sealedOtp: await sealToVaultPublicKey(inbox.publicKey, new TextEncoder().encode(OTP_SEED), scope), paneId: pane.id, createdAt: new Date().toISOString() });
       restarting = false;
       const rejoined = ((await agent("list", {})).items as Array<{ handle: string; label: string }>).find((item) => item.label === "Saved while restarting")!;
       expect(await fillOf(rejoined.handle, "https://later.example")).toEqual({ PASSWORD: "SYNTHETIC-agent-saved-3" });
+      expect(await fillOf(handle, "https://login.example", ["OTP"])).toEqual({ OTP: OTP_SEED });
+      expect(await fillOf(handle, "https://login.example")).toEqual({ PASSWORD: SENTINEL });
       expect(await agent("status", {})).toEqual({ status: "LISTED", auditId: expect.any(String), agentAccess: true, delegatedItems: 4 });
       // A new password of a login the operator hid from agents never joins a delegation, not even through the re-attach.
       const hidden = newVaultHandle("vault_item");
@@ -411,7 +417,7 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
           sealedPassword: await sealToVaultPublicKey(inbox.publicKey, new TextEncoder().encode("x"), scope) } })).body).toEqual({ error: "GENERATION_RETIRED" });
 
       const all = seen.join("\n");
-      for (const secret of [SENTINEL, "SYNTHETIC-agent-saved-1", "SYNTHETIC-agent-saved-2", "SYNTHETIC-agent-saved-3", PASSWORD, b64.encode(inbox.privateKey)]) expect(all).not.toContain(secret);
+      for (const secret of [SENTINEL, "SYNTHETIC-agent-saved-1", "SYNTHETIC-agent-saved-2", "SYNTHETIC-agent-saved-3", OTP_SEED, PASSWORD, b64.encode(inbox.privateKey)]) expect(all).not.toContain(secret);
     } finally {
       await harness.app.close();
     }

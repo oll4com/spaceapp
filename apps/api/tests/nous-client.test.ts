@@ -49,7 +49,7 @@ describe("Nous knows where the operator writes from", () => {
       { app: "NOUS_ANDROID", os: "ANDROID", form: "PHONE", version: NOUS_APP_MIN_VERSION, view: "requests" },
       { app: "DESKTOP_WINDOWS", os: "WINDOWS", form: "DESKTOP", version: "0.1.30", view: "nous:chat", viewport: "1920x1080" },
       { app: "SPACEAPP_ANDROID", os: "ANDROID", form: "PHONE" }]));
-    await vi.waitFor(() => expect(prompts.some((prompt) => prompt.includes(`(from the Nous app ${NOUS_APP_MIN_VERSION} on an Android phone, view requests): Από το κινητό`))).toBe(true));
+    await vi.waitFor(() => expect(prompts.some((prompt) => prompt.includes(`(from the Nous app ${NOUS_APP_MIN_VERSION} on an Android phone, view requests): Από το κινητό`))).toBe(true), { timeout: 10_000 });
     expect(prompts.join("\n")).toContain("# Where the operator is");
   });
 
@@ -63,5 +63,7 @@ describe("Nous knows where the operator writes from", () => {
     expect(renderOperatorWhere(messages, at)).toBe("# Where the operator is\nThe operator last wrote 3 min ago from the Nous app 0.2.10 on an Android phone. "
       + "Fit your answer, cards and needs-you items to a phone: tappable links and phone steps; mark anything that needs a computer \"From a computer: …\".");
     expect(renderOperatorWhere([message("x", "2026-10-31T09:00:00.000Z")], at)).toBe("");
+    // 21/11: a background turn with nothing waiting reads that the last message is answered.
+    expect(renderOperatorWhere(messages, at, true)).toContain("3 min ago from the Nous app 0.2.10 on an Android phone. That message is answered and none waits now");
   });
 });

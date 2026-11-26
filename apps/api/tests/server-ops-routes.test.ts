@@ -37,7 +37,8 @@ async function build({ managedHere = true, busy = false, refuse = false } = {}) 
     upsertUser: async (user: { id: string }) => user, recordAuditEvent: async (event: { action: string }) => { audits.push(event.action); },
     listRooms: async () => [{ id: "room:1" }], listPanes: async () => [{ cwd: "/w/open" }, { cwd: null }]
   } as never;
-  registerServerOpsRoutes(app, { store, managedHere, queueRoot, routeOptions: {}, runner });
+  // Its own (absent) remotes log: the host's /opt/spaceapp/var/deploy-remotes.log has lines wherever the queue pushed (hz, 15/11).
+  registerServerOpsRoutes(app, { store, managedHere, queueRoot, routeOptions: {}, runner, deployRemotesLog: join(queueRoot, "deploy-remotes.log") });
   await app.ready();
   const call = (method: "GET" | "POST", url: string, payload?: object, role = "ADMIN") =>
     app!.inject({ method, url: `/api/admin/server-ops${url}`, headers: role ? { "x-test-role": role } : {}, ...(payload ? { payload } : {}) });

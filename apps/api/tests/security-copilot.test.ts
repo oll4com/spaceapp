@@ -12,7 +12,7 @@ import { defaultSecurityCopilotPaneMetadata, type NotificationRaiseInput, type S
 import { createSecurityCopilotService } from "../src/security-copilot/service.js";
 import { createFeeds, type SecurityFeeds } from "../src/security-copilot/feeds.js";
 import {
-  compareVersions, cpeRangeMatches, distroFindings, newsFindings, parseFeed, parseNvdCve, productFindings, type KevEntry
+  compareVersions, cpeRangeMatches, cveRecordNamesPackage, distroFindings, newsFindings, parseCveRecord, parseFeed, parseNvdCve, productFindings, type KevEntry
 } from "../src/security-copilot/matcher.js";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, csrfHeaderName, signSessionWithTtl } from "../src/auth.js";
@@ -81,7 +81,8 @@ describe("Security Copilot matching", () => {
       <item><title>Unrelated: a Zyxel bug</title><link>https://seclists.org/oss-sec/2026/q4/2</link></item></channel></rss>`;
     const items = parseFeed("oss-security", rss);
     expect(items[0]).toMatchObject({ cves: ["CVE-2026-109618"], publishedAt: "2026-10-21T10:00:00.000Z" });
-    const leads = newsFindings(inventory(), items, new Map());
+    expect(newsFindings(inventory(), items, new Map(), new Map())).toEqual([]);
+    const leads = newsFindings(inventory(), items, new Map(), new Map([["CVE-2026-109618", ["PHP"]]]));
     expect(leads).toHaveLength(1);
     expect(leads[0]).toMatchObject({ advisoryId: "CVE-2026-109618", package: "php", priority: "P0" });
     expect(leads[0]!.advisory.title).toBe("oss-security: CVE-2026-109618 names php (exploited)");
@@ -90,6 +91,23 @@ describe("Security Copilot matching", () => {
     expect(leads[0]!.advisory.references).toEqual(["https://nvd.nist.gov/vuln/detail/CVE-2026-109618"]);
     const atom = `<feed><entry><title>Node.js security release</title><link href="https://nodejs.org/en/blog/vulnerability/x"/><updated>2026-10-20T00:00:00Z</updated></entry></feed>`;
     expect(parseFeed("Node.js", atom)[0]).toMatchObject({ link: "https://nodejs.org/en/blog/vulnerability/x", cves: [] });
+  });
+
+  it("matches a news lead to a package only when the CVE 5 record names it (Apache Griffin is not apache2/httpd)", () => {
+    const host = inventory({ packages: [{ name: "apache2", version: "2.4.62-1" }, { name: "httpd", version: "2.4.37-65" }] });
+    const item = (cve: string) => ({ feed: "oss-security", link: "https://seclists.org/oss-sec/2026/q4/9", title: `Critical: ${cve} in Apache`, publishedAt: null, cves: [cve] });
+    // The real CVE 5 records' affected entries (cveawg.mitre.org): CVE-2026-128841 (CNA only) and CVE-2024-38476 (CNA and CISA-ADP).
+    const griffin = parseCveRecord({ containers: { cna: { affected: [{ vendor: "Apache Software Foundation", product: "Apache Griffin Web Service",
+      packageURL: "pkg:maven/org.apache.griffin/service", packageName: "org.apache.griffin:service", collectionURL: "https://repo.maven.apache.org/maven2" }] } } });
+    const httpd = parseCveRecord({ containers: { cna: { affected: [{ vendor: "Apache Software Foundation", product: "Apache HTTP Server" }] },
+      adp: [{ affected: [{ vendor: "apache", product: "http_server", cpes: ["cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*"] }] }] } });
+    const records = new Map([["CVE-2026-128841", griffin], ["CVE-2024-38476", httpd]]);
+    expect(newsFindings(host, [item("CVE-2026-128841")], new Map(), records)).toEqual([]);
+    const real = newsFindings(host, [item("CVE-2024-38476")], new Map(), records);
+    expect(real.map((draft) => [draft.advisoryId, draft.package, draft.priority])).toEqual([["CVE-2024-38476", "apache2", "P1"]]);
+    expect([cveRecordNamesPackage("apache2", griffin), cveRecordNamesPackage("httpd", httpd), cveRecordNamesPackage("apache2", []), cveRecordNamesPackage("zsh", httpd)]).toEqual([false, true, null, null]);
+    // Not fetched yet: no match until the record is read.
+    expect(newsFindings(host, [item("CVE-2024-38476")], new Map(), new Map())).toEqual([]);
   });
 });
 
@@ -105,7 +123,7 @@ function serviceFixture(feedOverrides: Partial<SecurityFeeds> = {}, askOwnHosts 
   const resolved: string[] = [];
   const kickoffs: string[] = [];
   const feeds = {
-    state: () => ({}), kev: async () => new Map(), nvdModified: async () => [], nvdCve: async () => null, osvLibraries: async () => [], debianCves: async () => new Map(),
+    state: () => ({}), kev: async () => new Map(), nvdModified: async () => [], nvdCve: async () => null, cveRecord: async () => null, osvLibraries: async () => [], debianCves: async () => new Map(),
     internetDb: async () => ({ ports: [], vulns: [] }), news: async () => [], ...feedOverrides
   } as unknown as SecurityFeeds;
   const service = createSecurityCopilotService({
@@ -394,6 +412,32 @@ describe("Security Copilot service", () => {
     await service.watch();
     expect((await repository.getAction(owner, second.actionId))!).toMatchObject({ status: "SUPERSEDED", verification: expect.stringContaining("Target already met") });
     expect(told).toEqual([first.reviewId, second.reviewId]);
+  });
+
+  it("closes NEWS-only leads whose CVE 5 record names another product, keeps a real httpd lead and one without a CVE id", async () => {
+    const records: Record<string, string[]> = {
+      "CVE-2026-128841": ["Apache Griffin Web Service", "org.apache.griffin:service", "pkg:maven/org.apache.griffin/service"],
+      "CVE-2024-38476": ["Apache HTTP Server", "http_server"]
+    };
+    const { service, pane, owner, repository, resolved } = serviceFixture({ cveRecord: async (id: string) => records[id] ?? null } as Partial<SecurityFeeds>);
+    const packages = [{ name: "apache2", version: "2.4.62-1" }, { name: "httpd", version: "2.4.37-65" }];
+    for (const alias of ["vm100", "vm101", "vm102"]) await service.ingestInventory(owner, pane, inventory({ alias, packages, pendingSecurity: [] }));
+    const hosts = await repository.listHosts(owner);
+    const lead = async (hostId: string, advisoryId: string, pkg: string) => (await repository.upsertFinding({ ownerUserId: owner, hostId, advisoryId, package: pkg, installedVersion: "2.4.62-1",
+      fixedVersion: null, priority: "P1", advisory: { id: advisoryId, aliases: [], sources: ["NEWS"], title: `oss-security: ${advisoryId} names apache`, severity: "CRITICAL",
+        cvss: null, epss: null, kev: false, kevAddedAt: null, publishedAt: null, references: [] } })).finding;
+    // As secfind:DI1Mom32jFjZ, lk5Qv4U4dqJE and BmjE7s8VKaVa (16/11): CVE-2026-128841 raised P1 on three hosts' apache packages.
+    const griffin = [await lead(hosts[0]!.id, "CVE-2026-128841", "apache2"), await lead(hosts[1]!.id, "CVE-2026-128841", "httpd"), await lead(hosts[2]!.id, "CVE-2026-128841", "apache2")];
+    const httpd = await lead(hosts[0]!.id, "CVE-2024-38476", "httpd");
+    const noCve = await lead(hosts[0]!.id, "NEWS-abc", "apache2");
+    await service.watch();
+    for (const finding of griffin) {
+      expect(await repository.getFinding(owner, finding.id)).toMatchObject({ status: "NOT_AFFECTED",
+        note: `CVE 5 record names Apache Griffin Web Service, org.apache.griffin:service, pkg:maven/org.apache.griffin/service, not ${finding.package}` });
+      expect(resolved).toContain(`security:finding:${finding.id}`);
+    }
+    expect((await repository.getFinding(owner, httpd.id))!.status).toBe("NEW");
+    expect((await repository.getFinding(owner, noCve.id))!.status).toBe("NEW");
   });
 
   it("refuses an agent's ACCEPTED on a P0/P1 finding and raises URGENT when a fix fails", async () => {

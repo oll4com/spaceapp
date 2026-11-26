@@ -1542,8 +1542,8 @@ describe("Space contracts", () => {
     });
     const hiddenClientInput = paneCliWebSocketClientMessageSchema.parse({ type: "input", data: "/tmp/upload.png ", display: "hidden" });
     const clientResize = paneCliWebSocketClientMessageSchema.parse({ type: "resize", cols: 120, rows: 32 });
-    const clientPing = paneCliWebSocketClientMessageSchema.parse({ type: "ping" });
-    const serverPong = paneCliWebSocketServerMessageSchema.parse({ type: "pong" });
+    paneCliWebSocketClientMessageSchema.parse({ type: "ping" });
+    paneCliWebSocketServerMessageSchema.parse({ type: "pong" });
     const serverOutput = paneCliWebSocketServerMessageSchema.parse({ type: "output", stream: "stdout", data: "ready\n" });
     const serverStatus = paneCliWebSocketServerMessageSchema.parse({
       type: "status",

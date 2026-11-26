@@ -13,7 +13,7 @@ const openCodeControl: OpenCodeServerControl = {
   spaceSessionId: "space-shared",
   nativeSessionId: "ses_catalog",
   serverPort: 47047,
-  serverHost: "10.254.240.13",
+  serverHost: "10.88.240.13",
   serverUsername: "space",
   serverPassword: "secret",
   updatedAt: "2026-08-28T00:00:00.000Z"

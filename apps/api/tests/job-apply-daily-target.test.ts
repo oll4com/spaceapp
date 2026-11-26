@@ -64,6 +64,14 @@ describe("Job Copilot daily application target", () => {
     expect(await kick.tick()).toBe(1);
   });
 
+  it("records NO_PANE for an owner behind the target's pace with no open Job Copilot pane", async () => {
+    const { store, pane, service, kick } = fixture();
+    await service.updateProfile("user:owner", { dailyTarget: 200 });
+    store.updatePane(pane.id, { isClosed: true });
+    expect(await kick.tick()).toBe(0);
+    expect((await service.stats("user:owner", "Asia/Bangkok")).days[0]?.missed).toEqual(["NO_PANE"]);
+  });
+
   it("never starts after the operator's Stop, never types over an open ask, and reports a 30-minute wait once", async () => {
     const { pane, service, kick, kickoff, waited, advance, ask, observe } = fixture();
     await service.updateProfile("user:owner", { dailyTarget: 200 });

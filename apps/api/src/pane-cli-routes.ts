@@ -324,7 +324,7 @@ export function registerPaneCliModelRoutes(app: FastifyInstance, options: {
   }>;
   applyOpenCodePaneSelection: (
     pane: Pane, session: PaneCliSession, model: PaneCliModelSettings["models"][number], effort: string, traceId: string,
-    assertControl?: (current: PaneCliSession) => Promise<void>, allModels?: PaneCliModelSettings["models"]
+    assertControl?: (current: PaneCliSession) => Promise<void>
   ) => Promise<void>;
   roomOpenCodeTasks: (control: OpenCodeServerControl) => Promise<NativeTaskExecution[]>;
   assertNoManagedModelMutation: (paneId: string) => Promise<void>;
@@ -461,7 +461,7 @@ export function registerPaneCliModelRoutes(app: FastifyInstance, options: {
       const wasActive = before.settings.isTurnActive;
       const advertisedModel = before.settings.models.find(model => model.id === input.modelId)!;
       await applyOpenCodePaneSelection(pane, active, advertisedModel, input.reasoningEffort, request.requestIdForSpace,
-        current => assertCliHttpMutationControl(request, current), before.settings.models);
+        current => assertCliHttpMutationControl(request, current));
       const updatedSession = await store.updatePaneCliSession(
         active.sessionId,
         {
@@ -479,7 +479,7 @@ export function registerPaneCliModelRoutes(app: FastifyInstance, options: {
           },
           request.requestIdForSpace
         );
-      } catch {}
+      } catch { /* Best-effort: the session update above already holds the selected model. */ }
       const registry = await cliRuntimeRegistryCache.read();
       const runtime = findRuntime(registry, updatedSession.runtimeId);
       if (!runtime) throw new SpaceNotFoundError(`CLI runtime ${updatedSession.runtimeId} was not found.`);

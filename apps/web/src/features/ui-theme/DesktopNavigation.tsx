@@ -45,7 +45,7 @@ function isTypingTarget(target: EventTarget | null) {
   if (target.closest(".xterm, [contenteditable=''], [contenteditable='true']")) return true;
   return target.matches("input, textarea, select") || (target as HTMLElement).isContentEditable === true;
 }
-export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, onAction, footer, version, renderCreateTools, renderWorkspaceAction, onWorkspaceDetailChange, workspaceDetailActionIds = [], createOnly = false, docksOnly = false, toolsOnly = false, workspaceOnly = false, hiddenRailIds, emptySlots, availablePanes }: {
+export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, onAction, footer, renderCreateTools, renderWorkspaceAction, onWorkspaceDetailChange, workspaceDetailActionIds = [], createOnly = false, docksOnly = false, toolsOnly = false, workspaceOnly = false, hiddenRailIds, emptySlots, availablePanes }: {
   createOnly?: boolean; docksOnly?: boolean; toolsOnly?: boolean; workspaceOnly?: boolean;
   actions: IconToolbarAction[]; adminMode: boolean; canAdmin: boolean;
   onModeChange: () => void;
@@ -118,7 +118,7 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
       const parsed = raw ? JSON.parse(raw) : [];
       const list = Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
       if (list.length > 0) {
-        let updated = list.filter((id) => id !== "add-empty-slots");
+        const updated = list.filter((id) => id !== "add-empty-slots");
         const demosIdx = updated.indexOf("add-demos");
         const vncIdx = updated.indexOf("add-vnc");
         if (demosIdx !== -1 && vncIdx !== -1 && demosIdx > vncIdx) {
@@ -130,7 +130,7 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
         if (updated.length !== list.length || (demosIdx !== -1 && vncIdx !== -1 && demosIdx > vncIdx)) {
           try {
             window.localStorage.setItem(CREATE_MENU_ORDER_KEY, JSON.stringify(updated));
-          } catch {}
+          } catch { /* storage unavailable: migrated order kept for this session */ }
         }
         return updated;
       }
@@ -293,7 +293,7 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
   const isPageTab = (id: WorkspaceCategory) => Boolean(renderWorkspaceAction && workspacePageTabActionIds[id]);
   const chooseCategory = (next: WorkspaceCategory) => {
     setCategory(next);
-    try { window.localStorage.setItem(WORKSPACE_MENU_CATEGORY_KEY, next); } catch {}
+    try { window.localStorage.setItem(WORKSPACE_MENU_CATEGORY_KEY, next); } catch { /* storage unavailable: category kept for this session */ }
   };
   useEffect(() => {
     if (!open || !detailId) return;
@@ -329,7 +329,7 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
   const quick = workspace && !isSearching ? pinnedIds.flatMap(id => visible.filter(a => a.id === id)) : [];
   const saveQuickIds = (next: string[]) => {
     setQuickIds(next);
-    try { window.localStorage.setItem(WORKSPACE_QUICK_ACTIONS_KEY, JSON.stringify(next)); } catch {}
+    try { window.localStorage.setItem(WORKSPACE_QUICK_ACTIONS_KEY, JSON.stringify(next)); } catch { /* storage unavailable: quick actions kept for this session */ }
     saveUserSettingDebounced("workspaceQuickActions", next);
   };
   const togglePin = (id: string) => {
@@ -542,7 +542,7 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
             try {
               window.localStorage.setItem(CREATE_MENU_ORDER_KEY, JSON.stringify(nextOrder));
               saveUserSettingDebounced("createMenuOrder", nextOrder);
-            } catch {}
+            } catch { /* save failed: the new order still applies for this session */ }
           }
         }
         dragOverCreateActionIdRef.current = null;

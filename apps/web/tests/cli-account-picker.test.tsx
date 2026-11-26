@@ -251,7 +251,7 @@ describe("model picker providers", () => {
     expect(modelProviderAvailability("openai", quota, clock)).toMatchObject({ label: "Unknown · no reset", percent: null });
     // The Claude API key paced to the monthly budget (no prepaid balance): the budget left when it renews on the 1st, at this pace.
     const budget = modelProviderAvailability("anthropic", { ...quota, api: page([api("anthropic", "CONNECTED", null, 7)], "api") }, Date.UTC(2026, 9, 31, 12));
-    expect(budget.label).toBe(`${budget.label.split("%")[0]}% free in 12h`);
+    expect(budget.label).toBe(`${budget.label.split("%")[0]}% free in 12h · 00:00`);
     expect(Number(budget.label.split("%")[0])).toBeLessThan(7);
     expect(budget.description).toContain("monthly budget");
     // No sample for the Claude API key: unknown, not a figure.
@@ -384,8 +384,8 @@ describe("Antigravity model groups and plans", () => {
 
     // Every pooled account at its 5-hour limit (seen live 2026-10-12): not ready, back when the first one resets.
     const limited = read([member("crew", 0, 140), member("lab", 0, 40), member("ops", 0, 170)]);
-    expect(limited).toMatchObject({ tone: "blocked", label: "Back in 40m" });
-    expect(limited.description).toBe("Not available now · Back in 40m · 0 of 3 pooled accounts ready");
+    expect(limited).toMatchObject({ tone: "blocked", label: expect.stringMatching(/^Back in 40m · \d\d:\d\d$/) });
+    expect(limited.description).toMatch(/^Not available now · Back in 40m · \d\d:\d\d · 0 of 3 pooled accounts ready$/);
     expect(limited.detail).toBe("0 of 3 pooled accounts ready");
     expect(read([member("crew", 0), member("lab", 64)])).toMatchObject({ tone: "ready", percent: 64, detail: "1 of 2 pooled accounts ready" });
     expect(read([member("ops", null, 40, true)])).toMatchObject({ tone: "blocked", label: "Sign-in required" });
@@ -426,7 +426,7 @@ describe("Codex accounts behind Space Gateway", () => {
       .toMatchObject({ tone: "ready", percent: 72, label: "72%", detail: "1 of 2 pooled accounts ready" });
     const limited = gateway([codexAccount("leo", 1, 80)]);
     expect(limited).toMatchObject({ tone: "blocked", detail: "0 of 1 pooled account ready" });
-    expect(limited.label).toMatch(/^Back in 1h 3\dm$/);
+    expect(limited.label).toMatch(/^Back in 1h 3\dm · \d\d:\d\d$/);
     expect(gateway([])).toMatchObject({ tone: "blocked", label: "No accounts" });
     expect(gateway(null)).toMatchObject({ tone: "pending", label: "Unknown" });
     expect(cliAccountAvailability({ runtimeId: "cli:codex", profileId: "space-gateway", quota: null, identity: null, clock }))

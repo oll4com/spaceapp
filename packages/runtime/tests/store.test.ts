@@ -521,6 +521,14 @@ describe("InMemorySpaceStore", () => {
     ).toThrow(SpaceConflictError);
   });
 
+  it("refuses to move a closed pane and says to reopen it first (23/11 REVIEW panes.move)", () => {
+    const store = new InMemorySpaceStore();
+    const from = store.createRoom({ name: "From", initialPaneCount: 0 }, "trace:move");
+    const to = store.createRoom({ name: "To", initialPaneCount: 0 }, "trace:move");
+    const pane = store.createPane({ roomId: from.id, title: "CLI Browser", mode: "CHAT" }, "trace:move");
+    store.updatePane(pane.id, { isClosed: true, status: "CLOSED" }, "trace:move");
+    expect(() => store.movePane(pane.id, { targetRoomId: to.id })).toThrow(/^Pane CLI Browser is already closed and cannot be moved\. Reopen it first \(space_execute \{kind:"pane",operation:"reopen"\}\), then move it\.$/);
+  });
   it("keeps new and reopened panes at the active tail order", () => {
     const store = new InMemorySpaceStore();
     const room = store.createRoom({ name: "Order", initialPaneCount: 0 }, "trace:order");
@@ -1317,9 +1325,24 @@ describe("InMemorySpaceStore", () => {
     });
 
     expect(store.listRunningCliSessionCountsByRoom()).toEqual([
-      { roomId: firstRoom.id, runningCliCount: 2, paneCount: 2, runtimeIds: ["cli:codex", "cli:opencode"] },
-      { roomId: secondRoom.id, runningCliCount: 0, paneCount: 1, runtimeIds: [] },
-      { roomId: emptyRoom.id, runningCliCount: 0, paneCount: 0, runtimeIds: [] }
+      { roomId: firstRoom.id, runningCliCount: 2, paneCount: 2, runtimeIds: ["cli:codex", "cli:opencode"], paneModes: ["TERMINAL"] },
+      { roomId: secondRoom.id, runningCliCount: 0, paneCount: 1, runtimeIds: [], paneModes: ["TERMINAL"] },
+      { roomId: emptyRoom.id, runningCliCount: 0, paneCount: 0, runtimeIds: [], paneModes: [] }
+    ]);
+  });
+
+  it("shows a CLI only for open TERMINAL panes, not closed panes or copilot panes", () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Stale", initialPaneCount: 0 }, "trace:stale");
+    const closedPane = store.createPane({ roomId: room.id, title: "Claude", mode: "TERMINAL" });
+    const copilotPane = store.createPane({ roomId: room.id, title: "Mail", mode: "MAIL_COPILOT" });
+    for (const pane of [closedPane, copilotPane]) {
+      store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "claude", agentId: "claude", status: "RUNNING" });
+    }
+    store.updatePane(closedPane.id, { isClosed: true });
+
+    expect(store.listRunningCliSessionCountsByRoom()).toEqual([
+      { roomId: room.id, runningCliCount: 0, paneCount: 1, runtimeIds: [], paneModes: ["MAIL_COPILOT"] }
     ]);
   });
 

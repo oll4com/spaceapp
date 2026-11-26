@@ -1,10 +1,11 @@
+import { longQuotaWait, waitsForQuota } from "../agents-dashboard.js";
 import { cliToggleRuntimeIds, nousDecisionRunsWhen, type ClipboardItem, type NousDecision, type Pane, type Room, type SpaceNotification, type TaskItem } from "@space/contracts";
 import type { DashboardAgentsSample } from "../room-routes.js";
 import type { NousNote } from "@space/db";
 import { renderServerLoad, type NousLoadState } from "./server-load.js";
 import { isLessonNote } from "./lessons.js";
 import { planMapParts } from "./plan-map.js";
-import { nameList, NOUS_RETRIEVED_SECTION_CHARS, rankByWords, type PromptPart } from "./retrieval.js";
+import { nameList, NOUS_RETRIEVED_SECTION_CHARS, rankByWords, references, type PromptPart } from "./retrieval.js";
 
 /**
  * The world as Nous sees it at the start of every turn: every room with its panes and their live state, what waits for
@@ -33,11 +34,13 @@ export interface NousWorld {
   /** "## Operator requests waiting" (requests-waiting.ts, 31/10): right after the goals, never cut. */
   requestsWaiting?: string;
   /** The operator's allowances (settings mayPromote, mayApproveWarm); on stable Nous asked for promotes it was allowed to run (2026-10-18). */
-  allowances?: { promote: boolean; warm: boolean; securityHotfix?: boolean; send?: boolean; deleteOwn?: boolean; publish?: boolean; restartHosts?: boolean };
+  allowances?: { promote: boolean; warm: boolean; securityHotfix?: boolean; send?: boolean; deleteOwn?: boolean; publish?: boolean; restartHosts?: boolean; cleanSystem?: boolean };
   /** Pane watch (pane-watch.ts): "checked HH:MM (verdict)" per pane and the "Panes not checked" section. */
   paneChecked?: (paneId: string) => string | null;
   /** R13-13: a Claude pane's account when its live session is not on space-gateway ("main (direct)"). */
   paneAccount?: (paneId: string) => string | null;
+  /** Slice 22 (15/11: 21 sends refused "no room now" in 5 h, one pane three times): "Claude Max has no room now" for a pane on such a pool. */
+  paneNoRoom?: (paneId: string) => string | null;
   /** Operator 31/10: "2 briefs waiting since 17:50 UTC, idle at its prompt" for a brief-taking pane its own pass did not start. */
   paneBriefs?: (paneId: string) => string | null;
   /** R35-1 (stuck-panes.ts): "STUCK: screen and CLI state unchanged 42 min …" for a CLI pane frozen on a spinner or never taking a queued text. */
@@ -56,6 +59,8 @@ export interface NousWorld {
   query?: string;
   /** A turn that does not answer the operator (round 2, 1/11): only the pinned notes and the query's matches; the others are named for space_notes. */
   notesMatchedOnly?: boolean;
+  /** An inbox turn (token audit 22/11): its matches are the notes naming a record or ticket its lines name, not the notes sharing words. */
+  notesByReference?: boolean;
 }
 
 /** "7.7 h", "25 min", "3 d" since a time, for pane lines (a bare HH:MM could not tell 2 hours idle from 26). */
@@ -98,7 +103,7 @@ function roomFill(entry: NousWorld["rooms"][number]): string {
     : ` (${open} of ${cap} panes open)`;
 }
 
-function paneLines(entry: NousWorld["rooms"][number], world: Pick<NousWorld, "plans" | "now" | "paneChecked" | "paneReport" | "keptOpenForTask" | "paneAccount" | "paneBriefs" | "paneStuck">): string[] {
+function paneLines(entry: NousWorld["rooms"][number], world: Pick<NousWorld, "plans" | "now" | "paneChecked" | "paneReport" | "keptOpenForTask" | "paneAccount" | "paneNoRoom" | "paneBriefs" | "paneStuck">): string[] {
   const sample = entry.sample;
   if (!sample) return ["- (the room's panes could not be read now)"];
   if (!sample.data.length) return ["- no open panes"];
@@ -112,9 +117,11 @@ function paneLines(entry: NousWorld["rooms"][number], world: Pick<NousWorld, "pl
     const plan = world.plans.find((item) => item.paneId === pane.id);
     const task = world.keptOpenForTask?.(pane.id);
     const account = world.paneAccount?.(pane.id);
-    const briefs = world.paneStuck?.(pane.id) ?? world.paneBriefs?.(pane.id);
-    return `- ${paneLabel(pane)} · ${paneKind(pane)}${briefs ? ` · ${briefs}` : state ? ` · ${state}` : ""}${detail?.modelId ?? pane.modelId ? ` · model ${detail?.modelId ?? pane.modelId}` : ""}${account ? ` · account: ${account}` : ""}${detail?.sessionId ? ` · ${detail.sessionId}` : ""}`
-      + `${plan ? ` · plan "${oneLine(plan.title ?? plan.text, 80)}" ${plan.progressPercentage}%` : ""}${world.paneChecked?.(pane.id) ? ` · ${world.paneChecked(pane.id)}` : ""}`
+    const noRoom = world.paneNoRoom?.(pane.id);
+    const dead = waitsForQuota(detail) && longQuotaWait(detail?.resetsAt, at);
+    const briefs = dead ? `dead until ${detail!.resetsAt} (provider quota)` : world.paneStuck?.(pane.id) ?? world.paneBriefs?.(pane.id);
+    return `- ${paneLabel(pane)} · ${paneKind(pane)}${briefs ? ` · ${briefs}` : state ? ` · ${state}` : ""}${detail?.modelId ?? pane.modelId ? ` · model ${detail?.modelId ?? pane.modelId}${detail?.requestedModelId ? ` (asked: ${detail.requestedModelId}, not running yet)` : ""}` : ""}${account ? ` · account: ${account}` : ""}${noRoom ? ` · ${noRoom}` : ""}${detail?.sessionId ? ` · ${detail.sessionId}` : ""}`
+      + `${plan ? ` · plan "${oneLine(plan.title ?? plan.text, 80)}" ${plan.progressPercentage}%` : ""}${!dead && world.paneChecked?.(pane.id) ? ` · ${world.paneChecked(pane.id)}` : ""}`
       + `${world.paneReport?.(pane.id) ? ` · ${world.paneReport(pane.id)}` : ""}${task ? ` · task "${oneLine(task, 80)}"` : ""}`;
   });
 }
@@ -146,7 +153,8 @@ export function renderNousWorldSections(world: NousWorld): PromptPart[] {
       + ` · May send to third parties ${state(Boolean(world.allowances.send))} (an EXTERNAL send with refs.sendKind goes out at once when you ask, as long as its refs.files are unchanged)`
       + ` · May delete what Nous created ${state(Boolean(world.allowances.deleteOwn))} (a DESTRUCTIVE space_ask_operator deleting only Agent Files you added yourself runs at once, a copy kept; so does a pane prompt removing test VMs/CTs or snapshots an agent recorded creating, named in refs.testDeletes)`
       + ` · May publish after a green lab proof ${state(Boolean(world.allowances.publish))} (a RELEASE_APPROVE runs at once when the captain recorded a green lab proof for exactly that candidate)`
-      + ` · May run guarded host restarts ${state(Boolean(world.allowances.restartHosts))} (a RELEASE PANE_TEXT asking the guarded Browser Host or pane host restart runs at once, or by itself the minute the queues are idle, no browser is held and, for the pane host, no CLI pane is in a turn; no card).`);
+      + ` · May run guarded host restarts ${state(Boolean(world.allowances.restartHosts))} (a RELEASE PANE_TEXT asking the guarded Browser Host or pane host restart runs at once, or by itself the minute the queues are idle, no browser is held and, for the pane host, no CLI pane is in a turn; no card)`
+      + ` · May clean regenerable system files ${state(Boolean(world.allowances.cleanSystem))} (a DESTRUCTIVE pane prompt freeing disk runs at once when refs.cleanup names only /tmp/space-*, /tmp/tmp.* paths, "docker image prune" or "docker builder prune", each written in the text, and the text deletes nothing else).`);
   }
   if (world.operatorFacts) { section("Operator facts and rules", 9, "space_memory_recall {\"query\": …} finds any of them by its words"); sections.push(world.operatorFacts); }
   if (world.goals) { section("Goals", 8, "space_goals", true); sections.push(world.goals); }
@@ -225,7 +233,12 @@ export function renderNousWorldSections(world: NousWorld): PromptPart[] {
     + "space_lessons {\"query\": …} searches them all.");
   const others = world.notes.filter((entry) => !lessons.includes(entry)).sort(newest);
   const pinned = others.filter((note) => note.key === "operator-language" || note.key === "plan-map").sort((left, right) => left.key.localeCompare(right.key));
-  const matched = rankByWords(others.filter((note) => !pinned.includes(note)), (note) => `${note.key.replace(/-/g, " ")} ${note.text}`, world.query ?? "").map(({ doc }) => doc);
+  // Token audit 22/11 (goal 5acd171d): an inbox batch's words matched almost every note (436 turns: ~19,000 characters of notes a turn,
+  // 0.004 of them naming a record or ticket the batch names), as round 2 found for earlier inbox lines (relevantHistory).
+  const refs = new Set(world.notesByReference ? references(world.query ?? "") : []);
+  const candidates = others.filter((note) => !pinned.includes(note));
+  const matched = world.notesByReference ? candidates.filter((note) => references(note.text).some((ref) => refs.has(ref)))
+    : rankByWords(candidates, (note) => `${note.key.replace(/-/g, " ")} ${note.text}`, world.query ?? "").map(({ doc }) => doc);
   const rest = others.filter((note) => !pinned.includes(note) && !matched.includes(note));
   const ordered = [...pinned, ...matched, ...rest.filter((note) => !NOUS_LOG_NOTE.test(note.key)), ...rest.filter((note) => NOUS_LOG_NOTE.test(note.key))];
   // Round 2 (1/11: an inbox turn about one ticket carried 20,000 characters of pane-owner addenda and preferences): a turn that does not

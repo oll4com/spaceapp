@@ -1,7 +1,8 @@
 import type { AppDeviceSession, AppSignInId } from "@space/contracts";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 
-export type MobileDeviceScope = "read" | "act" | "decide";
+/** manage, upgrade and nous only on a SpaceApp link, granted by its owner (migration 0341, ADR-014 v2). */
+export type MobileDeviceScope = "read" | "act" | "decide" | "manage" | "upgrade" | "nous" | "ai" | "vault" | "sync";
 
 /** A paired device's own fields (migration 0274, ADR-013 §8); null on a Google sign-in row. */
 export interface PairedDeviceFields {
@@ -19,7 +20,11 @@ export interface PairedDeviceFields {
   rendezvousId: string | null;
   /** A Pro phone's opaque push handle, from ctl push-handle (migration 0282, design §8.1); null: no wake. */
   pushHandle: string | null;
+  /** A link whose grant holds nous: the Nous it names as this Nous's superior (migration 0345, v2 step 9); null: none. */
+  nousSuperior: NousSuperior | null;
 }
+/** The superior's identity key, its own chain above it (nearest first), and since when it holds this place. */
+export interface NousSuperior { identityPublic: string; label: string; host: string; chain: string[]; since: string; at: string }
 
 /** A device session row (migration 0245): the app's sign-in as Settings > Account > Devices lists it. Never the token. */
 export interface AppDeviceSessionRecord extends AppDeviceSession, PairedDeviceFields {
@@ -31,7 +36,7 @@ type NewSignIn = { id: string; ownerUserId: string; app: AppDeviceSession["app"]
 type NewPaired = NewSignIn & { noisePublic: string; decidePublicSpki: string | null; decideSecurityLevel: PairedDeviceFields["decideSecurityLevel"];
   decideSerials?: string[] | null; requestedScopes: MobileDeviceScope[]; rendezvousId?: string | null };
 const UNPAIRED: PairedDeviceFields = { noisePublic: null, decidePublicSpki: null, decideSecurityLevel: null, decideSerials: null, scopes: null, requestedScopes: null, confirmedAt: null, lastSeenAt: null,
-  rendezvousId: null, pushHandle: null };
+  rendezvousId: null, pushHandle: null, nousSuperior: null };
 
 export interface AppDeviceSessionRepository {
   create(input: NewSignIn): Promise<AppDeviceSessionRecord>;
@@ -39,6 +44,10 @@ export interface AppDeviceSessionRepository {
   createPaired(input: NewPaired): Promise<AppDeviceSessionRecord>;
   /** The owner allowed a held device: its requested scopes apply. Null unless it is the owner's, paired, live and not yet confirmed. */
   confirm(ownerUserId: string, id: string, atIso: string): Promise<AppDeviceSessionRecord | null>;
+  /** A live, allowed SpaceApp link's scopes, as its owner set them (ADR-014 v2); null unless it is the owner's. */
+  setLinkScopes(ownerUserId: string, id: string, scopes: MobileDeviceScope[], nowIso: string): Promise<AppDeviceSessionRecord | null>;
+  /** The superior a link with nous names; null forgets it. Null unless the row is a live link that holds nous. */
+  setNousSuperior(id: string, superior: NousSuperior | null): Promise<AppDeviceSessionRecord | null>;
   /** The device behind an IK handshake's static key, whatever its state (the caller checks revoked and expired). */
   byNoisePublic(noisePublic: string): Promise<AppDeviceSessionRecord | null>;
   /** A live paired device connected: last seen now, and it expires 90 days after that. */
@@ -84,6 +93,19 @@ export class InMemoryAppDeviceSessionRepository implements AppDeviceSessionRepos
     const row = this.rows.get(id);
     if (!row || row.ownerUserId !== ownerUserId || !row.noisePublic || row.revokedAt || row.confirmedAt || row.expiresAt <= atIso) return null;
     Object.assign(row, { confirmedAt: atIso, scopes: [...row.requestedScopes!] });
+    return { ...row };
+  }
+  async setLinkScopes(ownerUserId: string, id: string, scopes: MobileDeviceScope[], nowIso: string) {
+    const row = this.rows.get(id);
+    if (!row || row.ownerUserId !== ownerUserId || row.app !== "spaceapp-link" || !row.noisePublic || row.revokedAt || !row.confirmedAt || row.expiresAt <= nowIso) return null;
+    row.scopes = [...scopes];
+    if (!scopes.includes("nous")) row.nousSuperior = null;
+    return { ...row };
+  }
+  async setNousSuperior(id: string, superior: NousSuperior | null) {
+    const row = this.rows.get(id);
+    if (!row || row.app !== "spaceapp-link" || row.revokedAt || !row.scopes?.includes("nous")) return null;
+    row.nousSuperior = superior;
     return { ...row };
   }
   async byNoisePublic(noisePublic: string) {
@@ -149,11 +171,11 @@ interface Row extends Omit<PairedDeviceFields, "confirmedAt" | "lastSeenAt"> { i
 const columns = `id, owner_user_id AS "ownerUserId", app, device_name AS "deviceName", sid_sha256 AS "sidSha256",
   created_at AS "createdAt", expires_at AS "expiresAt", revoked_at AS "revokedAt", noise_public AS "noisePublic", decide_public_spki AS "decidePublicSpki",
   decide_security_level AS "decideSecurityLevel", decide_serials AS "decideSerials", scopes, requested_scopes AS "requestedScopes", confirmed_at AS "confirmedAt", last_seen_at AS "lastSeenAt",
-  rendezvous_id AS "rendezvousId", push_handle AS "pushHandle"`;
+  rendezvous_id AS "rendezvousId", push_handle AS "pushHandle", nous_superior AS "nousSuperior"`;
 const toRecord = (row: Row): AppDeviceSessionRecord => ({ id: row.id, ownerUserId: row.ownerUserId, app: row.app, deviceName: row.deviceName, sidSha256: row.sidSha256,
   createdAt: iso(row.createdAt)!, expiresAt: iso(row.expiresAt)!, revokedAt: iso(row.revokedAt), noisePublic: row.noisePublic, decidePublicSpki: row.decidePublicSpki,
   decideSecurityLevel: row.decideSecurityLevel, decideSerials: row.decideSerials, scopes: row.scopes, requestedScopes: row.requestedScopes, confirmedAt: iso(row.confirmedAt), lastSeenAt: iso(row.lastSeenAt),
-  rendezvousId: row.rendezvousId, pushHandle: row.pushHandle });
+  rendezvousId: row.rendezvousId, pushHandle: row.pushHandle, nousSuperior: row.nousSuperior ?? null });
 
 export class PostgresAppDeviceSessionRepository implements AppDeviceSessionRepository {
   constructor(private readonly pool: PgPoolLike) {}
@@ -175,6 +197,17 @@ export class PostgresAppDeviceSessionRepository implements AppDeviceSessionRepos
   async confirm(ownerUserId: string, id: string, atIso: string) {
     const result = await this.pool.query<Row>(`UPDATE app_device_sessions SET confirmed_at = $3, scopes = requested_scopes WHERE id = $1 AND owner_user_id = $2
       AND noise_public IS NOT NULL AND revoked_at IS NULL AND confirmed_at IS NULL AND expires_at > $3 RETURNING ${columns}`, [id, ownerUserId, atIso]);
+    return result.rows[0] ? toRecord(result.rows[0]) : null;
+  }
+  async setLinkScopes(ownerUserId: string, id: string, scopes: MobileDeviceScope[], nowIso: string) {
+    const result = await this.pool.query<Row>(`UPDATE app_device_sessions SET scopes = $3,
+      nous_superior = CASE WHEN 'nous' = ANY($3::text[]) THEN nous_superior END WHERE id = $1 AND owner_user_id = $2 AND app = 'spaceapp-link'
+      AND noise_public IS NOT NULL AND revoked_at IS NULL AND confirmed_at IS NOT NULL AND expires_at > $4 RETURNING ${columns}`, [id, ownerUserId, scopes, nowIso]);
+    return result.rows[0] ? toRecord(result.rows[0]) : null;
+  }
+  async setNousSuperior(id: string, superior: NousSuperior | null) {
+    const result = await this.pool.query<Row>(`UPDATE app_device_sessions SET nous_superior = $2 WHERE id = $1 AND app = 'spaceapp-link' AND revoked_at IS NULL
+      AND 'nous' = ANY(scopes) RETURNING ${columns}`, [id, superior === null ? null : JSON.stringify(superior)]);
     return result.rows[0] ? toRecord(result.rows[0]) : null;
   }
   async byNoisePublic(noisePublic: string) {

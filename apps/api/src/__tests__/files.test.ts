@@ -13,8 +13,6 @@ import {
   deleteEntry,
   searchFiles,
   assertAccessAllowed,
-  formatPermissions,
-  formatOctalPermissions,
   FilesystemError
 } from "../files-service.js";
 
@@ -22,12 +20,6 @@ const testOperatorUser: AuthUser = {
   id: "user:test-operator",
   email: "operator@space.local",
   role: "ADMIN"
-};
-
-const regularUser: AuthUser = {
-  id: "user:test-regular",
-  email: "user@space.local",
-  role: "OPERATOR" // In space contracts, OPERATOR also has admin access
 };
 
 describe("Filesystem Service & Security", () => {

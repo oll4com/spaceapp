@@ -48,7 +48,7 @@ function DiscoverPanel({ paneId, onQueued }: { paneId: string; onQueued(): void 
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [tokens, setTokens] = useState("");
   const [query, setQuery] = useState("");
-  const [remote, setRemote] = useState(false);
+  const [remote, setRemote] = useState(true);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<JobApplyDiscoverResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +60,7 @@ function DiscoverPanel({ paneId, onQueued }: { paneId: string; onQueued(): void 
     setError(null);
     try {
       const tokenList = tokens.split(/[\s,]+/).map((token) => token.trim().toLowerCase()).filter(Boolean).slice(0, 40);
-      setResult(await api.discoverJobApplyPostings(paneId, { query: query.trim() || undefined, tokens: tokenList, remote: remote || undefined, limit: 100 }));
+      setResult(await api.discoverJobApplyPostings(paneId, { query: query.trim() || undefined, tokens: tokenList, remote, limit: 100 }));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("Search failed."));
     } finally {

@@ -32,7 +32,7 @@ import { SPACE_INSTALL_ROOT } from "@space/contracts";
  */
 
 const DEFAULT_STATE_FILE = `${SPACE_INSTALL_ROOT}/var/chess-tournament.json`;
-export const MAX_CHESS_CONTESTANTS = 128;
+export const MAX_CHESS_CONTESTANTS = 1024;
 const PROVIDER_CHECK_TIMEOUT_MS = 60_000;
 const PROVIDER_CHECK_CONCURRENCY = 6;
 const PROVIDER_CHECK_MODELS = 3;

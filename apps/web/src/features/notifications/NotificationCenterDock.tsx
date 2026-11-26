@@ -1,51 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
-import { findFileMentions, NOTIFICATION_SOURCES, NOTIFICATION_SOURCE_LABELS, type NotificationSource, type SpaceNotification } from "@space/contracts";
-import { AgentFileMentions, FileMentionText } from "../terminal-pane/AgentFileLinks.js";
-import { DockButton, DockChips, DockIconButton, DockState, DockToolbar } from "../dock-kit/DockKit.js";
-import { Bell, Check, CheckCircle2, ExternalLink } from "../ui-theme/app-icons.js";
-import { formatUserTime } from "../date-time-settings/date-time-settings.js";
-import { ackNotification, isNousPaneCard, loadEarlierNotifications, notificationJoinUrl, openNotification, readAllNotifications, refreshNotifications, useNotificationStore } from "./notification-store.js";
-import { notificationSourceIcons } from "./notification-source-icons.js";
+import { NOTIFICATION_SOURCES, NOTIFICATION_SOURCE_LABELS, unreadForOperator, type NotificationSource, type SpaceNotification } from "@space/contracts";
+import { AgentFileMentions } from "../terminal-pane/AgentFileLinks.js";
+import { DockButton, DockChips, DockState, DockToolbar } from "../dock-kit/DockKit.js";
+import { Bell, CheckCircle2 } from "../ui-theme/app-icons.js";
+import { isNousPaneCard, loadEarlierNotifications, notificationsBadge, readAllNotifications, refreshNotifications, useNotificationStore } from "./notification-store.js";
+import { notificationRow } from "./NotificationRow.js";
 import "./notifications.css";
 
 type Filter = "unread" | "all";
 
-function when(iso: string, now = Date.now()): string {
-  const minutes = Math.round((now - Date.parse(iso)) / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours} h ago`;
-  return formatUserTime(iso, { withDate: true });
-}
-
-function notificationRow(item: SpaceNotification) {
-  const Icon = notificationSourceIcons[item.source];
-  const join = notificationJoinUrl(item);
-  return (
-    <>
-      <button type="button" className="notification-item-main" onClick={() => openNotification(item)} aria-label={`${item.status === "OPEN" ? "Unread: " : ""}${NOTIFICATION_SOURCE_LABELS[item.source]}: ${item.title}`}>
-        <span className="notification-item-icon"><Icon aria-hidden="true" /></span>
-        <span className="notification-item-copy">
-          <strong className="notification-item-title" data-sensitive-masked="manual">{item.title}</strong>
-          {item.body ? <span className="notification-item-body" data-sensitive-masked="manual">{item.body}</span> : null}
-          <span className="notification-item-meta">
-            <span className="notification-item-source">{NOTIFICATION_SOURCE_LABELS[item.source]}</span>
-            <time className="notification-item-time" dateTime={item.createdAt} title={formatUserTime(item.createdAt, { withDate: true })}>{when(item.createdAt)}</time>
-          </span>
-        </span>
-      </button>
-      {item.status === "OPEN" || item.status === "READ" ? (
-        <DockIconButton label="Acknowledge" icon={Check} title="Acknowledge" onClick={() => void ackNotification(item.id)} />
-      ) : null}
-      {/* nous_msg:8e7e6c25: the files a reminder or card names open from here (the row itself is a button, so they sit under it). */}
-      {join ? <p className="notification-item-files"><a className="notification-join" href={join} target="_blank" rel="noreferrer noopener"><ExternalLink aria-hidden="true" />Join {new URL(join).hostname}</a></p> : null}
-      {findFileMentions(item.body).length ? <p className="notification-item-files"><FileMentionText text={findFileMentions(item.body).map((mention) => mention.text).join("  ")} /></p> : null}
-    </>
-  );
-}
-
-/** The Notification Center: everything Space wanted the operator to see, newest first, with read / acknowledge and a click that opens the source. */
+/**
+ * The Notification Center: everything Space wanted the operator to see, newest first, with read / acknowledge and a click that opens the source.
+ * It is the bell's own dock and works without Nous (operator 17/11, nous_msg:e1bcd1d9). Unread lists what waits on the operator: an unread
+ * record or a needs-you card opened (READ) but never answered (efe70d0bf7), the same records as the bell's count; Mark all read empties it
+ * (`unreadForOperator`, operator 17/11 14:04 BKK) and the cards still wait in Needs you.
+ */
 export function NotificationCenterDock() {
   const store = useNotificationStore();
   const [filter, setFilter] = useState<Filter>("unread");
@@ -53,7 +22,9 @@ export function NotificationCenterDock() {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => { void refreshNotifications(); }, []);
   const all = useMemo(() => [...store.items, ...(store.earlier ?? []).filter((old) => !store.items.some((item) => item.id === old.id))], [store.items, store.earlier]);
-  const items = useMemo(() => all.filter((item) => (filter === "all" || item.status === "OPEN") && (source === "ALL" || item.source === source)), [filter, source, all]);
+  // The row whose report is open stays under Unread while it is read (opening it marks it read).
+  const items = useMemo(() => all.filter((item) => (filter === "all" || unreadForOperator(item) || item.id === store.reportView) && (source === "ALL" || item.source === source)),
+    [filter, source, all, store.reportView]);
   // A pane with Nous's card shows one row (the card) with the pane's other notifications under it (plan clipboard:8FfXWclYUfOH).
   const paneCards = useMemo(() => new Map(items.filter(isNousPaneCard).map((card) => [card.paneId!, card])), [items]);
   const rows = useMemo(() => items.filter((item) => isNousPaneCard(item) || !item.paneId || !paneCards.has(item.paneId)), [items, paneCards]);
@@ -64,18 +35,19 @@ export function NotificationCenterDock() {
     return next;
   });
   // Under Unread a source with nothing unread would only lead to an empty list, so it shows only while it is the chosen one.
-  const sources = useMemo(() => [{ id: "ALL" as const, label: "All" }, ...NOTIFICATION_SOURCES
+  const sources = useMemo(() => [{ id: "ALL" as const, label: "All sources" }, ...NOTIFICATION_SOURCES
     .filter((entry) => entry === source || (store.items.some((item) => item.source === entry) && (filter === "all" || (store.pending.bySource[entry] ?? 0) > 0)))
     .map((entry) => ({ id: entry, label: NOTIFICATION_SOURCE_LABELS[entry], count: store.pending.bySource[entry] ?? 0 }))], [filter, source, store.items, store.pending.bySource]);
 
+  const pendingTotal = notificationsBadge(store);
   return (
     <AgentFileMentions>
     <section className="notification-center dock-kit-dock" aria-label="Notification Center">
-      <DockToolbar summary={store.pending.total ? `${store.pending.total} unread` : "Nothing waiting"}>
-        <DockButton icon={CheckCircle2} disabled={!store.pending.total} onClick={() => void readAllNotifications()}>Mark all read</DockButton>
+      <DockToolbar summary={pendingTotal ? `${pendingTotal} unread` : "Nothing waiting"}>
+        <DockButton icon={CheckCircle2} disabled={!pendingTotal} onClick={() => void readAllNotifications()}>Mark all read</DockButton>
       </DockToolbar>
       <div className="dock-kit-controls">
-        <DockChips<Filter> label="Show" value={filter} onChange={setFilter} options={[{ id: "unread", label: "Unread", count: store.pending.total }, { id: "all", label: "All" }]} />
+        <DockChips<Filter> label="Show" value={filter} onChange={setFilter} options={[{ id: "unread", label: "Unread", count: pendingTotal }, { id: "all", label: "All" }]} />
         {sources.length > 2 || source !== "ALL" ? <DockChips<NotificationSource | "ALL"> label="Source" className="notification-source-chips" value={source} onChange={setSource} options={sources} /> : null}
       </div>
       {!store.loaded ? <DockState kind="loading" title="Loading notifications…" /> : null}

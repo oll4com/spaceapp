@@ -68,8 +68,12 @@ export async function startPaneCli(deps: PaneCliStartDeps, owner: string, pane: 
   return deps.start(pane);
 }
 
+// Daily Nous errors 13/11 19:10 (Bob run_start in Dino): a route's unexpected 500 reached Nous only as this text; its cause is in the API log.
+// 14/11: controlInvoke now names the 500's op and cause (`NOT CONFIRMED <op>: <cause>. It may have run in part…`, app.ts); the cause is kept.
+const INTERNAL_ERROR = /^(?:The request could not be completed\.|Protected control failed \(HTTP 5\d\d\)\.|NOT CONFIRMED (\S+ \S+: [\s\S]*?)\. It may have run in part[\s\S]*)$/;
+
 export function createCopilotControl(deps: { invoke: CopilotInvoke; store: Pick<SpaceStore, "getActivePaneCliSession" | "listPaneCliSessions">; start?: PaneCliStartDeps["start"]; hostRunning?: PaneCliStartDeps["hostRunning"]; gatewayAccount?: PaneCliStartDeps["gatewayAccount"] }) {
-  return async function control(owner: string, pane: Pane, action: CopilotControlAction): Promise<string> {
+  const control = async (owner: string, pane: Pane, action: CopilotControlAction): Promise<string> => {
     const prefix = routePrefix[pane.mode];
     const name = paneLabel(pane);
     if (!prefix) throw new Error(`${name} is not a copilot pane: use space_stop_pane, space_restart_pane or space_send_to_pane.`);
@@ -98,8 +102,17 @@ export function createCopilotControl(deps: { invoke: CopilotInvoke; store: Pick<
       await deps.invoke(owner, "PUT", `${at}/${prefix}/settings`, { ...metadata, settings: { ...metadata.settings, paused } });
       return `${paused ? "Paused" : "Resumed"} ${name}.`;
     }
+    // 18/11 (Design run_start, HTTP 404): Design and Video panes have no run; they work through their request queue.
+    if (pane.mode === "DESIGN" || pane.mode === "VIDEO") throw new Error(`${name} (${pane.mode}) works on requests, not runs: ask it with space_${pane.mode.toLowerCase()}_request, or start its agent with start_agent.`);
     const view = await deps.invoke(owner, "POST", `${at}/${prefix}/run/${action.slice("run_".length)}`, {}) as { status?: string; kickoffSent?: boolean };
     if (action === "run_stop") return `Stopped ${name}'s run.`;
     return `${name}'s run is ${view.status ?? "unknown"}${view.kickoffSent ? "; its agent got the kickoff" : ""}.`;
   };
+  return async (owner: string, pane: Pane, action: CopilotControlAction): Promise<string> => control(owner, pane, action).catch((error: unknown) => {
+    const internal = error instanceof Error ? INTERNAL_ERROR.exec(error.message) : null;
+    if (!internal) throw error;
+    throw new Error(`${paneLabel(pane)} (${pane.mode}): ${action} hit an internal error in Space, not in the pane (${internal[1] ?? "the API log has its cause"}). `
+      + `Read the copilot (space_copilot_state): if its agent is not running, start_agent first; otherwise try ${action} once more, `
+      + "and if it fails again, tell the operator (space_ask_operator) with this error.");
+  });
 }

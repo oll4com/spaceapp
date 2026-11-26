@@ -11,11 +11,10 @@ import {
   useImperativeHandle,
   useRef,
   useState,
-  type FocusEvent,
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { quotaLeftAtReset, quotaResetCredits, quotaResetCreditsText } from "@space/contracts";
+import { gatewayResetButtonLabel, gatewayResetClearedText, gatewayResetGrantsText, quotaLeftAtReset, quotaResetCredits, quotaResetCreditsText } from "@space/contracts";
 import type {
   AntigravityUsageAccountList,
   ApiProviderAccountList,
@@ -408,7 +407,6 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   presentation = "strip",
   initialPanel = "accounts",
   sharedTelemetry,
-  onOpenResources,
   hideTrigger = false,
   canManage = true,
   allowChanges = canManage,
@@ -696,7 +694,14 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     return () => window.removeEventListener("space:navigation-open", dismiss);
   }, []);
   useEffect(() => {
-    if (presentation === "embedded") openPanel(initialPanel);
+    if (presentation !== "embedded") return;
+    openPanel(initialPanel);
+    // Nous → Quotas has no Resources telemetry to follow: it reads the accounts again each minute itself.
+    if (sharedTelemetry || initialPanel !== "accounts" || !canManage) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") for (const list of [accounts, antigravityAccounts, claudeAccounts, apiProviderAccounts, resetCredits]) void list.load(true);
+    }, 60_000);
+    return () => window.clearInterval(timer);
   }, [presentation, initialPanel]);
   useImperativeHandle(ref, () => ({
     openResources: (trigger) => {
@@ -815,7 +820,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     }
   }
 
-  function resetLabel(accountId: string): { disabled: boolean; label: string } {
+  function resetLabel(accountId: string): { disabled: boolean; label: string; grants?: string } {
     const attempt = resetAttempts[accountId];
     if (attempt?.status === "resetting") return { disabled: true, label: "Resetting…" };
     if (attempt?.status === "retry") return { disabled: false, label: "Retry reset" };
@@ -826,19 +831,26 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     if (resetCredits.error || resetCredits.data?.error || availability?.availableCreditCount == null) {
       return { disabled: true, label: "Resets —" };
     }
+    // A Claude Fable or session grant still clears its own window when that is used up (else NO_CREDIT, nothing spent), never a week.
+    const grants = availability.grants?.length ? gatewayResetGrantsText(availability.grants) : "";
     return {
-      disabled: availability.availableCreditCount === 0,
-      label: `Resets ${availability.availableCreditCount}`,
+      disabled: availability.availableCreditCount === 0 && !grants,
+      label: gatewayResetButtonLabel(availability.availableCreditCount, availability.grants),
+      ...(grants ? { grants } : {}),
     };
   }
 
   function redemptionMessage(result: CodexResetCreditRedemptionResponse): string {
     if (client === defaultClient && getSpaceRuntimeKind() === "demo") return DEMO_LOCAL_REPLY;
     switch (result.outcome) {
-      case "RESET": return "Reset credit applied. Usage and credits were refreshed.";
+      case "RESET": {
+        // Claude names what it cleared (dev@ 14/11: "Reset credit applied" while the week stayed 93% used); Codex names nothing.
+        if (!result.windowsReset) return "Reset credit applied. Usage and credits were refreshed.";
+        return `Reset credit spent. ${gatewayResetClearedText(result.windowsReset)} Usage and credits were refreshed.`;
+      }
       case "ALREADY_REDEEMED": return "Reset was already applied. Usage and credits were refreshed.";
       case "NOTHING_TO_RESET": return "The account no longer needs a reset. Usage and credits were refreshed.";
-      case "NO_CREDIT": return "No reset credit is currently available. Usage and credits were refreshed.";
+      case "NO_CREDIT": return "No reset credit can clear the used-up window now, so none was spent. Usage and credits were refreshed.";
     }
   }
 
@@ -860,7 +872,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       const successMessage = redemptionMessage(result);
       setResetFeedback({ accountId, message: successMessage });
       try {
-        await Promise.all([resetCredits.load(true), accounts.load(true)]);
+        await Promise.all([resetCredits.load(true), accounts.load(true), claudeAccounts.load(true)]);
         await onChanged?.();
       } catch (refreshError) {
         const refreshMessage = refreshError instanceof Error
@@ -950,23 +962,34 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     if (activePanel === "accounts") {
       const antigravityEntries = antigravityAccountEntries(antigravityAccounts.data?.data ?? [], clock, { proOnly: proFilter, geminiOnly: geminiFilter });
       const codexCredits = quotaResetCredits(accounts.data?.data ?? []);
-      const codexEntries = codexAccountEntries(accounts.data?.data ?? [], clock, (account) => {
-        const reset = resetLabel(account.id);
+      // The operator's own button: spending a reset is theirs alone (nous_msg:734436b0), never Nous's or an agent's.
+      const resetButton = (accountId: string, label: string) => {
+        const reset = resetLabel(accountId);
         return (
           <button
             type="button"
             disabled={reset.disabled}
-            title={reset.disabled ? undefined : `Use the earliest-expiring reset credit for ${account.label}`}
-            onClick={() => void redeemReset(account.id)}
+            title={reset.disabled ? undefined : `Use the earliest-expiring reset credit for ${label}${reset.grants ? `: ${reset.grants}` : ""}`}
+            onClick={() => void redeemReset(accountId)}
           >{reset.label}</button>
         );
-      });
+      };
+      const codexEntries = codexAccountEntries(accounts.data?.data ?? [], clock, (account) => resetButton(account.id, account.label));
       // The Space Gateway profile pools accounts already listed here: no card or count of its own (operator 7/11, nous_msg:94ea75f7).
-      const claudeEntries = claudeAccountEntries((claudeAccounts.data?.data ?? []).filter((account) => account.status !== "GATEWAY"), clock, anthropicBillLines(anthropicBilling.data, clock, dateTimeSettings));
+      // Claude's limit resets get Codex's button on the account Space Gateway holds (nous_msg:2cdc2f9a).
+      const claudeEntries = claudeAccountEntries((claudeAccounts.data?.data ?? []).filter((account) => account.status !== "GATEWAY"), clock,
+        anthropicBillLines(anthropicBilling.data, clock, dateTimeSettings), (account) => resetButton(account.gatewayAccountId!, account.label));
+      const resetStatus = (ids: Array<string | null | undefined>) => resetFeedback && ids.includes(resetFeedback.accountId) ? (
+        <p className="toolbar-metric-reset-status" role="status" aria-live="polite">
+          {resetFeedback.message}
+        </p>
+      ) : null;
       // Only what this installation has (operator 5/11, plan clipboard:sJpyQIBFGszW): a provider with accounts, an API provider
       // with a key. A runtime switched off answers CLI_RUNTIME_DISABLED / CODEX_MASTER_DISABLED: absent, not a failure.
       const overview = buildQuotaOverview({ codex: accounts.data ?? null, agy: antigravityAccounts.data ?? null, claude: claudeAccounts.data ?? null, api: null, fetchedAt: clock }, clock);
       const summaryOf = (provider: QuotaProvider) => overview.providers.find((item) => item.provider === provider) ?? null;
+      // Claude's reset credits are the "At reset" line's own (Space Gateway's pool, each account once).
+      const claudeCredits = summaryOf("claude")?.atReset.entries.find((entry) => entry.resetCredits)?.resetCredits ?? null;
       const failed = (error: string | null) => Boolean(error) && !/^(CLI_RUNTIME_DISABLED|CODEX_MASTER_DISABLED):/.test(error ?? "");
       const apiProviders = configuredApiProviders(apiProviderAccounts.data);
       const present = {
@@ -1108,11 +1131,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
               {codexCredits ? <MetricRow label="Reset credits" value={quotaResetCreditsText(codexCredits)} /> : null}
             </div>
           ) : undefined,
-          footer: resetFeedback ? (
-            <p className="toolbar-metric-reset-status" role="status" aria-live="polite">
-              {resetFeedback.message}
-            </p>
-          ) : null,
+          footer: resetStatus((accounts.data?.data ?? []).map((account) => account.id)),
         })}
 
         {shows("claude") && renderAccountSection({
@@ -1125,6 +1144,12 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           dataError: claudeAccounts.data?.error,
           hasData: Boolean(claudeAccounts.data),
           empty: "No Claude accounts configured.",
+          intro: claudeCredits ? (
+            <div className="toolbar-metric-grid">
+              <MetricRow label="Reset credits" value={quotaResetCreditsText(claudeCredits)} />
+            </div>
+          ) : undefined,
+          footer: resetStatus((claudeAccounts.data?.data ?? []).map((account) => account.gatewayAccountId)),
         })}
 
         {shows("api") && (

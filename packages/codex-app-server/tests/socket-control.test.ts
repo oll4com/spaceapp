@@ -18,6 +18,9 @@ type RpcMessage = {
 
 const cleanups: Array<() => Promise<void>> = [];
 
+// A long TMPDIR pushes the socket past the ~107-byte Unix path limit and every test hangs until timeout.
+const socketTmp = tmpdir().length > 40 ? "/tmp" : tmpdir();
+
 afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
@@ -25,7 +28,7 @@ afterEach(async () => {
 async function listen(
   respond: (message: RpcMessage, socket: WebSocket) => unknown | Promise<unknown>
 ): Promise<{ socketPath: string; messages: RpcMessage[] }> {
-  const root = await mkdtemp(join(tmpdir(), "space-codex-socket-control-"));
+  const root = await mkdtemp(join(socketTmp, "space-codex-socket-control-"));
   const socketPath = join(root, "app-server.sock");
   const messages: RpcMessage[] = [];
   const sockets = new Set<WebSocket>();

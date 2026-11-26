@@ -60,7 +60,7 @@ function fixture(providerId: string) {
 function hangingProcess(onSpawn: () => void) {
   const child = Object.assign(new EventEmitter(), {
     stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
-    kill: vi.fn((_signal: string) => {
+    kill: vi.fn<(signal: string) => boolean>(() => {
       child.stdout.end(); child.stderr.end();
       queueMicrotask(() => child.emit("close", null));
       return true;

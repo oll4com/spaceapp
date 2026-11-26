@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { appointmentJoinUrl, type Appointment, type AppointmentList, type UiLanguage } from "@space/contracts";
+import { appointmentJoinUrl, appointmentSections, type Appointment, type AppointmentHours, type AppointmentInput, type AppointmentList, type AppointmentSectionKey,
+  type UiLanguage } from "@space/contracts";
 import { api } from "../../api.js";
 import { Calendar, Phone, Timer, Users, Video, type LucideIcon } from "../ui-theme/app-icons.js";
-import { browserTimeZone, formatAppDate, formatAppTime, useDateTimeSettings, type DateTimeSettings } from "../date-time-settings/date-time-settings.js";
+import { browserTimeZone, formatAppDate, formatAppTime, formatDateByPattern, useDateTimeSettings, type DateFormat, type DateTimeSettings, type TimeFormat } from "../date-time-settings/date-time-settings.js";
 import { dayLabel, shiftDay } from "../task-dock/calendar-days.js";
 import { uiText } from "../ui-language/ui-language.js";
 
@@ -83,6 +84,86 @@ export function zonedInputToIso(value: string, zone: string): string {
   const offset = (ms: number) => { const local = wall(ms, zone); return Date.parse(`${local.date}T${local.time}:00Z`) - (ms - (ms % 60_000)); };
   // Twice: the offset at the guess, then at the instant it gives (a DST change between them).
   return new Date(guess - offset(guess - offset(guess))).toISOString();
+}
+// Typed dates and times in the operator's Settings format (operator 26/11, nous_msg:cfce1783: the native picker showed 01/31/2027); values stay ISO-shaped.
+/** A day key ("2027-01-31") in the Settings date pattern ("31/01/2027"). */
+export const appointmentDayText = (day: string, format: DateFormat = "DD/MM/YYYY") => formatDateByPattern(new Date(`${day}T12:00:00Z`), format, "UTC");
+/** Typed text in the Settings date pattern as a day key; null when it is not a real date in that order. */
+export function appointmentDayFromText(text: string, format: DateFormat = "DD/MM/YYYY"): string | null {
+  const parts = text.trim().split(/[/.\-\s]+/);
+  if (parts.length !== 3 || parts.some((part) => !/^\d{1,4}$/.test(part))) return null;
+  const [a, b, c] = parts.map(Number) as [number, number, number];
+  const [year, month, day] = format === "YYYY-MM-DD" ? [a, b, c] : format === "MM/DD/YYYY" ? [c, a, b] : [c, b, a];
+  const full = year < 100 ? 2000 + year : year;
+  const date = new Date(Date.UTC(full, month - 1, day));
+  return full >= 1000 && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? date.toISOString().slice(0, 10) : null;
+}
+/** "14:30" as the Settings clock shows it ("2:30 PM" on 12-hour). */
+export function appointmentTimeText(time: string, format: TimeFormat = "24h"): string {
+  const [hour = 0, minute = 0] = time.split(":").map(Number);
+  return format === "12h" ? `${hour % 12 || 12}:${String(minute).padStart(2, "0")} ${hour < 12 ? "AM" : "PM"}` : time;
+}
+/** Typed time ("14:30", "9", "2:30 pm") as "HH:MM"; null when it is not one. */
+export function appointmentTimeFromText(text: string): string | null {
+  const match = /^(\d{1,2})(?:[:.](\d{2}))?\s*([ap])?\.?\s*m?\.?$/i.exec(text.trim());
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2] ?? 0);
+  if (match[3]) { if (hour < 1 || hour > 12) return null; hour = (hour % 12) + (/p/i.test(match[3]) ? 12 : 0); }
+  return hour < 24 && minute < 60 ? `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}` : null;
+}
+
+/** "Weekdays until 24/11/2026" for a recurring one; null for a one-off. */
+export function appointmentRecurrenceLabel(item: Pick<Appointment, "recurrence">, settings: DateTimeSettings, language: UiLanguage = "en"): string | null {
+  const rule = item.recurrence;
+  if (!rule) return null;
+  return uiText(language, rule.every === "WEEKDAY" ? "Weekdays until {day}" : "Every day until {day}", { day: appointmentDayText(rule.until, settings.dateFormat) });
+}
+
+/**
+ * Completed on a recurring one completes its whole period (operator 26/11, nous_msg:cfce1783): it asks first, in the interface language; Cancel
+ * changes nothing. A one-off one goes straight.
+ */
+export function appointmentCompleteAllowed(item: Pick<Appointment, "recurrence">, settings: DateTimeSettings, language: UiLanguage,
+  confirm: (options: { title: string; message: string; confirmLabel: string; cancelLabel: string; tone: "primary" }) => Promise<boolean>): Promise<boolean> {
+  const rule = appointmentRecurrenceLabel(item, settings, language);
+  if (!rule) return Promise.resolve(true);
+  const t = (text: string, vars?: Record<string, string>) => uiText(language, text, vars);
+  return confirm({ title: t("Complete the whole series?"), message: t("Completed applies to the whole period and all its repetitions ({rule}). Yes completes it for every day.", { rule }),
+    confirmLabel: t("Yes"), cancelLabel: t("Cancel"), tone: "primary" });
+}
+
+// Post-call notes and a recontact date from the record (operator 25/11 16:52 BKK, nous_msg:805b311060d04be19dd8ca26).
+const HEADINGS: Partial<Record<AppointmentSectionKey, string>> = { after: "ΣΗΜΕΙΩΣΕΙΣ ΜΕΤΑ ΤΗΝ ΚΛΗΣΗ", recontact: "ΕΠΑΝΕΠΙΚΟΙΝΩΝΙΑ", recontactOf: "ΣΥΝΕΧΕΙΑ ΤΟΥ" };
+export const appointmentAfterCall = (notes: string | null) => appointmentSections(notes).find((section) => section.key === "after")?.text ?? "";
+/** The notes with their `key` section replaced by `text` (dropped when empty), at the end. */
+function notesWith(notes: string | null, key: AppointmentSectionKey, text: string): string {
+  const kept = appointmentSections(notes).filter((section) => section.key !== key).map((section) => (section.heading ? `${section.heading}: ${section.text}` : section.text));
+  return [...kept, ...(text.trim() ? [`${HEADINGS[key]}: ${text.trim()}`] : [])].join("\n");
+}
+export const appointmentNotesWithAfterCall = (notes: string | null, text: string) => notesWith(notes, "after", text);
+
+/**
+ * Set recontact (operator 26/11 11:08 BKK, nous_msg:cfce1783): a new record carrying everything of `item` (title, kind, format, link, every
+ * section with its Agent Files, the post-call notes) as a FLEXIBLE call on `day` within the appointment hours, one per original
+ * (`followup:<id>`, so a second date moves it); `closed` completes the original and names the new one, and the new one names it back.
+ */
+export function appointmentRecontact(item: Appointment, day: string, hours: AppointmentHours, afterCall: string, settings: DateTimeSettings) {
+  const own = appointmentSections(item.notes);
+  const has = (key: AppointmentSectionKey) => own.some((section) => section.key === key && section.text);
+  // An older record without a required section still gets one, so the server takes the copy.
+  const missing = ([["what", `ΤΙ ΕΙΝΑΙ: Επανεπικοινωνία μετά το «${item.title}».`], ["join", "ΕΙΣΟΔΟΣ: Mail ή κλήση στην ίδια επαφή· no sign-in."],
+    ["why", `ΓΙΑΤΙ ΑΞΙΖΕΙ: Συνέχεια του «${item.title}».`], ["prepare", `ΤΙ ΧΡΕΙΑΖΕΣΑΙ: Τις σημειώσεις μετά την κλήση στο ${item.id}.`],
+    ["source", `ΠΗΓΗ: ${item.id}${item.sourceRef ? ` (${item.sourceRef})` : ""}`]] as const).filter(([key]) => !has(key)).map(([, line]) => line);
+  const notes = notesWith(item.notes, "after", afterCall);
+  const previous = `«${item.title}» ${appointmentDayText(appointmentDay(item.startsAt, item.timeZone), settings.dateFormat)} (${item.id})`;
+  const copied = notesWith([notesWith(notes, "recontact", ""), ...missing].join("\n"), "recontactOf", previous);
+  const input: AppointmentInput = {
+    title: item.title, kind: item.kind, format: item.format ?? "OTHER", timing: "FLEXIBLE", location: item.location, timeZone: hours.timeZone,
+    startsAt: zonedInputToIso(`${day}T${hours.start}`, hours.timeZone), deadlineAt: zonedInputToIso(`${day}T${hours.end}`, hours.timeZone),
+    sourceRef: `followup:${item.id}`, notes: copied
+  };
+  return { input, closed: (created: Pick<Appointment, "id">) => notesWith(notes, "recontact", `${appointmentDayText(day, settings.dateFormat)} (${created.id})`) };
 }
 export const isoToZonedInput = (iso: string, zone: string) => { const local = wall(Date.parse(iso), zone); return `${local.date}T${local.time}`; };
 

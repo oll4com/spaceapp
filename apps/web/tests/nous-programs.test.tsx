@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { NousProgram } from "@space/contracts";
-import { approvedTotals, approvedUsed, monthlyTotal, nextDate, NousPrograms, programTags, usedPercent } from "../src/features/nous/NousPrograms.js";
+import { amountRange, approvedTotals, approvedUsed, monthlyTotal, nextDate, NousPrograms, programTags, programUsage, usedPercent } from "../src/features/nous/NousPrograms.js";
 import { announceUiLanguage } from "../src/features/ui-language/ui-language.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
@@ -259,8 +259,8 @@ it("filters by a grouped tag with the status chips, and badges each line (operat
   expect(["Cash", "AI tokens", "Servers/Cloud", "Dev tools", "Perks"].map((label) => chip(label).textContent))
     .toEqual(["Cash0", "AI tokens1", "Servers/Cloud2", "Dev tools0", "Perks2"]);
   const line = (name: RegExp) => screen.getByRole("button", { name });
-  expect([...line(/Startup credits/).querySelectorAll(".nous-program-tag")].map((badge) => badge.textContent)).toEqual(["AI tokens"]);
-  expect([...line(/NVIDIA Inception/).querySelectorAll(".nous-program-tag")].map((badge) => badge.textContent)).toEqual(["Servers/Cloud"]);
+  expect([...line(/Startup credits/).querySelectorAll(".nous-program-tag:not([class*=is-usage])")].map((badge) => badge.textContent)).toEqual(["AI tokens"]);
+  expect([...line(/NVIDIA Inception/).querySelectorAll(".nous-program-tag:not([class*=is-usage])")].map((badge) => badge.textContent)).toEqual(["Servers/Cloud"]);
   fireEvent.click(chip("Servers/Cloud"));
   expect(chip("Servers/Cloud").getAttribute("aria-pressed")).toBe("true");
   expect(screen.getAllByRole("region").map((group) => group.getAttribute("aria-label"))).toEqual(["Google", "NVIDIA"]);
@@ -300,7 +300,7 @@ it("marks the programs worth joining with Choose on top of their type, and the t
   render(<NousPrograms page="startup" active />);
   fireEvent.click(await screen.findByRole("button", { name: /^Choose1/ }));
   expect(screen.getAllByRole("region").map((group) => group.getAttribute("aria-label"))).toEqual(["chosen"]);
-  expect([...screen.getByRole("button", { name: /chosen credits/ }).querySelectorAll(".nous-program-tag")].map((badge) => badge.textContent)).toEqual(["AI tokens", "Choose"]);
+  expect([...screen.getByRole("button", { name: /chosen credits/ }).querySelectorAll(".nous-program-tag:not([class*=is-usage])")].map((badge) => badge.textContent)).toEqual(["AI tokens", "Choose"]);
   expect(document.querySelector(".nous-programs-total")!.textContent).toMatch(/\$4,000$/);
 });
 
@@ -320,4 +320,70 @@ it("shows on an AI-token program's line the Space Gateway pool its credits feed,
   expect(screen.getByText(/AgentRouter answered HTTP 401 to its model list\./, { selector: "p" })).toBeTruthy();
   // Rows no pool spends show none.
   expect(within(screen.getByRole("button", { name: /Deep Learning Institute/ })).queryByText(/Space Gateway/)).toBeNull();
+});
+
+it("badges each line with the company that applied and filters by it with the type and status chips (operator 16/11, nous_msg:52aab269)", async () => {
+  serve(programs.map((program) => program.id === "nvidia-inception" || program.id === "google-cloud" ? { ...program, company: "INTRATRADE" } : program));
+  render(<NousPrograms page="startup" active />);
+  const companies = await screen.findByRole("group", { name: "Applying companies" });
+  expect([...companies.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["INTRATRADE2"]);
+  expect(screen.getByRole("button", { name: /NVIDIA Inception/ }).querySelector(".nous-program-tag.is-company")!.textContent).toBe("INTRATRADE");
+  expect(screen.getByRole("button", { name: /Deep Learning Institute/ }).querySelector(".nous-program-tag.is-company")).toBeNull();
+  fireEvent.click(within(companies).getByRole("button", { name: /^INTRATRADE/ }));
+  expect(screen.getAllByRole("region").map((group) => group.getAttribute("aria-label"))).toEqual(["Google", "NVIDIA"]);
+  fireEvent.click(within(screen.getByRole("group", { name: "Show programs" })).getByRole("button", { name: /^Rejected/ }));
+  expect(screen.getAllByRole("region").map((group) => group.getAttribute("aria-label"))).toEqual(["Google"]);
+});
+
+// Operator 26/11 10:14 BKK (nous_msg:36bdf34f): which programs we use, and amount ranges that can be picked together.
+type Line = NousProgram["benefits"][number];
+const usd = (value: number) => ({ text: `$${value}`, value, currency: "USD" });
+const line = (status: Line["status"], used: number | null, more: Partial<Line> = {}): Line => ({ what: "Credits", account: null, perMonth: null,
+  total: usd(100), used: used === null ? null : usd(used), remaining: null, usageAt: null, validUntil: null, status, source: null, notes: null, allocations: [], ...more });
+
+it("derives whether a program is in use from its benefit lines, and Unknown when nothing says", () => {
+  const approved = { ...base, status: "APPROVED" as const };
+  expect(programUsage(base)).toBe("unused");
+  expect(programUsage(approved)).toBe("unknown");
+  expect(programUsage({ ...approved, benefits: [line("ACTIVE", 0.02)] })).toBe("used");
+  expect(programUsage({ ...approved, benefits: [line("ACTIVE", null, { remaining: usd(90) })] })).toBe("used");
+  expect(programUsage({ ...approved, benefits: [line("ACTIVE", null, { allocations: [{ project: "SpaceApp", percent: null, purpose: null }] })] })).toBe("used");
+  expect(programUsage({ ...approved, benefits: [line("ACTIVE", 0)] })).toBe("unused");
+  expect(programUsage({ ...approved, benefits: [line("PENDING", 0)] })).toBe("unused");
+  expect(programUsage({ ...approved, awaitingCompletion: true })).toBe("unused");
+  expect(programUsage({ ...approved, benefits: [line("NOT_VERIFIED", null)] })).toBe("unknown");
+  expect(programUsage({ ...approved, benefits: [line("ACTIVE", null)] })).toBe("unknown");
+});
+
+it("buckets a program's value into the amount ranges at their edges", () => {
+  const worth = (value: number | null, currency: string | null = "USD") => amountRange({ ...base, amount: { text: "x", value, currency } });
+  expect([10_001, 10_000, 5_000, 4_999, 1_000, 999, 0].map((value) => worth(value))).toEqual(["over10k", "5k-10k", "5k-10k", "1k-5k", "1k-5k", "under1k", "under1k"]);
+  expect(worth(6_000, "EUR")).toBe("5k-10k");
+  expect(worth(null)).toBeNull();
+  expect(worth(20, null)).toBeNull();
+  expect(amountRange({ ...base, benefits: [line("ACTIVE", 0, { total: usd(700) }), line("ACTIVE", 0, { total: usd(700) })] })).toBe("1k-5k");
+});
+
+it("filters by usage and by any picked amount ranges together with the other chips, with counts and a usage badge on each line", async () => {
+  serve([...programs, { ...base, id: "claude", parent: "Anthropic", program: "Claude for Startups", status: "APPROVED", amount: usd(7000),
+    benefits: [line("ACTIVE", 1468.28, { total: usd(7000) })] }]);
+  render(<NousPrograms page="startup" active />);
+  const usage = await screen.findByRole("group", { name: "Program usage" });
+  const amounts = screen.getByRole("group", { name: "Program amounts" });
+  const chips = (group: HTMLElement) => [...group.querySelectorAll("button")].map((button) => button.textContent);
+  const shown = () => screen.getAllByRole("region").map((group) => group.getAttribute("aria-label"));
+  expect(chips(usage)).toEqual(["In use1", "Not in use3", "Usage unknown1"]);
+  expect(chips(amounts)).toEqual(["> 10,0000", "5,000–10,0003", "1,000–5,0000", "< 1,0000"]);
+  expect(screen.getByRole("button", { name: /Claude for Startups/ }).querySelector(".is-usage-used")?.textContent).toBe("In use");
+  fireEvent.click(within(amounts).getByRole("button", { name: /^5,000–10,000/ }));
+  fireEvent.click(within(amounts).getByRole("button", { name: /^< 1,000/ }));
+  expect(shown().sort()).toEqual(["Anthropic", "Google", "NVIDIA"]);
+  expect(chips(usage)).toEqual(["In use1", "Not in use1", "Usage unknown1"]);
+  fireEvent.click(within(usage).getByRole("button", { name: /^In use/ }));
+  expect(shown()).toEqual(["Anthropic"]);
+  expect(chips(amounts)).toEqual(["> 10,0000", "5,000–10,0001", "1,000–5,0000", "< 1,0000"]);
+  fireEvent.click(within(usage).getByRole("button", { name: /^In use/ }));
+  fireEvent.click(within(amounts).getByRole("button", { name: /^5,000–10,000/ }));
+  fireEvent.click(within(amounts).getByRole("button", { name: /^< 1,000/ }));
+  expect(shown()).toHaveLength(4);
 });

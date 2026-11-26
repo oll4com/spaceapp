@@ -100,7 +100,7 @@ export function registerVideo(app: FastifyInstance, deps: VideoWiring): VideoSer
     if (!session) throw new SpaceConflictError("Open the editor's terminal first: the pane has no running CLI session.");
     const traceId = `video:${makeSpaceId("kickoff")}`;
     await terminal.runSerializedTerminalMutation(session.sessionId, async () => {
-      await submitCliPrompt(terminal, session.sessionId, VIDEO_KICKOFF, traceId, `${traceId}:kickoff`);
+      await submitCliPrompt(terminal, session.sessionId, VIDEO_KICKOFF, traceId, `${traceId}:kickoff`, { paneId: session.paneId });
     });
   });
   const openPane = deps.invoke && deps.inspect ? async (owner: string, roomId: string): Promise<Pane | null> => {

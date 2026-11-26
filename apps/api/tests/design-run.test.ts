@@ -33,7 +33,7 @@ async function fixture(extra: Partial<DesignServiceOptions> = {}) {
     repository, store, artifactRoot, brandRoot: "/opt/spaceapp/apps/web/public/brand",
     roomOwner: async (roomId) => store.getRoom(roomId).ownerUserId ?? null,
     render: async (_owner, input) => { renders.push(input); return { bytes: pngOf(input.width, input.height), mimeType: "image/png", width: input.width, height: input.height }; },
-    generate: async (input) => ({ bytes: pngOf(1024, 576), mimeType: "image/png", model: "gemini-3.1-flash-image", text: null }),
+    generate: async () => ({ bytes: pngOf(1024, 576), mimeType: "image/png", model: "gemini-3.1-flash-image", text: null }),
     attachToMarketingPost: async (_owner, postId, assets) => { attached.push({ postId, assets }); },
     marketingPostExists: async (_owner, postId) => postId === "mktpost:post123",
     kickoff: { ready: async () => true, send: async (pane) => { kickoffs.push(pane.id); } },

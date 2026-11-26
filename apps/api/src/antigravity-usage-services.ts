@@ -1,4 +1,4 @@
-import { readFile, writeFile, readdir, readlink } from "node:fs/promises";
+import { readFile, readdir, readlink } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
   antigravityUsageAccountListSchema,
@@ -51,7 +51,7 @@ export function extractEmailFromIdToken(
         const decoded = Buffer.from(payload, "base64").toString("utf8");
         const claims = JSON.parse(decoded) as { email?: string };
         if (typeof claims.email === "string" && claims.email.includes("@")) return claims.email;
-      } catch {}
+      } catch { /* not a decodable JWT payload: no email from it */ }
     }
   }
   return typeof idTokenEmail === "string" && idTokenEmail.includes("@") ? idTokenEmail.trim() : null;
@@ -186,7 +186,7 @@ export async function discoverAntigravityProfiles(
         });
       }
     }
-  } catch {}
+  } catch { /* no profiles directory: only the locations found so far */ }
 
   return locations;
 }
@@ -213,6 +213,8 @@ export function createAntigravityUsageAccountProvider(
   let collectFailed = false;
   let cached: { value: AntigravityUsageAccountList; collectedAtMs: number } | null = null;
   let inFlight: Promise<AntigravityUsageAccountList> | null = null;
+  // Refreshed tokens stay in memory: CLI panes share the token file, and rewriting it in place raced their launches into "Select login method".
+  const refreshedTokens = new Map<string, { accessToken: string; expiresAtMs: number }>();
 
   async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
     const controller = new AbortController();
@@ -235,7 +237,7 @@ export function createAntigravityUsageAccountProvider(
       return null;
     }
 
-    let tokenData: any;
+    let tokenData: { id_token?: string | null; id_token_email?: string | null; token?: { access_token?: string; refresh_token?: string; expiry?: string } } | null;
     try {
       tokenData = JSON.parse(tokenJsonStr);
     } catch {
@@ -249,10 +251,15 @@ export function createAntigravityUsageAccountProvider(
 
     const expiryMs = expiryStr ? Date.parse(expiryStr) : Number.NaN;
     const currentMs = now().getTime();
-    const needsRefresh =
+    let needsRefresh =
       !accessToken ||
       !Number.isFinite(expiryMs) ||
       expiryMs <= currentMs + 120_000;
+    const memo = refreshToken ? refreshedTokens.get(refreshToken) : undefined;
+    if (needsRefresh && memo && memo.expiresAtMs > currentMs + 120_000) {
+      accessToken = memo.accessToken;
+      needsRefresh = false;
+    }
 
     if (needsRefresh && refreshToken) {
       try {
@@ -268,18 +275,16 @@ export function createAntigravityUsageAccountProvider(
           body: body.toString()
         });
         if (refreshResp.ok) {
-          const refreshData = (await refreshResp.json()) as any;
+          const refreshData = (await refreshResp.json()) as { access_token?: string; expires_in?: number };
           if (refreshData.access_token) {
             accessToken = refreshData.access_token;
-            tokenData.token = {
-              ...tokenData.token,
-              access_token: refreshData.access_token,
-              expiry: new Date(currentMs + (refreshData.expires_in ?? 3600) * 1000).toISOString()
-            };
-            await writeFile(loc.tokenPath, JSON.stringify(tokenData, null, 2), "utf8").catch(() => {});
+            refreshedTokens.set(refreshToken, {
+              accessToken: refreshData.access_token,
+              expiresAtMs: currentMs + (refreshData.expires_in ?? 3600) * 1000
+            });
           }
         }
-      } catch {}
+      } catch { /* refresh failed: keep the stored access token */ }
     }
 
     const emptyGroup = (displayName: string): AntigravityUsageGroup => ({
@@ -326,7 +331,7 @@ export function createAntigravityUsageAccountProvider(
           })
         });
         if (lcaResp.ok) {
-          const lcaData = (await lcaResp.json()) as any;
+          const lcaData = (await lcaResp.json()) as { cloudaicompanionProject?: unknown; paidTier?: { name?: string; id?: string }; currentTier?: { name?: unknown; id?: string } } | null;
           if (typeof lcaData?.cloudaicompanionProject === "string" && lcaData.cloudaicompanionProject) {
             quotaProject = lcaData.cloudaicompanionProject;
           }

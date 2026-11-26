@@ -1,6 +1,6 @@
 ---
 name: space-taste-skill
-description: "Taste Skill (Leonxlnx/taste-skill) visual-direction variants for marketing-style web pages, opt-in: use when the operator asks for taste-skill or for a premium, anti-template look on a landing page, portfolio or site redesign. For product UI, dashboards and apps such as Space use space-ui-ux-pro-max instead."
+description: "Taste Skill visual variants for marketing pages (landing, portfolio, site redesign). Opt-in; for product UI use space-ui-ux-pro-max."
 metadata:
   category: WORKFLOW
 ---

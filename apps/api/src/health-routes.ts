@@ -38,7 +38,7 @@ async function readGitVersionMetadata(cwd = process.env.SPACE_GIT_ROOT ?? proces
 // Three git processes per read (status walks the whole checkout) cost 2.5% of a saturated API (10/11); /readyz and /version share one read a minute.
 const GIT_VERSION_CACHE_MS = 60_000;
 let gitVersionCache: { at: number; value: ReturnType<typeof readGitVersionMetadata> } | null = null;
-function cachedGitVersionMetadata() {
+export function cachedGitVersionMetadata() {
   if (!gitVersionCache || Date.now() - gitVersionCache.at >= GIT_VERSION_CACHE_MS) gitVersionCache = { at: Date.now(), value: readGitVersionMetadata() };
   return gitVersionCache.value;
 }

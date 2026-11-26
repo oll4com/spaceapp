@@ -90,7 +90,9 @@ export function formatPaneContextBlock(payload: PaneContextDragPayload): string 
 
 function compactSpanText(value: string, maxLength: number): string {
   return value
+    // eslint-disable-next-line no-control-regex -- strips terminal escape sequences from pasted span text
     .replace(/\u001b(?:[@-_]|\[[0-?]*[ -/]*[@-~])/g, "")
+    // eslint-disable-next-line no-control-regex -- control characters become spaces
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
     .replace(/\r/g, " ")
     .replace(/\s+/g, " ")

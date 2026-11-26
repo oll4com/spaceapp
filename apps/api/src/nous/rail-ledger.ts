@@ -68,7 +68,7 @@ const cell = (text: string | null) => (text ?? "—").replace(/\s+/g, " ").repla
  * prediction, answer, HIT/MISS, rule), and the decision-rules note's Space part lists every kind whose last 2 or more answers agree. The
  * first run only marks where it starts (the rows before it are Nous's own lines); the mark is kept beside the file.
  */
-export async function mirrorLedger(owner: string, repo: Pick<NousRepository, "listLedger" | "listNotes" | "setNote">,
+export async function mirrorLedger(owner: string, repo: Pick<NousRepository, "listLedger" | "listNotes" | "setNote" | "getNote">,
   options: { file: string; timeZone: string; now?: number }): Promise<number> {
   const markFile = join(dirname(options.file), ".ledger-mirror.json");
   const marks = JSON.parse(await readFile(markFile, "utf8").catch(() => "{}")) as Record<string, { at: string; refs: string[] }>;
@@ -95,7 +95,7 @@ export async function mirrorLedger(owner: string, repo: Pick<NousRepository, "li
   await mkdir(dirname(markFile), { recursive: true });
   await writeFile(markFile, JSON.stringify(marks), { mode: 0o644 });
   // The note keeps Nous's own text; only the part between RULES_HEAD and RULES_END is Space's, rebuilt whole each time.
-  const note = (await repo.listNotes(owner)).find((found) => found.key === DECISION_RULES_NOTE)?.text ?? "";
+  const note = (repo.getNote ? await repo.getNote(owner, DECISION_RULES_NOTE) : (await repo.listNotes(owner)).find((found) => found.key === DECISION_RULES_NOTE))?.text ?? "";
   const start = note.indexOf(RULES_HEAD);
   const end = start < 0 ? -1 : note.indexOf(RULES_END, start);
   const own = start < 0 ? note.trimEnd() : `${note.slice(0, start).trimEnd()}${end < 0 ? "" : `\n\n${note.slice(end + RULES_END.length).trim()}`}`.trimEnd();

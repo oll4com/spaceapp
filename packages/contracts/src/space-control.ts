@@ -11,7 +11,7 @@ export const controlScreenshotViewports = ["desktop", "desktop-hd", "desktop-4k"
 export const controlCaptureAspects = { "16:9": "desktop-hd", "1:1": "square", "4:5": "portrait", "9:16": "story", full: "desktop" } as const;
 // The engine's DOCKS (plus "none": the dock closed), SETTINGS_SECTIONS and HEALTH_SECTIONS (scripts/tests/space-media-capture.test.mjs keeps them equal).
 export const controlCaptureDocks = ["rooms", "notifications", "room-agent", "shared-chat", "media", "streaming", "source-control", "agent-files",
-  "clipboard", "tasks", "links", "settings", "health", "cli", "agent-sessions", "nous", "nous-fullscreen", "nous-load", "nous-quotas", "nous-task-runs", "nous-goals", "nous-needs-you", "nous-startup", "nous-funding" /* alias of nous-startup since 7/11 */, "nous-jobs", "nous-crypto", "nous-marketing", "nous-score", "nous-requests", "nous-affiliate", "nous-affiliate-fullscreen", "none"] as const;
+  "clipboard", "tasks", "links", "settings", "health", "cli", "agent-sessions", "nous", "nous-fullscreen", "nous-load", "nous-quotas", "nous-task-runs", "nous-goals", "nous-needs-you", "nous-startup", "nous-funding" /* alias of nous-startup since 7/11 */, "nous-jobs", "nous-crypto", "nous-marketing", "nous-score", "nous-plans", "nous-requests", "nous-affiliate", "nous-affiliate-fullscreen", "none"] as const;
 export const controlCaptureSettingsSections = ["appearance", "docks", "panes", "widgets", "notifications", "dots", "plugins", "agent-capabilities",
   "default-provider", "voice-input", "releases", "cli-pane-controls", "date-time", "image-previews", "prompt-variables", "room-cache", "git-worktrees",
   "diagnostics", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "nous", "history"] as const;
@@ -87,6 +87,7 @@ export const controlActionSchema = z.discriminatedUnion("kind", [
     text:text.optional(), title:z.string().max(200).optional(), minimumModel:z.string().max(160).optional(), minimumReasoning:z.enum(["none","minimal","low","medium","high","xhigh","max","ultra"]).optional(), source:z.enum(["COPY","PASTE","MANUAL_NOTE","AGENT_NOTE","PLAN"]).default("MANUAL_NOTE"), completed:z.boolean().optional(),
     confirm:z.boolean().optional(), confirmed:z.boolean().optional()}).strict(),
   z.object({kind:z.literal("native_command"), target:controlTargetSchema,
+    // eslint-disable-next-line no-control-regex -- rejects control characters in a native command on purpose
     command:z.string().min(2).max(2000).regex(/^\/[a-zA-Z][a-zA-Z0-9_-]*(?: [^\x00-\x1f\x7f]*)?$/), when:z.enum(["NOW","AFTER_TURN"]).default("AFTER_TURN")}).strict(),
   z.object({kind:z.literal("watch"), operation:z.enum(["register","cancel","status","ack"]), id:id.optional(), target:controlTargetSchema.optional(), paneId:id.optional(),
     targetTaskRef:z.string().trim().min(1).max(200).optional(), timeoutMs:z.number().int().min(1000).max(3_600_000).optional(), maxRetries:z.number().int().min(0).max(3).optional(),

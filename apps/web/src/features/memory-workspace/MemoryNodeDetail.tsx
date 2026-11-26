@@ -13,7 +13,8 @@ export function MemoryNodeDetail({ detail, loading, onClose, onSelectNode, backL
   backLabel?: string;
 }) {
   const panelRef = useRef<HTMLElement>(null);
-  useEffect(() => { if (detail) panelRef.current?.focus(); }, [detail?.node.id]);
+  const nodeId = detail?.node.id;
+  useEffect(() => { if (nodeId !== undefined) panelRef.current?.focus(); }, [nodeId]);
   const record = detail?.record;
   const related = detail?.relatedNodes.filter(node => node.type === "MEMORY" || node.type === "TOPIC" || node.type === "SOURCE") ?? [];
   return <aside ref={panelRef} className="memory-node-detail" aria-label="Memory node detail" tabIndex={-1}>

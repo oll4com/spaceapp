@@ -1,6 +1,7 @@
 import { execFile } from "../safe-child-process.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 // What the operator sees before approving a Vault broker reinstall (Vault review 2026-10-22, plan clipboard:HIPO0ALNjfsP
@@ -43,10 +44,14 @@ export async function vaultBrokerReport(deps: VaultBrokerReportDeps = {}): Promi
   return lines.join("\n");
 }
 
-function git(repo: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile("git", ["--no-pager", "--no-optional-locks", "-c", "safe.directory=*", "-C", repo, ...args],
-      { timeout: 15_000, maxBuffer: 1_048_576, encoding: "utf8", env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: "C.UTF-8", GIT_TERMINAL_PROMPT: "0" } },
-      (error, stdout, stderr) => error ? reject(new Error((stderr || error.message).trim().split("\n")[0]?.slice(0, 200) ?? "git failed")) : resolve(stdout));
-  });
+const execFileAsync = promisify(execFile);
+async function git(repo: string, args: string[]): Promise<string> {
+  // Promisified, so it runs in the exec helper instead of forking the API (public-host lag 14/11).
+  try {
+    return (await execFileAsync("git", ["--no-pager", "--no-optional-locks", "-c", "safe.directory=*", "-C", repo, ...args],
+      { timeout: 15_000, maxBuffer: 1_048_576, encoding: "utf8", env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: "C.UTF-8", GIT_TERMINAL_PROMPT: "0" } })).stdout;
+  } catch (caught) {
+    const error = caught as { message: string; stderr?: string };
+    throw new Error((error.stderr || error.message).trim().split("\n")[0]?.slice(0, 200) ?? "git failed", { cause: caught });
+  }
 }

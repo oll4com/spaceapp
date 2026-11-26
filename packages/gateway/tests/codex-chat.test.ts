@@ -35,6 +35,24 @@ describe("Chat Completions over Responses", () => {
     expect(() => chatToResponses({ model: "m", messages: [{ role: "robot", content: "x" }] })).toThrow(/Unsupported message role/);
   });
 
+  it("keeps instructions and prior turns byte-identical across turns when volatile room state rides on the latest user turn", () => {
+    const turn = (nowText: string) => chatToResponses({
+      model: "gpt-5.6-sol", prompt_cache_key: "room-session-1",
+      messages: [
+        { role: "system", content: "You are the Room Agent." },
+        { role: "user", content: "first" },
+        { role: "assistant", content: "one" },
+        { role: "user", content: `second\n\n[Current room state (from Space, not operator text)]\n${nowText}` }
+      ]
+    });
+    const first = turn("Now: 08:03");
+    const second = turn("Now: 08:09");
+    expect(first.instructions).toBe("You are the Room Agent.");
+    expect(second.instructions).toBe(first.instructions);
+    expect(second.prompt_cache_key).toBe("room-session-1");
+    expect((second.input as unknown[]).slice(0, 2)).toEqual((first.input as unknown[]).slice(0, 2));
+  });
+
   it("drops Responses fields the Codex backend rejects and keeps the rest (Copilot BYOK, OpenAI SDK clients)", () => {
     const body = normalizeResponsesRequest({ model: "gpt-5.5", input: "hi", max_output_tokens: 4096, temperature: 0.2, top_p: 1, truncation: "auto",
       metadata: { a: "b" }, user: "u", safety_identifier: "s", prompt_cache_retention: "24h", prompt_cache_options: {}, prompt_cache_key: "k",

@@ -54,18 +54,25 @@ const stopWords = new Set([
 
 export function memoryQueryTerms(query: string): string[] {
   return [...new Set(normalizeMemoryQuery(query).split(/\s+/)
-    .map(t => t.replace(/^[?;:,!"'`()\[\]{}]+|[?;:,!"'`()\[\]{}]+$/g, ""))
+    .map(t => t.replace(/^[?;:,!"'`()[\]{}]+|[?;:,!"'`()[\]{}]+$/g, ""))
     .filter(t => t && !stopWords.has(t)))];
 }
 
-export function memoryTermMatches(text: string, term: string): boolean {
+/** One term's test, built once: a search asks it of every document and passage (a RegExp per call was most of a search). */
+export function memoryTermMatcher(term: string): (text: string) => boolean {
   const numeric = /\d/.test(term);
-  if (!numeric && !/^[\p{L}]{1,3}$/u.test(term)) return text.includes(term);
+  if (!numeric && !/^[\p{L}]{1,3}$/u.test(term)) return text => text.includes(term);
   const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // Short words such as IP must not match clipboard, Stripe, or unrelated IDs.
-  if (!numeric) return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "u").test(text);
   // Numeric values and machine identifiers must not match prefixes/suffixes.
   // A standalone year may still match the year component of an ISO date.
   const numericContinuation = term.includes("-") ? "[.-]\\d" : "\\.\\d";
-  return new RegExp(`(?<![\\p{L}\\p{N}_.])${escaped}(?![\\p{L}\\p{N}_]|${numericContinuation})`, "u").test(text);
+  const pattern = numeric
+    ? new RegExp(`(?<![\\p{L}\\p{N}_.])${escaped}(?![\\p{L}\\p{N}_]|${numericContinuation})`, "u")
+    : new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "u");
+  return text => pattern.test(text);
+}
+
+export function memoryTermMatches(text: string, term: string): boolean {
+  return memoryTermMatcher(term)(text);
 }

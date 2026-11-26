@@ -121,15 +121,12 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
     }
   };
   const flush = (): Promise<void> => {
-    if (!inFlight) {
-      inFlight = (async () => {
-        try {
-          while (queue.length) await flushOnce();
-        } finally {
-          inFlight = null;
-        }
-      })();
-    }
+    // .finally runs after the assignment even when the queue is empty; a sync reset would leave a settled promise that blocks every later flush.
+    inFlight ??= (async () => {
+      while (queue.length) await flushOnce();
+    })().finally(() => {
+      inFlight = null;
+    });
     return inFlight;
   };
   const timer = setInterval(() => void flush(), options.flushIntervalMs ?? 5000);

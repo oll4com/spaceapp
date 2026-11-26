@@ -67,7 +67,7 @@ function fixture(options: { busy?: boolean; slack?: boolean } = {}) {
   const runs = new Map<string, Run>();
   const messages = new Map<string, Array<{ messageId: string; content: string }>>();
   let sessions = 0;
-  const slack = { post: vi.fn(async (_input: { channel: string; text: string; threadTs?: string | null }) => undefined), openDirect: vi.fn(async (user: string) => `D-${user}`) };
+  const slack = { post: vi.fn<(input: { channel: string; text: string; threadTs?: string | null }) => Promise<undefined>>(async () => undefined), openDirect: vi.fn(async (user: string) => `D-${user}`) };
   const finishRun = (requestKey: string, content: string, status = "COMPLETED") => {
     const run = runs.get(requestKey)!; run.status = status;
     const sessionId = memory.threads[0]!.sessionId!;
@@ -90,8 +90,8 @@ function fixture(options: { busy?: boolean; slack?: boolean } = {}) {
       if (options.busy) throw new SpaceConflictError("busy");
       runs.set(input.requestKey, { runId: `run:${runs.size + 1}`, status: "RUNNING", responseMessageId: `msg:${runs.size + 1}`, createdAt: new Date().toISOString(), errorMessage: null });
     }),
-    pendingApprovals: vi.fn(async (_owner: string, _dot: string, _session: string) => [] as Array<{ invocationId: string; summary: string }>),
-    goalFor: vi.fn(async (_owner: string, _dot: string, _session: string) => null as { goalId: string; status: string; statusReason: string | null; createdAt: string; updatedAt: string } | null),
+    pendingApprovals: vi.fn<(owner: string, dot: string, session: string) => Promise<Array<{ invocationId: string; summary: string }>>>(async () => []),
+    goalFor: vi.fn<(owner: string, dot: string, session: string) => Promise<{ goalId: string; status: string; statusReason: string | null; createdAt: string; updatedAt: string } | null>>(async () => null),
     answerGoal: vi.fn(async () => undefined),
     appOrigin: "https://space.example",
     log: vi.fn()

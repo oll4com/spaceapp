@@ -1,5 +1,5 @@
 import type { PlatformGateway, SpaceRuntime } from "../runtime/SpaceRuntime.js";
-import { DEMO_LOCAL_REPLY, DemoStore } from "./DemoStore.js";
+import { DemoStore } from "./DemoStore.js";
 import type { DemoFixture } from "./demo-fixture.js";
 import { MockBrowserSocket } from "./mock-browser-socket.js";
 import { handleCliMockInput } from "./mock-cli-transcripts.js";
@@ -94,7 +94,7 @@ class LocalTerminalSocket extends EventTarget {
 
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
     if (this.readyState !== this.OPEN || typeof data !== "string") return;
-    let payload: { type?: string; data?: string } | null = null;
+    let payload: { type?: string; data?: string };
     try { payload = JSON.parse(data) as { type?: string; data?: string }; } catch { return; }
     if (payload.type === "ping") {
       this.emit("message", new MessageEvent("message", { data: JSON.stringify({ type: "pong" }) }));

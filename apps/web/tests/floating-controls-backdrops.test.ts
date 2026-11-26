@@ -20,6 +20,9 @@ describe("floating controls overlay visibility", () => {
   it("does not make terminal class changes invalidate a whole-shell substring search", () => {
     expect(selector).not.toContain('[class*=');
   });
+  it("lists the backdrops directly in :has(), which costs half of :has(:is(list)) per terminal row repaint (22/11)", () => {
+    expect(selector).not.toContain(":has(:is(");
+  });
   it.each([...new Set(backdropClasses(src))])("continues hiding controls behind %s", backdrop => {
     const shell = document.createElement("div");
     shell.className = "space-shell";

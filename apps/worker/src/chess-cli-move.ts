@@ -39,7 +39,7 @@ const MAX_BODY_BYTES = 32 * 1024;
 const MAX_PROMPT_CHARS = 12_000;
 const MAX_TIMEOUT_MS = 180_000;
 const RUNTIME_PATTERN = /^cli:[a-z][a-z0-9-]{1,30}$/;
-const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,159}$/;
+const MODEL_PATTERN = /^[A-Za-z0-9@][A-Za-z0-9._:/+@-]{0,159}$/;
 const EFFORT_PATTERN = /^[a-z][a-z0-9_-]{0,19}$/;
 const CLAUDE_PROFILE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const PROVIDER_FAILURE = /RESOURCE_EXHAUSTED|quota|rate.?limit|\b429\b|unauthori[sz]ed|authentication fail|invalid api key|no available tokens|insufficient balance/i;
@@ -116,7 +116,9 @@ export async function runChessCliMove(input: ChessCliMoveInput, signal: AbortSig
     const stop = () => {
       try {
         child.kill("SIGTERM");
-      } catch {}
+      } catch {
+        // The child already exited; nothing to stop.
+      }
     };
     const onAbort = () => {
       stop();

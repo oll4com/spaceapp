@@ -37,6 +37,7 @@ export async function stageFileUpload(options: {
   fileBytes?: number;
 }): Promise<StagedUpload> {
   const filename = path.basename(options.filename);
+  // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
   if (!filename || filename === "." || filename === ".." || /[\x00-\x1f\x7f]/.test(filename)) {
     throw new FilesystemError("Invalid upload filename.", 400, "INVALID_FILENAME");
   }

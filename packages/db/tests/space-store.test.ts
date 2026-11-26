@@ -2118,6 +2118,10 @@ class FakePgClient implements PgClientLike {
       });
       return { rows: [], rowCount: 1 };
     }
+    // A moved pane's plans, cards, Threads and decisions: covered on real PostgreSQL by pane-move-attention-postgres.test.ts.
+    if (/^\s*UPDATE (clipboard_items|space_notifications|space_inbox_threads|nous_decisions) SET (room_id|refs)/.test(sql)) {
+      return { rows: [], rowCount: 0 };
+    }
     if (sql.includes("DELETE FROM artifacts")) {
       const artifactId = String(values[0]);
       const before = this.artifactRows.length;
@@ -3448,7 +3452,7 @@ describe("PostgresSpaceStore", () => {
       content: "",
       status: "RUNNING"
     });
-    const statusMessage = await store.createSpaceAgentMessage({
+    await store.createSpaceAgentMessage({
       messageId: "agent_msg:status-1",
       sessionId: session.sessionId,
       role: "system",

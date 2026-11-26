@@ -108,13 +108,16 @@ export const plainText = (html: string) => decode(decode(html).replace(/<[^>]+>/
 
 const CODES = "USD|EUR|GBP|CHF|CAD|AUD|NZD|SEK|NOK|DKK|PLN|CZK|SGD|INR";
 const SYMBOLS: Record<string, string> = { "$": "USD", "€": "EUR", "£": "GBP" };
-const AMOUNT = String.raw`(\d{1,3}(?:[,.]\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d+)?)\s?([kK]\b)?`;
+// RedStone 16/11 (Polish postings): "30 000" groups thousands with a space.
+const AMOUNT = String.raw`(\d{1,3}(?:[,. ]\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d+)?)\s?([kK]\b)?`;
 const UNIT = String.raw`(?:\s?\/\s?(yr|year|hr|hour|mo|month)\b)?`;
-const RANGE_PATTERN = new RegExp(String.raw`(?:\b(${CODES})\s?|([$€£])\s?)${AMOUNT}${UNIT}\s*(?:-|–|—|to)\s*(?:\b(${CODES})\s?|([$€£])\s?)?${AMOUNT}${UNIT}(?:\s?\b(${CODES})\b)?`, "gi");
+// RedStone 16/11 ("Senior 30,000–40,000 PLN/month B2B" read as no range): the currency may only follow the range, its unit after it.
+const RANGE_PATTERN = new RegExp(String.raw`(?:\b(${CODES})\s?|([$€£])\s?)?${AMOUNT}${UNIT}\s*(?:-|–|—|to)\s*(?:\b(${CODES})\s?|([$€£])\s?)?${AMOUNT}${UNIT}(?:\s?\b(${CODES})\b${UNIT})?`, "gi");
 function amount(digits: string, thousands: string | undefined): number {
   if (thousands) return Number(digits.replace(/,/g, "")) * 1000;
   if (/^\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?$/.test(digits)) return Number(digits.replace(/,/g, ""));
   if (/^\d{1,3}(?:\.\d{3})+$/.test(digits)) return Number(digits.replace(/\./g, ""));
+  if (/^\d{1,3}(?: \d{3})+(?:\.\d{1,2})?$/.test(digits)) return Number(digits.replace(/ /g, ""));
   return Number(digits);
 }
 function periodNear(unit: string | undefined, around: string): SalaryPeriod | null {
@@ -124,8 +127,11 @@ function periodNear(unit: string | undefined, around: string): SalaryPeriod | nu
   if (/\b(per hour|hourly|an hour)\b|\/hour/i.test(around)) return "HOUR";
   return null;
 }
-/** The first plausible pay range written in a job description ("$192,000 — $216,000 USD", "€60k-80k per year"). */
-export function salaryRangeFromText(text: string): SalaryRange | null {
+/** The first plausible pay range written in a job description ("$192,000 — $216,000 USD", "€60k-80k per year"); with `level` (senior),
+ * the first one that word comes just before, when a posting prices several levels. */
+const LEVELS = /\b(senior|junior|lead|principal|staff|mid)\b/gi;
+export function salaryRangeFromText(text: string, level?: string): SalaryRange | null {
+  let first: SalaryRange | null = null;
   for (const match of text.matchAll(RANGE_PATTERN)) {
     let min = amount(match[3]!, match[4]);
     const max = amount(match[8]!, match[9] ?? match[4]);
@@ -133,15 +139,18 @@ export function salaryRangeFromText(text: string): SalaryRange | null {
     const symbol = match[2] ?? match[7];
     const currency = (match[1] ?? match[6] ?? match[11])?.toUpperCase() ?? (symbol ? SYMBOLS[symbol] : undefined);
     const around = text.slice(Math.max(0, match.index! - 80), match.index! + match[0].length + 80);
-    const period = periodNear(match[5] ?? match[10], around) ?? (min >= 15_000 ? "YEAR" : null);
-    if (currency && period && plausible(period, min, max)) return { currency, period, min, max };
+    const period = periodNear(match[5] ?? match[10] ?? match[12], around) ?? (min >= 15_000 ? "YEAR" : null);
+    if (!currency || !period || !plausible(period, min, max)) continue;
+    // The level word nearest before the range is its tier (a "Senior Backend" heading can sit just before the Mid range).
+    if (!level || [...fold(text.slice(Math.max(0, match.index! - 60), match.index!)).matchAll(LEVELS)].pop()?.[1] === fold(level)) return { currency, period, min, max };
+    first ??= { currency, period, min, max };
   }
-  return null;
+  return first;
 }
 
 const UNIT_TEXT: Record<string, SalaryPeriod> = { YEAR: "YEAR", MONTH: "MONTH", WEEK: "WEEK", DAY: "DAY", HOUR: "HOUR" };
 /** schema.org JobPosting.baseSalary (Ashby, Lever, Workday and most career sites), else a range in its description. */
-export function salaryRangeFromJsonLd(html: string): SalaryRange | null {
+export function salaryRangeFromJsonLd(html: string, level?: string): SalaryRange | null {
   const nodes: Array<Record<string, unknown>> = [];
   const visit = (value: unknown): void => {
     if (Array.isArray(value)) { value.forEach(visit); return; }
@@ -161,8 +170,9 @@ export function salaryRangeFromJsonLd(html: string): SalaryRange | null {
     const currency = String(salary?.currency ?? "").toUpperCase();
     if (min && max && period && /^[A-Z]{3}$/.test(currency) && plausible(period, min, max)) return { currency, period, min, max };
   }
-  for (const node of nodes) if (typeof node.description === "string") { const range = salaryRangeFromText(plainText(node.description)); if (range) return range; }
-  return null;
+  for (const node of nodes) if (typeof node.description === "string") { const range = salaryRangeFromText(plainText(node.description), level); if (range) return range; }
+  // RedStone 16/11: a career page with no JobPosting data still writes its range on the page.
+  return salaryRangeFromText(plainText(html.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ")), level);
 }
 
 /** Greenhouse's job API with pay_transparency=true: pay_input_ranges, else a range in the content. */
@@ -182,7 +192,7 @@ export function greenhouseSalaryRange(payload: unknown): SalaryRange | null {
 export function parsePayscale(html: string): { currency: string; figures: Figures; sampleCount: number | null; matched: string; cities: Array<{ name: string; url: string }> } | null {
   const script = /<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/.exec(html)?.[1];
   if (!script) return null;
-  let data: Record<string, any>;
+  let data: { compensation?: { salary?: Record<string, unknown> }; currencyCode?: unknown; byDimension?: Record<string, { rows?: unknown[] } | undefined>; dimensions?: { job?: unknown } };
   try { data = JSON.parse(script)?.props?.pageProps?.pageData ?? {}; } catch { return null; }
   const salary = data.compensation?.salary ?? {};
   const figures = figuresOf({ p10: salary["10"], p25: salary["25"], median: salary["50"], p75: salary["75"], p90: salary["90"] });
@@ -257,7 +267,7 @@ export function createSalaryResearch(options: SalaryResearchOptions) {
   }
   const failed = (value: { text: string } | SkippedSource): value is SkippedSource => "reason" in value;
 
-  async function postingRange(url: string): Promise<{ range: PostingRange } | SkippedSource> {
+  async function postingRange(url: string, level?: string): Promise<{ range: PostingRange } | SkippedSource> {
     const parsed = new URL(url);
     const greenhouse = /^(?:job-boards|boards)(\.eu)?\.greenhouse\.io$/.exec(parsed.hostname);
     const greenhousePath = /^\/([A-Za-z0-9_-]+)\/jobs\/(\d+)/.exec(parsed.pathname);
@@ -276,7 +286,7 @@ export function createSalaryResearch(options: SalaryResearchOptions) {
     const target = linkedin && /^\d{6,}$/.test(linkedin) ? `https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/${linkedin}` : url;
     const page = await get("posting", target);
     if (failed(page)) return { ...page, url };
-    const range = linkedin ? salaryRangeFromText(plainText(page.text)) : salaryRangeFromJsonLd(page.text);
+    const range = linkedin ? salaryRangeFromText(plainText(page.text), level) : salaryRangeFromJsonLd(page.text, level);
     return range ? { range: { ...range, source: linkedin ? "linkedin" : "page", url } } : { source: "posting", url, reason: "the posting states no pay range" };
   }
 
@@ -353,7 +363,7 @@ export function createSalaryResearch(options: SalaryResearchOptions) {
       const cached = input.refresh ? undefined : (await readCache())[cacheKey];
       const fresh = cached && now().getTime() - Date.parse(cached.fetchedAt) <= CACHE_TTL_MS ? cached : null;
       const [posting, market] = await Promise.all([
-        input.postingUrl ? postingRange(input.postingUrl) : Promise.resolve(null),
+        input.postingUrl ? postingRange(input.postingUrl, [...seniorTitle.matchAll(LEVELS)][0]?.[1]) : Promise.resolve(null),
         fresh ?? Promise.all([payscale(titles, input.city, country), paylab(seniorTitle, country)]).then((results): CacheEntry => ({
           fetchedAt: now().toISOString(),
           rows: results.filter((result): result is MarketRow => "figures" in result),

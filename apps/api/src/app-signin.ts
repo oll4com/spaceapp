@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import {
   APP_DEVICE_SESSION_TTL_SECONDS, APP_DEVICE_SESSIONS_MAX, LINK_APP, APP_HANDOFF_CODE_TTL_MS, APP_SIGNIN_REDIRECT_URIS, appDeviceSessionIdSchema, appHandoffRedeemSchema,
-  appSignInChallengeSchema, appSignInIdSchema, appSignInStateSchema, type AppDeviceSession, type AppSignInId, type AuthUser, type NotificationRaiseInput, type SpaceNotification
+  appSignInChallengeSchema, appSignInIdSchema, appSignInStateSchema, linkGrantScopeSchema, type AppDeviceSession, type AppSignInId, type AuthUser, type NotificationRaiseInput, type SpaceNotification
 } from "@space/contracts";
 import { InMemoryAppDeviceSessionRepository, PostgresAppDeviceSessionRepository, type AppDeviceSessionRecord, type AppDeviceSessionRepository } from "@space/db";
 import { makeSpaceId, type SpaceStore } from "@space/runtime";
@@ -21,7 +21,14 @@ import { createMobileWake } from "./mobile/wake.js";
 import type { MobileWake } from "./notifications/service.js";
 import { linkLease } from "./instance-link/lease.js";
 import { registerInstanceLinks } from "./instance-link/routes.js";
+import { chainOf, registerNousSuperior, superiorOf } from "./instance-link/nous-hierarchy.js";
+import { registerLinkAiBorrow } from "./instance-link/ai-lend.js";
+import type { GatewayAdminService } from "./gateway/gateway-service.js";
+import type { VaultModule } from "./vault/wiring.js";
 import { recordAudit } from "./request-audit.js";
+import { mailOwnerNotice } from "./mobile/pairing-mail.js";
+import { z } from "zod";
+import { STEP_UP_ROUTES } from "./step-up.js";
 
 // Sign-in for Space's own mobile apps (plan clipboard:VLBu2ge110ho step 4; design step4-mobile-signin-design.md): RFC 8252 with
 // PKCE. The start route keeps {app, challenge, state} in a cookie of the system browser; after the usual Google sign-in Space
@@ -52,16 +59,16 @@ export function appSignInRedirect(binding: AppSignInBinding, code: string): stri
 
 export const MOBILE_STEP_UP_MS = 5 * 60_000;
 export const MOBILE_STEP_UP_TICKET_MS = 2 * 60_000;
-export interface StepUpTicket { sessionHash: string; userId: string; email: string; state: string }
+export interface StepUpTicket { sessionHash: string; userId: string; email: string; state: string; app: AppSignInId }
 /** The app's own redirect URI with the step-up's outcome and the state it sent (R10b). */
-export const appStepUpReturn = (result: "done" | "failed", state: string) =>
-  `${APP_SIGNIN_REDIRECT_URIS.spaceapp}?${new URLSearchParams({ stepUp: result, state })}`;
+export const appStepUpReturn = (result: "done" | "failed", state: string, app: AppSignInId = "spaceapp") =>
+  `${APP_SIGNIN_REDIRECT_URIS[app]}?${new URLSearchParams({ stepUp: result, state })}`;
 const codeKey = (code: string) => createHash("sha256").update(code).digest("hex");
 const publicRow = (row: AppDeviceSessionRecord): AppDeviceSession => ({ id: row.id, app: row.app, deviceName: row.deviceName, createdAt: row.createdAt, expiresAt: row.expiresAt, revokedAt: row.revokedAt,
   ...(row.noisePublic ? { paired: { scopes: row.scopes ?? [], requestedScopes: row.requestedScopes ?? [], allowedAt: row.confirmedAt, lastSeenAt: row.lastSeenAt, decide: row.decideSecurityLevel } } : {}) });
 
 export interface AppSignInOptions {
-  store: Pick<SpaceStore, "upsertUser" | "recordAuditEvent" | "getControlActor" | "getPane" | "getArtifact" | "getOwnerCredentials">;
+  store: Pick<SpaceStore, "upsertUser" | "recordAuditEvent" | "getControlActor" | "getPane" | "getArtifact" | "getClipboardItem" | "getOwnerCredentials" | "getUserSettings" | "updateUserSettings">;
   repository: AppDeviceSessionRepository;
   revocations: Pick<SessionRevocationStore, "revokeSessionHash">;
   sessionSecret: string;
@@ -80,6 +87,9 @@ export interface AppSignInOptions {
   /** An open Nous decision, for a phone's signed answer (design §7). */
   decision?: Parameters<typeof createMobileChecks>[0]["decision"];
   goal?: Parameters<typeof createMobileChecks>[0]["goal"];
+  inboxAsks?: Parameters<typeof createMobileChecks>[0]["inboxAsks"];
+  /** The owner's connected Gmail for a link grant's notice (pairing-mail.ts); absent: only the URGENT card. */
+  google?: Parameters<typeof registerMobileChannel>[1]["google"]; gmailFetch?: typeof fetch;
   now?: () => number;
 }
 export type AppSignIn = ReturnType<typeof createAppSignIn>;
@@ -90,6 +100,12 @@ export function registerAppSignIn(app: FastifyInstance, options: Omit<AppSignInO
   version?: string;
   /** A kept Vault key's value: a linked SpaceApp's Cloudflare Access service token (instance-link/routes.ts). */
   linkVaultKey?: (owner: string, id: string) => Promise<string | null>;
+  /** Space Link version sync (instance-link/version-sync.ts): the commit this SpaceApp runs, and whether it syncs. */
+  linkCommit?: () => Promise<string | null>; versionSync?: boolean;
+  /** AI lending (plan step 6): this SpaceApp's Gateway admin (its keys), a key by hash, and its address. */
+  /** Vault→Vault over a Space Link (plan clipboard:TcX66vjNuZDv step 2). */
+  linkVault?: () => Pick<VaultModule, "repository" | "broker">;
+  linkGateway?: { service: () => GatewayAdminService; keyByHash: (keyHash: string) => Promise<{ isActive: boolean; expiresAt: string | null } | null>; url: string };
   events?: Parameters<typeof registerMobileChannel>[1]["events"] } & Pick<Parameters<typeof registerMobileChannel>[1], "google" | "gmailFetch">): AppSignIn {
   const repository = options.databaseUrl ? PostgresAppDeviceSessionRepository.fromConnectionString(options.databaseUrl) : new InMemoryAppDeviceSessionRepository();
   const signIn = createAppSignIn({ ...options, repository });
@@ -97,6 +113,7 @@ export function registerAppSignIn(app: FastifyInstance, options: Omit<AppSignInO
   // Settings > Mobile app (Nous Pro 1b, ADR-013): the Devices person check. The mobile gate itself is installed by app.ts.
   if (options.crypto) {
     // The channel registers after the routes, so a revoke reaches its live sessions through this late binding.
+    // eslint-disable-next-line prefer-const -- read by the closures below before its one assignment; const would throw there instead of no-op.
     let channel: ReturnType<typeof registerMobileChannel> | undefined;
     const integrity = createPlayIntegrity(options.playIntegrityFile ?? null);
     // Every revoke (Settings › Devices, a held phone's expiry, the per-app cap, C3) ends the phone's open channel at once (plan kTV3y2lwO-99 item 5).
@@ -117,7 +134,14 @@ export function registerAppSignIn(app: FastifyInstance, options: Omit<AppSignInO
       if (request.appSession) return void sendApiError(reply, 403, "MOBILE_ALLOW_FROM_COMPUTER", "Open SpaceApp on a computer to see who is connected.");
       return request.user.id;
     };
-    const liveAnswer = (owner: string) => ({ sessions: channel!.live(owner), lease: lease.holder(owner), takenBackAt: lease.takenBackAt(owner) });
+    // superior (plan step 9): the linked SpaceApp whose Nous this Nous answers to, for the Remote mark's "Under Nous".
+    const superiorRow = async (owner: string) => superiorOf(await repository.list(owner), new Date(options.now?.() ?? Date.now()).toISOString());
+    const superiorAnswer = async (owner: string) => {
+      const row = await superiorRow(owner), superior = row?.nousSuperior;
+      return row && superior ? { deviceId: row.id, label: superior.label, host: superior.host, since: superior.since, scopes: row.scopes ?? [] } : null;
+    };
+    const liveAnswer = async (owner: string) => ({ sessions: channel!.live(owner), lease: lease.holder(owner), takenBackAt: lease.takenBackAt(owner),
+      superior: await superiorAnswer(owner) });
     app.get("/api/auth/devices/live", options.routeOptions, async (request, reply) => {
       const owner = liveOwner(request, reply);
       return owner ? liveAnswer(owner) : reply;
@@ -133,13 +157,28 @@ export function registerAppSignIn(app: FastifyInstance, options: Omit<AppSignInO
     }
     if (options.mobilePushUrl) options.notifications?.setWake?.(createMobileWake({ url: options.mobilePushUrl, devices: repository, log: app.log }));
     setMobileChecks(app, createMobileChecks({ devices: repository, artifact: async (id) => options.store.getArtifact(id),
+      clipboardItem: async (owner, id) => options.store.getClipboardItem(owner, id),
       notification: async (owner, id) => (await options.notifications?.get(owner, id)) ?? null, decision: options.decision ?? (async () => null),
-      goal: options.goal ?? (async () => null), integrity }));
+      goal: options.goal ?? (async () => null), inboxAsks: options.inboxAsks, linkedDecision: async (owner, linkId, id) => links.linkedDecision(owner, linkId, id), integrity, ownIdentity: async () => (await mobile.repository.active())?.identityPublic ?? null, now: options.now }));
     // Space Link (ADR-014): the other SpaceApps this one manages, each paired as a spaceapp-link device of it.
     const links = registerInstanceLinks(app, { store: options.store, crypto: options.crypto, databaseUrl: options.databaseUrl, routeOptions: options.routeOptions,
-      assertPerson: signIn.assertPerson, version: options.version ?? "0.0.0", vaultKey: options.linkVaultKey });
-    // The Nous app's Remote mark (Λ9, MOBILE_ROUTE_SCOPES): the links connected here without their addresses, the lease, and the
-    // SpaceApps this one manages. A phone may take management back (it only narrows); Give back and revoking stay on a computer.
+      assertPerson: signIn.assertPerson, stepUp: signIn.stepUp, version: options.version ?? "0.0.0", vaultKey: options.linkVaultKey,
+      commit: options.linkCommit, versionSync: options.versionSync, gateway: options.linkGateway, vault: options.linkVault,
+      nous: { chain: async (owner) => chainOf(await superiorRow(owner)), identity: async () => {
+        const made = await mobile.keys.setUp();
+        if (made.created) await options.store.recordAuditEvent({ action: "mobile.instance.created", targetType: "mobile_instance", targetId: made.fingerprint, actorUserId: null,
+          traceId: makeSpaceId("trace"), metadata: { via: "nous-superior" } });
+        const row = await mobile.repository.active();
+        return row ? mobile.keys.open(row).identity : null;
+      } } });
+    registerNousSuperior(app, { store: options.store, devices: repository, routeOptions: options.routeOptions, now: options.now,
+      ownIdentity: async () => (await mobile.repository.active())?.identityPublic ?? null });
+    if (options.linkGateway) {
+      registerLinkAiBorrow(app, { store: options.store, routeOptions: options.routeOptions, gatewayUrl: options.linkGateway.url, keyByHash: options.linkGateway.keyByHash,
+        channelFor: (deviceId) => channel!.channelFor(deviceId) });
+    }
+    // The Nous app's Remote mark (Λ9, MOBILE_ROUTE_SCOPES): the links connected here without their addresses, the lease, the
+    // SpaceApps this one manages and the one whose Nous this Nous answers to (its "Under Nous", nuHo1D4ia1UA). A phone may take management back (it only narrows); Give back and revoking stay on a computer.
     const statusOwner = (request: FastifyRequest, reply: FastifyReply) => {
       if (!request.user) return void sendApiError(reply, 401, "UNAUTHORIZED", "Sign in to see your linked SpaceApps.");
       if (!request.mobileDevice) signIn.assertPerson(request);
@@ -148,7 +187,8 @@ export function registerAppSignIn(app: FastifyInstance, options: Omit<AppSignInO
     const linkStatus = async (owner: string) => ({
       remote: channel!.live(owner).filter((session) => session.app === LINK_APP).map((session) => ({ ...session, ip: undefined })),
       lease: lease.holder(owner), takenBackAt: lease.takenBackAt(owner),
-      managing: (await links.repository.list(owner)).map(({ id, label, scopes, lastSeenAt }) => ({ id, label, scopes, lastSeenAt }))
+      managing: (await links.repository.list(owner)).map(({ id, label, scopes, lastSeenAt }) => ({ id, label, scopes, lastSeenAt })),
+      superior: await superiorAnswer(owner)
     });
     app.get("/api/instance-links/status", options.routeOptions, async (request, reply) => {
       const owner = statusOwner(request, reply);
@@ -183,6 +223,8 @@ export function createAppSignIn(options: AppSignInOptions) {
       stepUps.set(sessionHash, now() + MOBILE_STEP_UP_MS);
     },
     fresh: (request: FastifyRequest) => (stepUps.get(sessionKey(request)) ?? 0) > now(),
+    /** When this session's step-up ends (ms), or null when it has none. */
+    until: (request: FastifyRequest) => { const until = stepUps.get(sessionKey(request)) ?? 0; return until > now() ? until : null; },
     issue(entry: StepUpTicket): string {
       for (const [key, held] of tickets) if (held.until <= now()) tickets.delete(key);
       const ticket = randomBytes(32).toString("base64url");
@@ -193,7 +235,7 @@ export function createAppSignIn(options: AppSignInOptions) {
     take(ticket: string): StepUpTicket | null {
       const key = ticketKey(ticket), held = tickets.get(key);
       tickets.delete(key);
-      return held && held.until > now() ? { sessionHash: held.sessionHash, userId: held.userId, email: held.email, state: held.state } : null;
+      return held && held.until > now() ? { sessionHash: held.sessionHash, userId: held.userId, email: held.email, state: held.state, app: held.app } : null;
     }
   };
   let closeChannels: (ids: ReadonlySet<string>) => void = () => undefined;
@@ -326,6 +368,50 @@ export function createAppSignIn(options: AppSignInOptions) {
         if (!row) return sendApiError(reply, 404, "DEVICE_NOT_FOUND", "No paired device waits for you to allow it.");
         await options.notifications?.resolve(request.user.id, pairedCard(row), "allowed").catch(() => 0);
         await recordAudit(options.store, request, { action: "mobile.pairing.allowed", targetType: "app_device_session", targetId: row.id, metadata: { scopes: row.scopes } });
+        return { device: publicRow(row) };
+      });
+      // Space Link v2 (ADR-014 v2): the owner sets what an allowed link may do beyond read and act (manage, upgrade, nous, ai; nous needs
+      // manage), on a computer; widening takes a fresh step-up and says so with an URGENT card and a mail, as a pairing does. The link
+      // learns it within 10 s (channel.ts ctl scopes). Narrowing takes no step-up.
+      app.post("/api/auth/devices/:id/scopes", options.routeOptions, async (request, reply: FastifyReply) => {
+        if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Sign in to change what a linked SpaceApp may do.");
+        assertPerson(request);
+        if (request.appSession) return sendApiError(reply, 403, "LINK_GRANT_FROM_COMPUTER", "Set what a linked SpaceApp may do from SpaceApp on a computer (Settings > Account > Devices).");
+        const id = appDeviceSessionIdSchema.safeParse((request.params as { id?: unknown }).id);
+        const input = z.object({ scopes: z.array(linkGrantScopeSchema).max(linkGrantScopeSchema.options.length) }).strict().safeParse(request.body);
+        if (!id.success || !input.success) return sendApiError(reply, 400, "INVALID_REQUEST", `scopes takes ${linkGrantScopeSchema.options.join(", ")} only.`);
+        const grants = [...new Set(input.data.scopes)];
+        if (grants.includes("nous") && !grants.includes("manage")) return sendApiError(reply, 400, "LINK_NOUS_NEEDS_MANAGE", "Nous over this SpaceApp needs manage too.");
+        const at = new Date(now()).toISOString();
+        const rows = await options.repository.list(request.user.id);
+        const link = rows.find((row) => row.id === id.data && row.app === LINK_APP && row.noisePublic && row.confirmedAt && !row.revokedAt && row.expiresAt > at);
+        if (!link) return sendApiError(reply, 404, "DEVICE_NOT_FOUND", "No allowed SpaceApp link has this id.");
+        const isGrant = (scope: string) => linkGrantScopeSchema.safeParse(scope).success;
+        const before = (link.scopes ?? []).filter(isGrant), added = grants.filter((scope) => !before.includes(scope)), removed = before.filter((scope) => !grants.includes(scope as never));
+        // One superior per Nous (plan step 9): nous goes to a second link only after the first gives it up.
+        if (added.includes("nous") && rows.some((row) => row.id !== link.id && row.app === LINK_APP && !row.revokedAt && row.expiresAt > at && row.scopes?.includes("nous"))) {
+          return sendApiError(reply, 409, "NOUS_LINK_ONE_SUPERIOR", "Another linked SpaceApp's Nous already leads this one; take nous from it first.");
+        }
+        if (added.length && !stepUp.fresh(request)) {
+          return sendApiError(reply, 401, "STEP_UP_REQUIRED", "Confirm it is you with Google or a link by mail, then grant it within 5 minutes.",
+        STEP_UP_ROUTES);
+        }
+        const row = await options.repository.setLinkScopes(request.user.id, link.id, [...(link.scopes ?? ["read"]).filter((scope) => !isGrant(scope)), ...grants], at);
+        if (!row) return sendApiError(reply, 404, "DEVICE_NOT_FOUND", "No allowed SpaceApp link has this id.");
+        await recordAudit(options.store, request, { action: "mobile.link.scopes_granted", targetType: "app_device_session", targetId: row.id, metadata: { scopes: row.scopes, added, removed, stepUp: stepUp.fresh(request) } });
+        if (added.length) {
+          const title = `${row.deviceName} may now ${added.join(", ")} here`;
+          await options.notifications?.raise({ ownerUserId: request.user.id, roomId: null, paneId: null, source: "SYSTEM", kind: "MOBILE_LINK_GRANTED", severity: "URGENT", title,
+            body: "If you did not grant it, take it back or Revoke the link in Settings > Account > Devices.", link: { surface: "settings", target: "devices" },
+            dedupeKey: `mobile:link-granted:${row.id}:${at}`, payload: { deviceId: row.id }, telegram: null }).catch(() => undefined);
+          const owner = request.user.id;
+          void (async () => {
+            const to = (await Promise.resolve(options.store.getControlActor(owner)).catch(() => null))?.email;
+            const mail = to ? await mailOwnerNotice({ google: options.google?.() ?? null, ...(options.gmailFetch ? { fetchImpl: options.gmailFetch } : {}) }, { owner, to,
+              subject: `SpaceApp link granted: ${row.deviceName}`, text: `${title} (link ${row.id}, at ${at}).\n\nIf you did not grant it: take it back or Revoke the link in SpaceApp > Settings > Account > Devices.` }) : { result: "NO_GMAIL" };
+            await recordAudit(options.store, request, { action: "mobile.link.scopes_mailed", targetType: "app_device_session", targetId: row.id, metadata: mail }).catch(() => undefined);
+          })();
+        }
         return { device: publicRow(row) };
       });
     }

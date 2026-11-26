@@ -93,10 +93,16 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
 
   app.put("/api/admin/gateway/anthropic-admin", writeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
-    const { adminKey } = gatewayAnthropicAdminKeySaveRequestSchema.parse(request.body);
+    // `space-admin-action gateway-anthropic-admin-key --vault-key` (nous_msg:5a2be929): the server reads the kept Vault key; the caller never sees it.
+    const vaultKeyId = z.object({ vaultKeyId: z.string().regex(/^vault_key:[A-Za-z0-9_-]{8,64}$/) }).strict().safeParse(request.body).data?.vaultKeyId;
+    const kept = vaultKeyId ? await options.vaultKey?.(request, vaultKeyId) ?? { reason: "VAULT_UNAVAILABLE" } : null;
+    if (kept && "reason" in kept) return sendApiError(reply, 409, "VAULT_KEY_UNAVAILABLE", `The Vault did not hand over ${vaultKeyId} (${kept.reason}).`);
+    // The schema's message never quotes the input, so a malformed Vault key is not echoed.
+    const { adminKey } = gatewayAnthropicAdminKeySaveRequestSchema.parse(kept ? { adminKey: kept.value } : request.body);
     const result = await service.gatewayAdmin("/__space-gateway/admin/anthropic-admin/save", { adminKey });
     if (result.status === 200) await recordAudit(request, { action: "admin.gateway.anthropic-admin.save", targetType: "gateway_settings", targetId: "anthropic-admin",
-      metadata: { keyHint: `…${adminKey.slice(-4)}` } });
+      metadata: { keyHint: `…${adminKey.slice(-4)}`, ...(vaultKeyId ? { method: "vault-key", vaultKeyId } : {}) } });
+    if (result.status === 200 && kept) await kept.used();
     return relay(reply, result);
   });
 

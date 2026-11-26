@@ -69,7 +69,7 @@ export const nousPaneBoardPaneSchema = z.object({
   keptOpenForTask: z.object({ id: z.string(), title: z.string() }).strict().nullable().optional(),
   summary: nousPaneSummarySchema,
   /** The pane's newest report (its own words). */
-  report: z.object({ at: z.string(), status: z.string(), summary: z.string() }).strict().nullable(),
+  report: z.object({ at: z.string(), status: z.string(), summary: z.string(), planId: z.string().nullable().optional() }).strict().nullable(),
   /** A waiting CLI pane's question and numbered options (from its waiting report). */
   prompt: z.object({ question: z.string(), options: z.array(z.object({ key: z.string(), label: z.string() }).strict()).max(9) }).strict().nullable(),
   notifications: z.array(z.object({ id: z.string(), source: z.string(), kind: z.string(), severity: z.string(), title: z.string(), body: z.string(), card: z.boolean() }).strict()),

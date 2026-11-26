@@ -7,7 +7,6 @@ import {
   createRoomAgentMonitor, notePanePrompted, notePaneReached, notePaneSent, OVERLAP_COORDINATED, ROOM_MONITOR_ACTIVE_MS, ROOM_MONITOR_PROMPTED_MS, ROOM_MONITOR_EMPTY_MS, ROOM_MONITOR_OVERLAP_MS, ROOM_MONITOR_OVERLAP_REPEAT_MS, ROOM_MONITOR_QUIET_MS, roomMonitorEventText, roomMonitorTransition
 } from "../src/room-agent-monitor.js";
 import { waitCloser } from "../src/nous/progress.js";
-import { roomMonitorEventText, roomMonitorTransition } from "../src/room-agent-monitor.js";
 
 const at = "2026-10-13T05:00:00.000Z";
 const room = (id: string, extra: Partial<Room> = {}) => ({ id, name: id, kind: "WORKSPACE", archivedAt: null, ...extra }) as Room;
@@ -21,18 +20,20 @@ const pane = (id: string, name: string, extra: Partial<Pane> = {}) => ({
   ...extra
 }) as Pane;
 
-function setup() {
+function setup({ autoAnswer = false } = {}) {
   let now = 1_000_000;
   const repository = new InMemoryRoomAgentMonitorRepository();
+  void repository.setAutopilotEnabled("room:monitor1", autoAnswer);
   const panes = [pane("pane:bob-term", "Bob"), pane("pane:dana-term", "Dana"), pane("pane:andy-brow", "Andy", { mode: "BROWSER", terminalRuntimeId: null })];
   let details: Record<string, DashboardActivityDetail> = {};
   const readActivity = vi.fn(async () => ({ data: panes, details }));
   const onEvent = vi.fn();
+  const onAttention = vi.fn();
   const onActivity = vi.fn();
   const rooms = [room("room:monitor1")];
-  const monitor = createRoomAgentMonitor({ repository, listRooms: async () => rooms, readActivity, onEvent, onActivity, now: () => now });
+  const monitor = createRoomAgentMonitor({ repository, listRooms: async () => rooms, readActivity, onEvent, onAttention, onActivity, now: () => now });
   return {
-    repository, monitor, readActivity, onEvent, onActivity, rooms,
+    repository, monitor, readActivity, onEvent, onAttention, onActivity, rooms,
     set(next: Record<string, DashboardActivityDetail>) { details = next; },
     advance(ms: number) { now += ms; },
     now: () => now
@@ -40,6 +41,99 @@ function setup() {
 }
 
 describe("room agent monitor", () => {
+  const transientScreens: DashboardActivityDetail[] = [
+    { status: "waiting", reason: "Permission prompt", source: "native", sessionId: "cli_session:transient" },
+    { status: "waiting", reason: "Needs input", source: "screen", rule: "approval", sessionId: "cli_session:transient" }
+  ];
+
+  it.each(transientScreens)("does not record or announce an auto-answer approval/code screen that clears within two minutes: %j", async (detail) => {
+    const c = setup({ autoAnswer: true });
+    c.set({ "pane:bob-term": { status: "working", source: "native" } });
+    await c.monitor.scanRoom("room:monitor1");
+    c.set({ "pane:bob-term": detail });
+    await c.monitor.scanRoom("room:monitor1");
+    expect(await c.repository.paneActivity("room:monitor1")).toEqual(expect.arrayContaining([expect.objectContaining({ paneId: "pane:bob-term", activity: "WAITING" })]));
+    c.advance(120_000);
+    c.set({ "pane:bob-term": { status: "working", source: "native" } });
+    await c.monitor.scanRoom("room:monitor1");
+    expect(await c.repository.listEvents("room:monitor1")).toEqual([]);
+    expect(c.onEvent).not.toHaveBeenCalled();
+    expect(c.onAttention).not.toHaveBeenCalled();
+  });
+
+  it.each(transientScreens)("announces a persistent auto-answer approval/code screen once after 150 seconds: %j", async (detail) => {
+    const c = setup({ autoAnswer: true });
+    c.set({ "pane:bob-term": detail });
+    await c.monitor.scanRoom("room:monitor1");
+    c.advance(149_999);
+    await c.monitor.scanRoom("room:monitor1");
+    expect(await c.repository.listEvents("room:monitor1")).toEqual([]);
+    c.advance(1);
+    await c.monitor.scanRoom("room:monitor1");
+    c.advance(150_000);
+    await c.monitor.scanRoom("room:monitor1");
+    expect(await c.repository.listEvents("room:monitor1")).toEqual([expect.objectContaining({ kind: "WAITING", status: "OPEN" })]);
+    expect(c.onEvent).toHaveBeenCalledTimes(1);
+    expect(c.onAttention).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["Question for you", "API error", "Usage limit", "Sign-in required", "Plan approval"])("announces a real wait immediately under auto-answer: %s", async (reason) => {
+    const c = setup({ autoAnswer: true });
+    c.set({ "pane:bob-term": { status: "waiting", reason, source: "native" } });
+    await c.monitor.scanRoom("room:monitor1");
+    expect(c.onAttention).toHaveBeenCalledTimes(1);
+  });
+
+  it("announces a real question immediately when it replaces a transient approval screen", async () => {
+    const c = setup({ autoAnswer: true });
+    c.set({ "pane:bob-term": transientScreens[0]! });
+    await c.monitor.scanRoom("room:monitor1");
+    c.advance(1_000);
+    c.set({ "pane:bob-term": { status: "waiting", reason: "Question for you", source: "native" } });
+    await c.monitor.scanRoom("room:monitor1");
+    expect(await c.repository.listEvents("room:monitor1")).toEqual([expect.objectContaining({ kind: "QUESTION" })]);
+  });
+
+  it("starts a fresh debounce when a pane's CLI session changes", async () => {
+    const c = setup({ autoAnswer: true });
+    c.set({ "pane:bob-term": transientScreens[0]! });
+    await c.monitor.scanRoom("room:monitor1");
+    c.advance(149_999);
+    c.set({ "pane:bob-term": { ...transientScreens[0]!, sessionId: "cli_session:replacement" } });
+    await c.monitor.scanRoom("room:monitor1");
+    c.advance(1);
+    await c.monitor.scanRoom("room:monitor1");
+    expect(await c.repository.listEvents("room:monitor1")).toEqual([]);
+    c.advance(149_999);
+    await c.monitor.scanRoom("room:monitor1");
+    expect(c.onAttention).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases an unchanged pending wait immediately when Auto-answer is turned off", async () => {
+    const c = setup({ autoAnswer: true });
+    c.set({ "pane:bob-term": transientScreens[0]! });
+    await c.monitor.scanRoom("room:monitor1");
+    expect(c.onAttention).not.toHaveBeenCalled();
+    await c.repository.setAutopilotEnabled("room:monitor1", false);
+    await c.monitor.scanRoom("room:monitor1");
+    expect(c.onAttention).toHaveBeenCalledTimes(1);
+  });
+
+  it("forgets a pending wait when its pane disappears, rather than carrying time into a later wait", async () => {
+    const c = setup({ autoAnswer: true });
+    c.set({ "pane:bob-term": transientScreens[0]! });
+    await c.monitor.scanRoom("room:monitor1");
+    c.advance(149_999);
+    c.readActivity.mockResolvedValueOnce({ data: [], details: {} });
+    await c.monitor.scanRoom("room:monitor1");
+    c.advance(1);
+    await c.monitor.scanRoom("room:monitor1");
+    expect(c.onAttention).not.toHaveBeenCalled();
+    c.advance(150_000);
+    await c.monitor.scanRoom("room:monitor1");
+    expect(c.onAttention).toHaveBeenCalledTimes(1);
+  });
+
   it("maps activity changes to feed events", () => {
     expect(roomMonitorTransition(undefined, { activity: "DONE", reason: null })).toBeNull();
     expect(roomMonitorTransition(undefined, { activity: "WAITING", reason: "Permission prompt" })).toEqual({ kind: "WAITING", severity: "ATTENTION" });
@@ -89,6 +183,23 @@ describe("room agent monitor", () => {
     expect((await c.repository.paneActivity("room:monitor1")).map((record) => [record.paneId, record.activity]).sort()).toEqual([
       ["pane:bob-term", "DONE"], ["pane:dana-term", "WORKING"]
     ]);
+  });
+
+  it("goal 401b115b: an escalated wait the pane moves on from keeps its reason and says it ended; the operator stays its closer", async () => {
+    const c = setup();
+    c.set({ "pane:dana-term": { status: "working", source: "native" } });
+    await c.monitor.tick();
+    c.advance(ROOM_MONITOR_ACTIVE_MS);
+    c.set({ "pane:dana-term": { status: "waiting", reason: "Needs input", source: "screen" } });
+    await c.monitor.tick();
+    const wait = (await c.repository.listEvents("room:monitor1")).find((event) => event.kind === "WAITING")!;
+    await c.repository.updateEvent(wait.eventId, { status: "ESCALATED", decision: "Needs you: no model could decide this prompt." }, ["OPEN"]);
+    c.advance(ROOM_MONITOR_ACTIVE_MS);
+    c.set({ "pane:dana-term": { status: "working", source: "native" } });
+    await c.monitor.tick();
+    const resolved = await c.repository.getEvent(wait.eventId);
+    expect(resolved).toMatchObject({ status: "RESOLVED", decision: "Needs you: no model could decide this prompt. The pane moved on before anyone answered." });
+    expect(waitCloser(resolved!).who).toBe("the operator (escalated to them)");
   });
 
   it("records HANDLED when a text Space typed for Nous reached the pane during the wait or up to 30 s before it (item 29a)", async () => {

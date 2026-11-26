@@ -56,8 +56,7 @@ describe("space_copilot_control through the API", () => {
     const kickoffs: string[] = [];
     const results: Array<{ text: string; isError: boolean }> = [];
     const actions = ["pause", "pause", "resume", "run_start", "run_stop"];
-    let app!: Awaited<ReturnType<typeof createApp>>;
-    app = await createApp({ store, auth: { sessionSecret, devLogin: true, secureCookies: false }, mailCopilotRepository: new InMemoryMailCopilotRepository(),
+    const app = await createApp({ store, auth: { sessionSecret, devLogin: true, secureCookies: false }, mailCopilotRepository: new InMemoryMailCopilotRepository(),
       mailCopilotKickoff: async (_pane: Pane, run: MailCopilotRun) => { kickoffs.push(run.id); },
       // The turn calls the tool over Nous's MCP endpoint with its own token, as its Claude Code run does.
       nousRunner: async ({ owner, turnId }) => {

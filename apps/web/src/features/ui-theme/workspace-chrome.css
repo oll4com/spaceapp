@@ -2038,6 +2038,8 @@
 }
 .pane-title-details > summary::-webkit-details-marker,
 .space-shell .pane-title-details > summary::-webkit-details-marker { display: none; }
+.pane-title-details[data-has-title="false"] > summary,
+.space-shell .pane-title-details[data-has-title="false"] > summary { cursor: default; }
 .pane-title-details > summary:focus-visible,
 .space-shell .pane-title-details > summary:focus-visible { outline: 2px solid var(--room-accent, #79b8ff); outline-offset: -2px; }
 .pane-title-details[open],
@@ -2231,7 +2233,7 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
   min-width: 0;
   max-width: 100%;
 }
-.space-shell .task-title-popover { position: fixed; margin: 0; inset: auto; width: min(520px, calc(100vw - 32px)); max-width: calc(100vw - 32px); box-sizing: border-box; max-height: min(65vh, 560px); overflow-y: auto; color: inherit; }
+.space-shell .task-title-popover { position: fixed; margin: 0; inset: auto; width: max-content; max-width: min(520px, calc(100vw - 32px)); box-sizing: border-box; max-height: min(65vh, 560px); overflow-y: auto; color: inherit; }
 .task-title-body { flex: 1; min-width: 0; user-select: text; overflow-wrap: anywhere; }
 .task-title-body p { margin: 0 0 .65rem; white-space: normal; }
 .task-title-heading { font-weight: 600; }

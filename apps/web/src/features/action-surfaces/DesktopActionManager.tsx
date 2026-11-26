@@ -150,6 +150,7 @@ export function DesktopActionManager({
 
   useEffect(() => {
     const menu = menuRef.current;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- focus returns to the trigger mounted at close time, on purpose
     return () => restorePopupTriggerFocus(menu, triggerRef.current, closeIntentRef.current);
   }, [triggerRef]);
 

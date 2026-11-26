@@ -61,7 +61,7 @@ export function createLiveCoordinator(deps: {
   const key = () => `space.live.coordinator.v2:${state.ownerId}`;
   const persist = () => {
     if (!state.ownerId) return;
-    try { deps.storage?.setItem(key(), JSON.stringify({ enabled: state.enabled, muted: state.muted, transcripts: state.transcripts.slice(-200), hasConnected, liveSessionId })); } catch {}
+    try { deps.storage?.setItem(key(), JSON.stringify({ enabled: state.enabled, muted: state.muted, transcripts: state.transcripts.slice(-200), hasConnected, liveSessionId })); } catch { /* best-effort: nothing to do if it fails */ }
   };
   const patch = (change: Partial<LiveCoordinatorState>) => {
     state = { ...state, ...change };
@@ -243,7 +243,7 @@ export function createLiveCoordinator(deps: {
       if (ownerId === state.ownerId) return;
       stop(); roomGeneration++; contextAbort?.abort(); contextRead = null;
       let saved: Partial<LiveCoordinatorState> = {};
-      try { saved = JSON.parse(deps.storage?.getItem(`space.live.coordinator.v2:${ownerId}`) || "{}"); } catch {}
+      try { saved = JSON.parse(deps.storage?.getItem(`space.live.coordinator.v2:${ownerId}`) || "{}"); } catch { /* best-effort: nothing to do if it fails */ }
       liveSessionId = (saved as { liveSessionId?: string }).liveSessionId || crypto.randomUUID();
       inputRoom = null; configured = {}; hasConnected = (saved as { hasConnected?: boolean }).hasConnected === true;
       patch({ ownerId, roomId: null, roomName: "", enabled: deps.restoreEnabled !== false && saved.enabled === true, muted: saved.muted === true, transcripts: Array.isArray(saved.transcripts) ? saved.transcripts.slice(-200) : [], context: null, contextState: "unavailable" });

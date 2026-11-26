@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, basename } from "node:path";
 import type { DeployQueueTicket, Pane } from "@space/contracts";
 import { readDeployQueue } from "./deploy-queue.js";
@@ -118,28 +118,44 @@ async function locateWorktree(cwd: string): Promise<WorktreeGit | null> {
   return top && commonDir && gitDir ? { top, commonDir, gitDir, base: defaultWorktreeBaseBranch(dirname(commonDir)) } : null;
 }
 
-/** Changes when the worktree's HEAD, index, branch tip or base branch moves (fs metadata only, no git). */
-async function worktreeChangeKey(git: WorktreeGit): Promise<string> {
-  const files = [`${git.gitDir}/HEAD`, `${git.gitDir}/index`, `${git.gitDir}/logs/HEAD`, `${git.commonDir}/packed-refs`,
+/** Changes when the worktree's own HEAD or index moves (fs metadata only, no git). */
+async function worktreeLocalKey(git: WorktreeGit): Promise<string> {
+  const files = [`${git.gitDir}/HEAD`, `${git.gitDir}/index`, `${git.gitDir}/logs/HEAD`];
+  return (await Promise.all(files.map((file) => stat(file).then((info) => `${info.size}:${info.mtimeMs}`, () => "-")))).join("|");
+}
+
+/** Changes when a linked worktree's HEAD or base branch moves (fs metadata only, no git). */
+async function worktreeDiffKey(git: WorktreeGit): Promise<string> {
+  const files = [`${git.gitDir}/HEAD`, `${git.gitDir}/logs/HEAD`, `${git.commonDir}/packed-refs`,
     `${git.commonDir}/refs/heads/${git.base}`, `${git.commonDir}/logs/refs/heads/${git.base}`];
   return (await Promise.all(files.map((file) => stat(file).then((info) => `${info.size}:${info.mtimeMs}`, () => "-")))).join("|");
 }
 
-/** The worktree's branch and the files it changed since the branch left its base, plus uncommitted ones. */
-async function readWorktree(git: WorktreeGit): Promise<Pick<RoomWorkPane, "top" | "branch" | "files">> {
-  const { top, commonDir } = git;
-  const linked = commonDir !== `${top}/.git`;
-  const [branch, committed, status] = await Promise.all([
-    execGit(top, ["branch", "--show-current"], GIT_TIMEOUT_MS).catch(() => null),
-    // The main checkout is the live tree; only feature worktrees have work of their own on top of a base.
-    linked ? execGit(top, ["diff", "--name-only", `${git.base}...HEAD`], GIT_TIMEOUT_MS).catch(() => null) : null,
-    execGit(top, ["status", "--porcelain"], GIT_TIMEOUT_MS).catch(() => null)
+/** Current branch from `.git/HEAD` without spawning `git branch`; falls back to git only on read error. */
+async function readWorktreeBranch(git: WorktreeGit): Promise<string | null> {
+  try {
+    const head = (await readFile(`${git.gitDir}/HEAD`, "utf8")).trim();
+    if (head.startsWith("ref: refs/heads/")) return head.slice("ref: refs/heads/".length) || null;
+    if (head) return null;
+  } catch {
+    // Fallback below when HEAD cannot be read directly.
+  }
+  const branch = await execGit(git.top, ["branch", "--show-current"], GIT_TIMEOUT_MS).catch(() => null);
+  return branch?.code === 0 ? branch.stdout.trim() || null : null;
+}
+
+async function readWorktreeStatus(git: WorktreeGit): Promise<{ branch: string | null; statusFiles: string[] }> {
+  const [branch, status] = await Promise.all([
+    readWorktreeBranch(git),
+    execGit(git.top, ["status", "--porcelain"], GIT_TIMEOUT_MS).catch(() => null)
   ]);
-  const files = new Set([
-    ...(committed?.code === 0 ? committed.stdout.split("\n").filter(Boolean) : []),
-    ...(status?.code === 0 ? porcelainPaths(status.stdout) : [])
-  ]);
-  return { top, branch: branch?.code === 0 ? branch.stdout.trim() || null : null, files: [...files].sort() }; // every file (until 31/10 the first 200: an overlap past them was missed)
+  return { branch, statusFiles: status?.code === 0 ? porcelainPaths(status.stdout) : [] };
+}
+
+/** null when git failed or timed out. */
+async function readWorktreeCommitted(git: WorktreeGit): Promise<string[] | null> {
+  const committed = await execGit(git.top, ["diff", "--name-only", `${git.base}...HEAD`], GIT_TIMEOUT_MS).catch(() => null);
+  return committed?.code === 0 ? committed.stdout.split("\n").filter(Boolean) : null;
 }
 
 export function createRoomWork(deps: {
@@ -154,9 +170,11 @@ export function createRoomWork(deps: {
   const now = deps.now ?? Date.now;
   const rooms = new Map<string, { at: number; work: Promise<RoomWork> }>();
   // Stable ran 4 git per CLI pane a minute (~8,900 an hour, 2026-10-24): a worktree is read once for every pane and
-  // room working in it, and again only when its HEAD, index or refs moved, or after 5 minutes for unstaged edits.
+  // room working in it; status and base-diff cache independently so dev advances never re-run `git status` across every
+  // worktree, and index/5-min status refreshes never re-run `git diff`.
   const locations = new Map<string, { at: number; git: Promise<WorktreeGit | null> }>();
-  const states = new Map<string, { at: number; key: string; read: Promise<Pick<RoomWorkPane, "top" | "branch" | "files">> }>();
+  const statusStates = new Map<string, { at: number; key: string; read: Promise<{ branch: string | null; statusFiles: string[] }> }>();
+  const diffStates = new Map<string, { key: string; read: Promise<string[] | null> }>();
 
   async function worktreeOf(cwd: string): Promise<Pick<RoomWorkPane, "top" | "branch" | "files">> {
     let location = locations.get(cwd);
@@ -167,13 +185,34 @@ export function createRoomWork(deps: {
     }
     const git = await location.git;
     if (!git) return { top: null, branch: null, files: [] };
-    const key = await worktreeChangeKey(git);
-    const state = states.get(git.top);
-    if (state && state.key === key && now() - state.at <= WORKTREE_MAX_AGE_MS) return state.read;
-    if (states.size > 1_000) states.clear();
-    const read = readWorktree(git);
-    states.set(git.top, { at: now(), key, read });
-    return read;
+    const linked = git.commonDir !== `${git.top}/.git`;
+    const [localKey, diffKey] = await Promise.all([
+      worktreeLocalKey(git),
+      linked ? worktreeDiffKey(git) : Promise.resolve("")
+    ]);
+    let statusEntry = statusStates.get(git.top);
+    if (!statusEntry || statusEntry.key !== localKey || now() - statusEntry.at > WORKTREE_MAX_AGE_MS) {
+      if (statusStates.size > 1_000) statusStates.clear();
+      statusEntry = { at: now(), key: localKey, read: readWorktreeStatus(git) };
+      statusStates.set(git.top, statusEntry);
+    }
+    let committedRead: Promise<string[]>;
+    if (!linked) {
+      committedRead = Promise.resolve([]);
+    } else {
+      let diffEntry = diffStates.get(git.top);
+      if (!diffEntry || diffEntry.key !== diffKey) {
+        if (diffStates.size > 1_000) diffStates.clear();
+        const entry = { key: diffKey, read: readWorktreeCommitted(git) };
+        // DEV3D-028: a failed or timed-out diff is not kept (the key moves only with HEAD or the base), so the next read tries again.
+        void entry.read.then((read) => { if (!read && diffStates.get(git.top) === entry) diffStates.delete(git.top); });
+        diffStates.set(git.top, diffEntry = entry);
+      }
+      committedRead = diffEntry.read.then((read) => read ?? []);
+    }
+    const [{ branch, statusFiles }, committedFiles] = await Promise.all([statusEntry.read, committedRead]);
+    const files = [...new Set([...committedFiles, ...statusFiles])].sort(); // every file (until 31/10 the first 200: an overlap past them was missed)
+    return { top: git.top, branch, files };
   }
   let shared: { at: number; tickets: Promise<DeployQueueTicket[]>; registry: Promise<WorktreeRecord[]> } | null = null;
 

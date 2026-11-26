@@ -4,21 +4,32 @@ import { SurfaceErrorBoundary } from "../src/features/SurfaceErrorBoundary.js";
 import { registerLocalCliDraftReloadGuard } from "../src/features/terminal-pane/local-cli-draft.js";
 import { readDockSession, writeDockSession, WORKSPACE_DOCK_SESSION_KEY } from "../src/features/workspace-session.js";
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); sessionStorage.clear(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); sessionStorage.clear(); localStorage.clear(); });
 
 describe("workspace recovery", () => {
   it.each([true, false])("restores the actual dock and visibility (%s) in this tab", (open) => {
     const state = { surface: "clipboard", desktopOpen: open, compactOpen: !open };
-    writeDockSession(sessionStorage, state);
-    expect(readDockSession(sessionStorage, ["rooms", "clipboard"])).toEqual(state);
+    writeDockSession([sessionStorage], state);
+    expect(readDockSession([sessionStorage], ["rooms", "clipboard"])).toEqual(state);
+  });
+
+  it("reopens on the last dock after the app or browser was closed, while a reload keeps this tab's own (nous_msg:6679a54e)", () => {
+    const nous = { surface: "nous", desktopOpen: true, compactOpen: false };
+    writeDockSession([sessionStorage, localStorage], nous);
+    sessionStorage.clear(); // Closing the window drops sessionStorage; localStorage stays.
+    expect(readDockSession([sessionStorage, localStorage], ["rooms", "nous", "clipboard"])).toEqual(nous);
+    sessionStorage.setItem(WORKSPACE_DOCK_SESSION_KEY, JSON.stringify({ surface: "clipboard", desktopOpen: false, compactOpen: false }));
+    expect(readDockSession([sessionStorage, localStorage], ["rooms", "nous", "clipboard"])?.surface).toBe("clipboard");
+    sessionStorage.setItem(WORKSPACE_DOCK_SESSION_KEY, "broken");
+    expect(readDockSession([sessionStorage, localStorage], ["rooms", "nous", "clipboard"])).toEqual(nous);
   });
 
   it("ignores malformed, retired and inaccessible storage", () => {
     for (const value of ["broken", "null", '{"surface":"removed"}', '{"surface":"rooms","desktopOpen":"false","compactOpen":false}']) {
       sessionStorage.setItem(WORKSPACE_DOCK_SESSION_KEY, value);
-      expect(readDockSession(sessionStorage, ["rooms"])).toBeNull();
+      expect(readDockSession([sessionStorage], ["rooms"])).toBeNull();
     }
-    expect(readDockSession({ getItem() { throw Error("Blocked"); } }, ["rooms"])).toBeNull();
+    expect(readDockSession([{ getItem() { throw Error("Blocked"); } }], ["rooms"])).toBeNull();
   });
 
   it("contains a broken view, retains sibling pane DOM, retries and recovers on navigation", () => {

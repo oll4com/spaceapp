@@ -11,7 +11,7 @@ import {
   Sparkles,
   X
 } from "../ui-theme/app-icons.js";
-import { api, type MemoryCalendarRecord, type MemoryCalendarResponse } from "../../api.js";
+import { api, type MemoryCalendarResponse } from "../../api.js";
 import "./memory-calendar.css";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

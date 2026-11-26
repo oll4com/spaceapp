@@ -209,6 +209,14 @@ describe("Space Gateway admin routes", () => {
     expect(paid.json()).toMatchObject({ status: "ACTIVE", statusReason: null, planType: "google-ai-pro" });
   });
 
+  it("resumes a free-plan Antigravity account, which serves free plans", async () => {
+    const { app, repository } = await setup();
+    Object.assign(repository.accounts[0]!, { provider: "ANTIGRAVITY", planType: "free", status: "PAUSED", statusReason: "Free plan: paused automatically." });
+    const resume = await app.inject({ method: "PATCH", url: `/api/admin/gateway/accounts/${accountId}`, headers: authHeaders("ADMIN"), payload: { paused: false } });
+    expect(resume.statusCode).toBe(200);
+    expect(resume.json()).toMatchObject({ status: "ACTIVE", statusReason: null, planType: "free" });
+  });
+
   it("pages request logs with a numeric cursor", async () => {
     const { app, repository } = await setup();
     await repository.insertRequestLogs(Array.from({ length: 3 }, (_, index) => ({

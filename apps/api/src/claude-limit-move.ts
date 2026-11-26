@@ -23,15 +23,24 @@ const BUSY_REPORT_TICKS = 4;
 export const CLAUDE_LIMIT_CONTINUE = "continue";
 /** Ticks (30 s apart) the restarted CLI gets to show an empty prompt before Space reports that it could not type continue. */
 const CONTINUE_TICKS = 6;
+/**
+ * Stable freeze 21/11 17:43Z (operator nous_msg:2f111ec7): a promote that bumped CLAUDE_LAUNCH_ENV_SINCE restarted the API, whose first ticks
+ * relaunched 11 Claude panes 4 s apart; the UI stalled 3-4 s a request and the deploy's continuity check saw a session end and retried.
+ * No stale relaunch in the first minutes after an API start (the deploy window), then one per tick across all panes.
+ */
+const RELAUNCH_AFTER_START_MS = 5 * 60_000;
 const MOVED = "hit its Claude usage limit; Space moved it to Space Gateway on the same conversation";
 
 /**
  * Plan clipboard:qH5emwVaV6yO step 8: Claude Code reads its launch env (CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000 in deploy/claude-vscode-parity)
  * only at start, so a CLI started before this ran the 400k window (5 panes, ~600M of 1.40B input on 6/11). Space relaunches such a CLI on the
  * same conversation (native resume) at its next idle empty prompt: no turn, no draft, no pace hold, no open card for the operator on the pane.
- * Bump it with any wrapper env change that running panes must get.
+ * Bump it with any wrapper env change that running panes must get. 21/11: the 120k window (copilots 20/11, TERMINAL 21/11 00:06Z promote) and the
+ * repo-pane skill trim reached only panes launched after them; copilots still compacted at ~128k (plan clipboard:ipO4c7J656Ed daily 21/11).
+ * 21/11 16:08Z: TERMINAL panes back to 160k (operator: a coding pane compacted 2 minutes after it started).
+ * 21/11 17:35Z: Design and Video panes compact at 120k too (plan clipboard:nsWKwUFhUFWA slice 2).
  */
-export const CLAUDE_LAUNCH_ENV_SINCE = "2026-11-05T09:58:49Z";
+export const CLAUDE_LAUNCH_ENV_SINCE = "2026-11-21T17:35:11Z";
 
 export type ClaudeLimitOutcome = "MOVED" | "STAYS" | "NOT_CONTINUED";
 
@@ -90,6 +99,8 @@ export interface ClaudeLimitMoveDeps {
 
 export function createClaudeLimitMove(deps: ClaudeLimitMoveDeps) {
   const now = deps.now ?? Date.now;
+  const apiStartedAt = now();
+  let relaunchedThisTick = false;
   /** Panes moved to the gateway, waiting for their restarted CLI's empty prompt. */
   const continuing = new Map<string, { sessionId: string; ticks: number }>();
   /** The limited session each staying pane was reported for. */
@@ -147,9 +158,11 @@ export function createClaudeLimitMove(deps: ClaudeLimitMoveDeps) {
 
   async function relaunchStale(pane: Pane, session: PaneCliSession): Promise<boolean> {
     if (!(Date.parse(session.startedAt) < Date.parse(CLAUDE_LAUNCH_ENV_SINCE))) return false;
+    if (relaunchedThisTick || now() - apiStartedAt < RELAUNCH_AFTER_START_MS) return false;
     const idle = (observed: RoomPaneObservation) => observed.sessionId === session.sessionId && atEmptyPrompt(observed) && !observed.paceHold;
     if (!idle(await deps.inspect(pane, false)) || await deps.waitsOnOperator!(pane) || !idle(await deps.inspect(pane, true))) return false;
     if (!await deps.relaunch!(pane, session)) return false;
+    relaunchedThisTick = true;
     deps.log?.("claude_launch_env.relaunched", { paneId: pane.id, from: session.sessionId, startedAt: session.startedAt });
     return true;
   }
@@ -204,6 +217,7 @@ export function createClaudeLimitMove(deps: ClaudeLimitMoveDeps) {
     async tick(): Promise<void> {
       if (running) return;
       running = true;
+      relaunchedThisTick = false;
       try {
         // API audit 5/11: `void tick()` on a timer; a failed pane read (database in recovery) is logged, never an unhandled rejection.
         const panes = await deps.listPanes().catch((error: unknown) => {

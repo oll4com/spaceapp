@@ -175,7 +175,7 @@ export function geminiModelsChatProviderAdapter(options: {
   };
 }
 
-const cliModelIdentifierPattern = /^[A-Za-z0-9@~][A-Za-z0-9._:\/@+~-]*$/;
+const cliModelIdentifierPattern = /^[A-Za-z0-9@~][A-Za-z0-9._:/@+~-]*$/;
 const cliReasoningEffortPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function reasoningEffortLabel(effort: string): string {
@@ -312,7 +312,7 @@ export function opencodeChatProviderAdapter(
         // A fixed Chat allowlist hides available models whenever that catalog changes.
         const models = descriptors.flatMap((descriptor, index) => {
           const rawId = `${descriptor.providerId}/${descriptor.modelId}`;
-          const optionId = rawId.replace(/[^A-Za-z0-9._:\/@+~-]/g, "-").replace(/^[^A-Za-z0-9@~]+/, "");
+          const optionId = rawId.replace(/[^A-Za-z0-9._:/@+~-]/g, "-").replace(/^[^A-Za-z0-9@~]+/, "");
           if (!optionId || !cliModelIdentifierPattern.test(optionId)) return [];
           const listedVariants = descriptor.variants.length > 0 ? descriptor.variants : [];
           const supportedReasoningEfforts = listedVariants.length > 0

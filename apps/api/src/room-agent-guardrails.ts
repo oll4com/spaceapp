@@ -28,7 +28,8 @@ const protectedRules: Array<[string, RegExp]> = [
   ["git push", /\bgit\s+push\b/i],
   ["secrets and credentials", /(?:^|[\s"'/])\.env\b|\bsecrets?\/|\bpassword\b|\bcredentials?\b|\bapi[_-]?key\b|space_session|SPACE_SESSION_SECRET|\.secret\b|id_(?:rsa|ed25519)/i],
   // The path is written plainly so the public export's path rewrite reaches it (a \/ escape hides it).
-  ["live Space checkout", new RegExp(`${SPACE_INSTALL_ROOT}/(?!var/worktrees/|var/artifacts/)(?:apps|packages|scripts|deploy|docs|bin)/`, "i")],
+  // Running the two reporting tools every pane must run (a verb after the path) is not a checkout change (Jack 23/11 14:20, Dana 13/11).
+  ["live Space checkout", new RegExp(`${SPACE_INSTALL_ROOT}/(?!var/worktrees/|var/artifacts/|scripts/space-progress\\.mjs\\s+(?:started|progress|blocked|needs-decision|needs-you|waiting|done|failed)\\b|scripts/space-plan-ops\\.sh\\s+(?:list|get|start|progress|step)\\b)(?:apps|packages|scripts|deploy|docs|bin)/`, "i")],
   ["operator-only Space files", /\/etc\/(?:AGENTS\.md|docs\/)/i]
 ];
 

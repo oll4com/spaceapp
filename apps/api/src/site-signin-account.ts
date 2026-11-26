@@ -5,7 +5,7 @@
 import type { BrowserHostActorContext } from "@space/browser-host";
 import { siteSigninKeySchema, type Pane, type SiteSignin } from "@space/contracts";
 import type { PaneBrowserAccountControl } from "./pane-browser-routes.js";
-import { siteSigninFor } from "./site-signins.js";
+import { siteSigninsForSite } from "./site-signins.js";
 import { googleAccountSignInUrl } from "./youtube-accounts.js";
 
 /** Google's own sites hold many accounts: only an explicit account in the address (authuser, Email, login_hint) picks one there. */
@@ -20,6 +20,8 @@ export interface SigninTarget {
   hintEmail: string | null;
   /** Where a Google sign-in page continues to (its continue address, followed to the deepest one); null for other pages. */
   destination: string | null;
+  /** The host a Google OAuth page returns to (its redirect_uri); absent for other pages. */
+  oauthReturnHost?: string;
 }
 
 function domainOf(url: URL): string | null {
@@ -35,6 +37,7 @@ export function signinTarget(address: string | null | undefined): SigninTarget {
   let site = domainOf(url);
   let hintEmail: string | null = null;
   let destination: string | null = null;
+  let oauthReturnHost: string | undefined;
   // Nested continue addresses (sign-in → OAuth consent → the site) are followed a few levels at most.
   for (let depth = 0; depth < 4 && site && GOOGLE_SITES.has(site); depth += 1) {
     for (const key of ["Email", "login_hint", "authuser", "email"]) {
@@ -46,11 +49,12 @@ export function signinTarget(address: string | null | undefined): SigninTarget {
     try { url = new URL(url.searchParams.get(key)!); } catch { break; }
     // An OAuth callback is never opened by itself: the consent page it came from stays the destination.
     if (key === "continue") destination = url.href;
+    if (key === "redirect_uri") oauthReturnHost = url.hostname;
     const nextSite = domainOf(url);
     if (!nextSite) break;
     site = nextSite;
   }
-  return { site, hintEmail, destination };
+  return { site, hintEmail, destination, oauthReturnHost };
 }
 
 export interface AccountChoice { profileId: string; email?: string | null; label?: string | null; browserStatus?: string }
@@ -94,6 +98,8 @@ export interface TabAccount { profileId: string | null; email: string | null; by
 export interface SiteAccountCheck {
   site: string | null;
   wanted: WantedAccount;
+  /** Every account the site's sign-ins name (one recipe per account label), `wanted` among them: a tab in any of them stays. */
+  accounts: WantedAccount[];
   /** The account the tab runs in now. */
   tab: TabAccount;
   /** The tab already runs in the wanted account's profile. */
@@ -103,6 +109,9 @@ export interface SiteAccountCheck {
   paneProfileId: string | null;
   pane: TabAccount;
 }
+
+/** The tab (or pane) runs in the account: its profile, or its email when Space has no profile for it. */
+export const runsIn = (account: WantedAccount, tab: TabAccount) => account.profileId !== null ? account.profileId === tab.profileId : tab.email?.toLowerCase() === account.email;
 
 export type ListPages = (pane: Pane) => Promise<{ activePageId: string | null; pages: Array<{ pageId: string; isActive: boolean; account?: { profileId: string; label: string | null } | null }> }>;
 
@@ -114,19 +123,22 @@ export async function checkSiteAccount(deps: {
 }, owner: string, pane: Pane, address: string | null | undefined, pageId?: string | null): Promise<SiteAccountCheck | null> {
   const target = signinTarget(address);
   if (!target.site && !target.hintEmail) return null;
-  const recipe = target.site && !GOOGLE_SITES.has(target.site) ? await siteSigninFor(deps.store, owner, target.site) : null;
-  if (!target.hintEmail && !recipe?.googleAccountEmail && !recipe?.browserProfileId) return null;
+  // Every sign-in of the site, never only "main" (15/11 21:11Z: Leo's tab in reddit.com's info-olla account moved into "main"'s profile,
+  // signed in to Reddit as the operator's personal account).
+  const recipes = !target.hintEmail && target.site && !GOOGLE_SITES.has(target.site) ? await siteSigninsForSite(deps.store, owner, target.site) : [];
+  if (!target.hintEmail && !recipes.some((recipe) => recipe.googleAccountEmail || recipe.browserProfileId)) return null;
   const listing = await deps.accounts.list(owner, pane);
-  const wanted = wantedAccount(recipe, target.hintEmail, listing.profiles);
-  if (!wanted) return null;
+  const accounts = (target.hintEmail ? [wantedAccount(null, target.hintEmail, listing.profiles)] : recipes.map((recipe) => wantedAccount(recipe, null, listing.profiles)))
+    .filter((account, index, all): account is WantedAccount => account !== null && all.findIndex((other) => other?.email === account.email && other.profileId === account.profileId) === index);
+  if (!accounts.length) return null;
   const pages = deps.listPages ? await deps.listPages(pane).catch(() => null) : null;
   const page = pages?.pages.find((entry) => pageId ? entry.pageId === pageId : entry.isActive) ?? null;
   const own = page?.account ?? null;
   const tabProfileId = own ? own.profileId : listing.effectiveProfileId;
   const emailOf = (profileId: string | null) => profileId ? listing.profiles.find((choice) => choice.profileId === profileId)?.email ?? null : null;
   const tab: TabAccount = { profileId: tabProfileId, email: own?.label ?? emailOf(tabProfileId), byDefault: !own && listing.selectedProfileId === null };
-  const matches = wanted.profileId !== null ? wanted.profileId === tabProfileId : tab.email?.toLowerCase() === wanted.email;
-  return { site: target.site, wanted, tab, matches, activePageId: page?.pageId ?? pages?.activePageId ?? null, paneProfileId: listing.effectiveProfileId,
+  const wanted = accounts.find((account) => runsIn(account, tab)) ?? accounts[0]!;
+  return { site: target.site, wanted, accounts, tab, matches: runsIn(wanted, tab), activePageId: page?.pageId ?? pages?.activePageId ?? null, paneProfileId: listing.effectiveProfileId,
     pane: { profileId: listing.effectiveProfileId, email: emailOf(listing.effectiveProfileId), byDefault: listing.selectedProfileId === null } };
 }
 
@@ -135,6 +147,9 @@ const describeTab = (tab: TabAccount) => tab.email ? `${tab.email}${tab.byDefaul
 /** One line for the agent and the operator's card: the account wanted, its state, and the tab's account. */
 export function siteAccountLine(check: SiteAccountCheck, moved: boolean): string {
   const why = check.wanted.source === "address" ? "named by the sign-in page" : `site sign-in recipe${check.site ? ` for ${check.site}` : ""}`;
+  if (!check.matches && !moved && check.accounts.length > 1) {
+    return `${check.site} has site sign-in recipes in ${check.accounts.map((account) => account.email).join(", ")}; this tab is in ${describeTab(check.tab)}, none of them.`;
+  }
   if (check.wanted.profileId === null) {
     return `Google account ${check.wanted.email} (${why}) has no browser profile in Space (not linked or signed in in any pane browser); this tab is in ${describeTab(check.tab)}, not ${check.wanted.email}.`;
   }
@@ -153,6 +168,8 @@ export const canMoveTab = (pane: Pane) => pane.mode !== "FREELANCE_COPILOT" && p
 export async function moveTabToWantedAccount(accounts: Pick<PaneBrowserAccountControl, "switchTab">, owner: string, pane: Pane,
   check: SiteAccountCheck, url: string | undefined, signIn: boolean, traceId: string, actor: BrowserHostActorContext): Promise<{ moved: boolean; error: string | null }> {
   if (check.matches || check.wanted.profileId === null || !check.activePageId) return { moved: false, error: null };
+  // Several sign-ins and the tab in none: the agent names the account, never the first recipe's by accident.
+  if (check.accounts.length > 1) return { moved: false, error: `${check.site} has sign-ins in ${check.accounts.map((account) => account.email).join(", ")}; open it in a tab of the account you mean` };
   if (!canMoveTab(pane)) return { moved: false, error: `${pane.mode} tabs keep the pane's Google account.` };
   try {
     // A tab back in the pane's own account carries no account of its own.

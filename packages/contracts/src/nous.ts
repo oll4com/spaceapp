@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { nousPaneBoardSettingsSchema } from "./nous-pane-board.js";
+import { nousLiveVoiceChoiceSchema } from "./nous-live.js";
 import { planWaitsOnKindSchema } from "./plan-map.js";
 import { nousGoalsSettingsSchema } from "./nous-goals.js";
 import { groupPatchSchema, patchSchema } from "./partial-update.js";
@@ -47,7 +48,7 @@ export const NOUS_SPACE_ROUTES: Record<GatewayProviderRoute, { prefix: string; p
   CLAUDE: { prefix: "claude", provider: "claude", name: "Claude", runtime: "Claude Code" },
   CODEX: { prefix: "codex", provider: "codex", name: "Codex", runtime: "Codex" },
   CLAUDE_OPENCODE: { prefix: "opencode-claude", provider: "opencode", name: "Claude via OpenCode", runtime: "OpenCode" },
-  ANTIGRAVITY: { prefix: "gemini", provider: "gemini", name: "Gemini Argon (Antigravity)", runtime: "Gemini (native)" },
+  ANTIGRAVITY: { prefix: "gemini", provider: "gemini", name: "Gemini Neon (Antigravity)", runtime: "Gemini (native)" },
   ANTIGRAVITY_FLASH: { prefix: "gemini-flash", provider: "gemini", name: "Gemini 3.8 Flash (Antigravity)", runtime: "Gemini (native)" },
   // The Claude models Antigravity serves (its "Claude · GPT" quota group), run by the same native Gemini runner (operator 8/11).
   ANTIGRAVITY_CLAUDE: { prefix: "antigravity-claude", provider: "gemini", name: "Claude (Antigravity)", runtime: "Gemini (native)" },
@@ -62,7 +63,7 @@ export const NOUS_FREE_ROUTE_MODELS: Partial<Record<GatewayProviderRoute, string
 export const nousFreeRouteProvider = (route: GatewayProviderRoute): string => route;
 /** Auto models of the Space provider and the tier each asks every route for (3: Opus/Astra class, 2: Sonnet/Sol class, 1: Haiku/Luna class). */
 export const NOUS_SPACE_AUTO: Record<string, { tier: 1 | 2 | 3; label: string }> = {
-  auto: { tier: 3, label: "Auto: best model, Gateway order" },
+  auto: { tier: 3, label: "Auto: best model for you and decisions, balanced in the background, Gateway order" },
   "auto-balanced": { tier: 2, label: "Auto: balanced model, Gateway order" },
   "auto-light": { tier: 1, label: "Auto: light model, Gateway order" }
 };
@@ -80,15 +81,16 @@ export function nousSpaceModel(model: string): { auto: 1 | 2 | 3 } | { route: Ga
   const route = (Object.keys(NOUS_SPACE_ROUTES) as GatewayProviderRoute[]).find((key) => NOUS_SPACE_ROUTES[key].prefix === prefix);
   return route ? { route, model: target } : null;
 }
-/** Model class: 3 Opus/Fable/Astra/Argon, 1 Haiku/Luna/Flash-low and other light models, 2 the rest (Nous's Space provider and Gateway /pools/space). */
+/** Model class: 3 Opus/Fable/Astra/Argon/Hydrogen, 1 Haiku/Luna/Flash-low and other light models, 2 the rest (Nous's Space provider and Gateway /pools/space). */
 export function nousModelTier(model: string): 1 | 2 | 3 {
-  if (/opus|fable|astra|argon/i.test(model)) return 3;
+  if (/opus|fable|astra|gemini-\d+-neon|argon|hydrogen/i.test(model)) return 3;
   // "mini" only as its own part of the id: "gemini" holds it too.
   if (/haiku|luna|flash-low|(?:^|[-_/])(?:mini|nano|lite)(?:$|[-_.:])|[:/]free\b/i.test(model)) return 1;
   return 2;
 }
-// Antigravity's Claude ids carry their effort (claude-opus-5-5-high): the top class takes high, the others Sonnet medium.
-const SPACE_PREFERRED = ["claude-opus-5-5", "gpt-6-astra", "gemini-4-argon-high", "claude-opus-5-5-high", "claude-sonnet-5-5", "gpt-6.1-sol", "gemini-4-argon", "claude-sonnet-5-5-medium",
+// Operator 22/11 c74c7453: Gemini 4 Neon before Argon. Antigravity's Claude ids carry their effort (claude-opus-5-5-high): the top class takes high, the others Sonnet medium.
+const SPACE_PREFERRED = ["claude-opus-5-5", "gpt-6-astra", "gemini-4-neon-high", "gemini-4-neon-xhigh", "gemini-4-argon-high", "gemini-4-hydrogen-high", "gemini-4-hydrogen-xhigh", "claude-opus-5-5-high", "claude-sonnet-5-5", "gpt-6.1-sol", "gemini-4-neon", "gemini-4-neon-medium", "gemini-4-argon", "gemini-4-hydrogen-medium", "claude-sonnet-5-5-medium",
+  "claude-opus-4-6-thinking", "claude-opus-4-6", "claude-sonnet-4-6",
   "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "claude-haiku-5-5", "gpt-6-luna", "gemini-3.8-flash-low"];
 /** A route's model for a class: the same class first, else the nearest below, else the nearest above; the known flagship of a class first. */
 export function nousRouteModel<T extends { id: string }>(models: T[], tier: 1 | 2 | 3): T | null {
@@ -286,7 +288,9 @@ export const nousRequestOutcomeSchema = z.object({
   outcome: z.enum(["SELF", "HELPER", "OPERATOR", "PENDING"]),
   missing: z.string().trim().min(1).max(300).optional(),
   /** The operator said Nous was wrong or repeated a request Nous reported done (not a new request, a card answer or a repeat while pending). */
-  correction: z.boolean().optional()
+  correction: z.boolean().optional(),
+  /** A correction about the same mistake an earlier corrected operator message named, before Nous reported it fixed: that message (one mistake, one correction). */
+  repeats: nousMessageIdSchema.optional()
 }).strict();
 export type NousRequestOutcome = z.infer<typeof nousRequestOutcomeSchema>;
 /**
@@ -344,6 +348,12 @@ export interface NousLoad {
   series: Array<{ at: string; value: number }>;
   averages: { hour: NousLoadAverage; today: NousLoadAverage; week: NousLoadAverage; month: NousLoadAverage; bestDay: { day: string; value: number } | null };
 }
+/**
+ * One linked SpaceApp's load (GET /api/instance-links/load, operator nous_msg:766c70a6): what its read returned. `parts` holds CPU,
+ * Memory, Load, Pressure and CLI panes as far as it answers them; one that does not answer stays listed with `answeredAt`.
+ */
+export interface NousLinkedLoad { id: string; label: string; host: string | null; answering: boolean; answeredAt: string | null;
+  overall: number | null; level: NousLoad["level"]; parts: NousLoadPart[]; error: string | null }
 
 /**
  * Score (operator 3/11 23:11 BKK, plan clipboard:1NF6u6gcCwtj): Nous's performance as points that can go negative; open plans and operator
@@ -354,7 +364,9 @@ export type NousScoreRange = z.infer<typeof nousScoreRangeSchema>;
 export type NousScoreTileKey = "plans" | "panes" | "goals" | "projects" | "dailyTasks" | "response" | "dailyErrors" | "requests" | "completed" | "done" | "utilization"
   | "corrections" | "couldHaveDecided" | "scorecard" | "marketing" | "lostTokens" | "browsers" | "idlePanes" | "approvedNotDone" | "parked" | "reset";
 /** One thing that gives or costs points (a plan, a request, a dimension); `id` is a plan, message or decision id when there is one. */
-export interface NousScoreItem { id: string | null; label: string; points: number; detail: string }
+export interface NousScoreItem { id: string | null; label: string; points: number; detail: string;
+  /** Daily Nous errors' day rows: each counted correction and lesson (its message id and summary, its key and date), so a code-fix pane reads which ones cost. */
+  records?: string[] }
 export interface NousScoreTile { key: NousScoreTileKey; label: string; points: number; detail: string; items: NousScoreItem[] }
 export interface NousScore {
   at: string; score: number;
@@ -365,6 +377,8 @@ export interface NousScore {
   breakdown: Array<{ label: string; points: number; share: number; detail: string }>;
   /** The owner's score reset (POST /api/nous/score/reset): only what happened after it counts; null or absent when never reset. */
   resetAt?: string | null;
+  /** The same snapshot with every window 24 h or 30 days long (operator 14/11, nous_msg:cf45a823); `tiles` and `score` above are the 7 days'. */
+  periods?: Partial<Record<NousScoreRange, Pick<NousScore, "score" | "tiles">>>;
 }
 export interface NousScoreHistory { range: NousScoreRange; points: Array<{ at: string; value: number }> }
 
@@ -502,7 +516,11 @@ export const nousDecisionRefsSchema = z.object({
   testDeletes: z.array(nousTestTargetSchema).min(1).max(50).optional()
     .describe("A DESTRUCTIVE PANE_TEXT that removes test VMs/CTs or their snapshots: every target it removes ({host, vmid} for a whole VM or CT, "
       + "{host, vmid, snapshot} for one snapshot). Under \"May delete what Nous created\" it runs at once when each target has the creation record "
-      + "the pane made with space-test-resource and the text removes nothing else.")
+      + "the pane made with space-test-resource and the text removes nothing else."),
+  /** Audit §4 item 3 (plan clipboard:USQ6ktIIN_1D): what a DESTRUCTIVE PANE_TEXT cleanup removes, checked by `mayCleanSystemCovers`. */
+  cleanup: z.array(z.string().trim().min(1).max(4096)).min(1).optional()
+    .describe("A DESTRUCTIVE PANE_TEXT that frees disk: every target it removes, each also written in the text (/tmp/space-*, /tmp/tmp.* "
+      + "paths, \"docker image prune\", \"docker builder prune\"). Under \"May clean regenerable system files\" it runs at once when the text deletes nothing else.")
 }).strict();
 
 export const nousDecisionSchema = z.object({
@@ -527,6 +545,10 @@ export const nousDecisionSchema = z.object({
   runsWhen: z.string().max(2_000).optional()
 }).strict();
 export type NousDecision = z.infer<typeof nousDecisionSchema>;
+/** Space Link v2 step 9c: what a linked SpaceApp shows its superior of an open decision: the card and what its content hash covers, no local refs. */
+export const nousLinkDecisionSchema = nousDecisionSchema.pick({ id: true, category: true, title: true, body: true, options: true, recommendation: true, action: true, status: true, createdAt: true })
+  .extend({ refs: nousDecisionRefsSchema.pick({ fileHashes: true }) });
+export type NousLinkDecision = z.infer<typeof nousLinkDecisionSchema>;
 
 /** Account facts (sign-ins, connected Google accounts, Vault logins): Nous's, never the operator's (operator 2/11 09:49 BKK, 30/10 08:44 BKK). */
 const ACCOUNT_FACT_LINE = /^(?:[-•]\s*)?(?:Vault: \d+ logins? for |Sign-ins for |Connected Google accounts: |Space's account facts:\s*$)/;
@@ -586,6 +608,13 @@ export const nousSettingsSchema = z.object({
     // The Nous app's own tabs (nous_msg:b4fb69589b394a6aa4679dc2, app 0.2.34): its Settings › Tabs saves them here; the web dock has neither tab.
     appointments: z.boolean().optional(), signature: z.boolean().optional()
   }).strict().optional(),
+  /**
+   * The Nous app's Media › YouTube chips (operator 15/11 nous_msg:e90fdeaf): unset shows the app's built-in presets; once saved, this list
+   * replaces them, so the operator adds their own links and removes any chip, a built-in one too. Phone, tablet and web read the same list.
+   */
+  mediaPresets: z.array(z.object({ label: z.string().trim().min(1).max(80), url: z.url({ protocol: /^https?$/ }).max(2_000) }).strict()).optional(),
+  /** Nous Live's voice provider, model, voice and language (nous_msg:7f739948); unset is the phone's own voice. */
+  liveVoice: nousLiveVoiceChoiceSchema.optional(),
   enabled: z.boolean().default(false),
   maxTurnsPerHour: z.number().int().min(1).max(120).default(20),
   /** Deprecated JSON field from the first dev slice; lowSpend.mode now controls the policy. */
@@ -604,8 +633,8 @@ export const nousSettingsSchema = z.object({
    */
   askOwnHostChanges: z.boolean().default(false),
   /**
-   * Space spends a Codex weekly reset credit by itself when an account is used up, its own reset is over 6 hours away and Codex work
-   * waits (operator 2/11 15:38 BKK, brief 20261102-codex-reset-credits). On unless false; false stops it, a person only on stable.
+   * Retired: Space no longer spends a reset credit by itself; only the operator does, with the Resources button (operator 14/11
+   * «Τα reset τα κανω μονο εγω!!!»). Kept so saved settings still parse; nothing reads it.
    */
   autoResetCredits: z.boolean().optional(),
   /** The operator lets the server approve Nous's learned sends to third parties after a 10-minute hold (operator decision 2026-10-28, off by default). */
@@ -616,6 +645,10 @@ export const nousSettingsSchema = z.object({
   mayPublish: z.boolean().default(false),
   /** R16-1: the operator lets the server approve a guarded Browser Host or pane host restart whose facts all hold (off by default, a person only). */
   mayRestartHosts: z.boolean().default(false),
+  /** Audit §4 item 4 (operator rule «Ποτέ αγορά, πάντα δωρεάν διαδρομή»): a question whether to buy something paid is answered "no purchase" at once (off by default, a person only). */
+  /** Audit §4 item 3: a DESTRUCTIVE pane prompt removing only regenerable targets (refs.cleanup) runs at once (off by default, a person only). */
+  mayCleanSystem: z.boolean().default(false),
+  neverBuy: z.boolean().default(false),
   /**
    * Operator 2/11 BKK: on, Nous has no right to refuse, narrow or question any task the operator asks; they took every responsibility and the
    * decision is theirs. Security matters are the exception and keep every rule; Space's own gates are unchanged. Off by default; a person only turns it on.
@@ -745,6 +778,8 @@ export const nousStateSchema = z.object({
   unavailable: z.string().max(300).nullable().optional(),
   openDecisions: z.number().int().min(0),
   inbox: z.number().int().min(0),
+  /** The inbox lines themselves (key, text, when queued), the dock's Inbox view; optional for older servers. */
+  inboxItems: z.array(z.object({ key: z.string(), text: z.string(), at: isoDateTime.nullable() }).strict()).optional(),
   /** The open away session; absent or null while the operator is here. */
   away: nousAwaySchema.nullable().optional(),
   /** The goals (2026-10-27): how many are ACTIVE (the composer's Goals badge) and whether a goal turn is due or held. */
@@ -797,6 +832,9 @@ export const nousSettingsInputSchema = patchSchema(nousSettingsSchema).extend({
   goals: groupPatchSchema(nousGoalsSettingsSchema).optional()
 }).strict();
 export type NousSettingsInput = z.infer<typeof nousSettingsInputSchema>;
+/** What a superior Nous sets here over Space Link (ADR-014 v2 step 9d): start and stop, turns an hour, the goal loop, the spend mode; never a grant or allowance. */
+export const nousLinkSettingsInputSchema = nousSettingsInputSchema.pick({ enabled: true, maxTurnsPerHour: true, goals: true })
+  .extend({ lowSpend: z.object({ mode: z.enum(["AUTO", "ON", "OFF"]) }).strict().optional() }).strict();
 const NOUS_SETTINGS_GROUPS = ["dockTabs", "lowSpend", "paneBoard", "standingOrders", "models", "goals"] as const;
 /** The saved settings with a PATCH on them: a group the PATCH names keeps the fields it does not name. */
 export function mergeNousSettings(before: NousSettings, patch: NousSettingsInput): NousSettings {
@@ -890,9 +928,8 @@ export const nousPlanHoldsSchema = z.object({
 }).strict();
 export type NousPlanHolds = z.infer<typeof nousPlanHoldsSchema>;
 
-/** The dock's overview: every open plan, what needs the operator's hands, the release trains and Nous's plan map. */
-export const nousOverviewSchema = z.object({
-  plans: z.array(z.object({
+/** One plan row of the dock's overview. */
+const nousOverviewPlanSchema = z.object({
     id: z.string(), title: z.string(), progress: z.number().int().min(0).max(100), status: z.string(),
     /** `pane` names the plan's pane only while it is open; `paneClosed`: its pane was closed or deleted (operator request 2026-10-26). */
     room: z.string().nullable(), pane: z.string().nullable(), paneClosed: z.boolean().optional(), nextStep: z.string().nullable(),
@@ -904,8 +941,17 @@ export const nousOverviewSchema = z.object({
     level: z.number().int().min(0).optional(), dependsOn: z.array(z.string()).optional(), dueAt: z.string().nullable().optional(),
     overdue: z.boolean().optional(), hold: nousPlanHoldSchema.nullable().optional(),
     /** Parked now (plan clipboard:7S_jA46vDkU9): why, and how many resume conditions are met. */
-    parked: z.object({ reason: z.string(), met: z.number().int().min(0), total: z.number().int().min(0) }).strict().optional()
-  }).strict()),
+    parked: z.object({ reason: z.string(), met: z.number().int().min(0), total: z.number().int().min(0),
+      /** Each resume condition (operator nous_msg:8076f33e): who or what it waits on, its text, a DATE check's date, OPEN or MET. */
+      conditions: z.array(z.object({ who: z.string(), what: z.string(), at: z.string().nullable(), state: z.enum(["OPEN", "MET"]), metAt: z.string().nullable() }).strict()).optional()
+    }).strict().optional()
+  }).strict();
+
+/** The dock's overview: every open plan, what needs the operator's hands, the release trains and Nous's plan map. */
+export const nousOverviewSchema = z.object({
+  plans: z.array(nousOverviewPlanSchema),
+  /** Closed plans with work left, under 100% or parked now (operator nous_msg:8076f33e): the Plans view and the board's Plans column show them. */
+  closedPlans: z.array(nousOverviewPlanSchema).optional(),
   needsHands: z.array(z.object({ id: z.string(), source: z.string(), title: z.string(), room: z.string().nullable() }).strict()),
   trains: z.string(),
   planMap: z.string().nullable(),

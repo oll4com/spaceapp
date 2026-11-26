@@ -32,7 +32,7 @@ export async function getLatestRoomEvent(store: SpaceStore, roomId: string): Pro
 export class PaneClosedConflictError extends SpaceConflictError {}
 /** A pane that may not close yet: a Marketing Copilot with approved posts still scheduled (operator rule 9/11). HTTP 409 PANE_HAS_SCHEDULED_POSTS. */
 export class PaneCloseRefusedError extends SpaceConflictError {
-  constructor(message: string, readonly details: Record<string, unknown>) { super(message); }
+  constructor(message: string, readonly details: Record<string, unknown>, readonly code: "PANE_HAS_SCHEDULED_POSTS" | "PANE_WAITS_FOR_OPERATOR" = "PANE_HAS_SCHEDULED_POSTS") { super(message); }
 }
 /** `?force=true` counts only from the operator's own hands: never an agent's broker or proof session, never Space Control's in-process call. */
 export const operatorForce = (request: FastifyRequest) => (request.query as { force?: unknown } | undefined)?.force === "true"
@@ -70,6 +70,20 @@ export function assertBrowserPaneCompatible(pane: Pane) {
   }
 }
 
+/**
+ * A Job, Marketing or Freelance Copilot pane's browser is its own agent's while that agent runs: no other pane drives it
+ * (15/11 04:03 BKK: Jack's Job Copilot, its own browser stopped, took Max's Freelance Copilot browser from the room's context).
+ */
+export async function isOtherAgentsBrowser(store: Pick<SpaceStore, "getActivePaneCliSession">, pane: Pick<Pane, "id" | "mode">, cliPaneId: string): Promise<boolean> {
+  return pane.id !== cliPaneId && isCliPane(pane) && isBrowserPane(pane) && Boolean(await store.getActivePaneCliSession(pane.id));
+}
+
+export async function assertNotOtherAgentsBrowser(store: Pick<SpaceStore, "getActivePaneCliSession">, pane: Pane, cliPaneId: string) {
+  if (await isOtherAgentsBrowser(store, pane, cliPaneId)) {
+    throw new SpaceConflictError(`Pane ${pane.id} is the browser of another agent's ${pane.mode} pane; drive your own: space_browser_start without targetPaneId.`);
+  }
+}
+
 export function assertNormalCliSession(session: PaneCliSession): void {
   if (session.purpose !== "NORMAL") {
     throw new SpaceConflictError("CLI login sessions support only terminal authentication I/O, reconnect, and cancellation.");
@@ -83,3 +97,6 @@ export async function getActiveBrowserSessionForPane(store: SpaceStore, pane: Pa
   }
   return session;
 }
+
+/** 15/11 Dino/Jack: Antigravity reports "gemini-3.8-flash-high" for a pane configured "gemini-3.8-flash": the same model, "-high" is its default effort. */
+export const sameModelId = (left: string | null | undefined, right: string | null | undefined) => left?.replace(/-high$/, "") === right?.replace(/-high$/, "");

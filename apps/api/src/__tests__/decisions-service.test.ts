@@ -176,7 +176,7 @@ describe("decisions service optional fallback", () => {
     const service = createDecisionsService({
       tokenFile: "/mock/token",
       readFileImpl: async () => "mock-token",
-      fetch: ((async (url: string, opts: any) => {
+      fetch: ((async (url: string, opts: { body: string }) => {
         const body = JSON.parse(opts.body);
         if (body.questions.status) {
           return {
@@ -228,7 +228,7 @@ describe("decisions service optional fallback", () => {
     const service = createDecisionsService({
       tokenFile: "/mock/token",
       readFileImpl: async () => "mock-token",
-      fetch: ((async (url: string, opts: any) => {
+      fetch: ((async (url: string, opts: { body: string }) => {
         const body = JSON.parse(opts.body);
         if (body.questions.agent) {
           return {

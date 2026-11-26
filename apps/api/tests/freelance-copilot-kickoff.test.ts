@@ -37,6 +37,8 @@ describe("freelance copilot kickoff", () => {
       // A bracketed paste, then Enter on its own: text and Enter in one chunk stayed a draft in Bruno/Cody (2026-10-20).
       expect(String(kickoff?.[1])).toMatch(/^\u001b\[200~[\s\S]*\u001b\[201~$/);
       expect(kickoff?.[5]).toBe(true);
+      // createCopilotRunKick's re-kick of the same run must type again: each kickoff has its own host input key.
+      expect(String(kickoff?.[4])).toMatch(/^freelance-copilot:flrun:[^:]+:kickoff:[A-Za-z0-9_-]+:prompt$/);
       expect(terminal.sendInput.mock.calls.map((call) => call[1])).toEqual([kickoff?.[1], "\r"]);
     } finally {
       await app.close();

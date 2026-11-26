@@ -35,7 +35,6 @@ export const SPACE_ROUTE_PATHS: Record<GatewayProviderRoute, Partial<Record<Spac
 const isTranslated = (route: GatewayProviderRoute, protocol: SpaceProtocol) => protocol === "messages" && !SPACE_ROUTE_PATHS[route].messages && GATEWAY_FREE_ROUTES.has(route) && Boolean(SPACE_ROUTE_PATHS[route].chat);
 const pathFor = (route: GatewayProviderRoute, protocol: SpaceProtocol) => (isTranslated(route, protocol) ? SPACE_ROUTE_PATHS[route].chat : SPACE_ROUTE_PATHS[route][protocol]);
 const protocolsOf = (route: GatewayProviderRoute) => (["messages", "responses", "chat"] as const).filter((protocol) => pathFor(route, protocol));
-const isFreeOpenRouterModel = (model: string) => model.endsWith(":free");
 const FORWARDED_OUT = new Set(["host", "content-length", "connection", "transfer-encoding", "x-space-internal-token", "x-space-gateway-route", "accept-encoding"]);
 const MODELS_TTL_MS = 5 * 60_000;
 /** OpenCode v1's output ceiling (OUTPUT_TOKEN_MAX), which v2 no longer applies to a listed limit. */

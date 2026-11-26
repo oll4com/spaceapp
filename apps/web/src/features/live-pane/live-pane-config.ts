@@ -59,7 +59,7 @@ function scheduleUserSettingsSave(patch: Partial<LivePaneSettings>) {
           }
         } : {})
       }).catch(() => {});
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
   }, 400);
 }
 
@@ -70,7 +70,7 @@ export function applyServerLivePaneSettings(settings: Partial<LivePaneSettings>)
     const existing: LivePaneStoredConfig = existingRaw ? JSON.parse(existingRaw) : {};
     const merged = { ...existing, ...settings };
     localStorage.setItem(GLOBAL_CONFIG_KEY, JSON.stringify(merged));
-  } catch {}
+  } catch { /* best-effort: nothing to do if it fails */ }
 }
 
 export function loadLivePaneConfig(paneId: string): LivePaneStoredConfig {
@@ -84,7 +84,7 @@ export function loadLivePaneConfig(paneId: string): LivePaneStoredConfig {
     const { geminiMemoryEnabled, ...config } = { ...defaultConfig, ...paneConfig } as LivePaneStoredConfig & { geminiMemoryEnabled?: boolean };
     const spaceMemoryEnabled = config.spaceMemoryEnabled ?? geminiMemoryEnabled;
     return spaceMemoryEnabled === undefined ? config : { ...config, spaceMemoryEnabled };
-  } catch {}
+  } catch { /* best-effort: nothing to do if it fails */ }
   return {};
 }
 
@@ -94,7 +94,11 @@ export function saveLivePaneConfig(paneId: string, config: LivePaneStoredConfig,
     const serialized = JSON.stringify(config);
     localStorage.setItem(`space_live_pane_${paneId}`, serialized);
     if (persistAsDefault) {
-      const { streamingMode: _paneOnlyMode, personalMemories: _memories, recordSession: _paneOnlyRecording, ...defaults } = config;
+      // Pane-only fields never become the default for new panes.
+      const defaults: Partial<LivePaneStoredConfig> = { ...config };
+      delete defaults.streamingMode;
+      delete defaults.personalMemories;
+      delete defaults.recordSession;
       localStorage.setItem(GLOBAL_CONFIG_KEY, JSON.stringify(defaults));
       scheduleUserSettingsSave({
         streamingMode: config.streamingMode,
@@ -117,5 +121,5 @@ export function saveLivePaneConfig(paneId: string, config: LivePaneStoredConfig,
         selectedDeviceId: config.selectedDeviceId
       });
     }
-  } catch {}
+  } catch { /* best-effort: nothing to do if it fails */ }
 }

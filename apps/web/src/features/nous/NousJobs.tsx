@@ -61,7 +61,7 @@ export function NousJobs({ active }: { active: boolean }) {
   if (!report.applications.length) return <div className="nous-decisions nous-programs"><DockState kind="empty" icon={Briefcase} title={t("No applications yet")} detail={t("The Job Copilot records every application here.")} /></div>;
   const { funnel } = report;
   return (
-    <div className="nous-decisions nous-programs nous-report" data-sensitive-masked="manual">
+    <div className="nous-decisions nous-programs nous-report">
       <p className="nous-programs-total">{t("{sent} applications sent to {companies} companies ({rows} rows in all)", { sent: funnel.applied.toLocaleString(), companies: funnel.companies.toLocaleString(), rows: funnel.rows.toLocaleString() })}
         {" · "}{t("read {date}", { date: when(report.generatedAt) })}</p>
       <section className="nous-report-funnel" aria-label={t("Funnel")}>

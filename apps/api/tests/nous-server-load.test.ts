@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SystemHealthHistory } from "@space/contracts";
 import { InMemoryControlRepository } from "@space/db";
 import { createHeldDispatch } from "../src/nous/held-dispatch.js";
-import { classifyLoad, createHostSwap, createServerLoad, hostSwapOf, hostSwapQuery, paneRootsFrom, parsePs, renderServerLoad, topProcesses, type HostSwap, type HostSwapReader } from "../src/nous/server-load.js";
+import { classifyLoad, createHostSwap, createServerLoad, hostSwapOf, hostSwapQuery, paneRootsFrom, parsePs, renderServerLoad, topProcesses, worseSwap, type HostSwap, type HostSwapReader } from "../src/nous/server-load.js";
 
 const GiB = 1024 ** 3;
 const NOW = Date.parse("2026-10-17T10:30:00Z");
@@ -33,10 +33,10 @@ describe("Nous's server load", () => {
   const loadOf = (host: HostSwapReader, history = vm207()) => createServerLoad({ health: { history: async () => history }, hostSwap: host,
     paneRoots: async () => new Map(), ps: async () => "", loadavg: () => [40, 40, 40], cores: 24, memTotalBytes: 47 * GiB, now: () => NOW });
 
-  it("holds nothing at pve 44% while public-host reads swap 100%, CPU 95% and load 40, and says the VM numbers are diagnostics", async () => {
+  it("takes the level from the swap reader alone; this VM's CPU 95% and load 40 hold nothing", async () => {
     const state = await loadOf(reader(pve(44.2))).read();
     expect(state).toMatchObject({ level: "CALM", reasons: [], swapPercent: 100, cpuPercent: 95, host: { percent: 44.2, host: "pve" } });
-    expect(renderServerLoad(state)).toMatch(/^Server: CALM · pve swap 44\.20% \(12 s old\), OVERLOADED only past 90% · this VM \(diagnostics, holds nothing\): CPU 95% · load 40\.0\/40\.0 on 24 cores .* swap 100% \(5 min average\)\.$/);
+    expect(renderServerLoad(state)).toMatch(/^Server: CALM · pve swap 44\.20% \(12 s old\), OVERLOADED only past 90% · this VM \(its swap counts too\): CPU 95% \(5 min average\) · load 40\.0\/40\.0 on 24 cores .* swap 100%\.$/);
   });
 
   it("is OVERLOADED past 90% of pve's swap, not at exactly 90, and a missing reading is unknown, never 100", async () => {
@@ -82,32 +82,52 @@ describe("Nous's server load", () => {
     expect(refused(at(NOW / 1000 - 119)).percent).not.toBeNull();
   });
 
-  it("reads the configured host from the collector, unknown when stale or down, this machine's only without a selector", async () => {
+  it("reads the configured host from the collector, unknown when stale or down while this VM is calm, this machine's only without a selector", async () => {
     const collectorConfig = { network: "192.0.2.0/24", defaults: { prometheusUrl: "http://192.0.2.210:9090", alertmanagerUrl: "http://192.0.2.210:9093", lokiUrl: "http://192.0.2.210:3100" } };
     const hostSelector = 'job="proxmox_host",instance="192.0.2.1:9100"';
     const promQuery = vi.fn(async () => ({ resultType: "matrix", series: fresh(), truncated: false }));
-    const meminfo = vi.fn(async () => "SwapTotal: 16777212 kB\nSwapFree: 0 kB\n");
+    let vmText = "SwapTotal: 16777212 kB\nSwapFree: 15099490 kB\n";
+    const meminfo = vi.fn(async () => vmText);
     let now = NOW;
-    const host = createHostSwap({ collectorConfig, hostSelector, collector: { promQuery }, meminfo, now: () => now });
+    const host = createHostSwap({ collectorConfig, hostSelector, collector: { promQuery }, meminfo, vmName: "vm208", now: () => now });
     expect(await host.read()).toMatchObject({ host: "pve", error: null, at: new Date(NOW - 10_000).toISOString() });
     expect(promQuery).toHaveBeenCalledWith("http://192.0.2.210:9090",
       { query: '{__name__=~"node_memory_Swap(Total|Free)_bytes",job="proxmox_host",instance="192.0.2.1:9100"}[2m]' });
     expect(hostSwapQuery(hostSelector)).toBe(promQuery.mock.calls[0]![1].query);
     await host.read();
     expect(promQuery).toHaveBeenCalledTimes(1);
-    // 3 minutes on, the same samples are stale; then the collector is down. public-host's 100% never stands in.
+    // 3 minutes on, the same samples are stale; then the collector is down. This VM's 10% does not stand in for an unknown host.
     now += 180_000;
     expect(await host.read()).toMatchObject({ percent: null, error: expect.stringMatching(/not within 2 minutes of now/) });
     promQuery.mockRejectedValueOnce(new Error("connect ECONNREFUSED"));
     now += 30_000;
     expect(await host.read()).toMatchObject({ percent: null, error: "the collector did not answer (connect ECONNREFUSED)" });
-    expect(meminfo).not.toHaveBeenCalled();
     // A selector without a collector is a misconfiguration, not this machine.
     expect(await createHostSwap({ collectorConfig: { network: null, defaults: null }, hostSelector, meminfo, now: () => NOW }).read())
       .toMatchObject({ percent: null, error: expect.stringMatching(/without a collector/) });
     // No selector (an install without a hypervisor): this machine's swap, even when a collector is configured.
+    vmText = "SwapTotal: 16777212 kB\nSwapFree: 0 kB\n";
     expect(await createHostSwap({ collectorConfig, hostSelector: null, collector: { promQuery }, meminfo, now: () => NOW }).read())
       .toEqual({ percent: 100, host: "this machine", at: new Date(NOW).toISOString(), error: null });
+  });
+
+  it("is OVERLOADED when the panes' VM swaps at 100% while pve reads 8.64% (vm208, 14/11 20:46Z), also with the collector down", async () => {
+    const collectorConfig = { network: "192.0.2.0/24", defaults: { prometheusUrl: "http://192.0.2.210:9090", alertmanagerUrl: "", lokiUrl: "" } };
+    const pveTotal = 42940223488, pveFree = pveTotal * (1 - 0.0864);
+    const promQuery = vi.fn(async () => ({ resultType: "matrix", series: [sample("node_memory_SwapTotal_bytes", pveTotal), sample("node_memory_SwapFree_bytes", pveFree)], truncated: false }));
+    // free -g: RAM 23 GiB, 5 available; swap 23 of 23 GiB used.
+    const vm208 = `MemTotal: ${23 * 1024 ** 2} kB\nMemAvailable: ${5 * 1024 ** 2} kB\nSwapTotal: ${23 * 1024 ** 2} kB\nSwapFree: 0 kB\n`;
+    const read = () => createHostSwap({ collectorConfig, hostSelector: 'job="proxmox_host"', collector: { promQuery }, meminfo: async () => vm208, vmName: "vm208", now: () => NOW }).read();
+    const swap = await read();
+    expect(swap).toMatchObject({ percent: 100, host: "vm208", error: null });
+    const state = await createServerLoad({ health: { history: async () => { throw new Error("timeout exceeded when trying to connect"); } }, hostSwap: reader(swap),
+      meminfo: async () => vm208, paneRoots: async () => new Map(), ps: async () => "", loadavg: () => [66, 107, 110], cores: 12, memTotalBytes: 23 * GiB, now: () => NOW }).read();
+    expect(state).toMatchObject({ level: "OVERLOADED", reasons: ["vm208 swap 100.00%"], swapPercent: 100, memAvailableBytes: 5 * GiB, samples: 0 });
+    expect(renderServerLoad(state)).toContain("this VM (its swap counts too): CPU ?% (no health samples)");
+    promQuery.mockRejectedValueOnce(new Error("connect ETIMEDOUT"));
+    expect(await read()).toMatchObject({ percent: 100, host: "vm208" });
+    // The worse one decides: pve past 90% stays pve's even while the VM is calmer.
+    expect(worseSwap(pve(95), { percent: 60, host: "vm208", at: null, error: null }).host).toBe("pve");
   });
 
   it("drains the texts held under the false OVERLOADED once pve reads 44%, one per pane per tick, never twice", async () => {
@@ -146,7 +166,7 @@ describe("Nous's server load", () => {
   it("is CALM before any sample is retained, whatever the load average (operator 31/10 22:31 BKK), and reads at most every 30 seconds", async () => {
     let now = NOW;
     const history = vi.fn(async (): Promise<SystemHealthHistory> => { throw new Error("no history"); });
-    const load = createServerLoad({ health: { history }, hostSwap: calmHost, paneRoots: async () => new Map(), ps: async () => "", loadavg: () => [31, 30, 20],
+    const load = createServerLoad({ health: { history }, hostSwap: calmHost, paneRoots: async () => new Map(), ps: async () => "", meminfo: async () => "", loadavg: () => [31, 30, 20],
       cores: 20, memTotalBytes: 40 * GiB, now: () => now });
     expect(await load.read()).toMatchObject({ level: "CALM", samples: 0, cpuPercent: null, swapPercent: null, memAvailableBytes: null });
     now += 29_000;
@@ -157,20 +177,22 @@ describe("Nous's server load", () => {
     expect(history).toHaveBeenCalledTimes(2);
   });
 
-  it("leaves out the sampling ps's own row (stable 2026-10-19: Nous read it as ps at 400% CPU)", async () => {
-    const ps = [`  9 ${process.pid} 412.0 3000 ps`, "  10 1 380.5 4000000 qemu-system-x86", "  11 7 2.0 1000 ps"].join("\n");
+  it("ranks CPU only over processes 10 s or older (stable 2026-10-19 ps at 400%, 14/11 ps at 600% and ffmpeg at 257%)", async () => {
+    const ps = [`  9 ${process.pid} 0 412.0 3000 ps`, "  12 8 0 600.0 3000 ps", "  13 7 3 257.0 90000 ffmpeg", "  10 1 9000 380.5 4000000 qemu-system-x86", "  11 7 50 2.0 1000 ps"].join("\n");
     const load = createServerLoad({ health: { history: async () => { throw new Error("no history"); } }, hostSwap: calmHost, paneRoots: async () => new Map(),
       ps: async () => ps, loadavg: () => [1, 1, 1], cores: 20, memTotalBytes: 40 * GiB, now: () => NOW });
-    expect((await load.read()).topCpu.map((row) => row.pid)).toEqual([10, 11]);
+    const state = await load.read();
+    expect(state.topCpu.map((row) => row.pid)).toEqual([10, 11]);
+    expect(state.topMemory.map((row) => row.pid)).toContain(13);
   });
 
   it("names the heaviest processes with the pane whose CLI runs them", () => {
     const rows = parsePs([
-      "    1     0  0.1   9000 systemd",
-      "  100     1  2.0 400000 codex-pane-host",
-      "  200   100  5.0 800000 claude",
-      "  300   200 97.5 2500000 node",
-      "  400     1 60.0 3000000 postgres",
+      "    1     0 900  0.1   9000 systemd",
+      "  100     1 900  2.0 400000 codex-pane-host",
+      "  200   100 900  5.0 800000 claude",
+      "  300   200 900 97.5 2500000 node",
+      "  400     1 900 60.0 3000000 postgres",
       "garbage line"
     ].join("\n"));
     expect(rows).toHaveLength(5);
@@ -199,7 +221,7 @@ describe("Nous's server load", () => {
       memTotalBytes: 40 * GiB, swapPercent: 36.7, host: pve(92), samples: 30, sampledAt: new Date(NOW).toISOString(),
       topCpu: [{ pid: 300, command: "node", cpuPercent: 97.5, rssBytes: GiB, pane: "Dino/Finn" }], topMemory: [] });
     expect(line.split("\n")).toEqual([
-      "Server: OVERLOADED (pve swap 92.00%) · pve swap 92.00% (12 s old), OVERLOADED only past 90% · this VM (diagnostics, holds nothing): CPU 78% · load 15.3/17.4 on 20 cores · RAM available 17 of 40 GiB · swap 37% (5 min average)."
+      "Server: OVERLOADED (pve swap 92.00%) · pve swap 92.00% (12 s old), OVERLOADED only past 90% · this VM (its swap counts too): CPU 78% (5 min average) · load 15.3/17.4 on 20 cores · RAM available 17 of 40 GiB · swap 37%."
         + " OVERLOADED: start no new work in panes now: open no new panes, send work only with when \"calm\" (urgent only for what cannot wait) and start nothing heavy; answers, stops and closes go at once.",
       "Top CPU: node (Dino/Finn) 98%."
     ]);

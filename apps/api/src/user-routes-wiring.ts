@@ -9,6 +9,7 @@ import { stat } from "node:fs/promises";
 import { registerAdminUserRoutes } from "./admin-user-routes.js";
 import { registerAgentSessionHistoryRoutes, registerAgentSessionThreadRoutes } from "./agent-session-routes.js";
 import { registerAppSignIn } from "./app-signin.js";
+import { cachedGitVersionMetadata } from "./health-routes.js";
 import { cookieName, defaultSessionRevocationStore, googleRedirectUriFor, requestOrigin, signOAuthState, verifyOAuthState, verifySession } from "./auth.js";
 import { registerAuthRoutes } from "./auth-routes.js";
 import { googleBrowserProfilePathFor } from "./browser-sessions.js";
@@ -36,6 +37,7 @@ import { registerSystemServicesRoutes } from "./system-services-routes.js";
 import { registerTaskItemRoutes } from "./task-item-routes.js";
 import type { TaskScheduleRunnerDeps } from "./task-schedules.js";
 import { registerTraceRoutes } from "./trace-routes.js";
+import { temporalWorkflowTaskFaults, type WorkflowTaskFault } from "./trace-workflow-faults.js";
 import { registerUserLinkRoutes } from "./user-link-routes.js";
 
 type Deps<F extends (app: FastifyInstance, deps: never) => unknown> = Parameters<F>[1];
@@ -56,6 +58,9 @@ type SignInRoutesDeps = Pick<Deps<typeof registerAuthRoutes>, "auth" | "browserS
     mailCampaigns?: () => MailCampaignsService | undefined;
     /** A kept Vault key's value (vaultKeptKeyReader): a linked SpaceApp's Access service token (Space Link). */
     vaultKeptKey?: AppSignInDeps["linkVaultKey"];
+    /** AI lending over Space Link (plan step 6): this SpaceApp's Gateway keys, created after these routes. */
+    linkGateway?: Omit<NonNullable<AppSignInDeps["linkGateway"]>, "url">;
+    linkVault?: AppSignInDeps["linkVault"];
   };
 type UserToolRoutesDeps = Pick<Deps<typeof registerAgentSessionThreadRoutes>, "codexParity" | "unifiedCliTaskRegistry" | "cliRuntimeVisibility" | "visibleCliRuntimeIds">
   & Pick<Deps<typeof registerAgentSessionHistoryRoutes>, "agentSessionHistoryService">
@@ -63,7 +68,7 @@ type UserToolRoutesDeps = Pick<Deps<typeof registerAgentSessionThreadRoutes>, "c
   & Pick<Deps<typeof registerSystemServicesRoutes>, "systemServicesProvider">
   & Pick<Parameters<typeof createCodexEnvironmentStats>[1], "hostStatsProvider">
   & {
-    store: SpaceStore; config: SpaceApiConfig; options: { gatewayAdminService?: GatewayAdminService }; nousRef: { current: NousWiring | null };
+    store: SpaceStore; config: SpaceApiConfig; options: { gatewayAdminService?: GatewayAdminService; workflowTaskFaults?: (workflowIds: string[]) => Promise<WorkflowTaskFault[]> }; nousRef: { current: NousWiring | null };
     gatewayRepositoryFor: () => Parameters<typeof createGatewayAdminService>[0]["repository"];
     gatewayVaultKey?: Deps<typeof registerGatewayAdminRoutes>["vaultKey"];
     installTelemetry: Pick<ReturnType<typeof createInstallTelemetry>, "active" | "firstAnswer">;
@@ -110,13 +115,18 @@ export function registerSignInRoutes(app: FastifyInstance, deps: SignInRoutesDep
   // The connector service is created with the other Dot services; the sign-in callback reaches it through this reference.
   const connectorServiceRef: { current: ReturnType<typeof createConnectorService> | null } = { current: null };
   // Forgot password's mail (Nous 13/11): the owner's personal sender. shortcut: this install's sender id; a Settings choice if another install needs it.
+  const RESET_SENDER = "msender:Yp9r40K3jQ46";
   const passwordResetMail = { get current() {
     const campaigns = deps.mailCampaigns?.();
-    return deps.passwordResetMail ?? (campaigns ? (owner: string, to: string, subject: string, text: string) => campaigns.sendTransactional(owner, "msender:Yp9r40K3jQ46", { to, subject, text }) : null);
+    return deps.passwordResetMail ?? (campaigns ? (owner: string, to: string, subject: string, text: string) => campaigns.sendTransactional(owner, RESET_SENDER, { to, subject, text }) : null);
+  }, async available(owner: string) {
+    if (deps.passwordResetMail) return true;
+    const campaigns = deps.mailCampaigns?.();
+    return campaigns ? campaigns.canSendTransactional(owner, RESET_SENDER) : false;
   } };
   registerAuthRoutes(app, {
     config, auth, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions, passwordResetMail,
-    googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef, persistRevocation, appSignIn: registerAppSignIn(app, { store, crypto: connectorCrypto, version: config.version, linkVaultKey: deps.vaultKeptKey, events: eventBus, notifications: notificationService, decision: async (owner, id) => (await nousRef.current?.service.decisions(owner))?.find((item) => item.id === id) ?? null, goal: async (owner, id) => (await nousRef.current?.service.goalsView(owner))?.goals.find((item) => item.id === id) ?? null, sessionSecret: auth.sessionSecret, routeOptions: defaultRouteRateLimitOptions, persistRevocation, revocations: defaultSessionRevocationStore, databaseUrl: store instanceof PostgresSpaceStore ? config.databaseUrl : null, mobileRelayUrl: config.mobileRelayUrl, mobilePushUrl: config.mobilePushUrl, mobileDemo: config.mobileDemo, playIntegrityFile: config.playIntegrityServiceAccountFile,
+    googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef, persistRevocation, appSignIn: registerAppSignIn(app, { store, crypto: connectorCrypto, version: config.version, linkVaultKey: deps.vaultKeptKey, linkVault: deps.linkVault, linkGateway: deps.linkGateway && { ...deps.linkGateway, url: config.gatewayUrl }, linkCommit: async () => (await cachedGitVersionMetadata())?.commit ?? null, versionSync: config.instance === "stable" && !config.publicDistribution, events: eventBus, notifications: notificationService, decision: async (owner, id) => (await nousRef.current?.service.decisions(owner))?.find((item) => item.id === id) ?? null, goal: async (owner, id) => (await nousRef.current?.service.goalsView(owner))?.goals.find((item) => item.id === id) ?? null, inboxAsks: async (owner, id) => (await nousRef.current?.inboxAsks(owner, id)) ?? null, sessionSecret: auth.sessionSecret, routeOptions: defaultRouteRateLimitOptions, persistRevocation, revocations: defaultSessionRevocationStore, databaseUrl: store instanceof PostgresSpaceStore ? config.databaseUrl : null, mobileRelayUrl: config.mobileRelayUrl, mobilePushUrl: config.mobilePushUrl, mobileDemo: config.mobileDemo, playIntegrityFile: config.playIntegrityServiceAccountFile,
       google: () => deps.mailCopilotGoogle ?? connectorServiceRef.current, gmailFetch: deps.mailCopilotGmailFetch })
   });
 
@@ -156,7 +166,7 @@ export function registerUserToolRoutes(app: FastifyInstance, deps: UserToolRoute
   registerInstallTelemetryRoutes(app, { onActive: (fields) => installTelemetry.active.observe(fields) });
   registerFirstAnswerWatch(app, { reporter: installTelemetry.firstAnswer, rooms: async () => store.listRooms(), readRoom: readDashboardAgents });
 
-  registerTraceRoutes(app, { store, routeOptions: defaultRouteRateLimitOptions });
+  registerTraceRoutes(app, { store, routeOptions: defaultRouteRateLimitOptions, workflowTaskFaults: options.workflowTaskFaults ?? temporalWorkflowTaskFaults(config) });
 
   registerSharedChatRoutes(app, {
     auth, store, cliTerminalManager, routeOptions: defaultRouteRateLimitOptions,
@@ -164,10 +174,10 @@ export function registerUserToolRoutes(app: FastifyInstance, deps: UserToolRoute
   });
   const reopenClosedPane = async (pane: Pane, owner: string) => spaceControl.execute(await controlUser(owner), controlExecuteSchema.parse({ roomId: pane.roomId, requestId: makeSpaceId("task_reopen"), actions: [{ kind: "pane", operation: pane.mode === "TERMINAL" ? "reopen" : "start", target: { paneIds: [pane.id], state: "ALL" }, when: "NOW" }] }));
   // R44-3: a recurring agent task whose pane is gone gets a new Claude Code pane in its room (the pane Space Control's panes.open adds).
-  const openTaskPane = async (roomId: string, owner: string) => {
+  const openTaskPane = async (roomId: string, owner: string, type = "claude") => {
     const before = new Set((await store.listPanes(roomId, true)).map((pane) => pane.id));
     const receipt = await spaceControl.execute(await controlUser(owner), controlExecuteSchema.parse({ roomId, requestId: makeSpaceId("task_open"),
-      actions: [{ kind: "resource", operation: "panes.open", input: { counts: { claude: 1 } } }] }));
+      actions: [{ kind: "resource", operation: "panes.open", input: { counts: { [type]: 1 } } }] }));
     const pane = (await store.listPanes(roomId, false)).find((entry) => !before.has(entry.id));
     if (!pane) throw new Error((receipt as { results?: Array<{ error?: string }> }).results?.find((result) => result.error)?.error ?? "Space Control opened no pane.");
     return pane;
@@ -175,7 +185,15 @@ export function registerUserToolRoutes(app: FastifyInstance, deps: UserToolRoute
   registerTaskItemRoutes(app, { store, routeOptions: defaultRouteRateLimitOptions, recordAudit: (request, input) => recordAudit(store, request, input),
     schedules: config.instanceJobs["task-schedules"] ? { inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }),
       answer: (pane, input, requestId) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, ...input, when: "NOW" }, requestId ?? makeSpaceId("trace")), reopen: reopenClosedPane, openPane: openTaskPane,
-      brief: async (pane, owner, text) => { if (!taskBrief.current) throw new Error("The copilots are not available here."); return taskBrief.current(pane, owner, text); }, notice: async (owner, key, line) => { await nousRef.current?.service.notice(owner, key, line); } } : null });
+      brief: async (pane, owner, text) => { if (!taskBrief.current) throw new Error("The copilots are not available here."); return taskBrief.current(pane, owner, text); }, notice: async (owner, key, line) => { await nousRef.current?.service.notice(owner, key, line); },
+      // A Mail Copilot's task waits for its current turn (Space Control defers it), never typed into it.
+      prompt: async (pane, owner, text) => {
+        const receipt = await spaceControl.execute(await controlUser(owner), controlExecuteSchema.parse({ roomId: pane.roomId, requestId: makeSpaceId("task_prompt"),
+          actions: [{ kind: "pane", operation: "prompt", target: { paneIds: [pane.id], state: "OPEN" }, text, when: "AFTER_TURN" }] }), true);
+        const failed = (receipt as { results?: Array<{ status?: string; error?: string; detail?: string }> }).results?.find((result) => result.status === "FAILED" || result.status === "CANCELLED");
+        if (failed) throw new Error(failed.error ?? failed.detail ?? "Space Control did not take the prompt.");
+      },
+      providerRooms: async (owner) => (await nousRef.current?.providerRooms(owner)) ?? [] } : null });
 
   registerLinkInspectRoutes(app, { routeOptions: defaultRouteRateLimitOptions });
 

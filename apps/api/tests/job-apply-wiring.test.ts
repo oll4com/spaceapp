@@ -33,7 +33,7 @@ function wire(input: { pane?: unknown; modules?: string[]; triageJob?: boolean; 
   const app = { addHook: (name: string) => { hooks.push(name); }, log: { warn: (...args: unknown[]) => { warns.push(args); } } };
   const published: Record<string, unknown>[] = [];
   const getPane = vi.fn(async () => input.pane === undefined ? jobPane() : input.pane);
-  const raise = vi.fn(async (_n: unknown) => ({ payload: input.raised ?? {} }));
+  const raise = vi.fn<(notice: unknown) => Promise<{ payload: Record<string, unknown> }>>(async () => ({ payload: input.raised ?? {} }));
   const resolve = vi.fn(async () => undefined);
   const notify = vi.fn(async () => { if (input.telegramFails) throw new Error("telegram down"); return true; });
   const mutations: string[] = [];
@@ -200,7 +200,7 @@ describe("Job Copilot wiring", () => {
     const live = wire({ session: { sessionId: "cli:2", purpose: "NORMAL", isActive: true, status: "RUNNING" } });
     await live.routes[0]!.kickoff(jobPane(), run, true);
     expect(live.mutations).toEqual(["cli:2"]);
-    expect(captured.prompts[0]).toEqual([expect.anything(), "cli:2", expect.stringContaining("first find new postings"), "job-apply:jobrun:1", expect.stringMatching(/^job-apply:jobrun:1:kickoff:/)]);
+    expect(captured.prompts[0]).toEqual([expect.anything(), "cli:2", expect.stringContaining("first find new postings"), "job-apply:jobrun:1", expect.stringMatching(/^job-apply:jobrun:1:kickoff:/), { paneId: jobPane().id }]);
     expect(captured.prompts[0]![2]).toContain("Job Copilot run jobrun:1 started");
     // Plan clipboard:qH5emwVaV6yO step 4: a run with no application in progress starts a fresh session; one resuming an application keeps it.
     expect(captured.clears).toHaveLength(1);

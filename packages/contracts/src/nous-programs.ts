@@ -62,6 +62,16 @@ const text = z.preprocess(blankToNull, z.string().trim().nullable());
 // Only web addresses: the page opens it as a link.
 const webUrl = z.preprocess(blankToNull, z.string().trim().url().refine((value) => /^https?:\/\//i.test(value), "Only http(s) links").nullable());
 const texts = z.preprocess(list, z.array(z.string().trim().min(1)));
+// The applying company (operator 16/11 12:39 BKK, nous_msg:52aab2695d1e421ca1c71928): its short name, so the page's company chips group
+// ("INTRATRADE SINGLE MEMBER P.C." is INTRATRADE): the legal form at the end is dropped, the rest upper-cased.
+const LEGAL_FORM = /[\s,]+(?:single[- ]member\s+)?(?:p\.?\s?c\.?|i\.?\s?k\.?\s?e\.?|ltd\.?|llc|inc\.?|gmbh|s\.?a\.?|(?:μονοπρόσωπη\s+)?ι\.?\s?κ\.?\s?ε\.?|α\.?\s?ε\.?|ο\.?\s?ε\.?)$/iu;
+export const nousProgramCompanyName = (value: string) => value.trim().replace(LEGAL_FORM, "").trim().toLocaleUpperCase("el");
+/** The "Εταιρεία αίτησης: …" (or "Applicant company: …") line a program's notes carry, as a company name; null without one. */
+export function nousProgramCompanyFromNotes(notes: string | null | undefined): string | null {
+  // The name ends at the line's end, a comma, a semicolon, a bracket or a sentence's full stop ("P.C. (SpaceApp)", "TECHME. Applied 16/11").
+  const name = /(?:εταιρεία αίτησης|εταιρεια αιτησης|applicant company)\s*:\s*([^\n;,(]+?)\.?(?=\s*(?:[\n;,(]|\.\s|$))/iu.exec(notes ?? "")?.[1];
+  return name ? nousProgramCompanyName(name) || null : null;
+}
 
 // A provider's yes in another word is APPROVED (operator 7/11: every approved record under Approved; tailscale-for-startups came as REDEEMED).
 const APPROVED_WORDS = new Set(["REDEEMED", "ACCEPTED", "GRANTED", "AWARDED", "ACTIVATED", "ACTIVE"]);
@@ -160,6 +170,8 @@ export const nousProgramInputSchema = z.object({
   program: z.string().trim().min(1).optional(),
   project: text.optional(),
   url: webUrl.optional(),
+  // Which company applied (INTRATRADE, TOP IMPORTS, TECHME...); without it an upsert reads the notes' "Εταιρεία αίτησης: …" line.
+  company: z.preprocess(blankToNull, z.string().trim().transform(nousProgramCompanyName).nullable()).optional(),
   status: nousProgramStatusSchema.optional(),
   statusReason: text.optional(),
   appliedAt: date.optional(),
@@ -205,7 +217,7 @@ export interface NousProgram {
   amount: { text: string; value: number | null; currency: string | null } | null;
   commitments: string | null; account: string | null; contacts: string[]; mails: NousProgramMail[]; nextAction: string | null;
   reapply: { needed: boolean; why: string | null; when: string | null } | null;
-  sources: string[]; notes: string | null; givesMoney: boolean | null; tags: string[]; whatItIs: string | null; howWeUse: string | null; benefits: NousProgramBenefit[]; tiers: NousProgramTier[]; affiliate?: NousProgramAffiliate | null; locked?: string[]; awaitingCompletion?: boolean; createdAt: string; updatedAt: string;
+  sources: string[]; notes: string | null; givesMoney: boolean | null; tags: string[]; whatItIs: string | null; howWeUse: string | null; benefits: NousProgramBenefit[]; tiers: NousProgramTier[]; affiliate?: NousProgramAffiliate | null; company?: string | null; locked?: string[]; awaitingCompletion?: boolean; createdAt: string; updatedAt: string;
 }
 
 /** The usage report's file (plan clipboard:MUFqsrKfQtAt): `{ generatedAt, entries: [{ id, benefits }] }`, merged into the stored lines. */

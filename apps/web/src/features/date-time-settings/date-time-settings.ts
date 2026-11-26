@@ -347,7 +347,7 @@ export function allTimeZones(): string[] {
 
 /** A zone's short label at that instant: the browser's (EEST, CET) or, where it gives only an offset, our list's (ICT for Asia/Bangkok). */
 export function timeZoneLabel(timeZone: string, date: Date = new Date()): string {
-  let name = "";
+  let name: string;
   try {
     name = new Intl.DateTimeFormat("en-GB", { timeZone, timeZoneName: "short" }).formatToParts(date).find((part) => part.type === "timeZoneName")?.value ?? "";
   } catch {

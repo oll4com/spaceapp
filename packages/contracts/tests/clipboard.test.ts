@@ -8,6 +8,7 @@ import {
   setClipboardItemCompletedRequestSchema,
   spaceAgentClipboardActionEnvelopeSchema,
   planStepSchema,
+  checkPlanDependencies,
   planDependencyProblem,
   updatePlanProgressRequestSchema,
   upsertClipboardItemInputSchema
@@ -270,5 +271,14 @@ describe("plan map contracts (operator request 2026-10-25)", () => {
     expect(planDependencyProblem("clipboard:b", ["clipboard:a"], plans)).toBe("The dependency would loop: clipboard:b → clipboard:a → clipboard:b.");
     expect(planDependencyProblem("clipboard:b", ["clipboard:c"], plans)).toBeNull();
     expect(planDependencyProblem(null, ["clipboard:c"], plans)).toBeNull();
+  });
+
+  it("checkPlanDependencies drops a completed plan as met and still refuses an unknown one and a loop (15/11 13:42Z)", () => {
+    const plans = [{ id: "clipboard:a", dependsOn: ["clipboard:b"], done: false }, { id: "clipboard:b", dependsOn: [], done: false },
+      { id: "clipboard:done", dependsOn: ["clipboard:b"], done: true }];
+    expect(checkPlanDependencies("clipboard:b", ["clipboard:done"], plans)).toEqual({ dependsOn: [], problem: null });
+    expect(checkPlanDependencies(null, ["clipboard:b", "clipboard:done"], plans)).toEqual({ dependsOn: ["clipboard:b"], problem: null });
+    expect(checkPlanDependencies("clipboard:b", ["clipboard:done", "clipboard:zz"], plans).problem).toBe("Plan clipboard:zz is not an open plan.");
+    expect(checkPlanDependencies("clipboard:b", ["clipboard:a"], plans).problem).toBe("The dependency would loop: clipboard:b → clipboard:a → clipboard:b.");
   });
 });

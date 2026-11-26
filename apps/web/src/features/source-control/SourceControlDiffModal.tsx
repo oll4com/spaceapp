@@ -11,10 +11,28 @@ import {
   Plus,
   Minus,
   Undo2,
-  CircleAlert
+  CircleAlert,
+  Copy
 } from "../ui-theme/app-icons.js";
 import type { GitFileDiff } from "@space/contracts";
-import { DiffViewer } from "./DiffViewer.js";
+import { DiffViewer, diffNoteKey, type DiffNoteLine } from "./DiffViewer.js";
+import { writeClipboardText } from "../clipboard-dock/clipboard-events.js";
+
+export interface DiffReviewNote extends DiffNoteLine {
+  note: string;
+}
+
+/** The prompt an agent gets for review notes: each note names its file and line, quotes the code and keeps its own lines. */
+export function formatReviewNotes(path: string, notes: readonly DiffReviewNote[]): string {
+  const items = [...notes]
+    .sort((a, b) => a.line - b.line || Number(b.removed) - Number(a.removed))
+    .map((n) => {
+      const where = n.removed ? `${path}, removed line ${n.line}` : `${path}:${n.line}`;
+      const code = n.code.trim() ? ` (\`${n.code.trim()}\`)` : "";
+      return `- ${where}${code}: ${n.note.trim().replace(/\n/g, "\n  ")}`;
+    });
+  return [`Review notes on ${path}. Please address each one:`, ...items].join("\n");
+}
 
 export interface SourceControlDiffModalProps {
   title: string;
@@ -62,12 +80,36 @@ export function SourceControlDiffModal({
 
   const [isMaximized, setIsMaximized] = useState(false);
   const [activeHunkIndex, setActiveHunkIndex] = useState(0);
+  // shortcut: notes live only while this file's diff is open, keep them server-side if reviews need to outlast the dialog.
+  const [notes, setNotes] = useState<DiffReviewNote[]>([]);
+  const [draft, setDraft] = useState<DiffReviewNote | null>(null);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  useEffect(() => { setNotes([]); setDraft(null); setCopyStatus(null); }, [path]);
+  const notedLines = useMemo(() => new Set(notes.map(diffNoteKey)), [notes]);
+
+  const openNote = (line: DiffNoteLine) =>
+    setDraft(notes.find((n) => diffNoteKey(n) === diffNoteKey(line)) ?? { ...line, note: "" });
+  const saveDraft = () => {
+    if (!draft) return;
+    const rest = notes.filter((n) => diffNoteKey(n) !== diffNoteKey(draft));
+    setNotes(draft.note.trim() ? [...rest, draft] : rest);
+    setDraft(null);
+    setCopyStatus(null);
+  };
+  const copyNotes = async () => {
+    try {
+      await writeClipboardText(formatReviewNotes(path, notes));
+      setCopyStatus("Copied. Paste it into the agent's pane.");
+    } catch (error) {
+      setCopyStatus(error instanceof Error ? error.message : "Copy failed.");
+    }
+  };
 
   const toggleViewMode = (mode: "split" | "inline") => {
     setViewMode(mode);
     try {
       localStorage.setItem("space:git-diff-mode", mode);
-    } catch {}
+    } catch { /* storage unavailable: mode still applies this session */ }
   };
 
   const pathParts = useMemo(() => {
@@ -109,7 +151,8 @@ export function SourceControlDiffModal({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        onClose();
+        if (draft) setDraft(null);
+        else onClose();
       } else if (e.altKey && e.key === "ArrowUp") {
         e.preventDefault();
         prevHunk();
@@ -347,6 +390,8 @@ export function SourceControlDiffModal({
               busy={busy}
               statusEpochVersion={snapshotVersion}
               activeHunkIndex={activeHunkIndex}
+              onLineNote={openNote}
+              notedLines={notedLines}
             />
           ) : (
             <div className="diff-empty-box" role="status">
@@ -359,6 +404,66 @@ export function SourceControlDiffModal({
             </div>
           )}
         </div>
+
+        {draft || notes.length ? (
+          <footer className="diff-review-notes" aria-label="Review notes">
+            {draft ? (
+              <form
+                className="diff-review-draft"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  saveDraft();
+                }}
+              >
+                <label htmlFor="diff-review-note-input">
+                  Note on {draft.removed ? "removed " : ""}line {draft.line}
+                </label>
+                <textarea
+                  id="diff-review-note-input"
+                  autoFocus
+                  rows={2}
+                  value={draft.note}
+                  onChange={(e) => setDraft({ ...draft, note: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                      e.preventDefault();
+                      saveDraft();
+                    }
+                  }}
+                />
+                <div className="diff-file-actions">
+                  <button type="submit" className="diff-subbar-action-btn">
+                    {draft.note.trim() ? "Save note" : "Remove note"}
+                  </button>
+                  <button type="button" className="diff-subbar-action-btn" onClick={() => setDraft(null)}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : null}
+            {notes.length ? (
+              <div className="diff-review-summary">
+                <ul>
+                  {[...notes].sort((a, b) => a.line - b.line).map((n) => (
+                    <li key={diffNoteKey(n)}>
+                      <button type="button" className="diff-review-note-link" onClick={() => setDraft(n)}>
+                        {n.removed ? "Removed line" : "Line"} {n.line}
+                      </button>
+                      <span>{n.note}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="diff-file-actions">
+                  {copyStatus ? <span role="status">{copyStatus}</span> : null}
+                  <button type="button" className="diff-subbar-action-btn" onClick={() => void copyNotes()}>
+                    <Copy size={13} />
+                    <span>Copy {notes.length === 1 ? "note" : `${notes.length} notes`} for the agent</span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </footer>
+        ) : null}
       </div>
     </div>
   );

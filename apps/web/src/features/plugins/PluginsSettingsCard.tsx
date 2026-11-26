@@ -25,7 +25,7 @@ import {
   Plus,
   ExternalLink
 } from "../ui-theme/app-icons.js";
-import { isRepositoryProviderId, type PluginWithState, type PluginCategory } from "@space/contracts";
+import { isRepositoryProviderId, type PluginWithState } from "@space/contracts";
 import "./plugins-settings.css";
 import { SOURCE_CONTROL_CONNECTION_EVENT } from "../source-control/client.js";
 import { RepositoryProvidersSection } from "../source-control/RepositoryProvidersSection.js";
@@ -92,7 +92,7 @@ async function getCsrfToken(): Promise<string> {
       const data = (await res.json()) as { csrfToken?: string };
       if (data.csrfToken) cachedCsrfToken = data.csrfToken;
     }
-  } catch {}
+  } catch { /* the request below reports the failure */ }
   return cachedCsrfToken || "";
 }
 
@@ -128,7 +128,7 @@ export function PluginsSettingsCard({ canManage = true }: { canManage?: boolean 
   const [plugins, setPlugins] = useState<PluginWithState[]>([]);
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState("all");
-  const [loading, setLoading] = useState(false);
+  const [, setLoading] = useState(false);
   const [selectedPlugin, setSelectedPlugin] = useState<PluginWithState | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [accountLabel, setAccountLabel] = useState("");

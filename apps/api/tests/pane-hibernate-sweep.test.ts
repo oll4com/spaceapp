@@ -40,7 +40,8 @@ function fixture(minutes?: number) {
   if (minutes !== undefined) void store.updateUserSettings("user:operator", { paneHibernate: { minutes: minutes as 0 } });
   const deps = {
     store, now: NOW, readDetails: async () => details as never,
-    backgroundJobs: async () => new Set([backgroundJob!.sessionId])
+    backgroundJobs: async () => new Set([backgroundJob!.sessionId]),
+    waitsOnOperator: async () => false
   };
   return { store, deps, details, room, idle: idle!, done: done! };
 }
@@ -69,6 +70,13 @@ describe("Idle CLI panes hibernate (plan clipboard:YqhRIXfLAnfK step 2β, operat
     expect((await hibernatablePanes(deps)).map(({ session }) => session.sessionId)).toEqual([done.sessionId]);
     // Idle the owner's minutes after Space's prompt, it sleeps.
     expect((await hibernatablePanes({ ...deps, now: NOW + 30 * 60_000 })).map(({ session }) => session.sessionId)).toContain(idle.sessionId);
+  });
+
+  it("never sleeps a pane whose needs-you request waits on the operator, though its CLI reads idle (15/11 Cleo/Andy)", async () => {
+    const { deps, idle, done } = fixture();
+    const asked = vi.fn(async (_owner: string, paneId: string) => paneId === idle.paneId);
+    expect((await hibernatablePanes({ ...deps, waitsOnOperator: asked })).map(({ session }) => session.sessionId)).toEqual([done.sessionId]);
+    expect(asked).toHaveBeenCalledWith("user:operator", idle.paneId);
   });
 
   it("does nothing when the owner turned it off", async () => {

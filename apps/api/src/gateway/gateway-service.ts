@@ -8,7 +8,7 @@ import {
   type GatewayApiKeyCreatedResponse, type GatewayApiKeyDetail, type GatewayDashboard, type GatewayDashboardRange, type GatewayHealth,
   type GatewayProvider, type GatewayApiKeyProvider, type GatewayRequestLog, type GatewayRequestLogFacets, type GatewayRequestLogFilter, type GatewayRequestLogList,
   type GatewaySettings, type GatewaySettingsUpdateRequest, type GatewayStatus, gatewayApiKeyUpdateRequestSchema, gatewayAccountUpdateRequestSchema,
-  type GatewayHeadroomHistory, type GatewayHeadroomLifetime, type GatewayHeadroomSession, type GatewayHistorySeries, isGatewayFreePlan, gatewayFreeKeyProviderOf,
+  type GatewayHeadroomHistory, type GatewayHeadroomLifetime, type GatewayHeadroomSession, type GatewayHistorySeries, gatewayFreePlanPaused, gatewayFreeKeyProviderOf,
   gatewayPoolModelsSchema, type GatewayPoolModels, type GatewayFreeLedger
 } from "@space/contracts";
 import type { z } from "zod";
@@ -148,21 +148,23 @@ export class GatewayAccountNotFoundError extends Error {}
 export class GatewayKeyPolicyError extends Error {}
 /** Settings the gateway could not apply (LAN access outside the private ranges, ...). */
 export class GatewaySettingsError extends Error {}
-/** A free-plan account stays paused: the gateway never sends it traffic (operator rule 2026-10-13). */
+/** A free-plan account stays paused: the gateway never sends it traffic (operator rule 2026-10-13; Antigravity is the exception since 2026-11-17). */
 export class GatewayAccountFreePlanError extends Error {
   constructor() { super("Free plan accounts stay paused. Sign in again on a paid plan, then resume."); }
 }
 
+/** A copy of `record` without `keys`. */
+function without<T extends object, K extends keyof T>(record: T, ...keys: K[]): Omit<T, K> {
+  return Object.fromEntries(Object.entries(record).filter(([key]) => !(keys as PropertyKey[]).includes(key))) as Omit<T, K>;
+}
+
 /** Strips the encrypted credential envelope and the key hash before anything leaves the API. */
 function publicAccount(record: GatewayAccountRecord): GatewayAccount {
-  const { externalAccountId: _external, credentialsEncrypted: _credentials, credentialsExpiresAt: _expires, source: _source,
-    sourceRef: _sourceRef, blockedUntil: _blocked, ...account } = record;
-  return account;
+  return without(record, "externalAccountId", "credentialsEncrypted", "credentialsExpiresAt", "source", "sourceRef", "blockedUntil");
 }
 
 function publicKey(record: GatewayApiKeyRecord): GatewayApiKey {
-  const { keyHash: _hash, ...key } = record;
-  return key;
+  return without(record, "keyHash");
 }
 
 function nextReset(window: "DAILY" | "WEEKLY" | "MONTHLY", now: Date): string {
@@ -216,7 +218,7 @@ export function createGatewayAdminService(options: {
     for (const location of await profileSource.list().catch(() => [])) {
       const tokenJson = await profileSource.read(location.tokenPath).catch(() => null);
       if (!tokenJson) continue;
-      let email: string | null = null;
+      let email: string | null;
       try {
         const parsed = JSON.parse(tokenJson) as { id_token?: string; id_token_email?: string };
         email = extractEmailFromIdToken(parsed.id_token, parsed.id_token_email);
@@ -227,7 +229,7 @@ export function createGatewayAdminService(options: {
   }
 
   async function recheckFreePlanAccount(account: GatewayAccountRecord | null): Promise<GatewayAccountRecord | null> {
-    if (!account || !isGatewayFreePlan(account.planType)) return account;
+    if (!account || !gatewayFreePlanPaused(account.provider, account.planType)) return account;
     await gatewayAdmin(`/__space-gateway/admin/accounts/${account.id}/test`);
     return knownAccount(account.id);
   }
@@ -357,7 +359,8 @@ export function createGatewayAdminService(options: {
     },
 
     async setAccountPaused(accountId, paused) {
-      if (!paused && isGatewayFreePlan((await recheckFreePlanAccount(await knownAccount(accountId)))?.planType)) throw new GatewayAccountFreePlanError();
+      const known = paused ? null : await recheckFreePlanAccount(await knownAccount(accountId));
+      if (known && gatewayFreePlanPaused(known.provider, known.planType)) throw new GatewayAccountFreePlanError();
       const updated = await repository.setAccountStatus(accountId, paused ? "PAUSED" : "ACTIVE", paused ? "Paused by an administrator." : null);
       return updated ? publicAccount(updated) : null;
     },
@@ -489,7 +492,7 @@ export function createGatewayAdminService(options: {
         refreshStored: typeof body.refreshStored === "boolean" ? body.refreshStored : null,
         idTokenParsed: typeof body.idTokenParsed === "boolean" ? body.idTokenParsed : null
       } : null;
-      const { credentialsEncrypted: _credentials, externalAccountId: _external, sourceRef: _sourceRef, blockedUntil: _blocked, ...rest } = account;
+      const rest = without(account, "credentialsEncrypted", "externalAccountId", "sourceRef", "blockedUntil");
       return buildAccountDetail({ repository, account: rest, tokenStatus, now: now().getTime() });
     },
 
@@ -499,7 +502,7 @@ export function createGatewayAdminService(options: {
       if (patch.paused === false) {
         record = await recheckFreePlanAccount(record);
         if (!record) return null;
-        if (isGatewayFreePlan(record.planType)) throw new GatewayAccountFreePlanError();
+        if (gatewayFreePlanPaused(record.provider, record.planType)) throw new GatewayAccountFreePlanError();
       }
       if (patch.alias !== undefined || patch.warmupEnabled !== undefined) {
         record = await repository.updateAccountPreferences(accountId, { alias: patch.alias, warmupEnabled: patch.warmupEnabled });

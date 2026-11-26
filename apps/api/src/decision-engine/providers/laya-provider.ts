@@ -1,4 +1,4 @@
-import type { JevDecideInput, JevDecideResult } from "@space/contracts";
+import type { JevDecideResult } from "@space/contracts";
 import type { DecisionProvider } from "../types.js";
 
 /**
@@ -14,7 +14,7 @@ export class LayaDecisionProvider implements DecisionProvider {
     return false;
   }
 
-  async decide(_request: JevDecideInput): Promise<JevDecideResult> {
+  async decide(): Promise<JevDecideResult> {
     return {
       available: false,
       reason: "Laya local neural provider is currently in staging/disabled; falling back to Jev/Rules.",

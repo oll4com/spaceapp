@@ -32,7 +32,7 @@ export function registerLinkInspectRoutes(app: FastifyInstance, options: {
 
     let title = parsed.hostname;
     let canEmbed = parsed.protocol === "https:";
-    let openMode: "EMBEDDED" | "NEW_TAB" = canEmbed ? "EMBEDDED" : "NEW_TAB";
+    let openMode: "EMBEDDED" | "NEW_TAB";
 
     const hostLower = parsed.hostname.toLowerCase().replace(/^www\./, "");
     const isYouTube = hostLower === "youtube.com" || hostLower === "m.youtube.com" || hostLower === "music.youtube.com" || hostLower === "youtu.be";
@@ -42,7 +42,6 @@ export function registerLinkInspectRoutes(app: FastifyInstance, options: {
     if (isYouTube) {
       if (playsInYouTubePane) {
         canEmbed = true;
-        openMode = "EMBEDDED";
       }
 
       try {
@@ -84,7 +83,9 @@ export function registerLinkInspectRoutes(app: FastifyInstance, options: {
             }
           }
         }
-      } catch {}
+      } catch {
+        // No oEmbed title: fall through to the generic page fetch below.
+      }
     }
 
     try {

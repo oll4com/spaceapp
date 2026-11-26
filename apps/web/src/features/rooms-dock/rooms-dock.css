@@ -221,6 +221,8 @@
 .side-surface-room-panel .room-meta {
   min-width: 0;
   display: flex;
+  flex-wrap: wrap;
+  row-gap: 0.15rem;
   align-items: center;
   overflow: hidden;
   color: var(--dock-muted);
@@ -236,7 +238,7 @@
 }
 
 .side-surface-room-panel .room-folder {
-  min-width: 0;
+  min-width: 3ch;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -247,11 +249,31 @@
   font-weight: 600;
 }
 
+.side-surface-room-panel .room-nous-off {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  color: var(--dock-muted);
+  font-weight: 600;
+}
+
+.side-surface-room-panel .room-nous-off svg {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
 .side-surface-room-panel .room-cli-runtime-icons {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 0.15rem;
+  margin-left: 0.35rem;
+}
+
+/* The icons wrap to their own line when the row is full; a separator dot would then lead that line. */
+.side-surface-room-panel .room-meta > .room-cli-runtime-icons::before {
+  content: none;
 }
 
 .side-surface-room-panel .room-cli-runtime-icon {
@@ -260,6 +282,19 @@
   box-sizing: border-box;
   border-radius: 4px;
   object-fit: contain;
+}
+
+.side-surface-room-panel .room-pane-type-icon {
+  display: inline-flex;
+  width: 1rem;
+  height: 1rem;
+  align-items: center;
+  justify-content: center;
+}
+
+.side-surface-room-panel .room-pane-type-icon > svg {
+  width: 0.85rem;
+  height: 0.85rem;
 }
 
 .side-surface-room-panel .room-cli-runtime-more {

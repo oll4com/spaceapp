@@ -34,8 +34,17 @@ class RecordingPool implements PgPoolLike {
       return { rows: [{ runId: "room_agent_task_run:abcdef01", missionId: "room_agent_mission:abcdef01", roomId: "room:abcdef01",
         status: "COMPLETED", errorCode: null, queuedAt: now, completedAt: null }] as T[], rowCount: 1 };
     }
+    if (sql.includes("FROM pane_cli_sessions")) {
+      return { rows: [{ sessionId: "cli_session:abcdef01", paneId: "pane:abcdef01", roomId: "room:abcdef01", runtimeId: "cli:claude", cliTaskId: null,
+        cliTaskRevisionId: null, launchMode: "NEW", status: "RUNNING", startedAt: now, endedAt: null }] as T[], rowCount: 1 };
+    }
+    if (sql.includes("FROM unnest(")) {
+      return { rows: [{ provider: "CLAUDE", model: "claude-opus-5-5", status: "success", errorCode: null, latencyMs: 2300, requestedAt: now,
+        cliSessionId: values[0] && (values[0] as string[])[0] }] as T[], rowCount: 1 };
+    }
     if (sql.includes("FROM space_gateway_request_logs")) {
-      return { rows: [{ provider: "ANTIGRAVITY", model: "gemini-3.8-flash-tiered", status: "error", errorCode: "http_429", latencyMs: 812, requestedAt: now }] as T[], rowCount: 1 };
+      return { rows: [{ provider: "ANTIGRAVITY", model: "gemini-3.8-flash-tiered", status: "error", errorCode: "http_429", latencyMs: 812, requestedAt: now,
+        cliSessionId: null }] as T[], rowCount: 1 };
     }
     if (sql.includes("FROM audit_events")) {
       return { rows: [{ id: "audit:abcdef01", actorUserId: null, traceId: values[0], action: "turn.queue", targetType: "workflow",
@@ -77,7 +86,7 @@ describe("PostgresSpaceStore.listTraceRecords", () => {
       errorCode: "ROOM_AGENT_TOKEN_LIMIT", queuedAt: "2026-10-11T10:00:00.000Z", completedAt: "2026-10-11T10:00:00.000Z" }]);
     expect(records.roomAgentTaskRuns).toEqual([{ runId: "room_agent_task_run:abcdef01", missionId: "room_agent_mission:abcdef01",
       roomId: "room:abcdef01", status: "COMPLETED", errorCode: null, queuedAt: "2026-10-11T10:00:00.000Z", completedAt: null }]);
-    const byRunId = (call: { sql: string }) => call.sql.includes("FROM room_agent_requests") || call.sql.includes("run_id = ANY");
+    const byRunId = (call: { sql: string }) => call.sql.includes("FROM room_agent_requests") || call.sql.includes("run_id = ANY") || call.sql.includes("FROM unnest(");
     for (const call of pool.calls.filter((entry) => entry !== runCall && !byRunId(entry))) {
       expect(call.values[0]).toBe("req:abcdefghijkl");
       expect(call.sql).not.toContain("req:abcdefghijkl");
@@ -85,9 +94,19 @@ describe("PostgresSpaceStore.listTraceRecords", () => {
       expect(call.sql).toMatch(/LIMIT \$\d/);
     }
     // EXT-G-5: Space Gateway's rows whose request id is the trace (OBS-006 keeps a caller's x-request-id), codes and times only.
-    expect(records.gatewayRequests).toEqual([{ provider: "ANTIGRAVITY", model: "gemini-3.8-flash-tiered", status: "error", errorCode: "http_429",
-      latencyMs: 812, requestedAt: "2026-10-11T10:00:00.000Z" }]);
-    expect(pool.calls.find((call) => call.sql.includes("FROM space_gateway_request_logs"))!.sql).not.toContain("error_message");
+    // EXT-G-5: and a traced CLI session's own calls, by its pane tag within the session's span (a running session up to now).
+    expect(records.gatewayRequests).toEqual([
+      { provider: "ANTIGRAVITY", model: "gemini-3.8-flash-tiered", status: "error", errorCode: "http_429",
+        latencyMs: 812, requestedAt: "2026-10-11T10:00:00.000Z", cliSessionId: null },
+      { provider: "CLAUDE", model: "claude-opus-5-5", status: "success", errorCode: null,
+        latencyMs: 2300, requestedAt: "2026-10-11T10:00:00.000Z", cliSessionId: "cli_session:abcdef01" }
+    ]);
+    const paneCall = pool.calls.find((call) => call.sql.includes("FROM unnest("))!;
+    expect(paneCall.values).toEqual([["cli_session:abcdef01"], ["pane:abcdef01"], ["2026-10-11T10:00:00.000Z"], [null], 500]);
+    expect(paneCall.sql).toContain("l.project = s.pane_id AND l.requested_at >= s.started_at AND l.requested_at <= COALESCE(s.ended_at, now())");
+    for (const call of pool.calls.filter((entry) => entry.sql.includes("FROM space_gateway_request_logs") || entry === paneCall)) {
+      expect(call.sql).not.toContain("error_message");
+    }
     const eventCall = pool.calls.find((call) => call.sql.includes("FROM events"))!;
     // Limits are clamped: 500 rows at most, default 14-day event window for invalid input.
     expect(eventCall.values).toEqual(["req:abcdefghijkl", 14, 500]);

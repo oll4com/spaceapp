@@ -55,7 +55,7 @@ export async function assertRemovableWorktreePath(path: string, managedRoot: str
     return { kind: "LINKED_WORKTREE", path: target };
   }
 
-  let root: string | null = null;
+  let root: string | null;
   try {
     root = await realpath(managedRoot);
   } catch {

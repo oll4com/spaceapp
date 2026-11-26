@@ -13,7 +13,7 @@ import { imageDimensions, readPngText } from "./design/images.js";
 const idParamSchema = z.object({ id: idSchema });
 
 /** A file's bytes, or the one range a player asks for (`Range: bytes=a-b`); the stream closes the handle. */
-async function sendBytes(request: FastifyRequest, reply: FastifyReply, handle: FileHandle, size: number) {
+export async function sendBytes(request: FastifyRequest, reply: FastifyReply, handle: FileHandle, size: number) {
   reply.header("accept-ranges", "bytes");
   const range = /^bytes=(\d*)-(\d*)$/.exec(String(request.headers.range ?? ""));
   // A resumed download sends If-Range with the validator it saw; a mismatch gets the whole file (RFC 9110 13.1.5).
@@ -93,7 +93,7 @@ export function registerArtifactReadRoutes(app: FastifyInstance, options: {
         embedded = readPngText(bytes);
       } finally { await handle.close(); }
     }
-    let design: Record<string, unknown> | null = null;
+    let design: Record<string, unknown> | null;
     try {
       const parsed: unknown = embedded["spaceapp:design"] ? JSON.parse(embedded["spaceapp:design"]) : null;
       design = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
@@ -139,6 +139,17 @@ export function registerArtifactReadRoutes(app: FastifyInstance, options: {
         reply.header("cache-control", "private, max-age=86400, stale-while-revalidate=604800");
       } else {
         reply.header("cache-control", "private, no-store");
+      }
+      // An HTML file runs as a page (operator nous_msg:709c40fa: a rating form showed as source), whole, under its own CSP sandbox: an
+      // opaque origin that never reaches Space's origin, cookies or API, even opened outside the viewer's sandboxed frame. Its own
+      // response, not srcdoc: a srcdoc page inherits the app's CSP (`script-src 'self'`), which blocks the page's inline scripts.
+      if (previewKind === "TEXT" && (request.query as { view?: unknown }).view === "page" && /\.html?$/i.test(artifactFilename(artifact))) {
+        reply
+          .type("text/html; charset=utf-8")
+          .header("content-disposition", "inline")
+          .header("content-security-policy", "sandbox allow-scripts allow-forms allow-downloads allow-modals; frame-ancestors 'self'; base-uri 'none'");
+        streaming = true;
+        return await sendBytes(request, reply, handle, fileStat.size);
       }
       if (previewKind === "TEXT") {
         const preview = await readAgentFileTextPreview(descriptorPath(handle));

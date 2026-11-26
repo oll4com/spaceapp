@@ -7,7 +7,8 @@ import {
   traceLookupResponseSchema,
   type TraceLookupResponse
 } from "@space/contracts";
-import type { SpaceStore, TraceRecords } from "@space/runtime";
+import { traceWorkflowIds, type SpaceStore, type TraceRecords } from "@space/runtime";
+import type { WorkflowTaskFault } from "./trace-workflow-faults.js";
 import { sendApiError } from "./http-errors.js";
 
 const identifierPattern = /^[A-Za-z0-9:._-]{1,240}$/;
@@ -19,7 +20,7 @@ const status = (value: unknown): string | null => (typeof value === "string" && 
  * Event messages, payload metadata and audit metadata are never returned:
  * they can contain classified error text or user content.
  */
-export function projectTraceRecords(traceId: string, records: TraceRecords): TraceLookupResponse {
+export function projectTraceRecords(traceId: string, records: TraceRecords, workflowTaskFaults: WorkflowTaskFault[] = []): TraceLookupResponse {
   const events = records.events.map((event) => {
     const payload = (event.payload ?? {}) as Record<string, unknown>;
     const reasonCode = isSafeErrorCode(payload.reasonCode) ? payload.reasonCode : null;
@@ -104,6 +105,7 @@ export function projectTraceRecords(traceId: string, records: TraceRecords): Tra
       endedAt: session.endedAt ?? null
     })),
     gatewayRequests: (records.gatewayRequests ?? []).map((row) => ({ ...row, errorCode: identifier(row.errorCode) })),
+    workflowTaskFaults,
     events,
     auditEvents: records.auditEvents.map((audit) => ({
       id: audit.id,
@@ -139,8 +141,10 @@ export function projectTraceRecords(traceId: string, records: TraceRecords): Tra
 export function registerTraceRoutes(app: FastifyInstance, options: {
   store: Pick<SpaceStore, "listTraceRecords">;
   routeOptions: Pick<RouteShorthandOptions, "config">;
+  /** Workflow-task faults from Temporal history (trace-workflow-faults.ts); absent, the lookup reports none. */
+  workflowTaskFaults?: (workflowIds: string[]) => Promise<WorkflowTaskFault[]>;
 }) {
-  const { store, routeOptions } = options;
+  const { store, routeOptions, workflowTaskFaults } = options;
   app.get("/api/admin/traces/:traceId", routeOptions, async (request, reply) => {
     if (!request.user || (request.user.role !== "ADMIN" && request.user.role !== "OPERATOR")) {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Administrator permissions are required.");
@@ -148,6 +152,7 @@ export function registerTraceRoutes(app: FastifyInstance, options: {
     const parsed = traceLookupIdSchema.safeParse((request.params as { traceId?: unknown }).traceId);
     if (!parsed.success) return sendApiError(reply, 400, "INVALID_TRACE_ID", "Trace ids are Space request ids such as req:abc123def456.");
     if (!store.listTraceRecords) return sendApiError(reply, 501, "NOT_IMPLEMENTED", "This store does not support trace lookup.");
-    return projectTraceRecords(parsed.data, await store.listTraceRecords(parsed.data, { limit: 200 }));
+    const records = await store.listTraceRecords(parsed.data, { limit: 200 });
+    return projectTraceRecords(parsed.data, records, (await workflowTaskFaults?.(traceWorkflowIds(records))) ?? []);
   });
 }

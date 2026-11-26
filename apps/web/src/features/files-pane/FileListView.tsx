@@ -28,7 +28,6 @@ import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 export interface FileListViewProps {
   entries: FileItem[];
   currentPath: string;
-  parentPath: string | null;
   canGoUp: boolean;
   viewMode: "table" | "grid";
   mode: "user" | "admin";
@@ -98,7 +97,6 @@ function getFileIcon(entry: FileItem) {
 export function FileListView({
   entries,
   currentPath,
-  parentPath,
   canGoUp,
   viewMode,
   mode,

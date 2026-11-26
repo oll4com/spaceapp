@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import type { GatewaySettings } from "@space/contracts";
+import { YOUTUBE_SUMMARY_PROMPT_CHARS, type GatewaySettings } from "@space/contracts";
 import type { GatewayAccountRecord, GatewayRepository } from "@space/db";
 import type { AccountPool } from "../../accounts/account-pool.js";
 import { StickyStore } from "../../accounts/sticky-store.js";
@@ -62,17 +62,32 @@ type ImageRequest = z.infer<typeof imageRequestSchema>;
 
 const textRequestSchema = z.object({
   model: z.string().regex(/^gemini-[a-z0-9.-]{1,60}$/, "a Gemini model"),
-  prompt: z.string().trim().min(1).max(8000),
+  prompt: z.string().trim().min(1).max(YOUTUBE_SUMMARY_PROMPT_CHARS),
   videoUrl: z.string().regex(/^https:\/\/www\.youtube\.com\/watch\?v=[A-Za-z0-9_-]{11}$/, "a YouTube watch URL").optional()
 }).strict();
 type TextRequest = z.infer<typeof textRequestSchema>;
+/**
+ * Gemini Pro asked of the AI Studio key's pool (`/pools/gemini/v1/chat/completions`, plan clipboard:I86UpEfZU2ke step 11, 17/11): the key has
+ * no free Pro quota and no card may pay for one, so Pro runs here on the Antigravity accounts, its own name first, then Gemini Argon (Antigravity's
+ * Pro) when Code Assist does not know it. Text turns only: tools and images are refused, never silently dropped.
+ */
+export const GEMINI_PRO_FALLBACK_MODEL = "gemini-4-argon";
+const chatTextSchema = z.union([z.string(), z.array(z.object({ type: z.literal("text"), text: z.string() }))]);
+const chatRequestSchema = z.object({
+  model: z.string().regex(/^gemini-[a-z0-9.-]{1,60}$/, "a Gemini model"),
+  messages: z.array(z.object({ role: z.enum(["system", "developer", "user", "assistant"]), content: chatTextSchema })).min(1)
+    .refine((messages) => messages.some((message) => message.role === "user"), "needs a user message"),
+  max_tokens: z.number().int().positive().optional(), max_completion_tokens: z.number().int().positive().optional(),
+  temperature: z.number().min(0).max(2).optional(), top_p: z.number().min(0).max(1).optional(), stream: z.boolean().optional()
+});
+type ChatRequest = z.infer<typeof chatRequestSchema>;
 
 interface GeneratedImage { mimeType: string; base64: string }
 interface Usage { inputTokens: number | null; cachedInputTokens: number | null; outputTokens: number | null }
 type Failure = { ok: false; account: GatewayAccountRecord | null; status: number; error: GatewayErrorEnvelope | string };
 /** `reply` is the client's JSON answer. */
 type Attempt = { ok: true; account: GatewayAccountRecord; reply: Record<string, unknown>; usage: Usage | null; costUsd: number | null } | Failure;
-type Job = { model: string; provider: "ANTIGRAVITY" | "CODEX"; run: (settings: GatewaySettings, scope: Set<string> | null) => Promise<Attempt> };
+type Job = { model: string; provider: "ANTIGRAVITY" | "CODEX"; sse?: boolean; run: (settings: GatewaySettings, scope: Set<string> | null) => Promise<Attempt> };
 
 export interface ImageRouteOptions {
   antigravityPool: AccountPool;
@@ -101,7 +116,7 @@ export function readCodexImageStream(text: string) {
   for (const block of text.split(/\r?\n\r?\n/)) {
     const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
     if (!data.includes("image_generation_call") && !data.includes("\"response.")) continue;
-    let event: Record<string, unknown> | null = null;
+    let event: Record<string, unknown> | null;
     try { event = obj(JSON.parse(data)); } catch { continue; }
     const item = obj(event?.item);
     if (event?.type === "response.output_item.done" && item?.type === "image_generation_call" && typeof item.result === "string" && item.result) {
@@ -159,7 +174,7 @@ export function registerImageRoutes(app: FastifyInstance, helpers: GatewayRouteH
     let last: Failure | null = null;
     let retryWith: GatewayAccountRecord | null | undefined;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const account = retryWith ?? await antigravity.pick("gemini", tried, null, settings);
+      const account = retryWith ?? await antigravity.pick("gemini", tried, null, settings, null, names[nameIndex] ?? null);
       if (retryWith) attempt -= 1;
       retryWith = undefined;
       if (!account) break;
@@ -255,6 +270,31 @@ export function registerImageRoutes(app: FastifyInstance, helpers: GatewayRouteH
     return { ok: true, account, reply: { text, model: input.model }, usage: logged, costUsd: geminiCostUsd(usage, input.model) };
   }
 
+  async function geminiChat(input: ChatRequest, settings: GatewaySettings, scope: Set<string> | null): Promise<Attempt> {
+    const text = (content: ChatRequest["messages"][number]["content"]) => (typeof content === "string" ? content : content.map((part) => part.text).join(""));
+    const system = input.messages.filter((message) => message.role === "system" || message.role === "developer").map((message) => ({ text: text(message.content) }));
+    const maxOutputTokens = input.max_completion_tokens ?? input.max_tokens;
+    const result = await codeAssist([...new Set([input.model, GEMINI_PRO_FALLBACK_MODEL])], {
+      contents: input.messages.filter((message) => message.role === "user" || message.role === "assistant")
+        .map((message) => ({ role: message.role === "assistant" ? "model" : "user", parts: [{ text: text(message.content) }] })),
+      ...(system.length ? { systemInstruction: { parts: system } } : {}),
+      generationConfig: { ...(maxOutputTokens ? { maxOutputTokens } : {}), ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+        ...(input.top_p !== undefined ? { topP: input.top_p } : {}) }
+    }, settings, scope, "chat");
+    if (!result.ok) return result;
+    const { account, response, name } = result;
+    const { reason, parts } = firstCandidate(response);
+    const answer = parts.filter((part) => part?.thought !== true).map((part) => (typeof part?.text === "string" ? part.text : "")).join("");
+    const { usage, logged } = loggedUsage(response);
+    if (!answer.trim()) return { ok: false, account, status: 422, error: gatewayError("text_not_generated", `The model returned no text (${reason ?? "NO_TEXT"}).`, "invalid_request_error") };
+    void options.antigravityPool.markSuccess(account.id).catch(() => undefined);
+    // `model` names what answered, so a client sees when Argon stood in for the Pro it asked.
+    return { ok: true, account, reply: { id: `chatcmpl-${randomUUID()}`, object: "chat.completion", created: Math.floor(now() / 1000), model: name,
+      choices: [{ index: 0, message: { role: "assistant", content: answer }, finish_reason: reason === "MAX_TOKENS" ? "length" : "stop" }],
+      usage: { prompt_tokens: usage?.promptTokens ?? 0, completion_tokens: usage?.outputTokens ?? 0, total_tokens: (usage?.promptTokens ?? 0) + (usage?.outputTokens ?? 0) } },
+    usage: logged, costUsd: geminiCostUsd(usage, name) };
+  }
+
   async function pickCodex(settings: GatewaySettings, tried: Set<string>) {
     const free = (await options.codexPool.accounts()).filter((account) => !tried.has(account.id));
     const accounts = options.modelPlans ? options.modelPlans.eligible(free, CODEX_IMAGE_CARRIER_MODEL) : free;
@@ -321,7 +361,8 @@ export function registerImageRoutes(app: FastifyInstance, helpers: GatewayRouteH
 
   /** The key's checks, the call, its request log row and the key's usage, for a request `prepare` turned into a job. */
   async function serve(request: FastifyRequest, reply: FastifyReply, prepare: (body: Record<string, unknown>) => Job | GatewayErrorEnvelope) {
-    if (!(await helpers.authenticate(request, reply))) return reply;
+    // The key pool hands Gemini Pro over already authenticated (key-pools.ts); a second check would count the request twice.
+    if (!request.gatewayApiKey && !(await helpers.authenticate(request, reply))) return reply;
     const key = request.gatewayApiKey!;
     const startedAt = now();
     const job = prepare({ ...(obj(request.body) ?? {}), ...(key.enforcedModel ? { model: key.enforcedModel } : {}) });
@@ -357,6 +398,12 @@ export function registerImageRoutes(app: FastifyInstance, helpers: GatewayRouteH
       void options.settleKeyUsage(key.id, { inputTokens: result.usage?.inputTokens ?? 0, outputTokens: result.usage?.outputTokens ?? 0,
         costMicros: Math.round((result.costUsd ?? 0) * 1e6), model: job.model, at: new Date(startedAt).toISOString() }).catch(() => undefined);
     }
+    // shortcut: a streaming client gets the whole answer as one chunk, stream Code Assist's own SSE when Pro carries real traffic.
+    if (job.sse) {
+      const choice = (result.reply.choices as Array<{ message: unknown; finish_reason: unknown }>)[0]!;
+      const chunk = { ...result.reply, object: "chat.completion.chunk", choices: [{ index: 0, delta: choice.message, finish_reason: choice.finish_reason }] };
+      return reply.header("x-request-id", requestId).type("text/event-stream").send(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`);
+    }
     return reply.header("x-request-id", requestId).send(result.reply);
   }
 
@@ -377,4 +424,16 @@ export function registerImageRoutes(app: FastifyInstance, helpers: GatewayRouteH
     if (Object.hasOwn(IMAGE_MODELS, input.model)) return gatewayError("model_not_supported", `'${input.model}' is an image model; use /images/v1/generate.`, "invalid_request_error");
     return { model: input.model, provider: "ANTIGRAVITY", run: (settings, scope) => geminiText(input, settings, scope) };
   }));
+  return {
+    /** Serves an OpenAI chat request for Gemini Pro on the Antigravity pool (the GOOGLE_AI key pool's Pro fallback). */
+    geminiProChat: (request: FastifyRequest, reply: FastifyReply) => serve(request, reply, (body) => {
+      if (body.tools !== undefined || body.functions !== undefined) {
+        return gatewayError("unsupported_parameter", "Gemini Pro runs on the Antigravity pool here, which answers text turns only: no tools.", "invalid_request_error");
+      }
+      const parsed = chatRequestSchema.safeParse(body);
+      if (!parsed.success) return invalid("chat", parsed.error);
+      const input = parsed.data;
+      return { model: input.model, provider: "ANTIGRAVITY", sse: input.stream === true, run: (settings, scope) => geminiChat(input, settings, scope) };
+    })
+  };
 }

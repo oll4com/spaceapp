@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NousSharedMemory } from "../src/features/nous/NousSharedMemory.js";
+import { announceUiLanguage } from "../src/features/ui-language/ui-language.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 
@@ -15,10 +16,11 @@ it("reviews proposals, saves edits with a revision, and retires entries", async 
     return new Response(JSON.stringify({ entries: [entry], policy: { autoApprove: false, dailyUpgrade: true, lastDailyDay: null } }), { status: 200 });
   }));
   render(<NousSharedMemory />);
+  fireEvent.click(await screen.findByRole("button", { name: "Manage entries…" }));
   await screen.findByText("Evidence");
   fireEvent.click(screen.getByRole("button", { name: "Approve Evidence" }));
   await waitFor(() => expect(changes[0]).toMatchObject({ revision: 1, status: "ACTIVE" }));
-  await screen.findByText("ACTIVE");
+  await screen.findByText("Active", { selector: ".nous-shared-memory-state" });
   fireEvent.click(screen.getByRole("button", { name: "Edit Evidence" }));
   fireEvent.change(screen.getByLabelText("Memory text"), { target: { value: "Read the task list before closing a pane." } });
   fireEvent.click(screen.getByRole("button", { name: "Save entry" }));
@@ -29,7 +31,7 @@ it("reviews proposals, saves edits with a revision, and retires entries", async 
 });
 it("shows private-content validation and prevents saving private content", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ entries: [], policy: { autoApprove: false, dailyUpgrade: true } }), { status: 200 })));
-  render(<NousSharedMemory />); await screen.findByRole("button", { name: "Add entry" });
+  render(<NousSharedMemory />); fireEvent.click(await screen.findByRole("button", { name: "Manage entries…" }));
   fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
   fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Evidence" } });
   fireEvent.change(screen.getByLabelText("Memory text"), { target: { value: "Ask Alice." } });
@@ -50,7 +52,7 @@ it("discards a stale edit on explicit reload and uses the new revision", async (
     }
     return new Response(JSON.stringify({ entries: [{ ...entry, revision: ++reads }], policy: { autoApprove: false, dailyUpgrade: true } }), { status: 200 });
   }));
-  render(<NousSharedMemory />); await screen.findByText("Evidence");
+  render(<NousSharedMemory />); fireEvent.click(await screen.findByRole("button", { name: "Manage entries…" })); await screen.findByText("Evidence");
   fireEvent.click(screen.getByRole("button", { name: "Edit Evidence" }));
   fireEvent.click(screen.getByRole("button", { name: "Save entry" })); await screen.findByRole("alert");
   fireEvent.click(screen.getByRole("button", { name: "Discard edits and reload" }));
@@ -58,4 +60,28 @@ it("discards a stale edit on explicit reload and uses the new revision", async (
   fireEvent.click(screen.getByRole("button", { name: "Edit Evidence" }));
   fireEvent.click(screen.getByRole("button", { name: "Save entry" }));
   await waitFor(() => expect(saved).toMatchObject({ revision: 2 }));
+});
+
+it("keeps Settings to one summary row and opens the entries in a window with search and status filters", async () => {
+  const row = (id: string, title: string, status: string) => ({ id, title, body: `${title} body.`, tags: [], source: "SEED", status, revision: 1 });
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ entries: [row("a", "Hand out work once", "ACTIVE"), row("b", "Quota refusals wait", "ACTIVE"), row("c", "Scope waits", "PROPOSED")],
+    policy: { autoApprove: false, dailyUpgrade: true } }), { status: 200 })));
+  render(<NousSharedMemory />);
+  await screen.findByText("2 active · 1 to approve");
+  expect(screen.queryByText("Hand out work once")).toBeNull();
+  expect(screen.getByRole("switch", { name: /Daily shared memory upgrade/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Manage entries…" }));
+  const dialog = await screen.findByRole("dialog", { name: "Shared working knowledge" });
+  expect(dialog.querySelectorAll("article")).toHaveLength(3);
+  fireEvent.click(screen.getByRole("button", { name: /^Proposed/ }));
+  expect([...dialog.querySelectorAll("article")].map((node) => node.getAttribute("aria-label"))).toEqual(["Scope waits"]);
+  fireEvent.click(screen.getByRole("button", { name: /^All/ }));
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search entries" }), { target: { value: "quota" } });
+  expect([...dialog.querySelectorAll("article")].map((node) => node.getAttribute("aria-label"))).toEqual(["Quota refusals wait"]);
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  act(() => announceUiLanguage("el"));
+  expect(await screen.findByText("2 ενεργές · 1 προς έγκριση")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Διαχείριση εγγραφών…" })).toBeTruthy();
+  act(() => announceUiLanguage("en"));
 });

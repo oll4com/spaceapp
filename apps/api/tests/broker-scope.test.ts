@@ -86,7 +86,7 @@ describe("broker-scoped agent sessions (hardening step 4)", () => {
     expect(changed.statusCode).toBe(200);
     const audit = (await store.listAuditEvents()).find((event) => event.action === "user_settings.update");
     // It acted in the operator's account; the row names the broker session and its scope.
-    expect(audit).toMatchObject({ actorUserId: "user:operator", metadata: { sessionPrincipal: "user:operator-proof", brokerScope: "ADMIN_ACTION:user-appearance" } });
+    expect(audit).toMatchObject({ actorUserId: "user:operator", metadata: { sessionPrincipal: "user:operator-proof", brokerScope: "ADMIN_ACTION:user-appearance", keys: ["uiTheme"] } });
   });
 
   it("checks the route the router matched, so encoded or cut paths cannot slip past (security review 2026-10-19)", async () => {

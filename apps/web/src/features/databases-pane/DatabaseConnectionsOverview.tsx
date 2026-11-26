@@ -13,8 +13,6 @@ export interface DatabaseConnectionsOverviewProps {
 
 export function DatabaseConnectionsOverview({
   connections,
-  sidebarVisible,
-  onToggleSidebar,
   onSelectConnection,
   onNewConnection,
   onDiscover

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
-  VAULT_PASSWORD_SYMBOLS, VaultCryptoError, canonicalVaultOrigin, generateVaultPassword, vaultItemLink, vaultLoginPageProblem,
+  VAULT_PASSWORD_SYMBOLS, VaultCryptoError, canonicalVaultOrigin, generateVaultPassword, parseVaultOtp, vaultItemLink, vaultLoginPageProblem, vaultOtpStoredValue,
   type VaultHandoffKey, type VaultItemMetadata, type VaultItemRecord, type VaultPasswordPolicy, type VaultPendingSecret
 } from "@space/contracts";
 import { api } from "../../api.js";
@@ -17,6 +17,7 @@ import { ChromeImportError, parseChromePasswords, planChromeImport, runChromeImp
 import { handOverToAgents, holdVaultKeys, lockVaultSession, openVaultInbox, subscribeVaultSession, vaultInboxProblem, vaultInboxRowProblem, vaultSessionKeys } from "./vault-session.js";
 import { useVaultDefaults, type VaultDefaults } from "./vault-defaults.js";
 import { VAULT_IDLE_CHOICES, useVaultAutoLockSettings, type VaultAutoLockSettings } from "./vault-auto-lock.js";
+import { VaultItemTotp, VaultTotpCode, readVaultOtpQr } from "./VaultTotp.js";
 import "./vault.css";
 
 // The Vault dock (plan clipboard:vEYtT6-bEN0J step 5). Everything secret is decrypted in this tab's memory (vault-session.ts)
@@ -229,13 +230,13 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
   useEffect(() => { void run(reload, true); }, [reload, version]); // eslint-disable-line react-hooks/exhaustive-deps
   // A login an agent saves while the dock is open shows within 30 s.
   useEffect(() => { const timer = window.setInterval(() => void reload().catch(() => undefined), 30_000); return () => window.clearInterval(timer); }, [reload]);
-  const matches = (text: string) => text.toLowerCase().includes(search.trim().toLowerCase());
+  const matches = useCallback((text: string) => text.toLowerCase().includes(search.trim().toLowerCase()), [search]);
   const itemIds = useMemo(() => new Set((items ?? []).map((item) => item.id)), [items]);
   const newPassword = useMemo(() => new Map(waiting.filter((entry) => entry.kind === "CHANGE_PASSWORD" && itemIds.has(entry.handle)).reverse().map((entry) => [entry.handle, entry])), [waiting, itemIds]);
   const waitingRows = waiting.filter((entry) => (entry.kind === "NEW_ACCOUNT" || !itemIds.has(entry.handle)) && matches(`${entry.label} ${entry.origin}`)
     && (!accountFilter || accountFilter === "none"));
   const shown = useMemo(() => (items ?? []).filter((item) => matches(`${item.label} ${item.origins.join(" ")} ${item.card ? cardLine(item.card) : ""}`)
-    && (!accountFilter || (accountFilter === "none" ? !item.googleAccountId : item.googleAccountId === accountFilter))), [items, search, accountFilter]);
+    && (!accountFilter || (accountFilter === "none" ? !item.googleAccountId : item.googleAccountId === accountFilter))), [items, matches, accountFilter]);
   // Every change reaches agents and Nous at once while agent access is on.
   const changed = async () => { await reload(); await handOverToAgents(keys.current!); await onVaultChanged(); };
   const remove = (id: string) => run(async () => { await deleteVaultItems(api, keys.current!, [id]); await changed(); });
@@ -262,7 +263,8 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
     return <ItemEditor draft={draft} generator={defaults.generator} onCancel={() => setDraft(null)} onSave={(next) => run(async () => {
       const origins = draftOrigins(next.origins);
       const policy = { ...(next.previous?.metadata.policy ?? VAULT_AGENT_POLICY), agentUse: next.agentUse, acceptedOriginRisks: next.acceptedRisks.filter((origin) => origins.includes(origin)) };
-      await api.vaultSaveItem(await encryptVaultItem(keys.current!, { id: next.id, label: next.label.trim(), origins, loginPage: next.loginPage.trim() || null, secrets: next.secrets, status: "ACTIVE", policy }, next.previous));
+      const secrets = next.secrets.OTP ? { ...next.secrets, OTP: vaultOtpStoredValue(next.secrets.OTP)! } : next.secrets;
+      await api.vaultSaveItem(await encryptVaultItem(keys.current!, { id: next.id, label: next.label.trim(), origins, loginPage: next.loginPage.trim() || null, secrets, status: "ACTIVE", policy }, next.previous));
       setDraft(null); await changed();
     })} />;
   }
@@ -302,7 +304,7 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
               <div className="vault-row-main">
                 <strong>{entry.label}</strong>
                 <span className="vault-origins">{entry.origin}</span>
-                <span className="vault-meta">{`${entry.kind === "NEW_ACCOUNT" ? "Saved" : "Password changed"} by an agent · ${formatUserTime(entry.createdAt, { withDate: true })}`}</span>
+                <span className="vault-meta">{`${entry.kind === "NEW_ACCOUNT" ? "Saved" : entry.kind === "SET_OTP" ? "Authenticator set" : "Password changed"} by an agent · ${formatUserTime(entry.createdAt, { withDate: true })}`}</span>
                 {problem ? <span className="vault-meta" role="status">{problem}</span> : null}
               </div>
             </li>
@@ -319,6 +321,7 @@ function ItemsView({ version, keys, run, confirm, defaults, vaultState, onVaultC
                   : <span className="vault-origins"><a href={vaultItemLink(item)!} target="_blank" rel="noreferrer noopener">{vaultItemLink(item)}</a>
                     {item.origins.length > 1 ? `, ${item.origins.slice(1).join(", ")}` : ""}</span>}
                 {stats[item.id] ? <span className="vault-meta">{itemStatsLine(stats[item.id]!)}</span> : null}
+                {item.fieldRoles.includes("OTP") ? <VaultItemTotp id={item.id} label={item.label} keys={keys} /> : null}
                 {fresh ? <span className="vault-meta">{`New password from an agent · ${formatUserTime(fresh.createdAt, { withDate: true })}`}</span> : null}
                 <span className="vault-tags">
                   {item.googleAccountId ? <span className="vault-tag">{accountName(item.googleAccountId)}</span> : null}
@@ -375,8 +378,16 @@ function ItemEditor({ draft: initial, generator, onCancel, onSave }: { draft: Dr
   const invalid = origins.some((origin) => !origin.parsed);
   const unaccepted = origins.some((origin) => origin.parsed && origin.parsed.warnings.length > 0 && !draft.acceptedRisks.includes(origin.parsed.origin));
   const pageProblem = draft.loginPage.trim() && !invalid ? vaultLoginPageProblem(draft.loginPage.trim(), draftOrigins(draft.origins)) : null;
-  const canSave = draft.label.trim() && origins.length > 0 && !invalid && !unaccepted && !pageProblem && Object.values(draft.secrets).some(Boolean);
+  const otpInvalid = Boolean(draft.secrets.OTP) && !parseVaultOtp(draft.secrets.OTP!);
+  const canSave = draft.label.trim() && origins.length > 0 && !invalid && !unaccepted && !pageProblem && !otpInvalid && Object.values(draft.secrets).some(Boolean);
   const submit = (event: FormEvent) => { event.preventDefault(); if (canSave) onSave(draft); };
+  const [qrProblem, setQrProblem] = useState<string | null>(null);
+  const qrInput = useRef<HTMLInputElement>(null);
+  // A setup QR (a file, or an image pasted into the key field) gives its otpauth:// link; a new item takes its issuer as the name.
+  const takeQr = (image: Blob) => void readVaultOtpQr(image).then((link) => {
+    setQrProblem(link ? null : "No authenticator QR code was found in that image.");
+    if (link) set({ secrets: { ...draft.secrets, OTP: link }, ...(!draft.label.trim() && parseVaultOtp(link)?.issuer ? { label: parseVaultOtp(link)!.issuer!.slice(0, 80) } : {}) });
+  }, () => setQrProblem("That image could not be read."));
   return (
     <form className="vault-card vault-form vault-editor" onSubmit={submit}>
       {/* Back at the top right instead of a Cancel under Save (operator 12/11). */}
@@ -393,9 +404,9 @@ function ItemEditor({ draft: initial, generator, onCancel, onSave }: { draft: Dr
         : parsed.origin !== raw ? <p key={raw} className="vault-hint">Saved as {parsed.origin}{draft.loginPage ? "" : " (the full address can go in Login page)"}</p> : null)}
       <label>Login page (optional)<input value={draft.loginPage} placeholder="https://accounts.example.com/login" onChange={(event) => set({ loginPage: event.target.value })} /></label>
       {pageProblem ? <p className="vault-hint is-error">{pageProblem}</p> : null}
-      <label>Username<input autoComplete="off" value={draft.secrets.USERNAME ?? ""} onChange={(event) => setSecret("USERNAME", event.target.value)} /></label>
+      <label>Username<input data-sensitive-masked="manual" autoComplete="off" value={draft.secrets.USERNAME ?? ""} onChange={(event) => setSecret("USERNAME", event.target.value)} /></label>
       <div className="vault-password-row">
-        <label>Password<input type={reveal ? "text" : "password"} autoComplete="new-password" value={draft.secrets.PASSWORD ?? ""} onChange={(event) => setSecret("PASSWORD", event.target.value)} /></label>
+        <label>Password<input data-sensitive-masked="manual" type={reveal ? "text" : "password"} autoComplete="new-password" value={draft.secrets.PASSWORD ?? ""} onChange={(event) => setSecret("PASSWORD", event.target.value)} /></label>
         <DockIconButton icon={reveal ? EyeOff : Eye} label={reveal ? "Hide password" : "Show password"} onClick={() => setReveal(!reveal)} />
         <DockIconButton icon={RefreshCw} label="Generate" onClick={() => {
           try { setSecret("PASSWORD", generateVaultPassword({}, generator)); setGenerateError(null); } catch { setGenerateError("The generator rules in Settings allow no password."); }
@@ -403,9 +414,19 @@ function ItemEditor({ draft: initial, generator, onCancel, onSave }: { draft: Dr
       </div>
       {generateError ? <p className="vault-hint is-error">{generateError}</p> : null}
       <SpaceToggle compact checked={draft.agentUse} label="Agents and Nous can use this login" detail="When agent access is on. They never see it; Space fills it only at this address." onChange={(agentUse) => set({ agentUse })} />
-      <details className="vault-more">
+      <details className="vault-more" open={Boolean(draft.secrets.OTP) || undefined}>
         <summary>More options</summary>
-        <label>Authenticator key<input type="password" autoComplete="off" value={draft.secrets.OTP ?? ""} onChange={(event) => setSecret("OTP", event.target.value.replace(/\s+/g, ""))} /></label>
+        <div className="vault-password-row">
+          <label>Authenticator key<input type="password" autoComplete="off" placeholder="Key, otpauth:// link or a pasted QR image" value={draft.secrets.OTP ?? ""}
+            onChange={(event) => { const text = event.target.value.trim(); setSecret("OTP", /^otpauth:/i.test(text) ? text : text.replace(/\s+/g, "")); }}
+            onPaste={(event) => { const image = [...event.clipboardData.files].find((file) => file.type.startsWith("image/")); if (image) { event.preventDefault(); takeQr(image); } }} /></label>
+          <DockIconButton icon={FileUp} label="Read a setup QR image" onClick={() => qrInput.current?.click()} />
+          <input ref={qrInput} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) takeQr(file); }} />
+        </div>
+        {otpInvalid ? <p className="vault-hint is-error">Paste the key the site shows (letters A-Z and digits 2-7) or its otpauth://totp/ link.</p> : null}
+        {qrProblem ? <p className="vault-hint is-error">{qrProblem}</p> : null}
+        {draft.secrets.OTP && !otpInvalid ? <VaultTotpCode value={draft.secrets.OTP} label={draft.label || "this login"} /> : null}
+        <p className="vault-hint">Agents and Nous fill the code at this login's site themselves; they never see the key.</p>
       </details>
       <DockButton type="submit" tone="primary" disabled={!canSave}>Save</DockButton>
     </form>
@@ -439,15 +460,15 @@ function CardEditor({ draft: initial, onCancel, onSave }: { draft: Draft; onCanc
       </div>
       <label>Name<input value={draft.label} maxLength={80} placeholder="Revolut" onChange={(event) => set({ label: event.target.value })} /></label>
       <div className="vault-password-row">
-        <label>Card number<input type={reveal ? "text" : "password"} inputMode="numeric" autoComplete="cc-number" value={draft.secrets.CARD_NUMBER ?? ""} onChange={(event) => setSecret("CARD_NUMBER", event.target.value)} /></label>
+        <label>Card number<input data-sensitive-masked="manual" type={reveal ? "text" : "password"} inputMode="numeric" autoComplete="cc-number" value={draft.secrets.CARD_NUMBER ?? ""} onChange={(event) => setSecret("CARD_NUMBER", event.target.value)} /></label>
         <DockIconButton icon={reveal ? EyeOff : Eye} label={reveal ? "Hide card number and security code" : "Show card number and security code"} onClick={() => setReveal(!reveal)} />
       </div>
       {digits && !numberOk ? <p className="vault-hint is-error">This card number is not valid.</p> : null}
-      <label>Expiry date<input inputMode="numeric" autoComplete="cc-exp" placeholder="MM/YY" maxLength={7} value={draft.secrets.CARD_EXPIRY ?? ""} onChange={(event) => setSecret("CARD_EXPIRY", event.target.value)} /></label>
+      <label>Expiry date<input data-sensitive-masked="manual" inputMode="numeric" autoComplete="cc-exp" placeholder="MM/YY" maxLength={7} value={draft.secrets.CARD_EXPIRY ?? ""} onChange={(event) => setSecret("CARD_EXPIRY", event.target.value)} /></label>
       {draft.secrets.CARD_EXPIRY && !expiry ? <p className="vault-hint is-error">Use the month and year on the card (MM/YY); the card must not have expired.</p> : null}
-      <label>Security code (CVC)<input type={reveal ? "text" : "password"} inputMode="numeric" autoComplete="cc-csc" maxLength={4} value={cvc} onChange={(event) => setSecret("CARD_CVC", event.target.value)} /></label>
+      <label>Security code (CVC)<input data-sensitive-masked="manual" type={reveal ? "text" : "password"} inputMode="numeric" autoComplete="cc-csc" maxLength={4} value={cvc} onChange={(event) => setSecret("CARD_CVC", event.target.value)} /></label>
       {cvc && !cvcOk ? <p className="vault-hint is-error">The security code has 3 or 4 digits.</p> : null}
-      <label>Name on card (optional)<input autoComplete="cc-name" value={draft.secrets.CARDHOLDER_NAME ?? ""} onChange={(event) => setSecret("CARDHOLDER_NAME", event.target.value)} /></label>
+      <label>Name on card (optional)<input data-sensitive-masked="manual" autoComplete="cc-name" value={draft.secrets.CARDHOLDER_NAME ?? ""} onChange={(event) => setSecret("CARDHOLDER_NAME", event.target.value)} /></label>
       <SpaceToggle compact checked={draft.agentUse} label="Agents and Nous can use this card"
         detail="When agent access is on. Space types it into a checkout's card fields; they never see it, and you approve each payment in your bank's app." onChange={(agentUse) => set({ agentUse })} />
       <DockButton type="submit" tone="primary" disabled={!canSave}>Save</DockButton>
@@ -775,7 +796,7 @@ function KeysView({ run, confirm, busy, agentAccess }: { run: Runner; confirm: C
         </div>
         <label>Label<input value={editing.label} maxLength={80} required onChange={(event) => setEditing({ ...editing, label: event.target.value })} /></label>
         <div className="vault-password-row">
-          <label>Key<input type={revealEdit ? "text" : "password"} value={editing.value} maxLength={4096} required autoComplete="off" spellCheck={false} onChange={(event) => setEditing({ ...editing, value: event.target.value })} /></label>
+          <label>Key<input data-sensitive-masked="manual" type={revealEdit ? "text" : "password"} value={editing.value} maxLength={4096} required autoComplete="off" spellCheck={false} onChange={(event) => setEditing({ ...editing, value: event.target.value })} /></label>
           <DockIconButton icon={revealEdit ? EyeOff : Eye} label={revealEdit ? "Hide key" : "Show key"} onClick={() => setRevealEdit(!revealEdit)} />
         </div>
         <SpaceToggle compact checked={editing.kept} label="Keep it for every agent" onChange={(kept) => setEditing({ ...editing, kept })} />

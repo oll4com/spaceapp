@@ -4,7 +4,7 @@ import { InMemoryAppDeviceSessionRepository } from "@space/db";
 import { InMemorySpaceStore } from "@space/runtime";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { cookieName, createCsrfToken, defaultSessionRevocationStore, sessionIdHash, signMobileSession, signSession } from "../src/auth.js";
+import { cookieName, createCsrfToken, defaultSessionRevocationStore, hashPassword, sessionIdHash, signMobileSession, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
 import { createMobileChecks, MOBILE_SIG_HEADER } from "../src/mobile/checks.js";
 import { MOBILE_INVOKE_HEADER, mobileInvokeSecret, setMobileChecks } from "../src/mobile/gate.js";
@@ -69,6 +69,19 @@ describe("the mobile gate", () => {
     expect(code(await app.inject({ method: "GET", url: "/api/user-settings", headers: phone(["read", "act", "decide"]) }))).toBe("MOBILE_SCOPE_DENIED");
     expect(code(await app.inject({ method: "PATCH", url: "/api/nous/settings", headers: phone(["read", "act"]), payload: { enabled: false, mayPromote: true } }))).toBe("MOBILE_BODY");
     expect(GATE_CODES).not.toContain(code(await app.inject({ method: "PATCH", url: "/api/nous/settings", headers: phone(["read", "act"]), payload: { dockTabs: { done: false } } })));
+    expect(GATE_CODES).not.toContain(code(await app.inject({ method: "PATCH", url: "/api/nous/settings", headers: phone(["read", "act"]), payload: { mediaPresets: [{ label: "Jazz", url: "https://youtu.be/4xDzrJKXOOY" }] } })));
+    // Nous Live's voice picker (nous_msg:7f739948): read with read, saved and started with act.
+    expect(GATE_CODES).not.toContain(code(await app.inject({ method: "PATCH", url: "/api/nous/settings", headers: phone(["read", "act"]), payload: { liveVoice: { provider: "device" } } })));
+    const voiceRes = await app.inject({ method: "GET", url: "/api/nous/live/voice", headers: phone(["read"]) });
+    expect(GATE_CODES).not.toContain(code(voiceRes));
+    expect(voiceRes.statusCode).toBe(200);
+    expect(JSON.parse(voiceRes.body)).toMatchObject({ choice: expect.any(Object), providers: expect.any(Array) });
+    expect(code(await app.inject({ method: "PATCH", url: "/api/nous/live/voice", headers: phone(["read"]), payload: { provider: "device" } }))).toBe("MOBILE_SCOPE_DENIED");
+    const patchVoiceRes = await app.inject({ method: "PATCH", url: "/api/nous/live/voice", headers: phone(["read", "act"]), payload: { provider: "device" } });
+    expect(GATE_CODES).not.toContain(code(patchVoiceRes));
+    expect(patchVoiceRes.statusCode).toBe(200);
+    expect(JSON.parse(patchVoiceRes.body)).toEqual({ choice: { provider: "device" } });
+    expect(code(await app.inject({ method: "POST", url: "/api/nous/live/realtime", headers: phone(["read"]), payload: {} }))).toBe("MOBILE_SCOPE_DENIED");
     expect(code(await app.inject({ method: "POST", url: "/api/notifications/notif:x/answer", headers: phone(["read", "act"]), payload: { option: "A", always: true } }))).toBe("MOBILE_BODY");
     expect(code(await app.inject({ method: "POST", url: "/api/nous/away", headers: phone(["read", "act"]), payload: { grant: ["PROMOTE"] } }))).toBe("MOBILE_BODY");
     // Operator 6/11 (nous_msg:781819c5): the Nous app reads token usage and signatures; saving or signing needs act.
@@ -78,6 +91,20 @@ describe("the mobile gate", () => {
     expect(code(await app.inject({ method: "POST", url: "/api/signatures", headers: phone(["read"]), payload: {} }))).toBe("MOBILE_SCOPE_DENIED");
     expect(code(await app.inject({ method: "POST", url: "/api/signature-requests/sigreq:x/sign", headers: phone(["read"]), payload: {} }))).toBe("MOBILE_SCOPE_DENIED");
     expect(GATE_CODES).not.toContain(code(await app.inject({ method: "POST", url: "/api/signature-requests/sigreq:x/sign", headers: phone(["read", "act"]), payload: {} })));
+  });
+
+  // Nik 15/11 (v2/mobile-act-contract.md): the phone's «Εισερχόμενα» is /api/inbox; read reads it, decide acts on it (v1 /api/nous/unified-inbox retires in step 7).
+  it("lets a phone read the inbox with read and act on it only with decide", async () => {
+    for (const url of ["/api/inbox", "/api/inbox/threads/thread:x"]) {
+      const response = await app.inject({ method: "GET", url, headers: phone(["read"]) });
+      expect(GATE_CODES, url).not.toContain(code(response));
+      expect(response.statusCode, url).toBe(url === "/api/inbox" ? 200 : 404);
+    }
+    const acts = [["/api/inbox/threads/thread:x/act", { verb: "DONE" }], ["/api/inbox/done-all", { ids: ["thread:x"] }]] as const;
+    for (const [url, payload] of acts) {
+      expect(code(await app.inject({ method: "POST", url, headers: phone(["read", "act"]), payload })), url).toBe("MOBILE_SCOPE_DENIED");
+      expect(GATE_CODES, url).not.toContain(code(await app.inject({ method: "POST", url, headers: phone(["read", "act", "decide"]), payload })));
+    }
   });
 
   it("lists the operator's saved signatures to his phone (6/11: the 0.2.27 proof read [] through a UI_PROOF session, which gets none by design)", async () => {
@@ -170,6 +197,37 @@ describe("the mobile gate", () => {
       expect(code(await call("/api/admin/server-ops/restart", restart, ["read", "act", "decide"], true, "appdev:phone2", member as never))).toBe("ADMIN_REQUIRED");
       expect(code(await call("/api/admin/server-ops/restart", restart, ["read", "act", "decide"], true))).toBe("NOT_MANAGED_HERE");
     } finally { await gated.close(); }
+  });
+
+  // Plan zqVWdClsx_pA step 9: the Nous app answers a linked decision over its channel, so it steps up there, with decide, as an ADMIN.
+  it("lets an ADMIN's decide phone take the password step-up on its channel session, nobody else", async () => {
+    const store = new InMemorySpaceStore();
+    store.initializeOwnerSetup({ tokenHash: "a".repeat(64), expiresAt: "2099-01-01T00:00:00.000Z" });
+    const owner = store.claimOwnerSetup({ tokenHash: "a".repeat(64), email: "owner@example.test", passwordHash: await hashPassword("right horse battery"), now: new Date().toISOString() }).user;
+    const member = await store.upsertUser({ id: "user:member", email: "member@example.test", role: "USER" });
+    const local = await createApp({ store, config: getApiConfig({ SPACE_LOG_LEVEL: "silent" }), auth: { sessionSecret: secret, devLogin: false, secureCookies: false } });
+    try {
+      await local.ready();
+      const confirm = (scopes: string[], password: string, user = owner, device = "appdev:phone0001") => {
+        const token = signMobileSession(user, secret, { sid: randomBytes(32).toString("hex"), app: "nous", device, scopes });
+        return local.inject({ method: "POST", url: "/api/auth/step-up/password", payload: { password },
+          headers: { cookie: `${cookieName}=${token}`, "x-space-csrf-token": createCsrfToken(token, secret)!, [MOBILE_INVOKE_HEADER]: mobileInvokeSecret(local)! } });
+      };
+      expect(code(await confirm(["read", "act"], "right horse battery"))).toBe("MOBILE_SCOPE_DENIED");
+      expect(code(await confirm(["read", "act", "decide"], "right horse battery", member, "appdev:phone0002"))).toBe("FORBIDDEN");
+      expect(code(await confirm(["read", "act", "decide"], "wrong"))).toBe("STEP_UP_FAILED");
+      expect((await confirm(["read", "act", "decide"], "right horse battery")).json()).toMatchObject({ steppedUp: true });
+      // The mailed-link step-up and canMail reach the route over the channel (this server has no sender, so it says it cannot mail).
+      const phone = (method: "GET" | "POST", url: string, scopes: string[], user = owner, device = "appdev:phone0001") => {
+        const token = signMobileSession(user, secret, { sid: randomBytes(32).toString("hex"), app: "nous", device, scopes });
+        return local.inject({ method, url, ...(method === "POST" ? { payload: {} } : {}),
+          headers: { cookie: `${cookieName}=${token}`, "x-space-csrf-token": createCsrfToken(token, secret)!, [MOBILE_INVOKE_HEADER]: mobileInvokeSecret(local)! } });
+      };
+      expect(code(await phone("POST", "/api/auth/step-up/mail/request", ["read", "act"]))).toBe("MOBILE_SCOPE_DENIED");
+      expect(code(await phone("POST", "/api/auth/step-up/mail/request", ["read", "act", "decide"]))).toBe("STEP_UP_MAIL_UNAVAILABLE");
+      expect((await phone("GET", "/api/auth/password", ["read"])).json()).toMatchObject({ hasPassword: true, canMail: false });
+      expect((await phone("GET", "/api/auth/password", ["read"], member, "appdev:phone0002")).statusCode).toBe(403);
+    } finally { await local.close(); }
   });
 
   it("a phone is the operator in person only where its route says so", () => {

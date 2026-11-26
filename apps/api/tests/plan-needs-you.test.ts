@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eventSchema, type ClipboardItem, type NousDecision } from "@space/contracts";
+import { eventSchema, needsYouAnswerKind, type ClipboardItem, type NousDecision } from "@space/contracts";
 import { InMemoryNousRepository, InMemorySpaceNotificationsRepository } from "@space/db";
 import { makeSpaceId, SpaceEventBus } from "@space/runtime";
 import { createNotificationService } from "../src/notifications/service.js";
@@ -33,7 +33,9 @@ describe("Plan Needs you", () => {
     expect(own).toHaveLength(1);
     expect(own[0]).toMatchObject({ dedupeKey: planNoticeKey("clipboard:mmmeF0-e3x4G"), paneId: null, roomId: "room:r1", title: "Plan clipboard:mmmeF0-e3x4G",
       payload: { planId: "clipboard:mmmeF0-e3x4G", derived: true, ask: { question: "This plan waits on you: Choose the hosting plan", options: ["Done", "Need help from an agent", "Not now"] } } });
-    expect(own[0]!.payload.ask).not.toHaveProperty("recommended");
+    // Audit §4 item 8, operator 16/11 21:55 BKK («δεν ειπα ποτε done»): raise's default is never "Done", and it is marked, so "Always answer like this" never answers.
+    expect(own[0]!.payload).toMatchObject({ ask: { recommended: "Need help from an agent" }, recommendedDefault: true });
+    expect(needsYouAnswerKind(own[0]!)).toBeNull();
     // Unchanged: nothing new; a new wait raises it again with the new text.
     expect(await f.needs.sync(owner)).toEqual({ raised: 0, resolved: 0, missing: [] });
     f.state.plans = [plan("clipboard:mmmeF0-e3x4G", { waitsOn: { kind: "OPERATOR", what: "Pay the invoice", until: null } as never })];
@@ -113,6 +115,36 @@ describe("Plan Needs you", () => {
     expect(await f.needs.sync(owner)).toEqual({ raised: 0, resolved: 0, missing: [] });
   });
 
+  it("operator 16/11 21:55 BKK: a closing pane's copilot question moves too, opened (READ) or not, and only once; one Nous holds stays", async () => {
+    const f = fixture([plan("clipboard:planAAAA", { paneId: "pane:p1", waitsOn: null })]);
+    const question = await f.service.raise({ ownerUserId: owner, roomId: "room:r1", paneId: "pane:p1", source: "MAIL_COPILOT", kind: "QUESTION", severity: "ATTENTION",
+      title: "Mail Copilot asks", body: "Reply to the landlord?", link: { roomId: "room:r1", paneId: "pane:p1" }, dedupeKey: "mail-copilot:question:q1", telegram: null, payload: {} });
+    await f.service.setStatus(owner, question.id, "READ");
+    const held = await f.service.raise({ ownerUserId: owner, roomId: "room:r1", paneId: "pane:p1", source: "MAIL_COPILOT", kind: "REVIEW_REQUESTED", severity: "ATTENTION",
+      title: "Mail Copilot review", body: "Approve the draft", link: { roomId: "room:r1", paneId: "pane:p1" }, dedupeKey: "mail-copilot:review:r1", telegram: null,
+      payload: { heldForNous: { until: new Date(Date.now() + 3_600_000).toISOString() } } });
+    expect(await f.needs.carry(owner, "pane:p1")).toBe(1);
+    expect((await f.service.get(owner, question.id))?.status).toBe("RESOLVED");
+    expect((await f.service.get(owner, held.id))?.status).not.toBe("RESOLVED");
+    expect((await f.waiting()).find((card) => card.dedupeKey === planNoticeKey("clipboard:planAAAA"))).toMatchObject({ title: "Mail Copilot asks", payload: { derived: false } });
+    // PANE_CLOSED fires on every update of a closed pane: nothing moves twice.
+    expect(await f.needs.carry(owner, "pane:p1")).toBe(0);
+  });
+
+  it("operator 16/11 21:55 BKK: no plan card while a card on the plan's pane asks, even one Nous holds, or one its wait names by short id", async () => {
+    const f = fixture([plan("clipboard:planAAAA", { paneId: "pane:p1" })]);
+    const held = await f.service.raise({ ownerUserId: owner, roomId: "room:r1", paneId: "pane:p1", source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION", title: "Sign in",
+      body: "Sign in on hz", link: { roomId: "room:r1", paneId: "pane:p1" }, dedupeKey: agentNeedsYouKey("pane:p1"), telegram: null,
+      payload: { heldForNous: { until: new Date(Date.now() + 3_600_000).toISOString() } } });
+    expect((await f.needs.sync(owner)).raised).toBe(0);
+    await f.service.resolve(owner, held.dedupeKey!, "test");
+    expect((await f.needs.sync(owner)).raised).toBe(1);
+    const elsewhere = await f.service.raise({ ownerUserId: owner, roomId: "room:r1", paneId: "pane:p9", source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION", title: "Vault",
+      body: "Turn Vault sync on", link: { roomId: "room:r1", paneId: "pane:p9" }, dedupeKey: agentNeedsYouKey("pane:p9"), telegram: null, payload: {} });
+    f.state.plans = [plan("clipboard:planBBBB", { waitsOn: { kind: "OPERATOR", what: `Card ${elsewhere.id.slice("notification:".length, "notification:".length + 8)}: Vault sync`, until: null } as never })];
+    expect(await f.needs.sync(owner)).toMatchObject({ raised: 0 });
+  });
+
   it("fix 3: Space's old text item clears, and a plan card clears when its plan closes", async () => {
     const f = fixture([plan("clipboard:planAAAA", { waitsOn: { kind: "NOUS", what: "Nous checks the prices", until: null } as never })]);
     for (const id of ["clipboard:planAAAA", "clipboard:planBBBB"]) {
@@ -121,6 +153,16 @@ describe("Plan Needs you", () => {
     }
     expect(await f.needs.sync(owner)).toEqual({ raised: 0, resolved: 1, missing: [] });
     expect((await f.waiting()).map((card) => card.dedupeKey)).toEqual([planNoticeKey("clipboard:planAAAA")]);
+  });
+
+  it("inbox upgrade step 3 (plan clipboard:LkwKdOOh2mXK): Nous's pane card asked for a closed plan closes with it; one for an open plan stays", async () => {
+    const f = fixture([plan("clipboard:planAAAA", { waitsOn: null })]);
+    for (const [pane, id] of [["pane:p1", "clipboard:planAAAA"], ["pane:p2", "clipboard:planBBBB"]]) {
+      await f.service.raise({ ownerUserId: owner, roomId: "room:r1", paneId: pane, source: "NOUS", kind: "NEEDS_HANDS", severity: "ATTENTION", title: `Card ${id}`, body: "Solve it",
+        link: { roomId: "room:r1", paneId: pane }, dedupeKey: `nous:pane:${pane}`, telegram: null, payload: { items: [{ text: "Solve it" }], checked: [], planId: id } });
+    }
+    expect((await f.needs.sync(owner)).resolved).toBe(1);
+    expect((await f.waiting()).map((card) => card.dedupeKey)).toEqual(["nous:pane:pane:p1"]);
   });
 
   it("operator 13/11 15:37 BKK: an answered decision of plan S6PyXKwpBrit ends its wait on the operator, and its text item goes", async () => {
@@ -170,5 +212,25 @@ describe("Plan Needs you", () => {
     await repository.answerDecision(owner, (await ask("clipboard:carried01")).id, { status: "APPROVED", answer: null });
     expect(conditions("clipboard:carried01")[0]!.state).toBe("MET");
     expect((await f.waiting()).map((card) => card.dedupeKey)).toEqual([planNoticeKey("clipboard:carried01")]);
+  });
+
+  it("2026-11-25 REVIEW: resolves agent/closed-pane cards of completed plans, skips carrying completed-plan cards, and marks carried Start now? cards recommendedDefault", async () => {
+    const f = fixture([plan("clipboard:openPlan1", { paneId: "pane:pOpen", waitsOn: null })]);
+    // Open agent Start now? card on a completed plan (not in open plans) -> sync resolves it.
+    await f.service.raise({ ownerUserId: owner, roomId: "room:r1", paneId: "pane:pDone", source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION", title: "Done pane needs you",
+      body: "Turn on switches", link: { roomId: "room:r1", paneId: "pane:pDone" }, dedupeKey: agentNeedsYouKey("pane:pDone"), telegram: null,
+      payload: { planId: "clipboard:donePlan1", ask: { question: "Start now?", options: ["Go now", "Later today"], recommended: "Go now", answer: { kind: "PANE" } } } });
+    // Closing pane with a card bound to a completed plan -> carry skips it (never creates a closed-pane card).
+    expect(await f.needs.carry(owner, "pane:pDone")).toBe(0);
+    expect((await f.needs.sync(owner)).resolved).toBe(1);
+    expect(await f.waiting()).toEqual([]);
+    // Closing pane with an open Start now? card on an open plan -> carried card marks recommendedDefault: true (no live pane target).
+    await f.service.raise({ ownerUserId: owner, roomId: "room:r1", paneId: "pane:pOpen", source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION", title: "Open pane needs you",
+      body: "Turn on switches", link: { roomId: "room:r1", paneId: "pane:pOpen" }, dedupeKey: agentNeedsYouKey("pane:pOpen"), telegram: null,
+      payload: { planId: "clipboard:openPlan1", ask: { question: "Start now?", options: ["Go now", "Later today"], recommended: "Go now", answer: { kind: "PANE" } } } });
+    expect(await f.needs.carry(owner, "pane:pOpen")).toBe(1);
+    await f.service.resolve(owner, agentNeedsYouKey("pane:pOpen"), "its pane is gone");
+    const carried = (await f.waiting()).find((card) => card.dedupeKey === planNoticeKey("clipboard:openPlan1"));
+    expect(carried?.payload).toMatchObject({ recommendedDefault: true, ask: { question: "Start now?", recommended: "Go now", answer: { kind: "NOUS" } } });
   });
 });

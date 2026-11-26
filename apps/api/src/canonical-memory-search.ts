@@ -45,8 +45,10 @@ export class CanonicalMemorySearch {
     return this.pending;
   }
   private async runSync() {
-    if (!await this.options.ready()) return { total: 0, updated: 0 };
+    // Read first: the tick keeps the reader's parse warm for keyword search even while embeddings are down (audit 16/11: a
+    // failed smoke skipped the read, so the first search after each save or restart re-parsed the month's file, 7-45 s).
     const entries = await this.options.canonical.list(allQuery);
+    if (!await this.options.ready()) return { total: 0, updated: 0 };
     const indexed = new Map((await this.options.repository.list(this.options.provider, this.options.model)).map(row => [row.id, row.inputHash]));
     const missing = entries.filter(e => indexed.get(e.id) !== canonicalEmbeddingHash(e));
     const deadline = Date.now() + 120_000;

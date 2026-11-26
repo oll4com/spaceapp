@@ -310,7 +310,7 @@ export function computeCodexCooldown(
   const totalSeconds = Math.max(0, Math.round(diffMs / 1000));
   const totalMinutes = Math.max(0, Math.round(totalSeconds / 60));
 
-  let formatted = "";
+  let formatted: string;
   if (totalSeconds >= 3600) {
     const hours = Math.floor(totalSeconds / 3600);
     formatted = `${hours}h`;

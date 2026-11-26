@@ -75,10 +75,11 @@ export function RoomAgentDock({ activeRoom, selectedBrowserPaneId, refreshKey = 
     Boolean(voiceInput.ownerId && !voiceOwned) ||
     Boolean(voiceOwned && voiceInput.status !== "recording");
 
-  useEffect(() => () => voiceInput?.cancel(voiceOwnerId), [voiceInput?.cancel, voiceOwnerId]);
+  const cancelVoice = voiceInput?.cancel;
+  useEffect(() => () => cancelVoice?.(voiceOwnerId), [cancelVoice, voiceOwnerId]);
   useEffect(() => {
-    if (!activeRoom) voiceInput?.cancel(voiceOwnerId);
-  }, [activeRoom?.id, voiceInput?.cancel, voiceOwnerId]);
+    if (!activeRoom) cancelVoice?.(voiceOwnerId);
+  }, [activeRoom?.id, cancelVoice, voiceOwnerId]);
 
   const loadSession = useCallback(async (roomId: string, showLoading = false) => {
     const sequence = ++loadSequenceRef.current;

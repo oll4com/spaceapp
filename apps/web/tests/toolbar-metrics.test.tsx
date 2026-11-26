@@ -420,6 +420,39 @@ describe("ToolbarMetrics", () => {
     expect(client.resetCredits).toHaveBeenCalledTimes(2);
   });
 
+  it("puts the operator's reset button on a Claude account Space Gateway holds (nous_msg:2cdc2f9a)", async () => {
+    const claudeId = `gw_account:${"c".repeat(32)}`;
+    const client = createClient();
+    client.claudeAccounts = vi.fn(async () => ({
+      data: [
+        { id: "crew", label: "crew", email: "crew@example.test", plan: "Team · Max 5x", status: "CONNECTED" as const, fiveHourRemainingPercent: 100, fiveHourResetAt: null,
+          weeklyRemainingPercent: 0, weeklyResetAt: null, weeklyScope: null, sampledAt, gatewayAccountId: claudeId, resetCredits: 0 },
+      ],
+      pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 },
+      source: "space-claude-profiles",
+      isStale: false,
+      error: null,
+      checkedAt: sampledAt,
+    }));
+    client.resetCredits = vi.fn(async () => ({
+      // The live grant (14/11): a Fable reset is never a week, so the button says what it does instead of "Resets 1".
+      data: [{ accountId: claudeId, availableCreditCount: 0, grants: [{ kind: "fable" as const, left: 1 }] }],
+      source: "space-gateway" as const, isStale: false, error: null, checkedAt: sampledAt,
+    }));
+    // dev@ 14/11: the answer names what was cleared, so a reset that left the week used says so.
+    client.redeemResetCredit = vi.fn(async () => ({ accountId: claudeId, outcome: "RESET" as const, completedAt: sampledAt, windowsReset: ["five_hour", "seven_day_overage_included"] }));
+    render(<ToolbarMetrics environment={environment} client={client} />);
+    fireEvent.mouseEnter(screen.getByRole("button", { name: "ALL 62%" }));
+    const panel = await screen.findByRole("region", { name: "Account usage details" });
+    const fable = await within(panel).findByRole("button", { name: "Fable usage only" });
+    expect(fable.getAttribute("title")).toBe("Use the earliest-expiring reset credit for crew: 1 Fable reset (Fable usage only, never a week)");
+    expect(within(panel).queryByRole("button", { name: /^Resets \d/ })).toBeNull();
+    fireEvent.click(fable);
+    await waitFor(() => expect(client.redeemResetCredit).toHaveBeenCalledWith(claudeId, expect.any(String)));
+    await waitFor(() => expect(client.claudeAccounts).toHaveBeenCalledTimes(2));
+    expect(await within(panel).findByText("Reset credit spent. Cleared: 5-hour window, Fable's weekly allowance. The week was not reset. Usage and credits were refreshed.")).toBeTruthy();
+  });
+
   it("redeems a reset credit in User mode too (operator 2/11: Resets 2 was greyed out)", async () => {
     const client = createClient();
     render(<ToolbarMetrics environment={environment} client={client} allowChanges={false} />);
@@ -735,10 +768,10 @@ describe("model stats MDL badge", () => {
     expect(cards().map((card) => card.dataset.availability)).toEqual(["available", "available", "soon", "exhausted"]);
     const card = (label: string) => within(section).getByText(label, { selector: ".account-quota-title" }).closest("li") as HTMLElement;
     expect(within(card("bo")).getByText("Available")).toBeTruthy();
-    expect(within(card("pir")).getByText("Back in 2h")).toBeTruthy();
+    expect(within(card("pir")).getByText(/^Back in 2h · \d\d:\d\d$/)).toBeTruthy();
     expect(within(card("wk")).getByText("Week exhausted")).toBeTruthy();
-    expect(within(card("bo")).getByText("back in 52m")).toBeTruthy();
-    expect(within(card("in1")).getByText("resets in 1h 35m")).toBeTruthy();
+    expect(within(card("bo")).getByText(/^back in 52m · \d\d:\d\d$/)).toBeTruthy();
+    expect(within(card("in1")).getByText(/^resets in 1h 35m · \d\d:\d\d$/)).toBeTruthy();
 
     // Both windows are always visible, each with its own tone.
     expect(within(section).getAllByTitle(/: Exhausted/).map((cell) => cell.textContent)).toEqual(["0% left", "0% left", "0% left", "0% left", "0% left"]);
@@ -833,7 +866,7 @@ describe("model stats MDL badge", () => {
     expect(within(card("lab")).getByText("Available")).toBeTruthy();
     expect(within(card("lab")).getByText("Week · Fable")).toBeTruthy();
     expect(within(card("lab")).getByRole("meter", { name: "5h remaining" }).getAttribute("aria-valuenow")).toBe("20");
-    expect(within(card("ntheo")).getByText("Back in 47m")).toBeTruthy();
+    expect(within(card("ntheo")).getByText(/^Back in 47m · \d\d:\d\d$/)).toBeTruthy();
     expect(within(card("dev")).getByText("Week exhausted")).toBeTruthy();
     expect(within(card("ops")).getByText("Sign-in expired")).toBeTruthy();
     expect(within(card("api")).getByText("Not signed in")).toBeTruthy();

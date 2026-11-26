@@ -14,6 +14,8 @@
   /* The dock's own surface (Modern), so content scrolling under the toolbar is hidden seamlessly. */
   background: var(--modern-surface, var(--room-surface, #141617));
 }
+/* The docked panel scrolls with .75rem top padding (.dock-panel): stick over that strip too, so no row shows above the search. */
+.agent-settings-dock:not(.is-fullscreen) > .settings-dock-toolbar { top: -.75rem; margin-top: -.75rem; padding-top: .75rem; }
 .settings-dock-toolbar > .settings-search { flex: 1 1 auto; }
 .settings-dock-toolbar > .dock-fullscreen-toggle { flex: none; }
 /* The phone drawer already fills the screen. */
@@ -155,6 +157,16 @@
   grid-template-columns: minmax(0, 1fr);
   gap: .35rem;
 }
+
+/* The ⓘ stays on its label's first line (it never wraps alone), and every switch lines up in one right-hand column
+   whatever its state text (DISABLED is wider than ENABLED). */
+.agent-settings-dock :is(.settings-flat-row.space-toggle .space-toggle-label, .settings-flat-row-copy > strong) {
+  display: flex; align-items: flex-start; overflow: visible;
+}
+.agent-settings-dock :is(.settings-flat-row.space-toggle .space-toggle-label, .settings-flat-row-copy > strong) > .info-tip {
+  flex: none; height: 1lh; align-items: center;
+}
+.agent-settings-dock .settings-flat-row.space-toggle .space-toggle-state { min-width: 6.2em; }
 
 /* Long shortcut names wrap in the narrow dock instead of being cut off. */
 .agent-settings-dock .cli-shortcut-visibility-name span { white-space: normal; overflow-wrap: anywhere; }

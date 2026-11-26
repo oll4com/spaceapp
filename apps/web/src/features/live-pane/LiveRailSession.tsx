@@ -61,7 +61,7 @@ export function LiveRailSession() {
     window.addEventListener("space-live-rail-stats-toggle", stats);
     window.addEventListener("space-live-rail-clear-conversation", handleClearConversation);
     const captions = () => setCaptionsDisabled(off => {
-      try { window.localStorage.setItem(LIVE_RAIL_CAPTIONS_DISABLED_STORAGE_KEY, String(!off)); } catch {}
+      try { window.localStorage.setItem(LIVE_RAIL_CAPTIONS_DISABLED_STORAGE_KEY, String(!off)); } catch { /* storage blocked or full: the toggle still applies for this session */ }
       return !off;
     });
     window.addEventListener("space-live-rail-captions-toggle", captions);

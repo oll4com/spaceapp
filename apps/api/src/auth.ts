@@ -112,7 +112,7 @@ export function getAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
           }
         }
       }
-    } catch {}
+    } catch { /* an unreadable or malformed client file leaves Google login unconfigured */ }
   }
   // The Antigravity OAuth client is shared with every Antigravity install, so an ID
   // token minted for any of them would satisfy the audience check. Google login

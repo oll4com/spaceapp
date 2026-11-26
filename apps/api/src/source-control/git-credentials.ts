@@ -8,6 +8,7 @@ import { GitControlError } from "./errors.js";
 /** Secrets exist only in the child environment/ASKPASS pipe, never argv or Git config. */
 export async function createGitEnvironment(policy: ProviderUrlPolicy, root: string, remote: string, token: string, login: string): Promise<NodeJS.ProcessEnv> {
   const normalized = policy.normalize(remote), url = new URL(normalized);
+  // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
   if (!token || !login || /[\x00-\x1f\x7f]/.test(token + login)) throw new GitControlError("INVALID_TOKEN", "Reconnect this provider.");
   const address = await policy.address(url);
   await mkdir(root, { recursive: true, mode: 0o700 }); const script = join(root, "git-askpass.cjs");

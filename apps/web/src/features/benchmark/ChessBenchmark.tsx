@@ -117,7 +117,7 @@ const TIME_CONTROLS = [
 ];
 const MOVE_CAPS = [40, 60, 80, 120, 200];
 const PARALLEL_GAMES = [4, 8, 16, 24, 32];
-const MAX_CONTESTANTS = 128;
+const MAX_CONTESTANTS = 1024;
 // Providers with more models than this start with only their first model selected.
 const FULL_SELECTION_MODELS = 12;
 const CHECK_POLL_MS = 2_000;
@@ -278,7 +278,9 @@ export function ChessBenchmark({ visible = true }: { visible?: boolean }) {
             return next;
           });
         }
-      } catch {}
+      } catch {
+        // A failed poll is retried on the next interval tick.
+      }
     }, CHECK_POLL_MS);
     return () => {
       stopped = true;
@@ -314,7 +316,9 @@ export function ChessBenchmark({ visible = true }: { visible?: boolean }) {
     try {
       const { game } = await benchmarkGet<{ game: ChessGameDetail }>(`/api/chess/benchmark/games/${encodeURIComponent(id)}`);
       if (openGameRef.current === id) setOpenGame(game);
-    } catch {}
+    } catch {
+      // The game stays as last shown; a live game reloads on the next refresh.
+    }
   }, []);
 
   const refresh = useCallback(async () => {

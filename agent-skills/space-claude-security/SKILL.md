@@ -1,6 +1,6 @@
 ---
 name: space-claude-security
-description: Anthropic's security review prompt (anthropics/claude-code-security-review) for a focused, high-confidence review of the pending changes on a branch - injection, authentication and authorization, crypto and secrets, code execution and deserialization, data exposure - with a false-positive filtering pass. Use when the operator asks for a security review of a change, a branch or a worktree before it ships.
+description: "Security review of a branch's pending changes (injection, auth, crypto and secrets, code execution, data exposure) with false-positive filtering."
 metadata:
   category: WORKFLOW
 ---

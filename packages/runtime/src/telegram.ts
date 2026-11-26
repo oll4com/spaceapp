@@ -254,6 +254,13 @@ export class TelegramBotApiClient implements TelegramBotClient {
     return { messageId: String(result.message_id) };
   }
 
+  /** Replaces a sent message's text; its inline buttons go with the old text. */
+  async editMessageText(chatId: string, messageId: string, text: string): Promise<void> {
+    if (!/^-?\d{1,24}$/.test(chatId) || !/^\d{1,24}$/.test(messageId)) throw new TelegramApiError("TELEGRAM_CHAT_INVALID", 400, null, true);
+    if (!text || Array.from(text).length > 4096) throw new TelegramApiError("TELEGRAM_MESSAGE_INVALID", 400, null, true);
+    await this.request("editMessageText", z.unknown(), { chat_id: chatId, message_id: messageId, text });
+  }
+
   /** Acknowledges a pressed inline button (Telegram shows `text` to the operator; without the call the button keeps spinning). */
   async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
     await this.request("answerCallbackQuery", z.boolean(), { callback_query_id: callbackQueryId.slice(0, 64), ...(text ? { text: text.slice(0, 200) } : {}) });

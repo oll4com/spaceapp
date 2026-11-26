@@ -22,7 +22,9 @@ type Ended = { result: CliUpdateAllResult; error: null } | { result: null; error
 function endedText(scope: string, ended: Ended): string {
   if (!ended.result) return `The update of ${scope} failed: ${ended.error}`;
   const { result } = ended;
-  return [`CLI update of ${scope}: ${result.overallStatus} (${result.runtimes.length} checked).`,
+  // Slice 14 (cli:gemini "FAIL (1 checked)" ×1, cause unreadable): the score keeps a failure's first line, so it names what failed and why.
+  const failed = result.runtimes.filter((runtime) => runtime.status === "FAIL").map((runtime) => `${runtime.displayName} ${runtime.code}: ${runtime.summary}`);
+  return [`CLI update of ${scope}: ${result.overallStatus} (${result.runtimes.length} checked)${failed.length ? `: ${failed.join("; ")}` : ""}.`,
     ...result.runtimes.map((runtime) => `- ${runtime.displayName}: ${runtime.installedVersion ?? "none"}${runtime.availableVersion && runtime.availableVersion !== runtime.installedVersion
       ? ` → ${runtime.availableVersion}` : ""} ${runtime.status} ${runtime.code}: ${runtime.summary}`),
     ...(result.runtimes.some((runtime) => runtime.code === "MAJOR_VERSION_HELD") ? [CLI_MAJOR_NOTE] : [])].join("\n");
@@ -68,7 +70,11 @@ export function createNousCliUpdate(deps: {
       clearTimeout(timer);
       waiting = false;
       if (!ended) return { ok: true, display: `Updating ${scope}`, result: `The update of ${scope} runs on (staging, checks, rollback on failure; running panes keep their version until they restart); its result comes to your inbox as one line.` };
-      return { ok: ended.result !== null && ended.result.overallStatus !== "FAIL", display: ended.result ? `Updated ${scope}: ${ended.result.overallStatus}` : `Could not update ${scope}`, result: endedText(scope, ended) };
+      // 2026-11-24 REVIEW (Kimi asset ids 23/11 00:00Z): update-all goes on past a CLI that fails and rolls it back, so that CLI is held and the run fails only when nothing passed.
+      const held = ended.result?.runtimes.filter((runtime) => runtime.status === "FAIL").map((runtime) => runtime.displayName) ?? [];
+      const passed = ended.result !== null && (ended.result.overallStatus !== "FAIL" || held.length < ended.result.runtimes.length);
+      return { ok: passed, display: !ended.result ? `Could not update ${scope}` : passed && held.length ? `Updated ${scope}: held ${held.join(", ")}`
+        : `Updated ${scope}: ${ended.result.overallStatus}`, result: endedText(scope, ended) };
     }
   };
 }

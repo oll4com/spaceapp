@@ -1,6 +1,6 @@
 ---
 name: space-stripe-best-practices
-description: Stripe's official best-practices skill (stripe/ai) for planning, building and reviewing Stripe integrations - sandboxes and test mode, Checkout Sessions or PaymentIntents, Payment Element, Connect with Accounts v2, Billing and subscriptions, Stripe Tax, Treasury, migrations from deprecated APIs, and security for API keys, restricted keys, webhooks and OAuth. Use for any Stripe integration work.
+description: "Stripe's best practices for planning, building and reviewing Stripe integrations (Checkout, PaymentIntents, Connect, Billing, Tax, webhooks, keys)."
 metadata:
   category: WORKFLOW
 ---

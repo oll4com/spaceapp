@@ -18,7 +18,7 @@ export function createLiveHistorySync(deps: {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let sending = false;
   const key = () => `space.live.outbox.v1:${ownerId}`;
-  const persist = () => { if (ownerId) try { deps.storage?.setItem(key(), JSON.stringify({ sessionId, epochs, pending: [...pending.values()] })); } catch {} };
+  const persist = () => { if (ownerId) try { deps.storage?.setItem(key(), JSON.stringify({ sessionId, epochs, pending: [...pending.values()] })); } catch { /* best-effort: nothing to do if it fails */ } };
   const schedule = (delay = 750) => { if (!timer && !disposed && pending.size) timer = setTimeout(() => { timer = null; void flush(); }, delay); };
   const flush = async () => {
     if (sending || disposed || !ownerId || !pending.size) return;
@@ -55,7 +55,7 @@ export function createLiveHistorySync(deps: {
             pending.set(turn.item.id, turn); revisions.set(turn.item.id, turn.item.revision);
           }
         }
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
       if (!owner) return [];
       try {
         const snapshot = await deps.load();

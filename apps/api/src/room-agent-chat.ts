@@ -28,6 +28,8 @@ export interface RoomAgentChatBody {
   messages: RoomAgentChatMessage[];
   tools?: unknown[];
   tool_choice?: "auto" | "none";
+  /** The conversation's id: Space Gateway keeps it on one Codex account, where its cached prefix lives. */
+  prompt_cache_key?: string;
 }
 
 /** One parsed `chat.completion.chunk` delta. */
@@ -257,10 +259,14 @@ export function withRoomAgentEvents(timeline: RoomAgentTimelineMessage[], events
 /**
  * The model's view of the conversation: user, assistant and tool rows after the transcript was cleared, newest turns
  * first until the budget. The last four turns keep their tool calls and results; older turns keep one line naming
- * the tools they used. System rows stay out: the room's events are in the system prompt.
+ * the tools they used. System rows stay out: the room's events are in the room state.
+ * The room state (`roomAgentRoomState`) rides on the latest user turn (never a mid-conversation `role: "system"` message, which
+ * Codex Chat Completions -> Responses in `packages/gateway/src/providers/codex/chat.ts` hoists into top-level `instructions`), so
+ * the system prompt and every earlier turn stay one unchanged prefix the model's prompt cache reads back (plan clipboard:nsWKwUFhUFWA).
  */
 export function buildRoomAgentChatMessages(input: {
   systemPrompt: string;
+  roomState?: string;
   history: SpaceAgentMessageRecord[];
   /** The answer being written now; it and its tool rows are not history yet. */
   currentMessageId?: string;
@@ -323,11 +329,24 @@ export function buildRoomAgentChatMessages(input: {
     used += next.size;
     first -= 1;
   }
-  return [
+  const messages: RoomAgentChatMessage[] = [
     { role: "system", content: input.systemPrompt },
     ...(first > 0 ? [{ role: "system" as const, content: `${first} earlier turn${first === 1 ? "" : "s"} of this conversation ${first === 1 ? "is" : "are"} beyond your context; the room transcript keeps ${first === 1 ? "it" : "them"}.` }] : []),
     ...rendered.slice(first).flatMap((turn) => turn.messages)
   ];
+  if (input.roomState) {
+    // Attach to the latest user turn (never role: "system"): Codex `chatToResponses` and Anthropic-style providers hoist all
+    // system messages into top-level `instructions`/`system`, which would bust the prompt cache on every turn. Putting it after
+    // the user's text preserves leading prefixes like "Room monitor:" and maximizes the common prefix with later turns.
+    const state = `[Current room state (from Space, not operator text)]\n${input.roomState}`;
+    const latest = messages.findLastIndex((message) => message.role === "user");
+    if (latest > 0) {
+      messages[latest] = { ...messages[latest]!, content: `${messages[latest]!.content ?? ""}\n\n${state}` };
+    } else {
+      messages.push({ role: "user", content: state });
+    }
+  }
+  return messages;
 }
 
 const ROOM_AGENT_PERSONA = [
@@ -344,21 +363,23 @@ const ROOM_AGENT_PERSONA = [
   "One release per product: panes join the live release train (space_room_release) instead of cutting their own version; the captain includes every joined commit and reruns the affected tests; a commit missing from main needs the operator's dev→stable promote, so say so in one line. You never publish, push, promote, deploy or bump versions yourself."
 ].join(" ");
 
-export function roomAgentSystemPrompt(input: {
+/** The part of the Room Agent's instructions that stays the same from turn to turn (the prompt cache's prefix). */
+export function roomAgentSystemPrompt(input: { paneTypes: string[] }): string {
+  return [ROOM_AGENT_PERSONA, "", `Pane types you can open: ${input.paneTypes.join(", ")}.`].join("\n");
+}
+
+/** The room as it was when the operator's message arrived, with the confirmations waiting for a yes. */
+export function roomAgentRoomState(input: {
   roomContext: string;
-  paneTypes: string[];
   pending: Array<{ token: string; action: string }>;
   now?: string;
 }): string {
   return [
-    ROOM_AGENT_PERSONA,
     `Now: ${input.now ?? nowIso()}. The room state below was read when the operator's message arrived; use room_status or read_pane for anything newer.`,
     "",
     input.roomContext,
-    "",
-    `Pane types you can open: ${input.paneTypes.join(", ")}.`,
     ...(input.pending.length
-      ? ["Waiting for the operator's yes:", ...input.pending.map((entry) => `- token ${entry.token}: ${entry.action}`)]
+      ? ["", "Waiting for the operator's yes:", ...input.pending.map((entry) => `- token ${entry.token}: ${entry.action}`)]
       : [])
   ].join("\n");
 }
@@ -448,7 +469,7 @@ export function createRoomAgentChat(deps: {
 
   function emit(roomId: string, frame: RoomAgentStreamFrame) {
     for (const listener of listeners.get(roomId) ?? []) {
-      try { listener(frame); } catch {}
+      try { listener(frame); } catch { /* One failing listener must not stop the others. */ }
     }
   }
 
@@ -586,8 +607,8 @@ export function createRoomAgentChat(deps: {
           return messages.filter((message) => !clearedAt || message.updatedAt > clearedAt);
         })
       ]), signal);
-      const systemPrompt = roomAgentSystemPrompt({ roomContext, paneTypes, pending: [...rooms.values()].map(({ token, action }) => ({ token, action })) });
-      const messages = buildRoomAgentChatMessages({ systemPrompt, history, currentMessageId: messageId });
+      const messages = buildRoomAgentChatMessages({ systemPrompt: roomAgentSystemPrompt({ paneTypes }), history, currentMessageId: messageId,
+        roomState: roomAgentRoomState({ roomContext, pending: [...rooms.values()].map(({ token, action }) => ({ token, action })) }) });
       // The dock's Yes button names the token: the server runs that action itself, the model only reports it.
       const confirmed = /\(confirm ([A-Za-z0-9_-]{4,40})\)/.exec(input.content)?.[1];
       if (confirmed && rooms.has(confirmed) && rooms.get(confirmed)!.turn !== messageId) {
@@ -600,7 +621,7 @@ export function createRoomAgentChat(deps: {
       const answerBy = Date.now() + limits.turnMs - 30_000;
       for (let step = 0; step < limits.steps; step++) {
         const last = step === limits.steps - 1 || Date.now() >= answerBy;
-        const body: RoomAgentChatBody = { model: modelId, reasoning_effort: deps.reasoningEffort ?? "medium", messages,
+        const body: RoomAgentChatBody = { model: modelId, reasoning_effort: deps.reasoningEffort ?? "medium", messages, prompt_cache_key: input.sessionId,
           ...(model.supportsTools ? { tools: deps.tools.definitions, tool_choice: last ? "none" : "auto" } : {}) };
         const calls = await streamStep(model, body, signal, input.traceId, () => onText(), (text) => { stepText = text; });
         if (!model.supportsTools || !calls.length || last) break;

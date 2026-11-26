@@ -2,12 +2,12 @@
 import { describe, expect, it } from "vitest";
 import {
   VaultCryptoError, generateVaultTransportKey, openServerShare, openWithVaultPrivateKey, sealServerShare, sealToVaultPublicKey,
-  vaultBase64url, vaultItemRecordSchema, vaultRandomBytes, vaultSignupGrantOperatorMessage, vaultDelegationOperatorMessage, vaultDigest, openVaultEnvelope, vaultDelegateRequestSchema, vaultSignupGrantRequestSchema, vaultUnlockChallengeMessage, verifyVaultMessage, type VaultKdfParams,
-  vaultOperatorRequestMessage, sealVaultEnvelope, joinVaultRootKey, type VaultSymmetricEnvelope
+  vaultBase64url, vaultItemRecordSchema, vaultRandomBytes, vaultSignupGrantOperatorMessage, vaultDelegationOperatorMessage, vaultDigest, openVaultEnvelope, vaultDelegateRequestSchema, vaultSignupGrantRequestSchema, vaultUnlockChallengeMessage, verifyVaultMessage, type VaultKdfParams, vaultPendingSecretSchema, type VaultItemRecord, type VaultPendingSecret,
+  vaultOperatorRequestMessage, sealVaultEnvelope, joinVaultRootKey, vaultAad, type VaultSymmetricEnvelope
 } from "@space/contracts";
 import { VAULT_AUTO_LOCK_DEFAULTS, VAULT_AUTO_LOCK_KEY, readVaultAutoLock } from "../src/features/vault/vault-auto-lock.js";
 import {
-  VaultInboxError, argon2idKdf, changeMasterPassword, confirmVaultItem, createTransferReseal, recoverVault, decryptVaultItem, encryptVaultItem, importVaultPending, planDuplicateRemoval, setUpVault, signVaultSignupGrant, delegateVaultItems, unlockVault, vaultInboxKey,
+  VaultInboxError, argon2idKdf, changeMasterPassword, confirmVaultItem, createTransferReseal, recoverVault, decryptVaultItem, encryptVaultItem, importVaultPending, planDuplicateRemoval, setUpVault, signVaultSignupGrant, delegateVaultItems, repairWipedKeyItems, unlockVault, vaultInboxKey,
   vaultCardExpiry, vaultCardMetadata, vaultCardNumberValid,
   type VaultApi, type VaultInboxApi
 } from "../src/features/vault/vault-client.js";
@@ -290,6 +290,12 @@ describe("Vault dock client", () => {
     expect((await decryptVaultItem(unlocked, shop)).PASSWORD).toBe(`${SENTINEL}-third`);
     expect(shop.history.length).toBe(2);
     expect((await decryptVaultItem(unlocked, vaultItemRecordSchema.parse(stored["vault_item:GGGGGGGGGGGGGGGGGGGGGG"]))).USERNAME).toBe("another-shop-user");
+
+    // An authenticator key an agent's browser read from a setup QR (SET_OTP, nous_msg:cb10eefe6cc544e7af63ff64): the existing login keeps its password and gains the key.
+    pending.push({ id: "vault_pending:IIIIIIIIIIIIIIIIIIIIII", kind: "SET_OTP", handle: existing.metadata.id, label: "Mail", origin: "https://mail.example", sealedUsername: null,
+      sealedPassword: null, sealedOtp: await seal("JBSWY3DPEHPK3PXP"), paneId: null, createdAt: "2026-10-19T08:16:00.000Z" });
+    expect(await importVaultPending(api, unlocked, key)).toEqual({ imported: 1, unreadable: [], failed: [] });
+    expect(await decryptVaultItem(unlocked, vaultItemRecordSchema.parse(stored[existing.metadata.id]))).toEqual({ USERNAME: "synthetic@example.com", PASSWORD: `${SENTINEL}-changed`, OTP: "JBSWY3DPEHPK3PXP" });
   });
 
   it("never lets one waiting login stop the rest: a changed password of a handle with no item becomes its own login (stable 25-30/10)", async () => {
@@ -339,6 +345,72 @@ describe("Vault dock client", () => {
       failed: [{ id: `vault_pending:${"E".repeat(22)}`, kind: "NEW_ACCOUNT", label: "Broken", origin: "https://broken.example", reason: "Request failed (500)." }] });
     expect(deleted).not.toContain(`vault_pending:${"E".repeat(22)}`);
     expect(stored["vault_item:FFFFFFFFFFFFFFFFFFFFFF"]).toBeDefined();
+  });
+
+  it("never seals under a wiped key; an item that does not open neither blocks its waiting change nor the hand-over (19/11 OPEN_FAILED)", async () => {
+    const context = { ownerUserId: "user:alice", vaultId: "vault:AAAAAAAAAAAAAAAAAAAAAA", keyVersion: 1, purpose: "ITEM_KEY" as const, itemId: "vault_item:AAAAAAAAAAAAAAAAAAAAAA" };
+    await expect(sealVaultEnvelope(new Uint8Array(32), new Uint8Array([1]), context)).rejects.toMatchObject({ code: "BAD_KEY" });
+    const { client } = await harness();
+    const { unlocked } = await setUpVault(client, "user:alice", "master", fastKdf);
+    const stored: Record<string, VaultItemRecord> = {};
+    let inbox: Awaited<ReturnType<VaultInboxApi["vaultInbox"]>>["inbox"] = null;
+    const pending: VaultPendingSecret[] = [];
+    const deleted: string[] = [];
+    const api: VaultInboxApi = {
+      vaultInbox: async () => ({ inbox }), vaultSetInbox: async (body) => { inbox = { publicKey: body.publicKey, privateKeyEnvelope: body.privateKeyEnvelope }; return { inbox: true }; },
+      vaultPending: async () => ({ pending: pending.filter((entry) => !deleted.includes(entry.id)) }), vaultDeletePending: async (id) => { deleted.push(id); return { deleted: true }; },
+      vaultItem: async (id) => ({ item: stored[id]! }),
+      vaultSaveItem: async (item) => { const record = vaultItemRecordSchema.parse(item); stored[record.metadata.id] = record; return { item: record }; },
+      vaultItems: async () => ({ items: Object.values(stored).map((record) => record.metadata) })
+    };
+    const key = await vaultInboxKey(api, unlocked);
+    // Sealed under another key, as a write racing a lock left it: it no longer opens with this Vault's keys.
+    const broken = vaultItemRecordSchema.parse(await encryptVaultItem({ ...unlocked, vrk: vaultRandomBytes(32) }, { label: "Affiliates (partners@example.com, a long synthetic label)", origins: ["https://aff.example"],
+      policy: { ...policy, agentUse: true }, secrets: { USERNAME: "synthetic@example.com", PASSWORD: "SYNTHETIC-old" } }));
+    stored[broken.metadata.id] = broken;
+    const scope = { ownerUserId: "user:alice", vaultId: unlocked.vaultId, keyVersion: 1 };
+    const seal = (text: string) => sealToVaultPublicKey(key.publicKey, new TextEncoder().encode(text), scope);
+    pending.push(...[{ id: "vault_pending:AAAAAAAAAAAAAAAAAAAAAA", kind: "CHANGE_PASSWORD", handle: broken.metadata.id, label: "Affiliates", origin: "https://aff.example", sealedUsername: null,
+      sealedPassword: await seal(`${SENTINEL}-new`), paneId: null, createdAt: "2026-11-19T08:00:00.000Z" },
+      { id: "vault_pending:BBBBBBBBBBBBBBBBBBBBBB", kind: "SET_OTP", handle: broken.metadata.id, label: "Affiliates", origin: "https://aff.example", sealedUsername: null,
+        sealedPassword: null, sealedOtp: await seal("JBSWY3DPEHPK3PXP"), paneId: null, createdAt: "2026-11-19T08:01:00.000Z" },
+      { id: "vault_pending:CCCCCCCCCCCCCCCCCCCCCC", kind: "NEW_ACCOUNT", handle: "vault_item:CCCCCCCCCCCCCCCCCCCCCC", label: "Other", origin: "https://aff.example",
+        sealedUsername: await seal("other@example.com"), sealedPassword: await seal("SYNTHETIC-other"), paneId: null, createdAt: "2026-11-19T08:02:00.000Z" }].map((entry) => vaultPendingSecretSchema.parse(entry)));
+    expect(await importVaultPending(api, unlocked, key)).toEqual({ imported: 3, unreadable: [], failed: [] });
+    // The old item is kept as it was; both waiting changes land in one new copy with its address and policy.
+    expect(stored[broken.metadata.id]).toEqual(broken);
+    const copies = Object.values(stored).filter((record) => record.metadata.label.endsWith("(added again: the earlier copy does not open)"));
+    expect(copies).toHaveLength(1);
+    expect(copies[0]!.metadata).toMatchObject({ origins: ["https://aff.example"], status: "ACTIVE", policy: { agentUse: true } });
+    expect(await decryptVaultItem(unlocked, copies[0]!)).toEqual({ PASSWORD: `${SENTINEL}-new`, OTP: "JBSWY3DPEHPK3PXP" });
+    // The hand-over leaves only the unreadable item out and names it.
+    let handles: string[] = [];
+    const done = await delegateVaultItems({ vaultBroker: client.vaultBroker, vaultDelegate: async (body: { generation: number; items: Array<{ handle: string }> }) => {
+      handles = body.items.map((item) => item.handle); return { generation: body.generation }; } } as never, unlocked, { records: Object.values(stored), delegationGeneration: 0 });
+    expect(done).toEqual({ generation: 1, count: 2, unreadable: ["Affiliates (partners@example.com, a long synthetic label)"] });
+    expect(handles).not.toContain(broken.metadata.id);
+  });
+
+  it("re-seals an item whose key was sealed under the wiped (all-zero) VRK, keeping its fields (14/11 14:14Z, 33 skipped on 23/11)", async () => {
+    const { client } = await harness();
+    const { unlocked } = await setUpVault(client, "user:alice", "master", fastKdf);
+    const good = vaultItemRecordSchema.parse(await encryptVaultItem(unlocked, { label: "Good", origins: ["https://good.example"], policy, secrets: { USERNAME: "a@example.com", PASSWORD: SENTINEL } }));
+    const made = vaultItemRecordSchema.parse(await encryptVaultItem(unlocked, { label: "Linkwise", origins: ["https://lw.example"], policy, secrets: { USERNAME: "b@example.com", PASSWORD: `${SENTINEL}-lw` } }));
+    // What a save racing a lock wrote: the item key under 32 zero bytes (sealVaultEnvelope now refuses that key, so WebCrypto directly).
+    const context = { ownerUserId: unlocked.ownerUserId, vaultId: unlocked.vaultId, keyVersion: 1, itemId: made.metadata.id, purpose: "ITEM_KEY" as const };
+    const dek = await openVaultEnvelope(unlocked.vrk, made.dekEnvelope, context);
+    const nonce = vaultRandomBytes(12);
+    const zero = await crypto.subtle.importKey("raw", new Uint8Array(32), "AES-GCM", false, ["encrypt"]);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: new Uint8Array(vaultAad(context)) }, zero, new Uint8Array(dek)));
+    const broken = { ...made, dekEnvelope: { v: 1, alg: "A256GCM", purpose: "ITEM_KEY", keyVersion: 1, nonce: vaultBase64url.encode(nonce), ct: vaultBase64url.encode(ct) } } as VaultItemRecord;
+    await expect(decryptVaultItem(unlocked, broken)).rejects.toMatchObject({ code: "OPEN_FAILED" });
+    const saved: VaultItemRecord[] = [];
+    const out = await repairWipedKeyItems({ vaultSaveItem: async (item) => { const record = vaultItemRecordSchema.parse(item); saved.push(record); return { item: record }; } }, unlocked, [good, broken]);
+    expect(saved.map((record) => record.metadata.id)).toEqual([made.metadata.id]);
+    expect(out[0]).toBe(good);
+    expect(await decryptVaultItem(unlocked, out[1]!)).toEqual({ USERNAME: "b@example.com", PASSWORD: `${SENTINEL}-lw` });
+    expect(out[1]!.metadata.loginKey).toBe(made.metadata.loginKey);
+    expect(out[1]!.fields).toEqual(made.fields);
   });
 
   it("plans duplicate removal: the same site, username and account more than once, the most recently changed copy stays (operator request 2026-10-22)", async () => {

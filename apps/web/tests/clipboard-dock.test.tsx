@@ -258,7 +258,7 @@ describe("ClipboardDock", () => {
   });
 
   it("shows the share of every plan that is completed above the list", async () => {
-    mocks.clipboardItems.mockImplementation(async (query: { source?: string; includeCompleted?: boolean; pageSize: number }) => ({
+    mocks.clipboardItems.mockImplementation(async (query: { source?: string; includeCompleted?: boolean; unfinished?: boolean; pageSize: number }) => ({
       data: query.pageSize === 1 ? [planItem] : [item],
       pagination: { page: 1, pageSize: query.pageSize, totalItems: query.source !== "PLAN" ? 1 : query.includeCompleted ? 4 : 1, totalPages: 1 }
     }));
@@ -268,7 +268,7 @@ describe("ClipboardDock", () => {
     expect(within(stats).getByText("3 / 4")).toBeTruthy();
     expect(within(stats).getByText("75%")).toBeTruthy();
     expect(within(stats).getByRole("progressbar", { name: "Plans completed" }).getAttribute("aria-valuenow")).toBe("75");
-    expect(mocks.clipboardItems).toHaveBeenCalledWith({ source: "PLAN", includeCompleted: false, page: 1, pageSize: 1 });
+    expect(mocks.clipboardItems).toHaveBeenCalledWith({ source: "PLAN", unfinished: true, page: 1, pageSize: 1 });
   });
 
   it("filters saved plans and renders the PLAN badge and title", async () => {
@@ -304,6 +304,9 @@ describe("ClipboardDock", () => {
     render(<ClipboardDock canInsert activePaneLabel="Model Task" onInsert={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Plans" }));
     const parked = await screen.findByText("Parked: Waits for the vendor · 1/2 conditions met");
+    // Parked reads as Parked, never Completed (operator 23/11).
+    expect(screen.getAllByText("Parked").length).toBe(2);
+    expect(screen.queryByText("Completed")).toBeNull();
     expect(parked.getAttribute("title")).toBe("MET OPERATOR: Condition c1\nOPEN OPERATOR: Condition c2");
   });
 

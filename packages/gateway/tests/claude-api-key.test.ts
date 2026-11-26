@@ -6,7 +6,7 @@ import { registerApiKeyAccountRoutes } from "../src/admin/api-key-accounts.js";
 import { claudeAccountActions } from "../src/admin/claude-sign-in.js";
 import { generateGatewayApiKey } from "../src/api-keys.js";
 import { createCredentialCipher } from "../src/credential-cipher.js";
-import { CLAUDE_API_KEY_PATTERN, claudeCreditsExhausted, isClaudeApiKeyAccount, isClaudeCodeRequest } from "../src/providers/claude/api-key.js";
+import { CLAUDE_API_KEY_PATTERN, claudeAccessReturnsAt, claudeCreditsExhausted, isClaudeApiKeyAccount, isClaudeCodeRequest } from "../src/providers/claude/api-key.js";
 import { apiBudgetPace, DAILY_ALLOWANCE_REACHED, MONTHLY_BUDGET_REACHED } from "../src/providers/claude/api-budget.js";
 import { registerClaudeProxyRoutes, type ClaudeProxyOptions } from "../src/providers/claude/claude-proxy.js";
 import { createClaudeRefresher } from "../src/providers/claude/credentials.js";
@@ -99,10 +99,17 @@ describe("Claude API key account", () => {
     expect(claudeCreditsExhausted(400, "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.")).toBe(true);
     expect(claudeCreditsExhausted(400, "max_tokens: must be greater than 0")).toBe(false);
     expect(claudeCreditsExhausted(429, "credit balance")).toBe(false);
+    // nous_msg:0dfab66c: the organization's monthly limit is a 429 too, and names when access returns.
+    const monthly = "You have reached your API usage limits: your organization has crossed its monthly API usage threshold. You will regain access on 2026-12-01 at 00:00 UTC.";
+    expect(claudeCreditsExhausted(429, monthly)).toBe(true);
+    expect(claudeAccessReturnsAt(monthly)).toBe(Date.parse("2026-12-01T00:00:00Z") / 1000);
+    expect(claudeAccessReturnsAt("Number of request tokens has exceeded your per-minute rate limit")).toBeUndefined();
   });
 
-  it("counts every Nous project as Claude Code whatever its user agent, so the key never serves Nous (operator rule 27/10)", () => {
-    for (const project of ["nous", "nous-operator", "nous-helper"]) expect(isClaudeCodeRequest({ "user-agent": "node", "x-space-project": project })).toBe(true);
+  // Operator 17/11 (nous_msg:35d3e36f8d414784bde8e43f) supersedes 8/11: only the Claude Code user agent (27/10) keeps a request off the key; Nous's projects reach it.
+  it("counts only Claude Code's user agent as Claude Code, so Nous's \"Claude via OpenCode\" route may reach the key", () => {
+    for (const project of ["nous", "nous-operator", "nous-helper"]) expect(isClaudeCodeRequest({ "user-agent": "node", "x-space-project": project })).toBe(false);
+    expect(isClaudeCodeRequest({ "user-agent": "claude-cli/2.1.307 (external, sdk-cli)", "x-space-project": "nous" })).toBe(true);
     expect(isClaudeCodeRequest({ "user-agent": "opencode/1.2.3" })).toBe(false);
     expect(isClaudeCodeRequest({ "user-agent": "opencode/1.2.3", "x-space-project": "pane:abc" })).toBe(false);
   });
@@ -273,6 +280,11 @@ describe("Claude API key fallback", () => {
     expect(calls.at(-1)!.headers).not.toHaveProperty("x-client");
     await logs.flush();
     expect((await repository.listRequestLogs({ limit: 1 }))[0]).toMatchObject({ clientName: "Hermes", project: null });
+    // nous_msg:35d3e36f8d414784bde8e43f: Nous's "Claude via OpenCode" turn (Node's user agent, a Nous project) is served by the key once Max is out.
+    for (const project of ["nous", "nous-operator"]) {
+      expect((await post(body, { "user-agent": "node", "x-space-project": project })).json(), project).toMatchObject({ id: "msg_key" });
+      expect(calls.at(-1)!.auth).toBe(`key:${apiKey}`);
+    }
   });
 
   it("takes the key out of routing when Anthropic reports used-up credits, and passes the answer on", async () => {
@@ -287,6 +299,20 @@ describe("Claude API key fallback", () => {
     expect(key.status).toBe("QUOTA_EXCEEDED");
     expect(key.statusReason).toMatch(/credit balance/);
     expect(key.blockedUntil).toBe(new Date(startMs + 3_600_000).toISOString());
+  });
+
+  it("takes the key out of routing until the day Anthropic names when the organization's monthly API limit is crossed (nous_msg:0dfab66c)", async () => {
+    const resetMs = startMs + 9 * 86_400_000;
+    const day = new Date(resetMs).toISOString().slice(0, 10);
+    const monthly = { type: "error", error: { type: "rate_limit_error", message: `You have reached your API usage limits: your organization has crossed its monthly API usage threshold. You will regain access on ${day} at 00:00 UTC.` } };
+    const { post, limitAccounts, account } = await setup((call) => call.auth.startsWith("key:") ? json(monthly, 429) : limited(startMs / 1000 + 2400), { fallback: true });
+    await limitAccounts();
+    const response = await post({ model: "claude-sonnet-4-5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] });
+    expect(response.statusCode).toBe(429);
+    expect(response.json()).toEqual(monthly);
+    const key = await account(keyAccount);
+    expect(key.status).toBe("QUOTA_EXCEEDED");
+    expect(key.blockedUntil).toBe(`${day}T00:00:00.000Z`);
   });
 
   it("answers token counts and model lists from the accounts first, and from the key only with the fallback on", async () => {

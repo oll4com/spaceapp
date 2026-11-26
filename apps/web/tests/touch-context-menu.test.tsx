@@ -54,7 +54,7 @@ describe("touch context menus", () => {
     vi.useFakeTimers();
     const entry = { path: "/opt/spaceapp/note.txt", name: "note.txt", isDirectory: false, size: 10, permissions: "rw-r--r--", mtime: "2026-09-24T00:00:00Z" } as FileItem;
     const noop = vi.fn();
-    const { container } = render(<FileListView entries={[entry]} currentPath="/opt/spaceapp" parentPath={null} canGoUp={false} viewMode="table" mode="user" onOpenEntry={noop} onEditEntry={noop} onPreviewEntry={noop} onRenameEntry={noop} onChmodEntry={noop} onDeleteEntry={noop} onDownloadEntry={noop} onFilesDropped={noop} onNavigateUp={noop} />);
+    const { container } = render(<FileListView entries={[entry]} currentPath="/opt/spaceapp" canGoUp={false} viewMode="table" mode="user" onOpenEntry={noop} onEditEntry={noop} onPreviewEntry={noop} onRenameEntry={noop} onChmodEntry={noop} onDeleteEntry={noop} onDownloadEntry={noop} onFilesDropped={noop} onNavigateUp={noop} />);
     expect(screen.queryByRole("button", { name: "More file actions note.txt" })).toBeNull();
     const row = container.querySelector<HTMLElement>("[data-file-entry-path]")!;
     fireEvent.pointerDown(row, { pointerId: 7, pointerType: "touch", isPrimary: true, clientX: 50, clientY: 80 });

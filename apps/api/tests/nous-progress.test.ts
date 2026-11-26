@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { InMemoryNousRepository } from "@space/db";
 import { createNousService, type NousServiceDeps } from "../src/nous/service.js";
 import { NOUS_TURN_FAILED_NO_ERROR, type NousDecision, type SpaceNotification, type NousTurnFacts, type RoomAgentEvent } from "@space/contracts";
-import { NOUS_BASELINE, NOUS_CATALOG_V1, addToolErrorSample, failureCauses, nousCatalogCoverage, nousProgressText, nousScorecard } from "../src/nous/progress.js";
+import { NOUS_BASELINE, NOUS_CATALOG_V1, addToolErrorSample, failureCauses, nousCatalogCoverage, nousProgressText, nousScorecard, waitCloser, waitQuestion } from "../src/nous/progress.js";
 import { createNousTools, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
 import { coordinationLine, operatorAsksByDay, renderDailyReview, waitLines } from "../src/nous/daily-review.js";
 
@@ -107,6 +107,21 @@ describe("Nous's scorecard v1 (plan clipboard:L7RgHsveHbcR)", () => {
       event("WAITING", "RESOLVED", "08:52:00", "08:54:30", "pane:c"), event("STUCK", "RESOLVED", "08:55:00", "08:55:29", "pane:d")];
     const card = nousScorecard({ now, facts: sampleFacts(), decisions: [], events, tools: baselineTools });
     expect(card.dimensions.unblocking).toMatchObject({ sample: 2, note: "median 1.4 min, 1 of 2 answered by Nous" });
+  });
+
+  it("names the operator for an escalated wait the pane later moved on from, still counts it unanswered, and skips a banner line for its question (goal 401b115b)", () => {
+    const wait = (status: RoomAgentEvent["status"], decision: string | null, createdAt: string, updatedAt: string, detail: string | null = null) =>
+      ({ ...event("WAITING", status, createdAt, updatedAt, null), title: "Jack is waiting: Needs input", decision, detail }) as RoomAgentEvent;
+    const banner = "     ▄▀▀▄\n    ▀▀▀▀▀▀\n  Welcome to the Antigravity CLI. You are currently not signed in.";
+    const events = [wait("HANDLED", 'Nous answered "1" for you.', "08:40:00", "08:41:00"),
+      wait("RESOLVED", "Needs you: the Room Agent could not find a prompt to answer.", "08:42:00", "08:51:00", banner),
+      wait("ESCALATED", "Needs you: auto-answer is off in this room.", "08:52:00", "08:52:00"),
+      wait("RESOLVED", "The pane moved on.", "08:53:00", "08:58:00")];
+    const card = nousScorecard({ now, facts: sampleFacts(), decisions: [], events, tools: baselineTools });
+    expect(card.dimensions.unblocking).toMatchObject({ sample: 3, note: "median 5 min, 1 of 3 answered by Nous" });
+    expect(card.waits!.map((row) => row.scored)).toEqual(["NOT_ANSWERED", "NOT_ANSWERED", "ANSWERED"]);
+    expect(waitCloser(events[1]!)).toEqual({ who: "the operator (escalated to them)", byAgent: false });
+    expect(waitQuestion(events[1]!)).toBe("Welcome to the Antigravity CLI. You are currently not signed in.");
   });
 
   it("lists every wait of the unblocking sample with its question, minutes and who closed it, never counting the pane or the operator as an agent (round 9 item 3)", () => {
@@ -276,38 +291,45 @@ describe("R19-3: a decision the operator answered in the chat is no stale ask", 
 });
 
 describe("Brief tool-error-samples (8/11): error texts per tool in the turn facts and space_nous_progress", () => {
-  it("keeps up to 3 failed calls' texts per tool, each at most 200 characters and redacted", () => {
+  it("keeps every failed call's text per tool (slice 15: no 3-sample cap), each at most 200 characters and redacted", () => {
     const tool = { calls: 5, failed: 5, refused: 0 } as NousTurnFacts["tools"][string];
     addToolErrorSample(tool, "  curl failed: token=abc123secret  ");
     addToolErrorSample(tool, "x".repeat(300));
     addToolErrorSample(tool, "third");
     addToolErrorSample(tool, "fourth");
-    expect(tool.errors).toHaveLength(3);
+    expect(tool.errors).toHaveLength(4);
     expect(tool.errors![0]).toBe("curl failed: token:[REDACTED]");
     expect(tool.errors![1]).toHaveLength(200);
     expect(tool.errors![1]!.endsWith("…")).toBe(true);
-    expect(tool.errors![2]).toBe("third");
+    expect(tool.errors![3]).toBe("fourth");
   });
 
-  it("groups each failing tool's texts with ids and numbers normalised, the top 3 kinds of the top 5 tools, old `error` rows included", () => {
+  it("groups each failing tool's texts with ids and numbers normalised, every kind of every tool, old `error` rows included, held causes as gates (slice 9)", () => {
     const tools = (name: string, failed: number, errors: string[]) => ({ [name]: { calls: failed, failed, refused: 0, errors } });
     const facts = [
       turn(1, { tools: { ...tools("space_db_query", 3, ['column "is_active" does not exist', 'relation "tasks" does not exist', 'column "is_active" does not exist']),
         ...tools("space_files_read", 2, ["active/a/1.md is private", "active/a/22.md is private"]) } }),
       turn(2, { tools: { ...tools("space_db_query", 2, ['column "key" does not exist', 'column "x" does not exist']),
         space_execute: { calls: 1, failed: 1, refused: 0, error: "configure: Pane has no active session pane:abc123" } } }),
-      turn(3, { tools: { ...tools("space_execute", 1, ["configure: Pane has no active session pane:def456"]), ...tools("t4", 1, ["a"]), ...tools("t5", 1, ["b"]), ...tools("t6", 1, ["c"]) } })
+      turn(3, { tools: { ...tools("space_execute", 1, ["configure: Pane has no active session pane:def456"]), ...tools("t4", 1, ["a"]), ...tools("t5", 1, ["b"]), ...tools("t6", 1, ["c"]) } }),
+      // A recorded cause the score holds (tool-holds.ts) is a gate here too, not a failure or a sample.
+      turn(4, { tools: tools("space_programs", 2, ["Only Nous changes the programs registry", "boom"]) })
     ];
     const card = nousScorecard({ now, facts, decisions: [], events: [], tools: baselineTools });
     const byName = Object.fromEntries(card.failures.tools.map((tool) => [tool.name, tool]));
     expect(byName.space_db_query).toEqual({ name: "space_db_query", failed: 5, errors: [
-      { text: 'column "is_active" does not exist', count: 2 }, { text: 'relation "tasks" does not exist', count: 1 }, { text: 'column "key" does not exist', count: 1 }] });
-    expect(byName.space_files_read!.errors).toEqual([{ text: "active/a/1.md is private", count: 2 }]);
-    expect(byName.space_execute!.errors).toEqual([{ text: "configure: Pane has no active session pane:abc123", count: 2 }]);
-    expect(card.failures.tools.filter((tool) => tool.errors)).toHaveLength(5);
+      { text: 'column "is_active" does not exist', count: 2, last: turn(1).startedAt }, { text: 'relation "tasks" does not exist', count: 1, last: turn(1).startedAt },
+      { text: 'column "key" does not exist', count: 1, last: turn(2).startedAt }, { text: 'column "x" does not exist', count: 1, last: turn(2).startedAt }] });
+    expect(byName.space_files_read!.errors).toEqual([{ text: "active/a/1.md is private", count: 2, last: turn(1).startedAt }]);
+    // The newest of the kind's turns, whichever came first in the list.
+    expect(byName.space_execute!.errors).toEqual([{ text: "configure: Pane has no active session pane:abc123", count: 2, last: turn(3).startedAt }]);
+    expect(card.failures.tools.filter((tool) => tool.errors)).toHaveLength(7);
+    expect(byName.space_programs).toEqual({ name: "space_programs", failed: 1, errors: [{ text: "boom", count: 1, last: turn(4).startedAt }] });
+    expect(card.failures.gates).toContainEqual({ name: "space_programs", held: 1 });
+    expect(card.dimensions.reliability.note).toContain("(13 tool,");
     const text = nousProgressText(card);
     expect(text).toContain("Failed tools: space_db_query 5, space_files_read 2, space_execute 2");
-    expect(text).toContain('- space_db_query errors (sampled up to 3 per turn; same text with other ids or numbers counted together): "column "is_active" does not exist" ×2;');
+    expect(text).toContain('- space_db_query errors (same text with other ids or numbers counted together): "column "is_active" does not exist" ×2 (last 2026-10-17 08:51 UTC);');
   });
 
   it("goal 7365014c criterion 4: the operator's asks per day by source, Space's own answers and Nous-held cards left out", () => {

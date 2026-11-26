@@ -21,12 +21,14 @@ function fixture(options: { updates?: TelegramUpdate[][]; record?: Partial<Teleg
   const batches = [...(options.updates ?? [])];
   const sent: Array<{ chatId: string; text: string; markup?: unknown }> = [];
   const acknowledged: Array<{ id: string; text?: string }> = [];
+  const edited: Array<{ chatId: string; messageId: string; text: string }> = [];
   const offsets: number[] = [];
   let record = integration(options.record);
   const client: NousTelegramClient = {
     getUpdates: vi.fn(async () => { if (options.failPoll) throw options.failPoll; return batches.shift() ?? []; }),
     sendMessage: vi.fn(async (chatId: string, text: string, sendOptions?: { replyMarkup?: unknown }) => { sent.push({ chatId, text, markup: sendOptions?.replyMarkup }); return { messageId: String(sent.length) }; }),
-    answerCallbackQuery: vi.fn(async (id: string, text?: string) => { acknowledged.push({ id, text }); })
+    answerCallbackQuery: vi.fn(async (id: string, text?: string) => { acknowledged.push({ id, text }); }),
+    editMessageText: vi.fn(async (chatId: string, messageId: string, text: string) => { if (messageId === "gone") throw new Error("message to edit not found"); edited.push({ chatId, messageId, text }); })
   };
   // /goal and /goals (2026-10-27) are answered by Space itself: the stored message carries the reply for the chat.
   const send = vi.fn(async (_owner: string, text: string) => ({ id: `nous_msg:${text.length}`, meta: /^\/goals?\b/.test(text) ? { reply: text === "/goals" ? "1. [ACTIVE] 0% Sell 100 licences" : "Goal recorded: ..." } : {} }) as never);
@@ -45,10 +47,19 @@ function fixture(options: { updates?: TelegramUpdate[][]; record?: Partial<Teleg
     clientFactory: () => client,
     now: () => Date.parse("2026-10-24T10:00:00.000Z")
   });
-  return { telegram, client, sent, acknowledged, offsets, send, answer, record: () => record };
+  return { telegram, client, sent, acknowledged, edited, offsets, send, answer, record: () => record, setRecord: (patch: Partial<TelegramIntegrationRecord>) => { record = { ...record, ...patch }; } };
 }
 
 describe("Nous on Telegram", () => {
+  it("marks a Thread's messages answered in the paired chat, a failed edit only warns, and never edits without a connected chat (spec v2 §7, step 4b)", async () => {
+    const f = fixture();
+    await f.telegram.markAnswered(["7", "gone", "9"], "Nous: Send the proposal?");
+    expect(f.edited).toEqual([{ chatId: "123", messageId: "7", text: "Nous: Send the proposal?\n\n✓ Answered" }, { chatId: "123", messageId: "9", text: "Nous: Send the proposal?\n\n✓ Answered" }]);
+    f.setRecord({ isEnabled: false });
+    await f.telegram.markAnswered(["11"], "x");
+    expect(f.edited).toHaveLength(2);
+  });
+
   it("answers /goal and /goals from the paired chat at once with Space's reply (2026-10-27)", async () => {
     const f = fixture({ updates: [[message(9, "/goal Sell 100 licences"), message(10, "/goals")]] });
     await f.telegram.poll();
@@ -70,7 +81,7 @@ describe("Nous on Telegram", () => {
 
   it("sends a decision card with Approve and Decline buttons bound to the decision, and answers a button press like the dock", async () => {
     const f = fixture({ updates: [[button(20, "nd:abc123def456:a"), button(21, "nd:zzz999done:d"), button(22, "nd:abc123gone:a"), button(23, "nd:abc123def456:a", "999"), button(24, "garbage")]] });
-    expect(await f.telegram.decisionCard(owner, decision("nous_decision:abc123def456", "OPEN", null), "Nous: Send the proposal?\nRecommendation: send")).toBe(true);
+    expect(await f.telegram.decisionCard(owner, decision("nous_decision:abc123def456", "OPEN", null), "Nous: Send the proposal?\nRecommendation: send")).toBe("1");
     expect(f.sent[0]).toEqual({ chatId: "123", text: "Nous: Send the proposal?\nRecommendation: send\n\nDecision nous_decision:abc123def456",
       markup: { inline_keyboard: [[{ text: "Approve", callback_data: "nd:abc123def456:a" }, { text: "Decline", callback_data: "nd:abc123def456:d" }]] } });
     await f.telegram.poll();
@@ -84,7 +95,7 @@ describe("Nous on Telegram", () => {
     // A long card goes whole: its start first, the last part with the decision id and the buttons (no silent cut, plan xCBrZwhCTzmC step 4).
     f.sent.length = 0;
     const long = `${"a".repeat(5_000)}END`;
-    expect(await f.telegram.decisionCard(owner, decision("nous_decision:abc123def456", "OPEN", null), long)).toBe(true);
+    expect(await f.telegram.decisionCard(owner, decision("nous_decision:abc123def456", "OPEN", null), long)).toBe("2");
     expect(f.sent.map((item) => item.text).join("")).toBe(`${long}\n\nDecision nous_decision:abc123def456`);
     expect(f.sent.at(-1)!.text.length).toBeLessThanOrEqual(NOUS_TELEGRAM_CHUNK);
     expect(f.sent.map((item) => Boolean(item.markup))).toEqual(f.sent.map((_, index) => index === f.sent.length - 1));

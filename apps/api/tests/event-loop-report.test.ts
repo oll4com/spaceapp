@@ -1,3 +1,5 @@
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import { reportEventLoopLoad, summarizeCpuProfile, type CpuProfile } from "../src/event-loop-report.js";
 
@@ -29,9 +31,25 @@ describe("event loop report", () => {
     const calls = loads().length;
     const [fields] = loads()[0]!;
     expect(fields).toMatchObject({ event: "event_loop.load" });
-    for (const key of ["utilization", "delayP50Ms", "delayP99Ms", "delayMaxMs"]) expect(fields[key]).toBeGreaterThanOrEqual(0);
+    for (const key of ["utilization", "delayP50Ms", "delayP99Ms", "delayMaxMs", "gcPauseMs", "gcPauseMaxMs", "gcMajor"]) expect(fields[key]).toBeGreaterThanOrEqual(0);
+    expect(fields.heapUsedMb).toBeGreaterThan(0);
+    expect(fields.rssMb).toBeGreaterThanOrEqual(fields.heapUsedMb);
+    expect(fields.rowsRead).toEqual(expect.any(Object));
     await new Promise((resolve) => setTimeout(resolve, 120));
     expect(loads()).toHaveLength(calls);
+  });
+
+  it("counts a full collection's pause in the line of its interval", async () => {
+    const log = { info: vi.fn() };
+    const loads = () => log.info.mock.calls.filter(([, message]) => message === "Event loop load").map(([fields]) => fields);
+    const stop = reportEventLoopLoad(log, 200, { profileEveryMs: 3_600_000 });
+    const kept = keepTwentyMegabytes();
+    // A major GC that has a heap to walk (gc() exposed for a new context); the observer reports it before the next line.
+    setFlagsFromString("--expose-gc");
+    (runInNewContext("gc") as () => void)();
+    await vi.waitFor(() => expect(loads().some((fields) => fields.gcMajor >= 1 && fields.gcPauseMaxMs >= 0 && fields.gcPauseMs >= fields.gcPauseMaxMs)).toBe(true), { timeout: 3_000 });
+    stop();
+    expect(kept.length).toBe(20);
   });
 
   it("profiles the first interval and names the code that blocked the loop", async () => {
@@ -70,6 +88,29 @@ describe("event loop profiling after the first interval", () => {
     blockTheLoopFor300ms();
     await vi.waitFor(() => expect(profiles()).toHaveLength(2), { timeout: 3_000 });
     stop();
+  });
+});
+
+describe("event loop profiling under heap pressure", () => {
+  it("starts a profile past 60% of the heap limit and logs it past 80%, naming what was allocated", async () => {
+    const log = { info: vi.fn() };
+    const profiles = () => log.info.mock.calls.filter(([, message]) => message === "Event loop profile").map(([fields]) => fields);
+    let share = 0.1;
+    // A long interval: only the pressure check can finish this profile.
+    const stop = reportEventLoopLoad(log, 60_000, { profileEveryMs: 3_600_000, pressureCheckMs: 20, heapUsedShare: () => share });
+    // The first-interval profile is running; past 80% it is logged at once, then 60% starts a fresh one.
+    share = 0.85;
+    await vi.waitFor(() => expect(profiles()).toHaveLength(1), { timeout: 3_000 });
+    share = 0.65;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const kept = keepTwentyMegabytes();
+    share = 0.85;
+    await vi.waitFor(() => expect(profiles()).toHaveLength(2), { timeout: 3_000 });
+    stop();
+    const fields = profiles()[1]!;
+    expect(kept.length).toBe(20);
+    expect(fields.reason).toBe("heap_pressure");
+    expect(fields.heapTop.find((entry: { site: string }) => entry.site.includes("keepTwentyMegabytes")).mb).toBeGreaterThanOrEqual(10);
   });
 });
 

@@ -4,9 +4,10 @@ import { NEEDS_YOU_GROUPS, needsYouGroup, withoutAccountFacts, type ClipboardIte
 import { api } from "../../api.js";
 import { DockIconButton, DockState } from "../dock-kit/DockKit.js";
 import { useNotificationStore } from "../notifications/notification-store.js";
-import { NeedsYouCard, needsYouDueToday, soonestDue, type NeedsYouBoardPane } from "../needs-you/NeedsYouCard.js";
+import { NeedsYouCard, needsYouAskedAt, needsYouDueToday, soonestDue, type NeedsYouBoardPane } from "../needs-you/NeedsYouCard.js";
 import { Nous, Send } from "../ui-theme/app-icons.js";
 import { useNousUiIds } from "./nous-ui-state.js";
+import { scrollWithin } from "./nous-scroll.js";
 import { useUiLanguage, uiServerText, uiText } from "../ui-language/ui-language.js";
 
 export { needsYouMarkdown } from "../needs-you/NeedsYouCard.js";
@@ -60,7 +61,11 @@ const noticeAsk = (item: SpaceNotification): Ask => ({ id: item.id, paneId: item
   planIds: [item.payload.planId, ...(Array.isArray(item.payload.items) ? item.payload.items.map((entry) => (entry as { ref?: unknown } | null)?.ref) : [])]
     .filter((ref): ref is string => typeof ref === "string" && ref.startsWith("clipboard:")) });
 const decisionAsk = (decision: NousDecision): Ask => ({ id: decision.id, paneId: decision.refs.paneId ?? null, planIds: decision.refs.planId ? [decision.refs.planId] : [] });
-const asksPlan = (plan: PlanTie, ask: Ask) => ask.planIds.includes(plan.id) || Boolean(plan.paneId && ask.paneId === plan.paneId) || Boolean(plan.what?.includes(ask.id));
+// What a card unblocks is only a plan it or the plan names: a pane's earlier plan is not its card's (nous_msg:832a500e, Felix/Cody).
+const namesPlan = (plan: PlanTie, ask: Ask) => ask.planIds.includes(plan.id) || Boolean(plan.what?.includes(ask.id));
+/** The open plans a needs-you card unblocks (its deadline is said on the card). */
+export const planUnblocks = (item: SpaceNotification, plans: NousOverview["plans"]) => plans.filter((plan) => namesPlan({ id: plan.id, what: plan.hold?.what }, noticeAsk(item)));
+const asksPlan = (plan: PlanTie, ask: Ask) => namesPlan(plan, ask) || Boolean(plan.paneId && ask.paneId === plan.paneId);
 
 type Row = { id: string; at: string; due: string | null; group: NeedsYouGroup; node: ReactNode };
 const GROUP_TITLES: Record<NeedsYouGroup, string> = { OFF_SPACE: "Off Space", QUESTIONS: "Questions", APPROVALS: "Approvals", PANE: "In a pane" };
@@ -95,20 +100,20 @@ export function NousNeedsYou({ requests, decisions = [], renderDecision, plans =
   useEffect(() => {
     const id = scrollTo.current;
     const card = id ? [...document.querySelectorAll<HTMLElement>(".ny-card[data-notification-id]")].find((element) => element.dataset.notificationId === id) : null;
-    if (card) { card.scrollIntoView?.({ block: "nearest" }); scrollTo.current = null; }
+    if (card) { scrollWithin(card, "nearest"); scrollTo.current = null; }
   }, [requests, openId]);
   const panes = useMemo(() => new Map<string, NeedsYouBoardPane>((board?.rooms ?? []).flatMap((room) => room.panes.map((pane) => [pane.paneId, { ...pane, roomName: room.name, lineLanguage: board!.settings.language }] as const))), [board]);
-  const planOf = (ask: Ask) => plans.filter((plan) => asksPlan({ id: plan.id, paneId: plan.paneId, what: plan.hold?.what }, ask)).map((plan) => plan.id);
+  const planOf = (ask: Ask) => plans.filter((plan) => namesPlan({ id: plan.id, what: plan.hold?.what }, ask)).map((plan) => plan.id);
   const rows: Row[] = requests === null ? [] : [
     ...requests.map((item): Row => {
       const planIds = planOf(noticeAsk(item));
       const unblocks = plans.filter((plan) => planIds.includes(plan.id));
       const pane = item.paneId ? panes.get(item.paneId) : undefined;
-      return { id: item.id, at: item.createdAt, due: soonestDue(unblocks)?.dueAt ?? null, group: needsYouGroup(item, pane?.mode),
+      return { id: item.id, at: needsYouAskedAt(item), due: soonestDue(unblocks)?.dueAt ?? null, group: needsYouGroup(item, pane?.mode),
         node: <NeedsYouCard key={item.id} variant="row" item={item} pane={pane} unblocks={unblocks} open={openId === item.id} onOpenChange={(open) => setOpenId(open ? item.id : null)} onOpenPlan={onOpenPlan} /> };
     }),
     ...decisions.map((decision): Row => ({ id: decision.id, at: decision.createdAt, due: null, group: "QUESTIONS",
-      node: <div key={decision.id} style={{ display: "contents" }} data-sensitive-masked="manual">{renderDecision?.(decision)}</div> }))
+      node: <div key={decision.id} style={{ display: "contents" }}>{renderDecision?.(decision)}</div> }))
   ].sort((left, right) => (left.due ?? "\uffff").localeCompare(right.due ?? "\uffff") || right.at.localeCompare(left.at));
   const dueToday = requests?.filter((item) => needsYouDueToday(soonestDue(plans.filter((plan) => planOf(noticeAsk(item)).includes(plan.id))))).length ?? 0;
   // The mask covers the requests' own words, never Space's labels, so a masked shot still shows the layout in the operator's language (plan clipboard:32etNsBgtbI- step 4).

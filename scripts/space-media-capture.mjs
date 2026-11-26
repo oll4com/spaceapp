@@ -13,6 +13,7 @@
 //   node scripts/space-media-capture.mjs --instance dev --slug launch --room room:abc --viewport desktop,mobile,story
 //   node scripts/space-media-capture.mjs --instance mock --slug tour --video scenario.json --viewport desktop
 //   node scripts/space-media-capture.mjs --instance stable --slug restart --dock nous --outage calm   (a played API restart, READ_ONLY)
+//   node scripts/space-media-capture.mjs --instance stable --slug bell --dock notifications --hide-dock nous   (Space without Nous)
 import { childProcessEnv } from "../packages/runtime/dist/child-process-env.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -34,13 +35,24 @@ export const INSTANCES = {
 
 // CSS size, device scale factor and touch: the output is the platform's pixel size.
 export const VIEWPORTS = {
-  desktop: [1440, 900, 2, false], "desktop-hd": [1920, 1080, 1, false], "desktop-4k": [1920, 1080, 2, false], laptop: [1280, 800, 2, false],
+  desktop: [1440, 900, 2, false], "desktop-hd": [1920, 1080, 1, false], "desktop-taskbar": [1920, 1032, 1, false], "desktop-4k": [1920, 1080, 2, false], laptop: [1280, 800, 2, false],
+  "desktop-small": [1120, 750, 1, false], "desktop-narrow": [900, 700, 1, false],
   tablet: [820, 1180, 2, true], narrow: [605, 1000, 2, false], "tablet-landscape": [1180, 820, 2, true], mobile: [390, 844, 3, true], android: [412, 915, 2.625, true],
   og: [1200, 630, 1, false], square: [1080, 1080, 1, false], portrait: [864, 1080, 1.25, false], story: [360, 640, 3, true],
   x: [1280, 720, 1.25, false], linkedin: [1200, 627, 1, false], "ph-gallery": [1270, 760, 1, false], "yt-thumb": [1280, 720, 1, false]
 };
 
 export const FRAMES = { og: [1200, 630], square: [1080, 1080], portrait: [1080, 1350], story: [1080, 1920] };
+
+// The toggles whose labels the app translates (useSideSurfaces.ts, Greek from ui-language.ts's EL): the labels shown when the dock opens and
+// when it is open. Every other dock's label stays English (the bell is "Show notifications" again since 17/11).
+export const DOCK_LABELS = {
+  nous: { open: ["Εμφάνιση Nous", "Άνοιξε το Nous"], shown: ["Απόκρυψη Nous", "Κλείσε το Nous"] }
+};
+const dockLabels = (label) => ({
+  open: [`Show ${label}`, `Open ${label}`, ...(DOCK_LABELS[label]?.open ?? [])],
+  shown: [`Hide ${label}`, `Close ${label}`, ...(DOCK_LABELS[label]?.shown ?? [])]
+});
 
 // Dock id → the action label of its Show/Open button (apps/web/src/features/docks/side-surface-meta.ts).
 export const DOCKS = {
@@ -64,15 +76,17 @@ export const DOCKS = {
   // Nous on its Job applications and Crypto tabs (operator 3/11 22:33 BKK), the same way.
   "nous-jobs": "nous", "nous-crypto": "nous", "nous-marketing": "nous",
   // Nous on its Score tab (plan clipboard:1NF6u6gcCwtj), the same way.
-  "nous-score": "nous",
+  "nous-score": "nous", "nous-plans": "nous",
   // Nous on its Requests tab (operator nous_msg:82daac31: the search with a status), the same way.
   "nous-requests": "nous",
   // Nous on its Affiliate tab (operator nous_msg:de448bc7, 14/11), docked or in its full-screen view.
   "nous-affiliate": "nous", "nous-affiliate-fullscreen": "nous"
 };
 // The Nous tab each of those docks opens on (the dock's `space.nous.ui.tab`).
-const NOUS_TABS = { "nous-load": "load", "nous-quotas": "quotas", "nous-task-runs": "taskRuns", "nous-goals": "goals", "nous-needs-you": "needs", "nous-startup": "startup", "nous-funding": "startup", "nous-jobs": "jobs", "nous-crypto": "crypto", "nous-marketing": "marketing", "nous-score": "score", "nous-requests": "requests", "nous-affiliate": "affiliate", "nous-affiliate-fullscreen": "affiliate" };
+const NOUS_TABS = { "nous-load": "load", "nous-quotas": "quotas", "nous-task-runs": "taskRuns", "nous-goals": "goals", "nous-needs-you": "needs", "nous-startup": "startup", "nous-funding": "startup", "nous-jobs": "jobs", "nous-crypto": "crypto", "nous-marketing": "marketing", "nous-score": "score", "nous-plans": "plans", "nous-requests": "requests", "nous-affiliate": "affiliate", "nous-affiliate-fullscreen": "affiliate" };
 // The Startup programs and Affiliate pages share the programs view: its status chips and a program's details.
+// The Inbox's tabs in the order NousInbox.tsx renders their chips.
+const INBOX_TABS = ["needs", "done", "updates", "requests"];
 const PROGRAM_DOCKS = ["nous-startup", "nous-funding", "nous-affiliate", "nous-affiliate-fullscreen"];
 // A copilot pane's rail tab (--rail, with --pane), seeded as the rail preference copilot-kit/rail-preference.ts reads: [storage kind, tab].
 export const RAIL_TABS = { "monitoring-charts": ["monitoring-copilot", "charts"], "marketing-memory": ["marketing-copilot", "memory"], "app-studio-setup": ["app-studio", "setup"] };
@@ -167,6 +181,31 @@ export function validateStep(raw, instance) {
     step.program = raw.program;
   }
   if (raw["focus-search"] === true) step.focusSearch = true;
+  // --inbox (nous_msg:eb36261e): the full-screen rail's Inbox count clicked, as the operator would, so its queued lines show.
+  if (raw.inbox !== undefined) {
+    if (step.dock !== "nous-fullscreen") throw new Error("--inbox needs --dock nous-fullscreen.");
+    if (raw.inbox === true) step.inbox = true;
+  }
+  // --inbox-tab updates (plan clipboard:JD8EbQgQdRls; it was --inbox-group, nous_msg:6d0be8d3): the Inbox on one of its tabs (NousInbox.tsx INBOX_TABS, in this order).
+  if (raw["inbox-tab"] !== undefined) {
+    if (!step.inbox || !INBOX_TABS.includes(raw["inbox-tab"])) throw new Error("--inbox-tab needs --inbox and one of needs, done, updates, requests.");
+    step.inboxTab = raw["inbox-tab"];
+  }
+  // --live-tile Idle (nous_msg:ad2b3a6a): a Live tile clicked, as the operator would, so the Agents Dashboard shows on that tile's filter.
+  // --conversation-end first|return (nous_msg:ad2b3a6a): the dock's Conversation, loaded fresh or after Overview and back, must sit at its newest message.
+  if (raw["conversation-end"] !== undefined) {
+    if (step.dock !== "nous") throw new Error("--conversation-end needs --dock nous.");
+    step.conversationEnd = oneOf(raw["conversation-end"], ["first", "return"], "conversation-end");
+  }
+  if (raw["live-tile"] !== undefined) {
+    if (step.dock !== "nous" && step.dock !== "nous-fullscreen") throw new Error("--live-tile needs --dock nous or nous-fullscreen.");
+    step.liveTile = oneOf(raw["live-tile"], ["Rooms", "Running", "Idle", "Waiting", "On a plan", "Load"], "live-tile");
+  }
+  // --closed-plans (nous_msg:8076f33e): the board's Plans column scrolled to "Closed with work left", below the fold.
+  if (raw["closed-plans"] !== undefined) {
+    if (step.dock !== "nous-fullscreen" && step.dock !== "nous-plans") throw new Error("--closed-plans needs --dock nous-fullscreen or nous-plans.");
+    if (raw["closed-plans"] === true) step.closedPlans = true;
+  }
   // Settings in its full-screen view (the dock's own fullscreen button), as the operator reads it on a wide screen.
   if (raw["settings-fullscreen"] === true) {
     if (!step.settings) throw new Error("--settings-fullscreen needs --settings.");
@@ -235,13 +274,31 @@ export function validateInput(raw) {
     if (input.pane || !input.appointments) throw new Error("--appointments-wheel needs --appointments without --pane.");
     input.appointmentsWheel = oneOf(raw["appointments-wheel"], ["next", "prev"], "appointments-wheel");
   }
+  // --appointments-open: Nous's card with its first row expanded (notes, Post-call notes, Recontact; plan clipboard:fmF-N-DXk_Y0).
+  if (raw["appointments-open"]) {
+    if (input.pane) throw new Error("--appointments-open is Nous's card, without --pane.");
+    input.appointmentsOpen = true;
+  }
+  // --appointments-confirm: the first recurring row expanded and its Completed confirm shown, never answered (operator 26/11, nous_msg:cfce1783).
+  if (raw["appointments-confirm"]) {
+    if (input.pane) throw new Error("--appointments-confirm is Nous's card, without --pane.");
+    input.appointmentsOpen = input.appointmentsConfirm = true;
+  }
   if (raw["token-usage"] !== undefined) input.tokenUsage = oneOf(raw["token-usage"], ["day", "week", "month"], "token-usage");
+  if (raw["score-range"] !== undefined) input.scoreRange = oneOf(raw["score-range"], ["24h", "7d", "30d"], "score-range");
   if (raw["requests-status"] !== undefined) input.requestsStatus = oneOf(raw["requests-status"], ["ALL", "DONE", "ANSWERED", "IN_PROGRESS", "WAITS_FOR_YOU", "NOT_DONE", "NOT_ANSWERED"], "requests-status");
   if (raw["requests-search"] !== undefined) {
     if (typeof raw["requests-search"] !== "string" || raw["requests-search"].length > 200) throw new Error("--requests-search takes at most 200 characters.");
     input.requestsSearch = raw["requests-search"];
   }
   if ((input.requestsStatus || input.requestsSearch) && raw.dock !== "nous-requests") throw new Error("--requests-status and --requests-search need --dock nous-requests.");
+  // --hide-dock nous (nous_msg:e1bcd1d9): the app as an operator who hides those docks sees it, for this capture only. The account's
+  // settings reach the page patched (appearancePatch) and the capture never writes them.
+  if (raw["hide-dock"] !== undefined) {
+    if (instance === "mock") throw new Error("--hide-dock is not available on the mock.");
+    input.hideDocks = [...new Set(String(raw["hide-dock"]).split(",").map((name) => oneOf(name.trim(), Object.keys(DOCKS).filter((key) => !key.startsWith("nous-")), "hide-dock")))];
+    if (input.hideDocks.some((dock) => raw.dock === dock || (DOCKS[raw.dock] === DOCKS[dock]))) throw new Error("--hide-dock cannot hide the --dock being captured.");
+  }
   input.view = oneOf(raw.view ?? "app", Object.keys(VIEWS), "view");
   if (instance === "mock" && input.view !== "app") throw new Error("The mock has only the app view.");
   input.step = validateStep(raw, instance);
@@ -287,16 +344,17 @@ export function validateInput(raw) {
 }
 
 /** The settings the capture browser sees: the account's own, with the preview and masking on top. */
-export function appearancePatch(settings, appearance, masked) {
+export function appearancePatch(settings, appearance, masked, hideDocks = []) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error("The user settings are invalid.");
-  return { ...settings, ...appearance, ...(masked ? { sensitiveDataMasked: true } : {}) };
+  const docksHidden = hideDocks.length ? { docksHidden: [...new Set([...(Array.isArray(settings.docksHidden) ? settings.docksHidden : []), ...hideDocks])] } : {};
+  return { ...settings, ...appearance, ...(masked ? { sensitiveDataMasked: true } : {}), ...docksHidden };
 }
 
 /**
  * Seeds the page's session storage with validated values only: the room, the pane and the open dock. A read-only
  * capture also hides the app's error banner: it reports only the writes the capture itself refused.
  */
-export function seedScript({ room, pane, dock, rail, appointments, tokenUsage, requestsStatus, requestsSearch, readOnly = false, outage = false, resourceRail = false }) {
+export function seedScript({ room, pane, dock, rail, appointments, tokenUsage, scoreRange, requestsStatus, requestsSearch, liveTile, readOnly = false, outage = false, resourceRail = false }) {
   const lines = ["try {"];
   if (room) lines.push(`sessionStorage.setItem("space.selectedRoomId", ${JSON.stringify(room)});`);
   if (pane) lines.push(`sessionStorage.setItem("space.selectedPaneId", ${JSON.stringify(pane)});`);
@@ -309,9 +367,13 @@ export function seedScript({ room, pane, dock, rail, appointments, tokenUsage, r
     : `localStorage.setItem("space.nous.ui.appointments.view", ${JSON.stringify(JSON.stringify(appointments))});`);
   // --token-usage: the Quotas view's Token usage period (a fresh capture browser reads the device-wide `space.nous.ui.<key>`).
   if (["day", "week", "month"].includes(tokenUsage)) lines.push(`localStorage.setItem("space.nous.ui.tokenUsage.period", ${JSON.stringify(JSON.stringify(tokenUsage))});`);
+  // --score-range: the Score tab's 24 h / 7 days / 30 days chip, device-wide like the period above.
+  if (["24h", "7d", "30d"].includes(scoreRange)) lines.push(`localStorage.setItem("space.nous.ui.score.range", ${JSON.stringify(JSON.stringify(scoreRange))});`);
   // --requests-status / --requests-search: the Requests tab's filter and search, device-wide like the period above.
   if (requestsStatus) lines.push(`localStorage.setItem("space.nous.ui.requests.status", ${JSON.stringify(JSON.stringify(requestsStatus))});`);
   if (requestsSearch) lines.push(`localStorage.setItem("space.nous.ui.requests.search", ${JSON.stringify(JSON.stringify(requestsSearch))});`);
+  // The dock shows the Live tiles on its Overview tab; the full-screen board shows them beside the conversation.
+  if (liveTile && dock === "nous") lines.push(`localStorage.setItem("space.nous.ui.tab", ${JSON.stringify(JSON.stringify("overview"))});`);
   if (NOUS_TABS[dock]) lines.push(`localStorage.setItem("space.nous.ui.tab", ${JSON.stringify(JSON.stringify(dock === "nous-score" ? "conversation" : NOUS_TABS[dock]))});`);
   lines.push("} catch {}");
   // --crop rail: the resource rail is a per-browser switch (useResourceIndicators, off by default); on for this capture browser only.
@@ -412,7 +474,15 @@ export function requestPolicy(method, url, input, mode) {
   // Appearance reaches the page through /api/auth/me (its settings) and /api/user-settings.
   const settings = /^\/api\/user[-/]settings$/.test(path) || path === "/api/auth/me";
   const block = (write && (mode === "read-only" || /^\/api\/user[-/]settings/.test(path))) || Boolean(input.room && foreignRoom(url, input.room));
-  return { block, settings, intercept: !block && !write && (settings || (path === "/api/rooms" && Boolean(input.room))) };
+  // A Nous tab shot shows its tab even when the account hid it from the dock (the page alone sees it; the account keeps its choice).
+  const nousTab = path === "/api/nous" && !write ? NOUS_TABS[input.step?.dock] ?? null : null;
+  return { block, settings, nousTab, intercept: !block && !write && (settings || Boolean(nousTab) || (path === "/api/rooms" && Boolean(input.room))) };
+}
+
+/** The Nous state with the shot's tab shown in the dock. */
+export function showNousTab(json, tab) {
+  const settings = json?.state?.settings;
+  return settings ? { ...json, state: { ...json.state, settings: { ...settings, dockTabs: { ...settings.dockTabs, [tab]: true } } } } : json;
 }
 
 const DISPLAYED_ROOM = `document.querySelector('[data-room-runtime-id][data-presentation-state="displayed"]')?.dataset.roomRuntimeId`;
@@ -464,7 +534,7 @@ async function openPage(chrome, input, session, viewport) {
       const { requestId, request, responseStatusCode } = params;
       const path = new URL(request.url).pathname;
       // In read-only mode a running CLI still attaches through GET /api/panes/:id/cli/session; a stopped one is never started.
-      const { block, settings, intercept } = requestPolicy(request.method, request.url, input, session.mode);
+      const { block, settings, nousTab, intercept } = requestPolicy(request.method, request.url, input, session.mode);
       try {
         if (responseStatusCode === undefined && outage.active) {
           await chrome.send("Fetch.fulfillRequest", { requestId, responseCode: 503, body: Buffer.from(OUTAGE_BODY).toString("base64"),
@@ -484,9 +554,9 @@ async function openPage(chrome, input, session, viewport) {
         }
         const body = await chrome.send("Fetch.getResponseBody", { requestId }, sid);
         const json = JSON.parse(body.base64Encoded ? Buffer.from(body.body, "base64").toString("utf8") : body.body);
-        const patched = !settings ? scopeRoomList(json, new Set([input.room]))
-          : path === "/api/auth/me" ? (json.settings ? { ...json, settings: appearancePatch(json.settings, input.appearance, input.masked) } : json)
-            : appearancePatch(json, input.appearance, input.masked);
+        const patched = nousTab ? showNousTab(json, nousTab) : !settings ? scopeRoomList(json, new Set([input.room]))
+          : path === "/api/auth/me" ? (json.settings ? { ...json, settings: appearancePatch(json.settings, input.appearance, input.masked, input.hideDocks) } : json)
+            : appearancePatch(json, input.appearance, input.masked, input.hideDocks);
         await chrome.send("Fetch.fulfillRequest", { requestId, responseCode: 200, body: Buffer.from(JSON.stringify(patched)).toString("base64"),
           responseHeaders: [{ name: "Content-Type", value: "application/json" }, { name: "Cache-Control", value: "no-store" }] }, sid);
       } catch {
@@ -495,7 +565,7 @@ async function openPage(chrome, input, session, viewport) {
     });
     await chrome.send("Fetch.enable", { patterns: [{ urlPattern: `${origin}/api/*`, requestStage: "Request" },
       ...(input.outage ? [{ urlPattern: `${origin}/readyz*`, requestStage: "Request" }] : [])] }, sid);
-    await chrome.send("Page.addScriptToEvaluateOnNewDocument", { source: seedScript({ room: input.room, pane: input.pane, rail: input.rail, appointments: input.appointments, tokenUsage: input.tokenUsage, requestsStatus: input.requestsStatus, requestsSearch: input.requestsSearch, dock: input.step.dock ?? (input.step.settings ? "settings" : undefined), readOnly: session.mode === "read-only", outage: Boolean(input.outage), resourceRail: input.crop === "rail" }) }, sid);
+    await chrome.send("Page.addScriptToEvaluateOnNewDocument", { source: seedScript({ room: input.room, pane: input.pane, rail: input.rail, appointments: input.appointments, tokenUsage: input.tokenUsage, scoreRange: input.scoreRange, requestsStatus: input.requestsStatus, requestsSearch: input.requestsSearch, liveTile: input.step.liveTile, dock: input.step.dock ?? (input.step.settings ? "settings" : undefined), readOnly: session.mode === "read-only", outage: Boolean(input.outage), resourceRail: input.crop === "rail" }) }, sid);
   }
   const evaluate = async (expression) => {
     const result = await chrome.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, sid);
@@ -548,17 +618,17 @@ export async function openLimitedGoals(doc, settleMs = 400) {
 async function applyStep(page, step) {
   const skipped = [];
   const openDock = async (dock) => {
-    const label = DOCKS[dock];
+    const { open, shown } = dockLabels(DOCKS[dock]);
     // The toggle is on the room toolbar, or (desktop) inside the "Show docks" menu, which mounts its items when open.
     const opened = await page.evaluate(`(async () => {
-      const find = (name) => [...document.querySelectorAll("button[aria-label]")].find((b) => b.getAttribute("aria-label") === name && b.getClientRects().length);
-      if (find(${JSON.stringify(`Hide ${label}`)}) || find(${JSON.stringify(`Close ${label}`)})) return true;
-      const toggle = () => find(${JSON.stringify(`Show ${label}`)}) || find(${JSON.stringify(`Open ${label}`)});
+      const find = (names) => [...document.querySelectorAll("button[aria-label]")].find((b) => [names].flat().includes(b.getAttribute("aria-label")) && b.getClientRects().length);
+      if (find(${JSON.stringify(shown)})) return true;
+      const toggle = () => find(${JSON.stringify(open)});
       const wait = () => new Promise((r) => setTimeout(r, 500));
       if (!toggle()) { find("Show docks")?.click(); await wait(); }
       if (!toggle()) {
-        // A phone-size dock covers the room toolbar: close it first.
-        [...document.querySelectorAll("aside.side-surface button[aria-label]")].find((b) => /^(Close|Hide) /.test(b.getAttribute("aria-label")) && b.getClientRects().length)?.click();
+        // A phone-size dock covers the room toolbar: close it first (in Greek its close reads «Κλείσιμο: …», SideSurfaceFrame.tsx).
+        [...document.querySelectorAll("aside.side-surface button[aria-label]")].find((b) => /^(Close|Hide|Κλείσιμο:) /.test(b.getAttribute("aria-label")) && b.getClientRects().length)?.click();
         await wait();
         if (!toggle()) { find("Show docks")?.click(); await wait(); }
       }
@@ -572,7 +642,7 @@ async function applyStep(page, step) {
   };
   if (step.dock === "none") {
     // The open dock's own Hide/Close button, as the operator closes it.
-    const labels = Object.values(DOCKS).flatMap((label) => [`Hide ${label}`, `Close ${label}`]);
+    const labels = Object.values(DOCKS).flatMap((label) => dockLabels(label).shown);
     const closed = await page.evaluate(`(async () => {
       const open = () => [...document.querySelectorAll("button[aria-label]")].find((b) => ${JSON.stringify(labels)}.includes(b.getAttribute("aria-label")) && b.getClientRects().length);
       open()?.click();
@@ -583,6 +653,8 @@ async function applyStep(page, step) {
   } else if (step.dock && await openDock(step.dock) && ["nous-fullscreen", "nous-affiliate-fullscreen"].includes(step.dock)) {
     const full = await page.evaluate(`(async () => {
       for (let i = 0; i < 20; i += 1) {
+        // A Nous the account keeps full screen opens that way: nothing to press.
+        if (document.querySelector(".nous-dock.is-fullscreen")) return true;
         const button = [...document.querySelectorAll('button[aria-label="Open Nous fullscreen"]')].find((b) => b.getClientRects().length);
         if (button) { button.click(); return true; }
         await new Promise((r) => setTimeout(r, 250));
@@ -591,6 +663,52 @@ async function applyStep(page, step) {
     })()`);
     if (!full) skipped.push(`dock:${step.dock}`);
     else await new Promise((resolve) => setTimeout(resolve, 2_500));
+  }
+  // --inbox: the rail's first count is Inbox in every interface language (NousDock.tsx, Needs you left it in G.3); loaded once its lines or its empty state show.
+  if (step.inbox && !skipped.length) {
+    try {
+      await page.until(`Boolean(document.querySelector(".nous-gauges > button:first-child"))`, "The Inbox count", 30_000);
+      await page.evaluate(`(document.querySelector(".nous-gauges > button:first-child").click(), true)`);
+      await page.until(`Boolean(document.querySelector("div.nous-inbox, [data-nous-inbox]"))`, "The Inbox", 15_000);
+    } catch { skipped.push("inbox"); }
+    const chip = `document.querySelectorAll(".nous-inbox-tabs .dock-kit-chip")[${INBOX_TABS.indexOf(step.inboxTab)}]`;
+    if (step.inboxTab && !skipped.length && !await page.until(`Boolean(${chip})`, "The Inbox tab", 15_000)
+      .then(() => page.evaluate(`(${chip}.click(), true)`), () => false)) skipped.push(`inbox-tab:${step.inboxTab}`);
+  }
+  if (step.conversationEnd && !skipped.length) {
+    const list = `Boolean(document.querySelector(".nous-messages")?.children.length)`;
+    const chip = (name) => `(document.querySelector('.nous-views button[title="${name}"]')?.click(), true)`;
+    try {
+      await page.until(list, "The conversation", 30_000);
+      if (step.conversationEnd === "return") {
+        await page.evaluate(chip("Overview"));
+        await page.until(`!document.querySelector(".nous-messages")?.getClientRects().length`, "The Overview tab", 15_000);
+        await page.evaluate(chip("Conversation"));
+        await page.until(list, "The conversation again", 15_000);
+      }
+      // Late rows and images settle before the measure; nothing scrolls the list for it.
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      const gap = await page.evaluate(`(() => { const l = document.querySelector(".nous-messages"); return Math.round(l.scrollHeight - l.scrollTop - l.clientHeight); })()`);
+      if (gap > 2) skipped.push(`conversation-end:${gap}px-above-end`);
+    } catch { skipped.push(`conversation-end:${step.conversationEnd}`); }
+  }
+  if (step.liveTile && !skipped.length) {
+    // Load opens the dock's Load view; every other tile opens the Agents Dashboard.
+    const load = step.liveTile === "Load";
+    const tile = `button.nous-live-load-open[aria-label^=${JSON.stringify(load ? "Open the Load view: " : `Open the Agents Dashboard: ${step.liveTile} `)}]`;
+    try {
+      await page.until(`Boolean(document.querySelector(${JSON.stringify(tile)}))`, "The Live tile", 30_000);
+      await page.evaluate(`(document.querySelector(${JSON.stringify(tile)}).click(), true)`);
+      await page.until(`Boolean(document.querySelector(${JSON.stringify(load ? 'section.nous-load[aria-label="Load"]' : "dialog.agents-dashboard[open]")}))`, load ? "The Load view" : "The Agents Dashboard", 15_000);
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+    } catch { skipped.push(`live-tile:${step.liveTile}`); }
+  }
+  if (step.closedPlans && !skipped.length) {
+    try {
+      await page.until(`Boolean(document.querySelector(".nous-board-subhead, .nous-plans-section[aria-label='Closed with work left']"))`, "Closed with work left", 30_000);
+      // The first closed card with conditions to reopen, else the group's heading.
+      await page.evaluate(`((document.querySelector(".nous-board-closed:has(ul), .nous-plan-item:has(.nous-plan-closed ul)") ?? document.querySelector(".nous-board-subhead, .nous-plans-section[aria-label='Closed with work left']")).scrollIntoView({ block: "start" }), true)`);
+    } catch { skipped.push("closed-plans"); }
   }
   if (step.dock === "nous-goals" && !skipped.length) {
     try {
@@ -630,7 +748,7 @@ async function applyStep(page, step) {
   }
   // The Quotas tab: loaded once its providers or its empty line show (6/11: every still shot "Loading panel…", it had no wait).
   if (step.dock === "nous-quotas" && !skipped.length) {
-    await page.until(`Boolean(document.querySelector('.nous-overview[aria-label="Quotas"] .aiq-footer'))`, "The Quotas", 60_000).catch(() => skipped.push("dock:nous-quotas"));
+    await page.until(`Boolean(document.querySelector('.nous-overview[aria-label="Quotas"] :is(.aiq-footer, .toolbar-metric-provider-section)'))`, "The Quotas", 60_000).catch(() => skipped.push("dock:nous-quotas"));
   }
   if ([...PROGRAM_DOCKS, "nous-jobs", "nous-crypto", "nous-marketing"].includes(step.dock) && !skipped.length) {
     try {
@@ -667,10 +785,12 @@ async function applyStep(page, step) {
         .find((e) => !e.children.length && e.textContent.trim() === ${JSON.stringify(step.settingsRow)}); row?.scrollIntoView({ block: "start" }); return Boolean(row); })()`)) skipped.push(`settings-row:${step.settingsRow}`);
     } catch { skipped.push(`settings:${step.settings}`); }
   }
-  if (step.health) await page.evaluate(`window.dispatchEvent(new CustomEvent("space:system-health", { detail: { section: ${JSON.stringify(step.health.replace(/^ai-.*/, "ai"))} } })), true`);
+  // With --dock nous-quotas an ai-* section is the Quotas view's own provider tab: Resources stays closed (nous_msg:b25f1b9e).
+  const inQuotas = step.dock === "nous-quotas" && ACCOUNT_TABS[step.health];
+  if (step.health && !inQuotas) await page.evaluate(`window.dispatchEvent(new CustomEvent("space:system-health", { detail: { section: ${JSON.stringify(step.health.replace(/^ai-.*/, "ai"))} } })), true`);
   if (ACCOUNT_TABS[step.health]) {
     // A read-only capture fails the setting's write, so only this page shows the tab.
-    const selector = JSON.stringify(`[role="tablist"][aria-label="Account providers"] [role="tab"][aria-label="${ACCOUNT_TABS[step.health]}"]`);
+    const selector = JSON.stringify(`${inQuotas ? ".nous-overview " : ""}[role="tablist"][aria-label="Account providers"] [role="tab"][aria-label="${ACCOUNT_TABS[step.health]}"]`);
     try {
       await page.until(`Boolean(document.querySelector(${selector}))`, "The Accounts & quotas tab", 15_000);
       await page.evaluate(`(document.querySelector(${selector}).click(), true)`);
@@ -924,6 +1044,12 @@ export async function capture(input, { session: given, dir: videoDir = null, fit
       }
       const page = await openPage(chrome, input, session, viewport);
       report.skipped.push(...await applyStep(page, input.step));
+      // --hide-dock: proof the page took the hidden docks from the patched settings (its own space:docks-hidden:v1), not just the request.
+      if (input.hideDocks?.length) {
+        const hidden = await page.evaluate(`(() => { try { return JSON.parse(localStorage.getItem("space:docks-hidden:v1") || "[]"); } catch { return []; } })()`).catch(() => []);
+        report.hiddenDocks = Array.isArray(hidden) ? hidden : [];
+        for (const dock of input.hideDocks) if (!report.hiddenDocks.includes(dock)) report.skipped.push(`hide-dock:${dock}`);
+      }
       // Token usage ends the Quotas view, below the fold: wait for its bars (a month of request logs reads slowly), grow the window until the whole
       // section fits the dock, and shoot only the section; the report names every row and any label that overlaps or is clipped.
       if (input.tokenUsage) await page.until(`Boolean(document.querySelector(".nous-token-usage .nous-load-parts"))`, "The token usage", 60_000)
@@ -947,6 +1073,25 @@ export async function capture(input, { session: given, dir: videoDir = null, fit
           await sleep(600);
           (report.appointmentsWheel ??= []).push({ viewport, wheel: input.appointmentsWheel, from: at.from, to: await page.evaluate(period) });
         }, () => report.skipped.push("appointments-wheel"));
+      }
+      if (input.appointmentsOpen) {
+        // A recurring row names its rule ("Weekdays until …" / "Εργάσιμες έως …").
+        const row = input.appointmentsConfirm
+          ? `[...document.querySelectorAll(".nous-appointments-item > button")].find((row) => /(Weekdays|Every day) until|(Εργάσιμες|Κάθε μέρα) έως/.test(row.textContent))`
+          : `document.querySelector(".nous-appointments-item > button")`;
+        await page.until(`Boolean(${row})`, "An appointment row", 30_000).then(async () => {
+          await page.evaluate(`(() => { const row = ${row}; row.click(); })()`);
+          // The record's end (Post-call notes, Recontact) in view: the card scrolls inside the right column.
+          await sleep(300);
+          await page.evaluate(`document.querySelector(".nous-appointments-item.is-open .appointments-followup")?.scrollIntoView({ block: "end" })`);
+          await sleep(500);
+          if (input.appointmentsConfirm) {
+            await page.evaluate(`document.querySelector(".nous-appointments-item.is-open .nous-appointments-actions button")?.click()`);
+            await page.until(`Boolean(document.querySelector("dialog[role=alertdialog][open]"))`, "The Completed confirm", 10_000);
+          }
+          (report.appointmentsOpen ??= []).push({ viewport, ...await page.evaluate(`(() => { const open = document.querySelector(".nous-appointments-item.is-open");
+            return { title: open?.querySelector(".nous-appointments-title")?.textContent ?? null, followUp: Boolean(open?.querySelector(".appointments-followup")) }; })()`) });
+        }, () => report.skipped.push("appointments-open"));
       }
       if (page.scoreOpen) (report.scoreOpen ??= []).push({ viewport, ...page.scoreOpen });
       if (input.step.focusSearch) {
@@ -1007,10 +1152,10 @@ const options = {
   instance: { type: "string" }, slug: { type: "string" }, viewport: { type: "string" }, room: { type: "string" }, pane: { type: "string" },
   dock: { type: "string" }, settings: { type: "string" }, health: { type: "string" }, gateway: { type: "string" }, "gateway-account": { type: "string" }, view: { type: "string" }, scene: { type: "string" },
   crop: { type: "string" }, theme: { type: "string" }, mode: { type: "string" }, icons: { type: "string" }, background: { type: "string" },
-  tint: { type: "string" }, "room-theme": { type: "string" }, language: { type: "string" }, rail: { type: "string" }, appointments: { type: "string" }, "appointments-wheel": { type: "string" }, "token-usage": { type: "string" }, "requests-status": { type: "string" }, "requests-search": { type: "string" }, zoom: { type: "string" }, unmasked: { type: "boolean" }, format: { type: "string" },
+  tint: { type: "string" }, "room-theme": { type: "string" }, language: { type: "string" }, rail: { type: "string" }, appointments: { type: "string" }, "appointments-wheel": { type: "string" }, "appointments-open": { type: "boolean" }, "appointments-confirm": { type: "boolean" }, "token-usage": { type: "string" }, "score-range": { type: "string" }, "requests-status": { type: "string" }, "requests-search": { type: "string" }, "hide-dock": { type: "string" }, zoom: { type: "string" }, unmasked: { type: "boolean" }, format: { type: "string" },
   quality: { type: "string" }, frame: { type: "string" }, headline: { type: "string" }, subline: { type: "string" }, video: { type: "string" },
   gif: { type: "boolean" }, stdin: { type: "boolean" }, outage: { type: "string" }, program: { type: "string" }, approved: { type: "boolean" }, waiting: { type: "boolean" },
-  "focus-search": { type: "boolean" }, "settings-fullscreen": { type: "boolean" }, "settings-row": { type: "string" }
+  "focus-search": { type: "boolean" }, inbox: { type: "boolean" }, "inbox-tab": { type: "string" }, "live-tile": { type: "string" }, "conversation-end": { type: "string" }, "closed-plans": { type: "boolean" }, "settings-fullscreen": { type: "boolean" }, "settings-row": { type: "string" }
 };
 
 /**

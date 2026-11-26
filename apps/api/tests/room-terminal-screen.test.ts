@@ -57,3 +57,22 @@ describe("a cancellable projection (model-settings/status, 4/11)", () => {
     expect(runs[0]![0]!.fg).toBeDefined();
   });
 });
+
+describe("OSC 8 hyperlinks in a replay", () => {
+  const linked = "a \x1b]8;id=x;https://example.com/p?q=1\x07link \x1b[31mred\x1b[39m\x1b]8;;\x07 b \x1b]8;;file:///srv/a.ts\x1b\\file\x1b]8;;\x1b\\ c\r\n\x1b]0;title\x07d \x1b]8;;http://cut";
+  const plain = "a link \x1b[31mred\x1b[39m b file c\r\n\x1b]0;title\x07d \x1b]8;;http://cut";
+
+  it("reads the same text with the links dropped before the parse, split across chunks too", async () => {
+    const expected = await projectRoomTerminalScreen([plain], 40, 3);
+    expect(expected.split("\n").slice(0, 2)).toEqual(["a link red b file c", "d "]);
+    expect(await projectRoomTerminalScreen([linked], 40, 3)).toBe(expected);
+    expect(await projectRoomTerminalScreen([linked.slice(0, 9), linked.slice(9)], 40, 3)).toBe(expected);
+  });
+
+  it("keeps a linked cell underlined in the styled projection", async () => {
+    const { text, runs } = await projectRoomTerminalRuns([linked], 40, 3);
+    expect(text).toBe(await projectRoomTerminalScreen([linked], 40, 3));
+    expect(runs[0]).toEqual([{ text: "a " }, { text: "link ", underline: true }, { text: "red", fg: 1, underline: true },
+      { text: " b " }, { text: "file", underline: true }, { text: " c" }]);
+  });
+});

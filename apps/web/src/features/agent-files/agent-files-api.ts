@@ -1,13 +1,12 @@
 import type { Artifact } from "@space/contracts";
 import { api } from "../../api.js";
 
+/** The newest page of Agent Files and the total count. */
+export const fetchAgentFilesHead = () => api.artifacts({ collection: "AGENT_FILES", pageSize: 100, sortOrder: "desc" });
+
 /** Every Agent File of every room, newest first; the API pages by 100. The dock keeps its own copy inside its load sequence. */
-export async function fetchAllAgentFiles(): Promise<Artifact[]> {
-  const firstPage = await api.artifacts({
-    collection: "AGENT_FILES",
-    pageSize: 100,
-    sortOrder: "desc"
-  });
+export async function fetchAllAgentFiles(firstPage?: Awaited<ReturnType<typeof fetchAgentFilesHead>>): Promise<Artifact[]> {
+  firstPage ??= await fetchAgentFilesHead();
   const loaded = [...firstPage.data];
   if (firstPage.pagination.totalPages > 1) {
     const remainingPages = await Promise.all(

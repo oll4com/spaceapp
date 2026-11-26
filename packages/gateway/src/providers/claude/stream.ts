@@ -38,7 +38,7 @@ export class ClaudeStreamInspector {
       const block = this.buffer.slice(0, boundary);
       this.buffer = this.buffer.slice(boundary).replace(/^\r?\n\r?\n/, "");
       const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
-      let event: Json | null = null;
+      let event: Json | null;
       try { event = obj(JSON.parse(data)); } catch { continue; }
       if (event && this.handle(event) && !this.outputStarted) {
         this.outputStarted = true;

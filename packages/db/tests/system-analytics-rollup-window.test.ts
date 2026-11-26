@@ -288,7 +288,7 @@ function timeline(input: {
     if (down(atMs)) continue;
     events.push({ atMs, order: order++, kind: "rollup" });
   }
-  if (input.downtime) events.push({ atMs: input.downtime[1], order: order++, kind: "restart" });
+  if (input.downtime) events.push({ atMs: input.downtime[1], order, kind: "restart" });
   return events.sort((left, right) => left.atMs - right.atMs || left.order - right.order);
 }
 

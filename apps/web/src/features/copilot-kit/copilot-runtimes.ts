@@ -53,6 +53,28 @@ export async function loadPaneAccountProfileId(paneId: string, runtimeId: string
   return active?.session.runtimeId === runtimeId ? active.session.accountProfileId ?? "main" : null;
 }
 
+/**
+ * Whether a copilot pane already runs `runtimeId`. 20/11 Bob: the pane record said Claude Code while its old Gemini CLI ran on,
+ * so picking Claude Code did nothing; the live session counts too.
+ */
+export async function paneRunsRuntime(pane: Pick<Pane, "id" | "terminalRuntimeId">, runtimeId: string): Promise<boolean> {
+  if (runtimeId !== pane.terminalRuntimeId) return false;
+  const live = (await api.activeCliSession(pane.id, { includeTranscript: false }).catch(() => null))?.session.runtimeId;
+  return !live || live === runtimeId;
+}
+
+/** Restarts a copilot pane's CLI on `runtimeId`; a failed restart puts the runtime record back, so it keeps naming the CLI that runs. */
+export async function restartPaneCli(pane: Pick<Pane, "id" | "terminalRuntimeId">, runtimeId: string, account: string | null | undefined): Promise<void> {
+  const patched = runtimeId !== pane.terminalRuntimeId;
+  if (patched) await api.updatePane(pane.id, { terminalRuntimeId: runtimeId });
+  try {
+    await api.createCliSession(pane.id, { runtimeId, forceRestart: true, includeTranscript: false, ...(account ? { accountProfileId: account } : {}) });
+  } catch (error) {
+    if (patched) await api.updatePane(pane.id, { terminalRuntimeId: pane.terminalRuntimeId ?? null }).catch(() => undefined);
+    throw error;
+  }
+}
+
 export type CopilotLaunchDecision =
   | { open: true; choice: CopilotAgentChoice; label: string }
   | { open: false; preselect: CopilotLaunchSettings | null; notice: string | null };

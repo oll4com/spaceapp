@@ -2,7 +2,6 @@
 // delegation token (a JWT whose signature the fake token endpoint checks), and the sender rules: consumer Gmail is never bulk by
 // default, only our own SMTP host, a check (no mail) makes a sender ACTIVE, nothing reaches a third party.
 import { createVerify, generateKeyPairSync } from "node:crypto";
-import { createServer, type Socket } from "node:net";
 import { describe, expect, it } from "vitest";
 import { mailSenderCreateSchema } from "@space/contracts";
 import { InMemoryMailCampaignsRepository } from "@space/db";
@@ -10,34 +9,10 @@ import { createMailCampaignsService } from "../src/mail-campaigns/service.js";
 import { SmtpError, smtpCheck, smtpSubmit } from "../src/mail-campaigns/smtp.js";
 import { createDelegatedTokens, type MailTransports } from "../src/mail-campaigns/transports.js";
 import { stubMailSite } from "./fixtures/mail-campaigns-dns.js";
+import { fakeSmtp } from "./fixtures/fake-smtp.js";
 
 stubMailSite();
 
-async function fakeSmtp(script: (line: string) => string | null) {
-  const lines: string[] = [];
-  const server = createServer((socket: Socket) => {
-    socket.write("220 fake ESMTP\r\n");
-    let buffer = ""; let inData = false; let data = "";
-    socket.on("data", (chunk) => {
-      buffer += chunk.toString();
-      for (let index = buffer.indexOf("\r\n"); index >= 0; index = buffer.indexOf("\r\n")) {
-        const line = buffer.slice(0, index); buffer = buffer.slice(index + 2);
-        if (inData) {
-          if (line === ".") { inData = false; lines.push(`DATA:${data}`); socket.write("250 2.0.0 Ok: queued as ABC123\r\n"); data = ""; } else data += `${line}\n`;
-          continue;
-        }
-        lines.push(line);
-        if (line === "DATA") { inData = true; socket.write("354 go\r\n"); continue; }
-        const answer = script(line);
-        if (answer) socket.write(answer);
-        if (line === "QUIT") socket.end();
-      }
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as { port: number }).port;
-  return { lines, port, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
-}
 const happy = (line: string) => line.startsWith("EHLO") ? "250-fake\r\n250-AUTH LOGIN PLAIN\r\n250 SIZE 10000000\r\n" : line.startsWith("QUIT") ? "221 bye\r\n" : line.startsWith("AUTH") ? "235 ok\r\n" : "250 ok\r\n";
 
 describe("SMTP submission", () => {
@@ -121,6 +96,17 @@ describe("senders", () => {
     expect((await service.checkSender("user:o", sender.id)).sender.status).toBe("ACTIVE");
     expect((await service.updateSender("user:o", sender.id, { status: "PAUSED" }))!.status).toBe("PAUSED");
     expect(sent).toEqual([]);
+  });
+  it("nous_msg:832a500e: a new Vault key sets an ACTIVE sender back to SETUP (its campaigns pause) until its check passes", async () => {
+    const { service } = setup(async () => "Signed in.");
+    const smtp = await service.createSender("user:o", mailSenderCreateSchema.parse({ ...base, address: "news@brand.example", config: { route: "SMTP", host: "smtp.brand.example", port: 465, username: "news@brand.example", vaultKeyId: "vault_key:abcdef12", dkim: { selector: "space", vaultKeyId: "vault_key:dkim0001" } } }), "test");
+    await service.checkSender("user:o", smtp.id);
+    expect(await service.updateSender("user:o", smtp.id, { vaultKeyId: "vault_key:sSau2JEudDNmZQXHw6IyMQ" })).toMatchObject({ status: "SETUP",
+      config: { route: "SMTP", vaultKeyId: "vault_key:sSau2JEudDNmZQXHw6IyMQ", dkim: { vaultKeyId: "vault_key:dkim0001" } } });
+    expect((await service.checkSender("user:o", smtp.id)).sender.status).toBe("ACTIVE");
+    // The same key again is no change; a pause asked with a new key stays a pause.
+    expect((await service.updateSender("user:o", smtp.id, { vaultKeyId: "vault_key:sSau2JEudDNmZQXHw6IyMQ" }))!.status).toBe("ACTIVE");
+    expect((await service.updateSender("user:o", smtp.id, { status: "PAUSED", vaultKeyId: "vault_key:other001" }))!.status).toBe("PAUSED");
   });
   it("sends one transactional plain-text mail only through the owner's ACTIVE sender (Forgot password)", async () => {
     const { service, sent } = setup(async () => "Signed in.");

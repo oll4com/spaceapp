@@ -163,7 +163,7 @@ describe("Space deterministic demo store", () => {
 
     expect(
       roomCliActivityResponseSchema.parse(await store.api.roomCliActivity()).data
-    ).toContainEqual({ roomId: emptyRoom.id, runningCliCount: 0, paneCount: 0, runtimeIds: [] });
+    ).toContainEqual({ roomId: emptyRoom.id, runningCliCount: 0, paneCount: 0, runtimeIds: [], paneModes: [] });
 
     await store.api.createPane(emptyRoom.id, "OpenCode CLI", "TERMINAL", {
       terminalRuntimeId: "cli:opencode"
@@ -172,7 +172,8 @@ describe("Space deterministic demo store", () => {
       roomId: emptyRoom.id,
       runningCliCount: 1,
       paneCount: 1,
-      runtimeIds: ["cli:opencode"]
+      runtimeIds: ["cli:opencode"],
+      paneModes: ["TERMINAL"]
     });
   });
 

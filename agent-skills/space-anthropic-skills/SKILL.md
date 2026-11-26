@@ -1,6 +1,6 @@
 ---
 name: space-anthropic-skills
-description: Anthropic's skill-creator and mcp-builder skills. Use when the user wants to create, edit, evaluate or benchmark a skill, or tune a skill's description so it triggers reliably; or when building or reviewing an MCP server (tool design, schemas, pagination, errors, evaluations) in TypeScript or Python.
+description: "Anthropic's skill-creator and mcp-builder: create, edit, evaluate or tune a skill, or build or review an MCP server."
 metadata:
   category: WORKFLOW
 ---

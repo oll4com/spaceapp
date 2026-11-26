@@ -1,8 +1,7 @@
-import {
-  authMeSchema,
-  appDiagnosticsStatusSchema,
-  type AppDiagnosticsEventBatch,
-  type AppDiagnosticsStatus
+import type {
+  AppDiagnosticsEventBatch,
+  AppDiagnosticsStatus,
+  AuthMe
 } from "@space/contracts";
 import type {
   AppDiagnosticsCollector,
@@ -18,6 +17,90 @@ const appDiagnosticsBroadcastChannelName = "space.app-diagnostics.v1";
 const hintMaxAgeMs = 5 * 60_000;
 const pollIntervalDefaultMs = 12_000;
 const diagnosticsIdPattern = /^[A-Za-z0-9][A-Za-z0-9:_-]{5,99}$/;
+const appDiagnosticsRetentionHours = 24;
+const appDiagnosticsQuotaBytes = 8 * 1024 ** 3;
+const appDiagnosticsTechnicalQuotaBytes = 512 * 1024 ** 2;
+const appDiagnosticsVisualQuotaBytes = appDiagnosticsQuotaBytes - appDiagnosticsTechnicalQuotaBytes;
+const isoDateTimePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+// Speed audit 21/11: validate bootstrap payloads without importing @space/contracts runtime Zod schemas into index.js (~740 KB saved from entry).
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isIntInRange(value: unknown, min: number, max: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+}
+function isDiagnosticsId(value: unknown): value is string {
+  return typeof value === "string" && diagnosticsIdPattern.test(value);
+}
+function isIsoDateTime(value: unknown): value is string {
+  return typeof value === "string" && isoDateTimePattern.test(value) && Number.isFinite(Date.parse(value));
+}
+
+function parseAppDiagnosticsStatus(raw: unknown): AppDiagnosticsStatus | null {
+  if (!isPlainRecord(raw)) return null;
+  if (typeof raw.isEnabled !== "boolean") return null;
+  if (raw.captureId !== null && !isDiagnosticsId(raw.captureId)) return null;
+  if (raw.enabledAt !== null && !isIsoDateTime(raw.enabledAt)) return null;
+  if (raw.enabledByUserId !== null && !isDiagnosticsId(raw.enabledByUserId)) return null;
+  if (
+    raw.retentionHours !== appDiagnosticsRetentionHours ||
+    raw.quotaBytes !== appDiagnosticsQuotaBytes ||
+    raw.technicalQuotaBytes !== appDiagnosticsTechnicalQuotaBytes ||
+    raw.visualQuotaBytes !== appDiagnosticsVisualQuotaBytes ||
+    !isIsoDateTime(raw.checkedAt)
+  ) return null;
+  if (!isPlainRecord(raw.usage) || !isPlainRecord(raw.counters) || !isPlainRecord(raw.recorder)) return null;
+  if (
+    !isIntInRange(raw.usage.technicalBytes, 0, appDiagnosticsQuotaBytes) ||
+    !isIntInRange(raw.usage.visualBytes, 0, appDiagnosticsQuotaBytes) ||
+    !isIntInRange(raw.usage.totalBytes, 0, appDiagnosticsQuotaBytes) ||
+    !isIntInRange(raw.usage.segmentCount, 0, 10_000_000) ||
+    !isIntInRange(raw.counters.droppedEvents, 0, Number.MAX_SAFE_INTEGER) ||
+    !isIntInRange(raw.counters.quotaDrops, 0, Number.MAX_SAFE_INTEGER) ||
+    !isIntInRange(raw.counters.rejectedUploads, 0, Number.MAX_SAFE_INTEGER)
+  ) return null;
+  const rec = raw.recorder;
+  if (rec.status === "IDLE") {
+    if (Object.keys(rec).length !== 1) return null;
+  } else if (rec.status === "ACTIVE") {
+    if (
+      !isDiagnosticsId(rec.leaseId) ||
+      !isDiagnosticsId(rec.clientId) ||
+      !isIsoDateTime(rec.acquiredAt) ||
+      !isIsoDateTime(rec.heartbeatAt) ||
+      !isIsoDateTime(rec.expiresAt)
+    ) return null;
+  } else {
+    return null;
+  }
+  return raw as unknown as AppDiagnosticsStatus;
+}
+
+function requireAppDiagnosticsStatus(raw: unknown): AppDiagnosticsStatus {
+  const parsed = parseAppDiagnosticsStatus(raw);
+  if (!parsed) throw new DiagnosticsHttpError("INVALID_STATUS_PAYLOAD", 500);
+  return parsed;
+}
+
+function parseAuthMeBootstrap(raw: unknown): AuthMe | null {
+  if (!isPlainRecord(raw)) return null;
+  if (typeof raw.isAuthenticated !== "boolean" || typeof raw.isSetupRequired !== "boolean") return null;
+  if (raw.user !== null) {
+    if (
+      !isPlainRecord(raw.user) ||
+      typeof raw.user.id !== "string" ||
+      raw.user.id.length === 0 ||
+      typeof raw.user.email !== "string" ||
+      !raw.user.email.includes("@") ||
+      (raw.user.role !== "OPERATOR" && raw.user.role !== "ADMIN" && raw.user.role !== "USER")
+    ) return null;
+  }
+  if (raw.googleAuthEnabled !== undefined && typeof raw.googleAuthEnabled !== "boolean") return null;
+  if (raw.optionalModules !== undefined && (!Array.isArray(raw.optionalModules) || !raw.optionalModules.every((item) => typeof item === "string"))) return null;
+  if (raw.settings !== undefined && raw.settings !== null && !isPlainRecord(raw.settings)) return null;
+  return raw as unknown as AuthMe;
+}
 
 export interface AppDiagnosticsClientState {
   status: AppDiagnosticsStatus | null;
@@ -152,7 +235,7 @@ function createHttpTransport(fetchImpl: typeof fetch) {
         const code = (payload as { error?: { code?: unknown } } | null)?.error?.code;
         throw new DiagnosticsHttpError(typeof code === "string" ? code : "STATUS_UNAVAILABLE", response.status);
       }
-      return appDiagnosticsStatusSchema.parse(payload);
+      return requireAppDiagnosticsStatus(payload);
     },
     upload: async (batch: AppDiagnosticsEventBatch, signal: AbortSignal) => {
       const send = async () => fetchImpl("/api/app-diagnostics/event-batches", {
@@ -263,8 +346,8 @@ export function createAppDiagnosticsBootstrap(
         channel.onmessage = (event) => {
           const candidate = (event.data as { type?: unknown; status?: unknown } | null);
           if (candidate?.type !== "STATUS") return;
-          const parsed = appDiagnosticsStatusSchema.safeParse(candidate.status);
-          if (parsed.success) void bootstrap.applyStatus(parsed.data, false);
+          const parsed = parseAppDiagnosticsStatus(candidate.status);
+          if (parsed) void bootstrap.applyStatus(parsed, false);
         };
       }
       const hint = parseHint(storage, now());
@@ -290,7 +373,7 @@ export function createAppDiagnosticsBootstrap(
     },
     applyStatus: async (input, broadcast = true) => {
       if (stopped) return;
-      const status = appDiagnosticsStatusSchema.parse(input);
+      const status = requireAppDiagnosticsStatus(input);
       state = { ...state, status, lastErrorCode: null };
       if (status.isEnabled && status.captureId) {
         storage.setItem(APP_DIAGNOSTICS_HINT_STORAGE_KEY, JSON.stringify({
@@ -334,10 +417,10 @@ export async function appDiagnosticsSessionIsAuthenticated(
   try {
     const response = await fetchImpl("/api/auth/me", { credentials: "include", signal: controller.signal });
     if (!response.ok) return false;
-    const parsed = authMeSchema.safeParse(await response.json());
-    if (!parsed.success) return false;
-    cacheAuthBootstrap(parsed.data);
-    return parsed.data.isAuthenticated;
+    const parsed = parseAuthMeBootstrap(await response.json());
+    if (!parsed) return false;
+    cacheAuthBootstrap(parsed);
+    return parsed.isAuthenticated;
   } catch {
     return false;
   } finally {

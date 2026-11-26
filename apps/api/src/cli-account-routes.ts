@@ -31,7 +31,7 @@ export function registerCliAccountRoutes(app: FastifyInstance, options: {
   deletingCliAccountProfileKeys: Set<string>;
   cliAccountProfileKey: (runtimeId: string, profileId: string) => string;
   readCliAccountProfileDetails: (runtimeId: CliAccountProfileRuntimeId, profileId: string) => Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null; }>;
-  cliAccountIdentityCacheTtlMs: 30000;
+  cliAccountIdentityCacheTtlMs: number;
   cliAccountIdentityCache: Map<string, { expiresAt: number; value: Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null; login?: string | null; }>; }>;
   readCachedCliAccountIdentity: (runtimeId: CliAccountProfileRuntimeId, profileId: string) => Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null; } | { authStatus: "UNAVAILABLE"; email: null; }>;
   invalidateCliAccountIdentity: (runtimeId: string, profileId: string) => void;

@@ -71,7 +71,18 @@ export async function startDisposableTemporal(label: string, namespace: string):
   const pools: pg.Pool[] = [];
   let networkCreated = false;
 
+  const exitCleanup = () => {
+    for (const name of containers) {
+      try { execFileSync("docker", ["rm", "--force", "--volumes", name], { timeout: 15_000, stdio: "ignore" }); } catch { /* ignore */ }
+    }
+    if (networkCreated) {
+      try { execFileSync("docker", ["network", "rm", network], { timeout: 15_000, stdio: "ignore" }); } catch { /* ignore */ }
+    }
+  };
+  process.once("exit", exitCleanup);
+
   const stop = async () => {
+    process.removeListener("exit", exitCleanup);
     await Promise.allSettled(pools.map((pool) => pool.end()));
     pools.length = 0;
     if (containers.includes(pgName)) {
@@ -100,7 +111,7 @@ export async function startDisposableTemporal(label: string, namespace: string):
     docker(["network", "create", "--label", "space.disposable-test=1", network]);
     networkCreated = true;
     docker([
-      "run", "--tmpfs", "/var/lib/postgresql/data", "--detach", "--pull=never", "--name", pgName, "--label", "space.disposable-test=1", "--network", network,
+      "run", "--rm", "--tmpfs", "/var/lib/postgresql/data", "--detach", "--pull=never", "--name", pgName, "--label", "space.disposable-test=1", "--network", network,
       "--mount", `type=bind,source=${socketDir},target=/var/run/postgresql`,
       "--env", "POSTGRES_HOST_AUTH_METHOD=trust", disposablePostgresImage,
       "-c", "fsync=off", "-c", "max_connections=200"
@@ -125,7 +136,7 @@ export async function startDisposableTemporal(label: string, namespace: string):
     }
 
     docker([
-      "run", "--detach", "--pull=never", "--init", "--name", temporalName, "--label", "space.disposable-test=1",
+      "run", "--rm", "--detach", "--pull=never", "--init", "--name", temporalName, "--label", "space.disposable-test=1",
       "--network", network,
       "--env", "DB=postgres12", "--env", "DB_PORT=5432", "--env", "POSTGRES_USER=postgres",
       "--env", "POSTGRES_PWD=disposable-trust-auth", "--env", `POSTGRES_SEEDS=${pgName}`,
@@ -147,7 +158,7 @@ export async function startDisposableTemporal(label: string, namespace: string):
           await connection.close();
         }
       } catch (error) {
-        if (Date.now() > deadline) throw new Error(`Disposable Temporal ${temporalName} did not become ready: ${String(error)}`);
+        if (Date.now() > deadline) throw new Error(`Disposable Temporal ${temporalName} did not become ready: ${String(error)}`, { cause: error });
         await sleep(1_000);
       }
     }

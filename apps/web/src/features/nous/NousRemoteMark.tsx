@@ -26,7 +26,7 @@ export function NousRemoteMark({ active }: { active: boolean }) {
     let cancelled = false;
     // An older SpaceApp answers these routes without the lists: show nothing rather than break the dock.
     const load = () => {
-      void api.liveDeviceSessions().then((result) => { if (!cancelled) setLive({ sessions: result.sessions ?? [], lease: result.lease ?? null, takenBackAt: result.takenBackAt ?? null }); }, () => undefined);
+      void api.liveDeviceSessions().then((result) => { if (!cancelled) setLive({ sessions: result.sessions ?? [], lease: result.lease ?? null, takenBackAt: result.takenBackAt ?? null, superior: result.superior ?? null }); }, () => undefined);
       void api.listInstanceLinks().then((result) => { if (!cancelled) setManaged(result.links ?? []); }, () => undefined);
     };
     load();
@@ -36,6 +36,11 @@ export function NousRemoteMark({ active }: { active: boolean }) {
 
   const remote = live.sessions.filter((session) => session.app === LINK_APP);
   if (!remote.length && !managed.length && !live.takenBackAt) return null;
+  const superior = live.superior ?? null;
+  const superiorInfo = superior ? [t("This Nous answers to Nous {label}:", { label: superior.label }),
+    t("{name} from {ip}", { name: superior.host, ip: remote.find((session) => session.deviceId === superior.deviceId)?.ip ?? t("not connected now") }),
+    t("Since {time}", { time: time(superior.since) }), t("May {scopes}", { scopes: superior.scopes.join(", ") }),
+    t("Click to take nous from it in Settings > Account > Devices.")].join("\n") : "";
   const manage = (action: "take-back" | "give-back") => void api.linkManagement(action).then(setLive, () => undefined);
   const remoteInfo = [t("Another SpaceApp's Nous is connected to this SpaceApp:"), ...remote.map((session) => [
     t("{name} from {ip}", { name: session.name, ip: session.ip }),
@@ -52,6 +57,9 @@ export function NousRemoteMark({ active }: { active: boolean }) {
   return (
     <p className="nous-remote-line">
       {remote.length ? <span id={`${id}-remote`} className="sr-only">{remoteInfo}</span> : null}
+      {superior ? <span id={`${id}-superior`} className="sr-only">{superiorInfo}</span> : null}
+      {superior ? <button type="button" className="nous-remote-mark is-remote" title={superiorInfo} aria-describedby={`${id}-superior`} onClick={() => openSettingsSection("account")}>
+        {t("Under Nous {label}", { label: superior.label })}</button> : null}
       {managed.length ? <span id={`${id}-managed`} className="sr-only">{managedInfo}</span> : null}
       {remote.length ? <button type="button" className="nous-remote-mark is-remote" title={remoteInfo} aria-describedby={`${id}-remote`} onClick={() => openSettingsSection("account")}>
         {remote.length > 1 ? t("Remote ({count})", { count: remote.length }) : t("Remote")}</button> : null}

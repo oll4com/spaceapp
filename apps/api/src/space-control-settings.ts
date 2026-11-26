@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { AuthUser, ControlAction } from "@space/contracts";
 import type { ControlRepository } from "@space/db";
 import { makeSpaceId, nowIso, SpaceConflictError, type SpaceStore } from "@space/runtime";
+import type { PluginsService } from "./plugins-service.js";
 
 /** Who runs a Space Control action; defined here so space-control.ts and this module do not import each other. */
 export interface ControlActor {id:string; role:AuthUser["role"]; dotId?:string}
@@ -119,7 +120,7 @@ export async function restoreControlSettingsSnapshot(input: {
   input: Record<string, unknown>;
   repository: ControlRepository;
   store?: SpaceStore;
-  pluginsService?: any;
+  pluginsService?: Pick<PluginsService, "getPlugins" | "connectPlugin" | "disconnectPlugin">;
 }) {
   const parsed = controlRollbackSchema.parse(input.input);
   if (!parsed.confirm) {
@@ -129,8 +130,9 @@ export async function restoreControlSettingsSnapshot(input: {
   let targetSnapshotId = parsed.snapshotId;
   if (!targetSnapshotId) {
     const latestPointer = await input.repository.get("settings_snapshot", input.actor.id, "latest");
-    if (latestPointer?.value && typeof (latestPointer.value as any).snapshotId === "string") {
-      targetSnapshotId = (latestPointer.value as any).snapshotId;
+    const latestId = (latestPointer?.value as { snapshotId?: unknown } | undefined)?.snapshotId;
+    if (latestPointer?.value && typeof latestId === "string") {
+      targetSnapshotId = latestId;
     }
   }
 
@@ -180,7 +182,7 @@ export async function executeControlPluginAction(input: {
   roomId: string;
   input: Record<string, unknown>;
   repository: ControlRepository;
-  pluginsService?: any;
+  pluginsService?: Pick<PluginsService, "getPlugins" | "connectPlugin" | "disconnectPlugin">;
 }) {
   const parsed = controlPluginActionSchema.parse(input.input);
   const { pluginId, enabled } = parsed;
@@ -198,9 +200,9 @@ export async function executeControlPluginAction(input: {
         pluginState = { ...disconnected };
       } else {
         const plugins = await input.pluginsService.getPlugins();
-        const existing = plugins.find((p: any) => p.id === pluginId);
-        if (existing?.authType === "none" || !existing?.authFields?.some((f: any) => f.required)) {
-          const connected = await input.pluginsService.connectPlugin({ pluginId });
+        const existing = plugins.find((p) => p.id === pluginId);
+        if (existing?.authType === "none" || !existing?.authFields?.some((f) => f.required)) {
+          const connected = await input.pluginsService.connectPlugin({ pluginId, credentials: {} });
           pluginState = { ...connected };
         } else if (existing?.connection?.status === "CONNECTED") {
           pluginState = { ...existing.connection };
@@ -212,8 +214,8 @@ export async function executeControlPluginAction(input: {
           };
         }
       }
-    } catch (err: any) {
-      throw new SpaceConflictError(`Plugin operation failed: ${err?.message || String(err)}`);
+    } catch (err) {
+      throw new SpaceConflictError(`Plugin operation failed: ${(err as Error)?.message || String(err)}`);
     }
   }
 
@@ -247,7 +249,7 @@ export async function executeControlAppearanceAction(input: {
   roomId: string;
   input: Record<string, unknown>;
   repository: ControlRepository;
-  clientAction?: (actor: ControlActor, roomId: string, action: ControlAction) => Promise<any>;
+  clientAction?: (actor: ControlActor, roomId: string, action: ControlAction) => Promise<{ status?: string; evidence?: unknown }>;
 }) {
   const preferences = controlAppearancePatchSchema.parse(input.input);
 
@@ -288,7 +290,7 @@ export async function executeControlAppearanceAction(input: {
           }
         };
       }
-    } catch {}
+    } catch { /* Client dispatch failed: the persisted-only result below is returned. */ }
   }
 
   return {

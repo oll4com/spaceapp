@@ -216,13 +216,12 @@ describe("Nous's helpers (space_subagents)", () => {
 
   it("audits a helper's call in the conversation with its subagent id and the parent turn id", async () => {
     const repository = new InMemoryNousRepository();
-    let service!: ReturnType<typeof createNousService>;
     const runner: NousRunner = async (input) => {
       expect(service.turnContext(owner, input.turnId)).toMatchObject({ deadline: expect.any(Number), signal: expect.any(AbortSignal) });
       await service.callTool(owner, input.turnId, "space_world", {}, "toolu_helper", { subagentId: "nous_helper:abc123", title: "Check Alex" });
       return { text: "Done.", isError: false };
     };
-    service = createNousService({ repository, runner, tools: { execute: vi.fn(async () => ({ ok: true, display: "Looked at everything", result: "# The world now" })) } as never,
+    const service = createNousService({ repository, runner, tools: { execute: vi.fn(async () => ({ ok: true, display: "Looked at everything", result: "# The world now" })) } as never,
       world: async () => ({ text: "# The world now", overview: {} as never }),
       settings: async () => ({ enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false }), saveSettings: async (_owner, value) => value,
       notifications: { raise: vi.fn(async () => ({}) as never), resolve: vi.fn(async () => {}) }, executeAction: vi.fn() });

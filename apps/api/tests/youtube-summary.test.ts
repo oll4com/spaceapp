@@ -2,6 +2,7 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { YOUTUBE_SUMMARY_PROMPT_CHARS } from "@space/contracts";
 import { captionsText, youtubeCaptions, youtubeVideoText } from "../src/youtube-summary.js";
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -33,8 +34,24 @@ describe("YouTube summary", () => {
     expect(await call("jNQXAC9IVRw")).toEqual({ text: "0:00 Gemini heard this.", model: "gemini-3.8-flash-tiered" });
     captions.mockRejectedValueOnce(new Error("yt-dlp failed"));
     expect((await call("2rBRIhFPaYQ")).model).toBe("gemini-3.8-flash-tiered");
-    await call("2rBRIhFPaYQ", "summary");
     expect(captions).toHaveBeenCalledTimes(3);
+  });
+
+  it("summarizes from the captions as text when they fit the gateway's prompt, and watches the video otherwise (plan clipboard:nsWKwUFhUFWA slice 7)", async () => {
+    const fetchImpl = vi.fn(async () => json({ text: "About a Wednesday." }));
+    let said: string | null = "0:00 Καλή Τετάρτη σε όλους.";
+    const call = () => youtubeVideoText({ gatewayUrl: "http://gw.test", keyFile, videoId: "2rBRIhFPaYQ", kind: "summary", captions: async () => said,
+      fetchImpl: fetchImpl as unknown as typeof fetch });
+    const sent = () => JSON.parse(String((fetchImpl.mock.calls.at(-1) as unknown as [string, RequestInit])[1].body)) as { prompt: string; videoUrl?: string };
+    expect(await call()).toEqual({ text: "About a Wednesday.", model: "gemini-3.8-flash-tiered" });
+    expect(sent().videoUrl).toBeUndefined();
+    expect(sent().prompt).toMatch(/^Summarize this YouTube video from its captions below[^]*Write in English\.\n\nCaptions:\n0:00 Καλή Τετάρτη σε όλους\.$/);
+    said = "0:00 word ".repeat(YOUTUBE_SUMMARY_PROMPT_CHARS / 10);
+    await call();
+    expect(sent()).toMatchObject({ videoUrl: "https://www.youtube.com/watch?v=2rBRIhFPaYQ", prompt: expect.stringMatching(/^Summarize this YouTube video for/) });
+    said = null;
+    await call();
+    expect(sent().videoUrl).toBe("https://www.youtube.com/watch?v=2rBRIhFPaYQ");
   });
 
   it("turns json3 captions into timed paragraphs and runs the engine's captions op in a work dir it removes", async () => {

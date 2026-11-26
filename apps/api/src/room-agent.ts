@@ -39,7 +39,8 @@ import {
 import { roomMissionSnapshot } from "./room-mission-snapshot.js";
 import { resolveMissionControlTarget, assertMissionControlOwner, activeMissionStatuses, type RoomMissionControlTarget } from "./room-mission-control.js";
 import { gatewayRequestIdHeader } from "./gateway-request-id.js";
-import { codexServiceRoot, createCachedModelSelection, GATEWAY_CLAUDE_MODEL, resolveAdvancedMissionModel, runOpenCodeText, type AdvancedMissionModelSelection } from "./room-agent-model-resolver.js";
+import { codexServiceRoot, createCachedModelSelection, resolveAdvancedMissionModel, runOpenCodeText, type AdvancedMissionModelSelection } from "./room-agent-model-resolver.js";
+import { createGatewayFallback } from "./gateway-fallback.js";
 import { roomAgentTimeline, withRoomAgentEvents, type RoomAgentChat } from "./room-agent-chat.js";
 import { parseRoomAgentMention, parseSpaceControlQuick } from "./space-control-quick.js";
 import { recordWorkflowStart } from "./api-metrics.js";
@@ -267,10 +268,12 @@ export function createRoomAgentWorkflowCoordinator(options: {
 }
 
 /**
- * One answer from the Room Agent's model tier: the injected command, the Space Gateway's chat completions, Claude through
- * the Gateway, then OpenCode run. Null when no model answered in time. Used by the autopilot; the conversation streams through
+ * One answer from the Room Agent's model tier: the injected command, Space Gateway's Codex pool (CODEX tier) and free pools
+ * (`createGatewayFallback`), then OpenCode run. Null when no model answered in time. Used by the autopilot; the conversation streams through
  * room-agent-chat.ts.
  */
+const askRoomAgentGateway = createGatewayFallback();
+
 export async function completeRoomAgentPrompt(input: {
   systemPrompt: string;
   content: string;
@@ -297,41 +300,13 @@ export async function completeRoomAgentPrompt(input: {
   const apiKey = root ? await import("node:fs/promises").then((fs) => fs.readFile(keyFile, "utf8")).then((text) => text.trim() || null, () => null) : null;
   const headers = { "Content-Type": "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}), ...gatewayRequestIdHeader(input.traceId) };
 
-  if (modelSelection.tier === "CODEX" && root) {
-    try {
-      const bareModel = modelSelection.modelId.replace(/^codex\//, "");
-      const res = await fetch(`${root}/v1/chat/completions`, {
-        method: "POST",
-        headers,
-        // The whole budget: the model often needs 11-39 s, and a 10 s cap ended as "no model could decide this prompt".
-        signal: AbortSignal.timeout(timeoutMs),
-        body: JSON.stringify({ model: bareModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content }] })
-      });
-      if (res.ok) {
-        const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-        const reply = data.choices?.[0]?.message?.content?.trim();
-        if (reply) return reply;
-      }
-    } catch {}
-  }
-
-  // Claude's subscription route next (never the API-key route): with every Codex week spent (5/11) each autopilot decision
-  // ended "no model could decide this prompt" while Claude served, and OpenCode's run outlasted the pane's 2-minute prompt.
+  // Codex for the CODEX tier, then the free pools, then OpenCode: Claude's subscription refuses every call that is not Claude Code (20/11, M6).
   if (root) {
-    try {
-      const res = await fetch(`${root}/v1/messages`, {
-        method: "POST",
-        headers: { ...headers, "anthropic-version": "2023-06-01" },
-        signal: AbortSignal.timeout(timeoutMs),
-        // max_tokens is required by the Messages API; the answer is one short JSON decision.
-        body: JSON.stringify({ model: GATEWAY_CLAUDE_MODEL, max_tokens: 4096, system: systemPrompt, messages: [{ role: "user", content }] })
-      });
-      if (res.ok) {
-        const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> };
-        const reply = data.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("").trim();
-        if (reply) return reply;
-      }
-    } catch { /* unreachable or timed out: OpenCode next */ }
+    // Each route gets the whole budget: the model often needs 11-39 s, and a 10 s cap ended as "no model could decide this prompt".
+    const message = await askRoomAgentGateway({ root, headers, timeoutMs, codexModel: modelSelection.tier === "CODEX" ? modelSelection.modelId.replace(/^codex\//, "") : null,
+      body: { messages: [{ role: "system", content: systemPrompt }, { role: "user", content }] } }).catch(() => null);
+    const reply = typeof message?.content === "string" ? message.content.trim() : "";
+    if (reply) return reply;
   }
 
   const output = await runOpenCode(modelSelection.modelId, prompt, timeoutMs).catch(() => null);

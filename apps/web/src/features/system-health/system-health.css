@@ -581,12 +581,15 @@
   color: var(--health-muted);
   margin-top: 24px !important;
 }
+/* Sized by the panel, not the viewport: the Resources dock is ~480px wide on any screen. */
 .health-services-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+  align-items: start;
   gap: 14px;
 }
 .health-service-card {
+  min-width: 0;
   padding: 18px;
   border: 1px solid var(--health-border);
   border-top: 2px solid var(--health-tone);
@@ -606,7 +609,6 @@
   font-size: 12px;
   color: var(--health-muted);
   margin-top: 8px;
-  min-height: 36px;
 }
 .health-service-card > small {
   display: block;
@@ -614,21 +616,31 @@
   color: var(--health-muted);
   margin-top: 18px;
 }
+/* One label column for every row: labels stay on one line, long values (pane ids) end in an ellipsis with the full text as title. */
 .health-service-card dl {
+  display: grid;
+  grid-template-columns: fit-content(50%) minmax(0, 1fr);
+  column-gap: 12px;
   margin: 14px 0 0;
+  font-size: 11px;
 }
 .health-service-card dl > div {
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  font-size: 11px;
+  display: contents;
+}
+.health-service-card dt,
+.health-service-card dd {
+  min-width: 0;
+  margin: 0;
   padding: 5px 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .health-service-card dt {
   color: var(--health-muted);
 }
 .health-service-card dd {
-  margin: 0;
+  font-variant-numeric: tabular-nums;
 }
 .health-issue-list {
   display: grid;
@@ -810,8 +822,14 @@
   margin-right: auto;
   color: var(--health-muted);
 }
+/* Fits the ~480px Resources dock without a sideways scroll: the hint wraps, the inputs shrink to 64px. */
 .health-thresholds input {
-  width: 100px;
+  width: 100%;
+  min-width: 64px;
+  max-width: 100px;
+}
+.health-thresholds td small {
+  white-space: normal;
 }
 .health-thresholds footer {
   display: flex;
@@ -1432,9 +1450,6 @@ body:has(.health-resources) .health-indicator-rail {
   .health-overview-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  .health-services-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
   .health-performance-layout {
     grid-template-columns: 165px minmax(0, 1fr);
     gap: 16px;
@@ -1546,9 +1561,6 @@ body:has(.health-resources) .health-indicator-rail {
   }
 }
 @media (max-width: 450px) {
-  .health-services-grid {
-    grid-template-columns: 1fr;
-  }
   .health-navigation > button {
     flex-direction: column;
     gap: 4px;
@@ -3039,6 +3051,7 @@ body:has(.health-resources) .room-toolbar-collapsed { visibility: hidden; }
 /* One Resources surface: compact overview, in-place details, optional expansion. */
 .health-modal-backdrop:has(.resources-unified) {
   background: transparent;
+  backdrop-filter: none;
   pointer-events: none;
   display: flex;
   justify-content: flex-end;

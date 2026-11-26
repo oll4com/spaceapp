@@ -6,7 +6,7 @@ import { AccountPool, type StoredCredentials } from "../src/accounts/account-poo
 import { antigravityAccountActions, registerAntigravitySignInRoutes } from "../src/admin/antigravity-sign-in.js";
 import { createCredentialCipher } from "../src/credential-cipher.js";
 import { registerAntigravityProxyRoutes, type AntigravityProxyOptions } from "../src/providers/antigravity/antigravity-proxy.js";
-import { parseQuotaSummary, quotaGroupForModel } from "../src/providers/antigravity/code-assist.js";
+import { antigravityModelRequiresPaidPlan, fetchQuotaSummary, parseQuotaSummary, quotaGroupForModel } from "../src/providers/antigravity/code-assist.js";
 import { parseAntigravityTokenFile } from "../src/providers/antigravity/oauth.js";
 import { CodeAssistStreamInspector, parseResetsIn } from "../src/providers/antigravity/stream.js";
 import { CompressionCache, RawBlockRegistry } from "../src/compression/engine.js";
@@ -84,7 +84,7 @@ it("correlates pooled and passthrough Antigravity CLI calls with the Gateway API
 });
 
 describe("Antigravity helpers", () => {
-  it("reads the CLI sign-in file, quota groups, reset hints and the model's quota group", () => {
+  it("reads the CLI sign-in file, quota groups, reset hints and the model's quota group", async () => {
     const idToken = `x.${Buffer.from(JSON.stringify({ email: "a@example.com", sub: "sub-a" })).toString("base64url")}.y`;
     expect(parseAntigravityTokenFile(JSON.stringify({ token: { access_token: "at", refresh_token: "rt", expiry: "2030-01-10T01:00:00Z" }, id_token: idToken })))
       .toEqual({ accessToken: "at", refreshToken: "rt", expiresAtMs: Date.parse("2030-01-10T01:00:00Z"), email: "a@example.com", subject: "sub-a" });
@@ -96,16 +96,43 @@ describe("Antigravity helpers", () => {
       { displayName: "Claude and GPT models", buckets: [{ bucketId: "3p-5h", remainingFraction: 1 }] }
     ] })).toEqual({
       gemini: { fiveHourUsedPercent: 75, fiveHourResetAt: "2030-01-10T05:00:00Z", weeklyUsedPercent: 10, weeklyResetAt: null },
-      claude: { fiveHourUsedPercent: 0, fiveHourResetAt: null, weeklyUsedPercent: null, weeklyResetAt: null }
+      claude: { fiveHourUsedPercent: 0, fiveHourResetAt: null, weeklyUsedPercent: null, weeklyResetAt: null },
+      argon: { fiveHourUsedPercent: null, fiveHourResetAt: null, weeklyUsedPercent: null, weeklyResetAt: null }
     });
+    const parsedWithArgon = parseQuotaSummary({ groups: [
+      { displayName: "Gemini 4 Argon", buckets: [{ bucketId: "gemini-argon-wtu-weekly", window: "weekly", remainingFraction: 0, resetTime: "2030-01-12T00:00:00Z" }] },
+      { displayName: "Gemini Models", buckets: [{ bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.99, resetTime: "2030-01-15T00:00:00Z" }] }
+    ] });
+    expect(parsedWithArgon.gemini).toEqual({ fiveHourUsedPercent: null, fiveHourResetAt: null, weeklyUsedPercent: 1, weeklyResetAt: "2030-01-15T00:00:00Z" });
+    expect(parsedWithArgon.argon).toEqual({ fiveHourUsedPercent: null, fiveHourResetAt: null, weeklyUsedPercent: 100, weeklyResetAt: "2030-01-12T00:00:00Z" });
     expect(parseQuotaSummary(
       { groups: [{ displayName: "Claude and GPT models", buckets: [{ bucketId: "3p-5h", remainingFraction: 1 }] }] },
       { buckets: [{ modelId: "gemini-3.8-flash-tiered", remainingFraction: 0.962, resetTime: "2030-01-10T04:00:00Z" }] },
       Date.parse("2030-01-10T00:00:00Z")
     ).gemini).toEqual({ fiveHourUsedPercent: 3.8, fiveHourResetAt: "2030-01-10T04:00:00Z", weeklyUsedPercent: null, weeklyResetAt: null });
+    const agents: string[] = [];
+    await fetchQuotaSummary("at", "project-a", { fetchImpl: (async (_url: string, init: RequestInit) => {
+      agents.push((init.headers as Record<string, string>)["user-agent"]);
+      return new Response(JSON.stringify({ groups: [] }));
+    }) as typeof fetch });
+    expect(agents[0]).toMatch(/^antigravity\/cli\/\d+\.\d+\.\d+$/);
     expect(parseResetsIn("Individual quota reached. Resets in 4h3m17s.")).toBe(4 * 3600 + 3 * 60 + 17);
     expect(quotaGroupForModel("claude-opus-5-5-high")).toBe("claude");
     expect(quotaGroupForModel("gemini-3.8-flash-high")).toBe("gemini");
+    expect(quotaGroupForModel("gemini-4-argon-high")).toBe("argon");
+    // Operator 22/11 c74c7453: Gemini 4 Neon draws on the Gemini group (Google reports no Neon group), never on Argon's.
+    expect(quotaGroupForModel("gemini-4-neon-high")).toBe("gemini");
+    expect(quotaGroupForModel("gemini-pro-orchestrator-g1-pro")).toBe("argon");
+    expect(antigravityModelRequiresPaidPlan("gemini-4-argon-high")).toBe(true);
+    expect(antigravityModelRequiresPaidPlan("gemini-4-hydrogen-high")).toBe(true);
+    expect(antigravityModelRequiresPaidPlan("gemini-4-neon-high")).toBe(true);
+    expect(antigravityModelRequiresPaidPlan("claude-opus-5-5-high")).toBe(true);
+    expect(antigravityModelRequiresPaidPlan("claude-sonnet-5-5-medium")).toBe(true);
+    expect(antigravityModelRequiresPaidPlan("gemini-pro-orchestrator-g1-pro")).toBe(true);
+    expect(antigravityModelRequiresPaidPlan("gemini-4-hydrogen-sonar")).toBe(false);
+    expect(antigravityModelRequiresPaidPlan("gemini-3.8-flash-high")).toBe(false);
+    expect(antigravityModelRequiresPaidPlan("claude-sonnet-4-6")).toBe(false);
+    expect(antigravityModelRequiresPaidPlan("gpt-oss-120b-medium")).toBe(false);
     const inspector = new CodeAssistStreamInspector();
     inspector.push(new TextEncoder().encode(`data: ${JSON.stringify({ error: { code: 429, message: "quota" } })}\n\n`));
     expect(inspector).toMatchObject({ outputStarted: false, errorStatus: 429 });
@@ -179,6 +206,23 @@ describe("Antigravity proxy", () => {
     expect(await repository.listRequestLogs({ limit: 5 })).toEqual([expect.objectContaining({ project: "nous", accountId: accountA })]);
   });
 
+  it("keeps a previously verified pooled token working if tokeninfo fails after the 10-minute cache window", async () => {
+    let clock = nowMs;
+    let tokenInfoUp = true;
+    const { app, calls } = await setup(() => reply("pooled"), {
+      now: () => clock,
+      verifyIdentity: async (token) => (tokenInfoUp && token === "client-a-token" ? { subject: "sub-a", email: "a@example.com", clientId: null } : null)
+    });
+    const headers = { authorization: "Bearer client-a-token", "content-type": "application/json", "x-space-gateway-require-pool": "true", "x-space-project": "nous-operator" };
+    expect((await app.inject({ method: "POST", url: "/antigravity/v1internal:generateContent", headers, payload: JSON.stringify(generate()) })).statusCode).toBe(200);
+    // 10m01s later (mid-turn), tokeninfo fails or the client token expired, but the already-verified token stays pooled instead of failing with 403.
+    clock += 10 * 60_000 + 1_000;
+    tokenInfoUp = false;
+    expect((await app.inject({ method: "POST", url: "/antigravity/v1internal:generateContent", headers, payload: JSON.stringify(generate()) })).statusCode).toBe(200);
+    expect(calls).toHaveLength(2);
+    await app.close();
+  });
+
   it("tags a pane CLI's calls with the pane its base URL names, and sends the path upstream without it", async () => {
     const { post, calls, logs, repository } = await setup(() => reply("pooled"));
     expect((await post("/project/pane:abc_DEF-1/v1internal:streamGenerateContent?alt=sse", generate())).statusCode).toBe(200);
@@ -241,6 +285,24 @@ describe("Antigravity proxy", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("takes an account Google disabled for Terms of Service out of rotation and logs why the last call failed (25/11)", async () => {
+    const tosError = () => json({ error: { code: 403, message: "This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.",
+      status: "PERMISSION_DENIED" } }, 403);
+    const { post, calls, repository } = await setup((token) => (token === "token-a" ? tosError() : reply("from b")));
+    expect((await post("/v1internal:streamGenerateContent?alt=sse", generate())).body).toContain("from b");
+    const a = (await repository.listAccounts()).find((account) => account.id === accountA)!;
+    expect(a).toMatchObject({ status: "DEACTIVATED", statusReason: "Account has been suspended" });
+    await post("/v1internal:streamGenerateContent?alt=sse", { ...generate(), request: { contents: [], sessionId: "session-2" } });
+    expect(calls.map((call) => call.token)).toEqual(["token-a", "token-b", "token-b"]);
+
+    const both = await setup(() => tosError());
+    expect((await both.post("/v1internal:streamGenerateContent?alt=sse", generate())).statusCode).toBe(403);
+    await both.logs.flush();
+    const [last] = await both.repository.listRequestLogs({ limit: 1 });
+    expect(last).toMatchObject({ status: "error", errorCode: "http_403" });
+    expect(last!.errorMessage).toContain("violation of Terms of Service");
+  });
+
   it("passes account calls, and clients outside the pool, through with the client's own sign-in", async () => {
     const { post, calls, app, logs, repository } = await setup((_token, path) => (path.includes("loadCodeAssist") ? json({ cloudaicompanionProject: "project-a" }) : reply("own account")));
     const response = await post("/v1internal:loadCodeAssist", { metadata: {} });
@@ -258,6 +320,16 @@ describe("Antigravity proxy", () => {
       model: "gemini-3.8-flash-high", inputTokens: 1200, outputTokens: 7, reasoningTokens: 3, status: "success", clientName: expect.any(String) })]);
   });
 
+  it("passes an account switched off through with its own sign-in and project, never another pool account's (25/11)", async () => {
+    const { post, calls, repository, pool, app } = await setup(() => reply("own account"));
+    await repository.setAccountStatus(accountA, "PAUSED", "Paused by an administrator.");
+    pool.invalidate();
+    const own = await post("/v1internal:streamGenerateContent?alt=sse", { ...generate(), project: "own-project" });
+    expect(own.body).toContain("own account");
+    expect(calls).toEqual([expect.objectContaining({ token: "client-a-token", body: expect.objectContaining({ project: "own-project" }) })]);
+    await app.close();
+  });
+
   it("lists a pooled client's models from a pool account, a stranger's from its own (3/11: Claude Opus 4.6 retired on the pool only)", async () => {
     const { post, calls, app } = await setup((token) => json({ models: { [token === "client-a-token" || token === "stranger" ? "claude-opus-4-6-thinking" : "claude-opus-5-5-high"]: {} } }));
     const pooled = await post("/v1internal:fetchAvailableModels", { project: "own-project" });
@@ -266,6 +338,201 @@ describe("Antigravity proxy", () => {
     const stranger = await post("/v1internal:fetchAvailableModels", { project: "project-x" }, "stranger");
     expect(stranger.json()).toEqual({ models: { "claude-opus-4-6-thinking": {} } });
     expect(calls[1]).toMatchObject({ token: "stranger", body: { project: "project-x" } });
+    await app.close();
+  });
+
+  it("routes fetchAvailableModels and Pro-only models through paid accounts even when a free account has lower usage or owns the sticky session", async () => {
+    const { post, calls, repository, pool, app } = await setup((token, path) => {
+      if (path.includes("fetchAvailableModels")) {
+        return json({ models: token === "token-a" ? { "gemini-3.8-flash-high": {} } : { "gemini-4-argon-high": {}, "gemini-3.8-flash-high": {} } });
+      }
+      return token === "token-a" ? json({ error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } }, 404) : reply("PRO_OK");
+    });
+    const a = (await repository.listAccounts()).find((item) => item.id === accountA)!;
+    await repository.upsertAccount({
+      accountId: a.id, provider: "ANTIGRAVITY", label: a.label, email: a.email, externalAccountId: a.externalAccountId,
+      planType: "free", credentialsEncrypted: a.credentialsEncrypted, credentialsExpiresAt: null, source: "PROFILE_ADOPTION", sourceRef: "a", lastRefreshAt: null
+    });
+    await repository.saveUsageWindows(accountA, [
+      { quotaKey: "gemini", window: "PRIMARY", usedPercent: 0, resetAt: null, windowMinutes: 300 },
+      { quotaKey: "claude", window: "PRIMARY", usedPercent: 0, resetAt: null, windowMinutes: 300 }
+    ]);
+    pool.invalidate();
+
+    // fetchAvailableModels must use the paid account (token-b) so the CLI lists gemini-4-argon-high, even when the paid account's quota is at 100%.
+    await repository.saveUsageWindows(accountB, [
+      { quotaKey: "gemini", window: "PRIMARY", usedPercent: 100, resetAt: "2030-01-10T05:00:00Z", windowMinutes: 300 },
+      { quotaKey: "claude", window: "PRIMARY", usedPercent: 100, resetAt: "2030-01-10T05:00:00Z", windowMinutes: 300 }
+    ]);
+    pool.invalidate();
+    const models = await post("/v1internal:fetchAvailableModels", { project: "own-project" });
+    expect(models.json()).toEqual({ models: { "gemini-4-argon-high": {}, "gemini-3.8-flash-high": {} } });
+    expect(calls[0]).toMatchObject({ token: "token-b", body: { project: "project-b" } });
+
+    await repository.saveUsageWindows(accountB, [
+      { quotaKey: "gemini", window: "PRIMARY", usedPercent: 40, resetAt: "2030-01-10T05:00:00Z", windowMinutes: 300 },
+      { quotaKey: "claude", window: "PRIMARY", usedPercent: 40, resetAt: "2030-01-10T05:00:00Z", windowMinutes: 300 }
+    ]);
+    pool.invalidate();
+
+    // Even if a session was previously sticky to the free account (accountA), switching to gemini-4-argon-high routes to the paid account (accountB).
+    const argon = await post("/v1internal:streamGenerateContent?alt=sse", generate("gemini-4-argon-high"));
+    expect(argon.statusCode).toBe(200);
+    expect(argon.body).toContain("PRO_OK");
+    expect(calls[1]).toMatchObject({ token: "token-b", body: { project: "project-b", model: "gemini-4-argon-high" } });
+    await app.close();
+  });
+
+  it("unpins a session stuck on a free account that lacks claude-opus-5-5-high and keeps the Pro catalog on fetchAvailableModels refreshes (Max)", async () => {
+    const { post, calls, repository, pool, app } = await setup((token, path, body) => {
+      if (path.includes("fetchAvailableModels")) {
+        return json({
+          models: token === "token-a"
+            ? { "claude-opus-4-6-thinking": {}, "gemini-3.8-flash-high": {} }
+            : { "claude-opus-5-5-high": {}, "gemini-4-argon-high": {}, "gemini-3.8-flash-high": {} }
+        });
+      }
+      if (token === "token-a" && body?.model === "claude-opus-5-5-high") {
+        return json({ error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } }, 404);
+      }
+      return reply(token === "token-b" ? "OPUS_PRO_OK" : "FREE_OK");
+    });
+    const [a, b] = await Promise.all([
+      repository.listAccounts().then((items) => items.find((item) => item.id === accountA)!),
+      repository.listAccounts().then((items) => items.find((item) => item.id === accountB)!)
+    ]);
+    await repository.upsertAccount({
+      accountId: a.id, provider: "ANTIGRAVITY", label: a.label, email: a.email, externalAccountId: a.externalAccountId,
+      planType: "free", credentialsEncrypted: a.credentialsEncrypted, credentialsExpiresAt: null, source: "PROFILE_ADOPTION", sourceRef: "a", lastRefreshAt: null
+    });
+    await repository.upsertAccount({
+      accountId: b.id, provider: "ANTIGRAVITY", label: b.label, email: b.email, externalAccountId: b.externalAccountId,
+      planType: "google-ai-pro", credentialsEncrypted: b.credentialsEncrypted, credentialsExpiresAt: null, source: "PROFILE_ADOPTION", sourceRef: "b", lastRefreshAt: null
+    });
+    // Pin session-1 to the free account first while the Pro account is temporarily exhausted on gemini.
+    await repository.saveUsageWindows(accountA, [
+      { quotaKey: "gemini", window: "PRIMARY", usedPercent: 0, resetAt: null, windowMinutes: 300 },
+      { quotaKey: "claude", window: "PRIMARY", usedPercent: 100, resetAt: "2030-01-16T00:00:00Z", windowMinutes: 300 },
+      { quotaKey: "claude", window: "SECONDARY", usedPercent: 0, resetAt: "2030-01-16T00:00:00Z", windowMinutes: 10080 }
+    ]);
+    await repository.saveUsageWindows(accountB, [
+      { quotaKey: "gemini", window: "PRIMARY", usedPercent: 100, resetAt: "2030-01-10T05:00:00Z", windowMinutes: 300 },
+      { quotaKey: "claude", window: "PRIMARY", usedPercent: 2, resetAt: "2030-01-10T05:00:00Z", windowMinutes: 300 },
+      { quotaKey: "claude", window: "SECONDARY", usedPercent: 1, resetAt: "2030-01-16T00:00:00Z", windowMinutes: 10080 }
+    ]);
+    pool.invalidate();
+    const pinned = await post("/v1internal:streamGenerateContent?alt=sse", generate("gemini-3.8-flash-high"));
+    expect(pinned.statusCode).toBe(200);
+    expect(calls[0]).toMatchObject({ token: "token-a", body: { project: "project-a", model: "gemini-3.8-flash-high" } });
+
+    // Switching the pinned session to claude-opus-5-5-high bypasses the free account (never hitting 404) and moves sticky to the Pro account.
+    const opus = await post("/v1internal:streamGenerateContent?alt=sse", generate("claude-opus-5-5-high"));
+    expect(opus.statusCode).toBe(200);
+    expect(opus.body).toContain("OPUS_PRO_OK");
+    expect(calls[1]).toMatchObject({ token: "token-b", body: { project: "project-b", model: "claude-opus-5-5-high" } });
+
+    // Periodic 6-minute fetchAvailableModels refreshes still read from the Pro account so claude-opus-5-5-high never becomes MODEL_PLACEHOLDER_M402.
+    const refreshed = await post("/v1internal:fetchAvailableModels", { project: "project-a" });
+    expect(refreshed.json()).toEqual({ models: { "claude-opus-5-5-high": {}, "gemini-4-argon-high": {}, "gemini-3.8-flash-high": {} } });
+    expect(calls[2]).toMatchObject({ token: "token-b", body: { project: "project-b" } });
+    await app.close();
+  });
+
+  it("moves a session pinned to a free account with a 166h weekly quota error to a Pro account at 1-3% without cycling through other free accounts (Emma)", async () => {
+    const weeklyQuotaError = () => json({
+      error: {
+        code: 429,
+        message: "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 166h59m16s.",
+        status: "RESOURCE_EXHAUSTED"
+      }
+    }, 429);
+    let freeExhausted = false;
+    const { post, calls, repository, pool, app } = await setup((token) => {
+      if (token.startsWith("token-free") || (token === "token-a" && freeExhausted)) return weeklyQuotaError();
+      return reply(token === "token-b" ? "PRO_FLASH_OK" : "FREE_FLASH_OK");
+    });
+    const [a, b] = await Promise.all([
+      repository.listAccounts().then((items) => items.find((item) => item.id === accountA)!),
+      repository.listAccounts().then((items) => items.find((item) => item.id === accountB)!)
+    ]);
+    await repository.upsertAccount({
+      accountId: a.id, provider: "ANTIGRAVITY", label: a.label, email: a.email, externalAccountId: a.externalAccountId,
+      planType: "free", credentialsEncrypted: a.credentialsEncrypted, credentialsExpiresAt: null, source: "PROFILE_ADOPTION", sourceRef: "a", lastRefreshAt: null
+    });
+    await repository.upsertAccount({
+      accountId: b.id, provider: "ANTIGRAVITY", label: b.label, email: b.email, externalAccountId: b.externalAccountId,
+      planType: "google-ai-pro", credentialsEncrypted: b.credentialsEncrypted, credentialsExpiresAt: null, source: "PROFILE_ADOPTION", sourceRef: "b", lastRefreshAt: null
+    });
+    // Add four more free accounts so the pool has 5 free accounts and 1 Pro account, matching live public-host.
+    for (const idx of ["1", "2", "3", "4"]) {
+      const freeId = `gw_account:${idx.repeat(32)}`;
+      const creds: StoredCredentials = { accessToken: `token-free-${idx}`, refreshToken: "rt", idToken: null, upstreamAccountId: `project-free-${idx}`, accessExpiresAtMs: null };
+      await repository.upsertAccount({
+        accountId: freeId, provider: "ANTIGRAVITY", label: `free${idx}@example.com`, email: `free${idx}@example.com`, externalAccountId: `sub-free-${idx}`,
+        planType: "free", credentialsEncrypted: cipher.encrypt(JSON.stringify(creds), freeId), credentialsExpiresAt: null,
+        source: "PROFILE_ADOPTION", sourceRef: `free-${idx}`, lastRefreshAt: null
+      });
+      await repository.saveUsageWindows(freeId, [
+        { quotaKey: "gemini", window: "PRIMARY", usedPercent: 100, resetAt: "2030-01-16T22:59:16Z", windowMinutes: 300 },
+        { quotaKey: "gemini", window: "SECONDARY", usedPercent: 99.2, resetAt: "2030-01-16T22:59:16Z", windowMinutes: 10080 }
+      ]);
+    }
+    // Pin session-1 to accountA (free) while accountB (Pro) is temporarily at 100%, then restore accountB (Pro) to 2% used.
+    await repository.saveUsageWindows(accountA, [{ quotaKey: "gemini", window: "SECONDARY", usedPercent: 10, resetAt: "2030-01-16T00:00:00Z", windowMinutes: 10080 }]);
+    await repository.saveUsageWindows(accountB, [{ quotaKey: "gemini", window: "PRIMARY", usedPercent: 100, resetAt: "2030-01-10T05:00:00Z", windowMinutes: 300 }]);
+    pool.invalidate();
+    expect((await post("/v1internal:streamGenerateContent?alt=sse", generate("gemini-3.8-flash-high"))).body).toContain("FREE_FLASH_OK");
+    expect(calls[0]).toMatchObject({ token: "token-a", body: { project: "project-a" } });
+
+    // Pro account sits at 1-3% while the pinned free account hits "Individual quota reached ... Resets in 166h59m16s".
+    freeExhausted = true;
+    await repository.saveUsageWindows(accountB, [
+      { quotaKey: "gemini", window: "PRIMARY", usedPercent: 2, resetAt: "2030-01-10T05:00:00Z", windowMinutes: 300 },
+      { quotaKey: "gemini", window: "SECONDARY", usedPercent: 1, resetAt: "2030-01-16T00:00:00Z", windowMinutes: 10080 }
+    ]);
+    pool.invalidate();
+
+    const failovered = await post("/v1internal:streamGenerateContent?alt=sse", generate("gemini-3.8-flash-high"));
+    expect(failovered.statusCode).toBe(200);
+    expect(failovered.body).toContain("PRO_FLASH_OK");
+    // Fails over directly from the sticky free account (token-a) to the Pro account (token-b) without touching the other 4 free accounts.
+    expect(calls.slice(1).map((call) => call.token)).toEqual(["token-a", "token-b"]);
+    const updatedA = (await repository.listAccounts()).find((item) => item.id === accountA)!;
+    const expectedReset = new Date(nowMs + (166 * 3600 + 59 * 60 + 16) * 1000).toISOString();
+    expect(updatedA.quotaGroups?.find((g) => g.key === "gemini")).toMatchObject({
+      primaryWindow: { usedPercent: 100, resetAt: expectedReset },
+      secondaryWindow: { usedPercent: 100, resetAt: expectedReset }
+    });
+
+    // Subsequent turns (even if retrieveUserQuota later reports 99.2% weekly on the free account) go straight to the Pro account.
+    await repository.saveUsageWindows(accountA, [
+      { quotaKey: "gemini", window: "PRIMARY", usedPercent: 100, resetAt: expectedReset, windowMinutes: 300 },
+      { quotaKey: "gemini", window: "SECONDARY", usedPercent: 99.2, resetAt: expectedReset, windowMinutes: 10080 }
+    ]);
+    pool.invalidate();
+    const nextTurn = await post("/v1internal:streamGenerateContent?alt=sse", generate("gemini-3.8-flash-high"));
+    expect(nextTurn.statusCode).toBe(200);
+    expect(calls.at(-1)).toMatchObject({ token: "token-b", body: { project: "project-b" } });
+    await app.close();
+  });
+
+  it("automatically hands over from Argon to Hydrogen when Argon limits are reached so no pane gets stuck", async () => {
+    const { post, calls, repository, pool, app } = await setup((token, path, body) => {
+      if (body?.model === "gemini-4-argon-high") {
+        return json({ error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } }, 404);
+      }
+      return reply(body?.model === "gemini-4-hydrogen-high" ? "HYDROGEN_OK" : "DEFAULT_OK");
+    });
+    await repository.saveUsageWindows(accountB, [
+      { quotaKey: "argon", window: "PRIMARY", usedPercent: 100, resetAt: "2030-01-12T00:00:00Z", windowMinutes: 300 },
+      { quotaKey: "gemini", window: "PRIMARY", usedPercent: 20, resetAt: null, windowMinutes: 300 }
+    ]);
+    pool.invalidate();
+
+    const response = await post("/v1internal:streamGenerateContent?alt=sse", generate("gemini-4-argon-high"));
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("HYDROGEN_OK");
+    expect(calls.some((call) => call.body.model === "gemini-4-hydrogen-high")).toBe(true);
     await app.close();
   });
 });

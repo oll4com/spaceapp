@@ -184,7 +184,7 @@ describe("Nous Android app sign-in", () => {
 
   it("limits redeem attempts to 10 per 15 minutes per address", async () => {
     const answers = [];
-    for (let index = 0; index < 11; index += 1) answers.push((await redeem({ app: "nous", code: "x".repeat(43), codeVerifier: pkce().verifier, deviceName: "x" }, "10.200.0.1")).statusCode);
+    for (let index = 0; index < 11; index += 1) answers.push((await redeem({ app: "nous", code: "x".repeat(43), codeVerifier: pkce().verifier, deviceName: "x" }, "10.20.0.1")).statusCode);
     expect(answers.slice(0, 10).every((status) => status === 200)).toBe(true);
     expect(answers[10]).toBe(429);
   });

@@ -140,15 +140,12 @@ describe("browser runtime network guard", () => {
     expect(googleReturnOrigins("https://space.example.com:4911", undefined)).toEqual([]);
   });
 
-  it("allows the Harness origin through the shared browser-host guard path", async () => {
-    await expect(assertSafeBrowserTargetUrl(
-      "http://10.254.240.21:3080/session#latest",
-      "http://127.0.0.1:4911"
-    )).resolves.toBe("http://10.254.240.21:3080/session");
-    await expect(assertSafeBrowserTargetUrl(
-      "http://127.0.0.1:3081/",
-      "http://127.0.0.1:4911"
-    )).rejects.toMatchObject({ errorCode: "BROWSER_TARGET_BLOCKED" });
+  it("allows the Harness origin from SPACE_HARNESS_ORIGIN only, never a built-in private address (review 1.2.1)", async () => {
+    const config = { browserEvidenceTargetOrigin: "http://127.0.0.1:4911", harnessOrigin: "http://10.20.0.21:3080" };
+    await expect(assertSafeBrowserTargetUrl("http://10.20.0.21:3080/session#latest", config)).resolves.toBe("http://10.20.0.21:3080/session");
+    await expect(assertSafeBrowserTargetUrl("http://127.0.0.1:3081/", config)).rejects.toMatchObject({ errorCode: "BROWSER_TARGET_BLOCKED" });
+    await expect(assertSafeBrowserTargetUrl("http://10.20.0.21:3080/session", { ...config, harnessOrigin: "" }))
+      .rejects.toMatchObject({ errorCode: "BROWSER_TARGET_BLOCKED" });
   });
 
   it("bounds and caches DNS checks while rejecting mixed or stalled answers", async () => {

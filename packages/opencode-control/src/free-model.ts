@@ -19,7 +19,14 @@ const probeTimeoutMs = 45_000;
 export interface OpenCodeRunResult { code: number | null; stdout: string; stderr: string }
 export type OpenCodeExecute = (args: string[], options: { env: NodeJS.ProcessEnv; cwd: string; timeoutMs: number; signal?: AbortSignal }) => Promise<OpenCodeRunResult>;
 
-function parseEvents(stdout: string): Array<Record<string, any>> {
+/** The fields of OpenCode's `run --format json` events this file reads; JSON gives no guarantee, so every field is optional. */
+interface OpenCodeEvent {
+  type?: string;
+  part?: { tool?: string; text?: string; state?: { status?: string } };
+  error?: { name?: string; message?: string; data?: { message?: string } };
+}
+
+function parseEvents(stdout: string): OpenCodeEvent[] {
   return stdout.split("\n").flatMap((line) => {
     try { return [JSON.parse(line)]; } catch { return []; }
   });
@@ -48,7 +55,7 @@ export function isFreeCostTier(tier: unknown): boolean {
 /** Free (every price of every cost tier zero), tool-capable, active OpenCode Zen models from OpenCode 2's /api/model JSON, newest first. */
 export function parseFreeModelCatalog(text: string): string[] {
   let models: unknown = [];
-  try { models = JSON.parse(text)?.data ?? []; } catch {}
+  try { models = JSON.parse(text)?.data ?? []; } catch { /* not JSON: no models */ }
   return (Array.isArray(models) ? models : [])
     .filter((model) =>
       model?.providerID === "opencode" &&
@@ -135,7 +142,7 @@ export function openCodeRunText(result: OpenCodeRunResult): string | null {
   if (result.code !== 0) return null;
   const events = parseEvents(result.stdout);
   if (events.some((event) => event.type === "error")) return null;
-  const text = events.filter((event) => event.type === "text" && typeof event.part?.text === "string").map((event) => event.part.text).join("").trim();
+  const text = events.filter((event) => event.type === "text" && typeof event.part?.text === "string").map((event) => event.part?.text).join("").trim();
   return text || null;
 }
 

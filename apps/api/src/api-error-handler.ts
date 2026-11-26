@@ -4,6 +4,7 @@ import type {} from "./request-context.js";
 import type { FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import {
+  redactSecretText,
   SpaceConflictError,
   SpaceFeatureDisabledError,
   SpaceNotFoundError,
@@ -59,6 +60,14 @@ function getFrameworkClientError(error: unknown): { statusCode: number; code: st
     code: frameworkHttpErrorCode(statusCode),
     message
   };
+}
+
+// Daily Nous errors 14/11 (space_copilot_control "The request could not be completed."): an in-process call (controlInvoke) reads its
+// 500's cause here, keyed by the raw request, so it never reaches an HTTP answer: its op and cause (it may have run in part), slice 19's form.
+const internalErrorCauses = new WeakMap<object, string>();
+export function internalErrorText(method: string, url: string, response: { statusCode: number; raw: { req: object } }): string | null {
+  const cause = response.statusCode >= 500 ? internalErrorCauses.get(response.raw.req) : undefined;
+  return cause ? `NOT CONFIRMED ${method} ${url.split("?")[0]}: ${cause}. It may have run in part: read the pane before repeating it.` : null;
 }
 
 /** One error answer for every API route: each known error class maps to its status and code; anything else is a logged 500. */
@@ -156,7 +165,7 @@ export function registerApiErrorHandler(app: FastifyInstance) {
       );
       return sendApiError(reply, error.statusCode, error.code, error.message);
     }
-    if (error instanceof PaneCloseRefusedError) return sendApiError(reply, 409, "PANE_HAS_SCHEDULED_POSTS", error.message, error.details);
+    if (error instanceof PaneCloseRefusedError) return sendApiError(reply, 409, error.code, error.message, error.details);
     if (error instanceof SpaceConflictError) {
       request.log.info({ err: error, requestId: request.requestIdForSpace }, "request conflicted");
       return sendApiError(reply, 409, "CONFLICT", error.message);
@@ -183,6 +192,9 @@ export function registerApiErrorHandler(app: FastifyInstance) {
     const trace = traceContextForRawRequest(request.raw);
     captureSentryException(error, { trace_id: trace.w3cTraceId, span_id: trace.spanId });
     request.log.error({ err: error, requestId: request.requestIdForSpace }, "request failed");
+    const cause = error instanceof Error ? `${error.name}: ${error.message.split("\n")[0]}` : String(error);
+    // shortcut: first line, 500 characters (a message can echo a whole payload), the rest is in the API log under the request id.
+    internalErrorCauses.set(request.raw, `${redactSecretText(cause).slice(0, 500)}${request.requestIdForSpace ? ` (request ${request.requestIdForSpace})` : ""}`);
     return sendApiError(reply, 500, "INTERNAL_ERROR", "The request could not be completed.");
   });
 }

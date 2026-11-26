@@ -311,38 +311,78 @@ describe("Browser host IPC", () => {
     }
   });
 
-  it("drops the socket after a request timeout so the next request reconnects", async () => {
+  it("ends frame and audio streams whose host connection dropped while the host lives on (Emma 20/11)", async () => {
+    const root = await mkdtemp(join(socketTmp, "space-browser-host-drop-"));
+    const socketPath = join(root, "browser-host.sock");
+    const accepted: Socket[] = [];
+    // A host that answers every request and keeps running; only the connection to the API drops.
+    const server = createServer((socket) => {
+      accepted.push(socket);
+      const decoder = new BrowserHostFrameDecoder();
+      socket.on("data", (chunk) => {
+        for (const message of decoder.push(chunk) as Array<{ requestId: string; method: string }>) {
+          const result = message.method === "startFrameStream"
+            ? { id: `browser_stream:${accepted.length}`, profile: { requestedMode: "REALTIME", resolvedMode: "REALTIME", framesPerSecond: 30, format: "jpeg", quality: 70 } }
+            : message.method === "startAudioStream"
+              ? { id: `browser_audio_stream:${accepted.length}`, sampleRate: 48000, channels: 2, format: "s16le" }
+              : null;
+          socket.write(encodeBrowserHostFrame({ kind: "response", requestId: message.requestId, ok: true, result }));
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    const client = new BrowserHostClient({ socketPath, requestTimeoutMs: 1_000, closeTimeoutMs: 30 });
+    try {
+      const frames = await client.startFrameStream("browser_session:test", "REALTIME", () => undefined);
+      const audio = await client.startAudioStream("browser_session:test", () => undefined);
+      let ended = 0;
+      void frames.ended?.then(() => { ended += 1; });
+      void audio.ended?.then(() => { ended += 1; });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(ended).toBe(0);
+      accepted[0]!.destroy();
+      await Promise.all([frames.ended, audio.ended]);
+      expect(ended).toBe(2);
+      // A stream started on the next connection is not ended by the old one's close.
+      const next = await client.startFrameStream("browser_session:test", "REALTIME", () => undefined);
+      expect(accepted).toHaveLength(2);
+      let nextEnded = false;
+      void next.ended?.then(() => { nextEnded = true; });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(nextEnded).toBe(false);
+    } finally {
+      await client.close();
+      for (const socket of accepted) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the connection after one pane's request times out, so another pane's request in flight still answers", async () => {
     const root = await mkdtemp(join(socketTmp, "space-browser-host-recover-"));
     const socketPath = join(root, "browser-host.sock");
-    let connections = 0;
     const handler: BrowserHostRequestHandler = {
-      async health() {
-        return {
-          hostPid: process.pid,
-          startedAt: "2026-07-12T00:00:00.000Z",
-          buildCommit: "b".repeat(40),
-          status: { enabled: true, statusReason: "ready", defaultUrl: "https://example.com/", checkedAt: "2026-07-12T00:00:00.000Z" },
-          capacity: null,
-          captureMetrics: {
-            jobs: { QUEUED: 0, RUNNING: 0, COMPLETED: 0, FAILED: 0, CANCELLED: 0 },
-            segments: { OPEN: 0, FINALIZED: 0, FAILED: 0, DISCARDED: 0 }
-          }
-        };
-      },
-      // First request hangs forever (simulates a stuck CDP call). Later ones succeed.
-      async request(method) {
-        if (connections < 1) return new Promise(() => undefined);
-        return { method };
+      async health() { throw new Error("unused"); },
+      // Pane A hangs (a wedged Chrome); pane B answers only after A's client timeout has fired.
+      async request(method, params) {
+        const pane = params.pane as { id?: string } | undefined;
+        if (pane?.id === "pane:a") return new Promise(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        return { pane: pane?.id };
       }
     };
     const server = await createBrowserHostServer({ socketPath, handler });
-    const client = new BrowserHostClient({ socketPath, requestTimeoutMs: 40, connectTimeoutMs: 100, closeTimeoutMs: 50 });
+    const client = new BrowserHostClient({ socketPath, requestTimeoutMs: 200, connectTimeoutMs: 100, closeTimeoutMs: 50 });
     try {
-      await expect(client.captureFrame("browser_session:test")).rejects.toMatchObject({ code: "BROWSER_HOST_TIMEOUT" });
-      connections += 1;
-      // The hung server handler is still running on the old connection, but the
-      // client must have dropped it: this request goes over a fresh socket.
-      await expect(client.health()).resolves.toMatchObject({ buildCommit: "b".repeat(40) });
+      const a = client.getActive({ id: "pane:a" } as never);
+      const aFailed = expect(a).rejects.toMatchObject({ code: "BROWSER_HOST_TIMEOUT" });
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      // B is sent at ~120 ms, A times out at ~200 ms, B answers at ~240 ms on the same connection.
+      await expect(client.getActive({ id: "pane:b" } as never)).resolves.toMatchObject({ pane: "pane:b" });
+      await aFailed;
     } finally {
       await client.close();
       await server.close();

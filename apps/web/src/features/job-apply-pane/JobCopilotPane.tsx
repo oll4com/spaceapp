@@ -4,6 +4,7 @@ import { api } from "../../api.js";
 import { ActivityTab } from "./ActivityTab.js";
 import { loadDefaultAccountProfileId } from "./AgentAccountField.js";
 import { jobCopilotAccountFor, jobCopilotAgentLabel, jobCopilotRuntimeOptions, loadPaneAccountProfileId, saveJobCopilotLaunch } from "./agent-runtimes.js";
+import { paneRunsRuntime, restartPaneCli } from "../copilot-kit/copilot-runtimes.js";
 import { CommandBar } from "./CommandBar.js";
 import { CopilotRail, RAIL_TAB_ICONS, type CopilotRailTab, type CopilotRailTabDefinition } from "./CopilotRail.js";
 import { FieldsTab } from "./FieldsTab.js";
@@ -152,9 +153,13 @@ export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilo
    * it as the pane's agent), then remount the terminal element so it attaches to the new session. Without an account
    * the CLI starts on the user's default account for it, else on that CLI's default pane account.
    */
+  const switchBusy = useRef(false); // set before the first await, so a quick second pick never restarts the CLI twice
   const switchAgent = useCallback(async (runtimeId: string, accountProfileId?: string) => {
-    const sameRuntime = runtimeId === pane.terminalRuntimeId;
-    if (switching || (sameRuntime && accountProfileId === undefined)) return;
+    if (switchBusy.current || switching) return;
+    switchBusy.current = true;
+    try {
+    const sameRuntime = await paneRunsRuntime(pane, runtimeId);
+    if (sameRuntime && accountProfileId === undefined) return;
     if (sameRuntime && accountProfileId === await loadPaneAccountProfileId(pane.id, runtimeId)) return;
     setSwitching(true);
     setNotice(null);
@@ -162,8 +167,7 @@ export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilo
       const remembered = accountProfileId === undefined ? (await api.userSettings().catch(() => null))?.jobCopilot : null;
       const account = jobCopilotAccountFor(runtimeId, accountProfileId
         ?? (remembered?.runtimeId === runtimeId && remembered.accountProfileId ? remembered.accountProfileId : await loadDefaultAccountProfileId(runtimeId)));
-      if (!sameRuntime) await api.updatePane(pane.id, { terminalRuntimeId: runtimeId });
-      await api.createCliSession(pane.id, { runtimeId, forceRestart: true, includeTranscript: false, ...(account ? { accountProfileId: account } : {}) });
+      await restartPaneCli(pane, runtimeId, account);
       setTerminalKey((key) => key + 1);
       setRail((current) => ({ ...current, collapsed: false, tab: "terminal" }));
       void data.refresh();
@@ -172,7 +176,10 @@ export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilo
     } finally {
       setSwitching(false);
     }
-  }, [data, pane.id, pane.terminalRuntimeId, switching, t]);
+    } finally {
+      switchBusy.current = false;
+    }
+  }, [data, pane, switching, t]);
   /** A fresh conversation on the same agent and account; the previous one stays in the task history. */
   const startNewSession = useCallback(async () => {
     const runtimeId = pane.terminalRuntimeId;

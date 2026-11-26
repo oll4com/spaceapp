@@ -61,7 +61,7 @@ describe("Teams requests", () => {
     expect(await verify(token(claims, "unknown"), service)).toBe(false);
     expect(await verify("Bearer nonsense", service)).toBe(false);
     expect(await verify(undefined, service)).toBe(false);
-    const tampered = token(claims).replace(/\.([A-Za-z0-9_-]+)\./, (_m, p) => `.${Buffer.from(JSON.stringify({ ...claims, aud: "app-1", extra: 1 })).toString("base64url")}.`);
+    const tampered = token(claims).replace(/\.([A-Za-z0-9_-]+)\./, () => `.${Buffer.from(JSON.stringify({ ...claims, aud: "app-1", extra: 1 })).toString("base64url")}.`);
     expect(await verify(tampered, service)).toBe(false);
   });
 

@@ -16,4 +16,13 @@ describe("Nous world: room fill", () => {
     expect(text).toContain("### Bruno (full: 2 of 2 panes open; space_open_panes here is refused until a finished pane closes: open new panes in a room with space)");
     expect(text).toContain("### Eva (1 of 16 panes open)");
   });
+  // 22/11: a pane on a quota days from its reset reads as dead, not "ok working".
+  it("names a pane whose provider reset is over an hour away dead until that reset", () => {
+    const resetsAt = "2026-11-05T10:00:00.000Z";
+    const text = renderNousWorld({ rooms: [{ room: { id: "room:a", name: "Eva" } as Room, sample: { data: [pane("pane:1", "Andy")], activity: { "pane:1": "WAITING" },
+      details: { "pane:1": { reason: "Usage limit", resetsAt } }, sampledAt: "" } }] as never, paneChecked: () => "ok working",
+      notifications: [], plans: [], tasks: [], trains: "", decisions: [], notes: [], now: "2026-11-02T13:00:00.000Z" });
+    expect(text).toContain(`dead until ${resetsAt} (provider quota)`);
+    expect(text).not.toContain("ok working");
+  });
 });

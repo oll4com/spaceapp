@@ -64,7 +64,7 @@ describe("OpenCode Chat state isolation", () => {
       spaceSessionId: "agent_session:test",
       nativeSessionId: "ses_chat_test",
       serverPort: 47047,
-      serverHost: "10.254.240.13",
+      serverHost: "10.88.240.13",
       serverUsername: "space",
       serverPassword: "secret",
       updatedAt: "2026-08-28T00:00:00.000Z"
@@ -88,8 +88,8 @@ describe("OpenCode Chat state isolation", () => {
       fetchImpl as typeof fetch
     )).rejects.toThrow("upstream failed");
     expect(calls).toEqual([
-      { url: "http://10.254.240.13:47047/api/session/ses_chat_test/agent", method: "POST" },
-      { url: "http://10.254.240.13:47047/api/session/ses_chat_test/interrupt", method: "POST" }
+      { url: "http://10.88.240.13:47047/api/session/ses_chat_test/agent", method: "POST" },
+      { url: "http://10.88.240.13:47047/api/session/ses_chat_test/interrupt", method: "POST" }
     ]);
   });
 });

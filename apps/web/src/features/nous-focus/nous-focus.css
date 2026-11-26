@@ -69,3 +69,103 @@
 .nous-focus-banner button:focus-visible,
 .nous-focus-back button:focus-visible { outline: 2px solid var(--modern-accent, var(--room-accent, #61d2c3)); outline-offset: 2px; }
 .nous-focus-card .ny-files { margin-bottom: 0.35rem; }
+
+/* Nous fullscreen's floating pane (operator nous_msg:8596b29a): over fullscreen Nous (90) and the dock drawer (300), under the banner (1000).
+   The bar drags it, its edges and corners resize it; NousFloat sets left/top/width/height from the saved bounds (nous_msg:154cee76).
+   Its look (operator nous_msg:f10d0e47, 14/11): a quiet border and soft shadow, one title bar, a browser bar over the Teleport's page. */
+.nous-float {
+  position: fixed;
+  z-index: 960;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: var(--modern-surface-raised, var(--room-surface-soft, #1b1d1f));
+  color: var(--modern-text, var(--room-text, #f4efe5));
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font-size: 0.82rem;
+  overflow: hidden;
+}
+.nous-float-edge { position: absolute; z-index: 1; touch-action: none; }
+.nous-float-edge[data-edge="n"], .nous-float-edge[data-edge="s"] { left: 14px; right: 14px; height: 7px; cursor: ns-resize; }
+.nous-float-edge[data-edge="e"], .nous-float-edge[data-edge="w"] { top: 14px; bottom: 14px; width: 7px; cursor: ew-resize; }
+.nous-float-edge[data-edge^="n"] { top: 0; }
+.nous-float-edge[data-edge^="s"] { bottom: 0; }
+.nous-float-edge[data-edge$="w"] { left: 0; }
+.nous-float-edge[data-edge$="e"] { right: 0; }
+.nous-float-edge[data-edge="ne"], .nous-float-edge[data-edge="nw"], .nous-float-edge[data-edge="se"], .nous-float-edge[data-edge="sw"] { width: 14px; height: 14px; }
+.nous-float-edge[data-edge="nw"], .nous-float-edge[data-edge="se"] { cursor: nwse-resize; }
+.nous-float-edge[data-edge="ne"], .nous-float-edge[data-edge="sw"] { cursor: nesw-resize; }
+.nous-float button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  min-height: 32px;
+  min-width: 32px;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+.nous-float button:hover { background: rgba(255, 255, 255, 0.08); }
+.nous-float button:disabled { cursor: default; opacity: 0.5; }
+.nous-float button svg { flex: 0 0 auto; width: 1rem; height: 1rem; }
+.nous-float button:focus-visible { outline: 2px solid var(--modern-accent, var(--room-accent, #61d2c3)); outline-offset: 2px; }
+/* The title bar: what it is on the left, the size presets as one segmented control, then open and close. */
+.nous-float-bar { display: flex; flex: 0 0 auto; align-items: center; gap: 0.4rem; padding: 0.4rem 0.45rem 0.4rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08); cursor: grab; touch-action: none; user-select: none; }
+.nous-float-icon { display: inline-flex; flex: 0 0 auto; color: var(--modern-accent, var(--room-accent, #61d2c3)); }
+.nous-float-icon svg { width: 1rem; height: 1rem; }
+.nous-float-heading { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; line-height: 1.25; }
+.nous-float-title,
+.nous-float-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nous-float-title { font-weight: 600; }
+.nous-float-sub { font-size: 0.68rem; opacity: 0.6; }
+.nous-float-sizes { display: inline-flex; flex: 0 0 auto; gap: 2px; padding: 2px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; background: rgba(0, 0, 0, 0.35); }
+.nous-float .nous-float-sizes button { min-width: 0; min-height: 26px; padding: 0.1rem 0.45rem; border-radius: 6px; font-size: 0.72rem; font-weight: 500; opacity: 0.65; }
+.nous-float .nous-float-sizes button:hover { opacity: 1; }
+.nous-float .nous-float-sizes button.is-active { background: rgba(255, 255, 255, 0.12); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4); opacity: 1; }
+.nous-float .nous-float-bar > button { padding: 0; opacity: 0.75; }
+.nous-float .nous-float-bar > button:hover { opacity: 1; }
+/* The card: what is left of a plain float, scrolling; a compact notice above a Teleport, whose page takes the rest. */
+.nous-float:not(.is-teleport) > .nous-focus-card { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0.75rem; }
+.nous-float.is-teleport > .nous-focus-card { flex: 0 1 auto; max-height: 35%; min-height: 0; overflow: auto; margin: 0.6rem 0.6rem 0; padding: 0.6rem 0.7rem;
+  border: 1px solid rgba(97, 210, 195, 0.25); border-radius: 10px; background: rgba(97, 210, 195, 0.07); }
+.nous-float .nous-focus-card > p { margin-bottom: 0.45rem; line-height: 1.4; }
+.nous-float .nous-focus-question { font-size: 0.86rem; }
+.nous-float .nous-focus-card button { min-height: 32px; padding: 0.2rem 0.75rem; border-color: rgba(255, 255, 255, 0.15); background: rgba(255, 255, 255, 0.08); }
+.nous-float .nous-focus-card button:hover { background: rgba(255, 255, 255, 0.14); }
+.nous-float .nous-focus-card button.nous-focus-go { border-color: transparent; background: var(--modern-accent, var(--room-accent, #61d2c3)); color: var(--modern-on-accent, #071b19); font-weight: 600; }
+.nous-float .nous-focus-card button.nous-focus-go:hover { filter: brightness(1.08); }
+.nous-float .nous-float-open { margin: 0 0.75rem 0.75rem; border-color: var(--modern-accent, var(--room-accent, #61d2c3)); }
+/* The Teleport: a browser bar (Back, Reload, the address pill, the live dot) over the page. */
+.nous-teleport { display: flex; flex: 1 1 auto; flex-direction: column; gap: 0.5rem; min-height: 0; padding: 0.5rem 0.6rem 0.6rem; outline: none; }
+.nous-teleport-tools { display: flex; flex: 0 0 auto; align-items: center; gap: 0.35rem; }
+.nous-float .nous-teleport-tools > button { min-width: 30px; min-height: 30px; padding: 0; }
+.nous-teleport-address { display: flex; flex: 1 1 auto; align-items: center; gap: 0.4rem; min-width: 0; height: 30px; box-sizing: border-box; padding: 0 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 999px; background: rgba(0, 0, 0, 0.35); font-size: 0.78rem; }
+.nous-teleport-address svg { flex: 0 0 auto; width: 0.8rem; height: 0.8rem; opacity: 0.6; }
+.nous-teleport-address span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.85; }
+.nous-teleport-fps { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 0.35rem; padding: 0 0.15rem 0 0.25rem; font-size: 0.72rem; font-variant-numeric: tabular-nums;
+  white-space: nowrap; opacity: 0.85; }
+.nous-teleport-fps::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: rgba(255, 255, 255, 0.35); }
+.nous-teleport-fps.is-live::before { background: #3fd07a; animation: nous-teleport-pulse 2s ease-out infinite; }
+@keyframes nous-teleport-pulse { 0% { box-shadow: 0 0 0 0 rgba(63, 208, 122, 0.6); } 70%, 100% { box-shadow: 0 0 0 6px rgba(63, 208, 122, 0); } }
+.nous-teleport-page { flex: 1 1 auto; min-height: 0; height: 100%; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; overflow: hidden; background: #141517; }
+.nous-teleport:focus-visible .nous-teleport-page { box-shadow: 0 0 0 2px var(--modern-accent, var(--room-accent, #61d2c3)); }
+.nous-teleport-page img { display: block; width: 100%; height: 100%; object-fit: contain; touch-action: none; user-select: none; }
+.nous-teleport-error { margin: 0; overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) {
+  .nous-teleport-fps.is-live::before { animation: none; box-shadow: 0 0 6px rgba(63, 208, 122, 0.7); }
+}
+/* A finger keeps the 40 px targets the desktop sizes (32/30 px) would take away. */
+@media (pointer: coarse) {
+  .nous-float .nous-float-bar > button,
+  .nous-float .nous-teleport-tools > button { min-width: 40px; min-height: 40px; }
+}

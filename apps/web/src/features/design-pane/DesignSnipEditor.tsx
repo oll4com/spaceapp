@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { createPortal } from "react-dom";
 import { designCustomFormatRef, DESIGN_CUSTOM_MIN_PX, type DesignAsset } from "@space/contracts";
 import { api } from "../../api.js";
@@ -19,12 +19,14 @@ export function DesignSnipEditor({ paneId, asset, onSaved, onClose }: { paneId: 
   const [alert, setAlert] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
 
+  // The latest language's text without re-decoding the image when the language changes.
+  const openFailed = useEffectEvent(() => setAlert(t("The design could not be opened for editing.")));
   useEffect(() => {
     let cancelled = false;
     const image = new Image();
     image.src = api.artifactFileUrl(asset.artifactId);
     image.decode().then(() => { if (!cancelled) setFrame({ source: image, width: image.naturalWidth, height: image.naturalHeight }); },
-      () => { if (!cancelled) setAlert(t("The design could not be opened for editing.")); });
+      () => { if (!cancelled) openFailed(); });
     return () => { cancelled = true; };
   }, [asset.artifactId]);
 

@@ -106,14 +106,15 @@ describe("Codex rollout diagnostics", () => {
   it("reports the latest Codex turn as running after earlier turns completed", () => {
     const activity = inspectCurrentCodexCliTurnActivity(
       [
-        JSON.stringify({ type: "turn_context", payload: { turn_id: "turn:completed" } }),
+        JSON.stringify({ type: "turn_context", payload: { turn_id: "turn:completed", model: "gpt-6.1-sol" } }),
         JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn:completed" } }),
-        JSON.stringify({ type: "turn_context", payload: { turn_id: "turn:running" } }),
+        JSON.stringify({ type: "turn_context", payload: { turn_id: "turn:running", model: "gpt-6-astra" } }),
         JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "turn:running" } })
       ].join("\n")
     );
 
-    expect(activity).toEqual({ status: "RUNNING", turnId: "turn:running" });
+    // The model the last turn_context ran, not the one asked for (the dashboard's running model).
+    expect(activity).toEqual({ status: "RUNNING", turnId: "turn:running", modelId: "gpt-6-astra" });
   });
 
   it("marks a Codex turn that ended on a transient server error, never on a policy error, until the next turn starts (R9-7)", () => {
@@ -125,6 +126,19 @@ describe("Codex rollout diagnostics", () => {
     expect(inspectCurrentCodexCliTurnActivity([start, ended("cyber_policy")].join("\n"))).toEqual({ status: "COMPLETED", turnId: "turn:cut" });
     const next = JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "turn:next" } });
     expect(inspectCurrentCodexCliTurnActivity([start, ended("server_overloaded"), next].join("\n"))).toEqual({ status: "RUNNING", turnId: "turn:next" });
+  });
+
+  it("marks a Codex turn that ended on its provider's quota as a usage limit until the next turn starts (operator 14/11)", () => {
+    // pane:iHY1srvO-lYV 14/11 12:2x UTC: "exceeded retry limit, last status: 429" read as done, and Nous closed it.
+    const ended = (info: unknown) => JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn:quota", last_agent_message: null,
+      error: { message: "exceeded retry limit, last status: 429 Too Many Requests", codex_error_info: info } } });
+    const start = JSON.stringify({ type: "turn_context", payload: { turn_id: "turn:quota" } });
+    const quota = { status: "COMPLETED", turnId: "turn:quota", usageLimit: true };
+    expect(inspectCurrentCodexCliTurnActivity([start, ended({ response_too_many_failed_attempts: { http_status_code: 429 } })].join("\n"))).toEqual(quota);
+    expect(inspectCurrentCodexCliTurnActivity([start, ended("usage_limit_exceeded")].join("\n"))).toEqual(quota);
+    expect(inspectCurrentCodexCliTurnActivity([start, ended({ response_too_many_failed_attempts: { http_status_code: 500 } })].join("\n"))).toEqual({ status: "COMPLETED", turnId: "turn:quota" });
+    const next = JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "turn:next" } });
+    expect(inspectCurrentCodexCliTurnActivity([start, ended("usage_limit_exceeded"), next].join("\n"))).toEqual({ status: "RUNNING", turnId: "turn:next" });
   });
 
   it("recognizes a completed tail even when its turn context is outside the read window", () => {

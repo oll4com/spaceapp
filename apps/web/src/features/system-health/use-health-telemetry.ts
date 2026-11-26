@@ -12,7 +12,6 @@ import type {
   SystemHealthSnapshot,
 } from "@space/contracts";
 import { api } from "../../api.js";
-import { getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
 import { measureHealthRtt } from "./measure-health-rtt.js";
 import {
   advanceHealthTone,

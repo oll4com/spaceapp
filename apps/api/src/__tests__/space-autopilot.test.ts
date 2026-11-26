@@ -2,25 +2,25 @@ import { describe, expect, it } from "vitest";
 import { createSpaceAutopilot } from "../space-autopilot.js";
 import type { SpaceControl, ControlActor } from "../space-control.js";
 import type { DecisionsService } from "../decisions-service.js";
-import type { ControlOperation } from "@space/contracts";
+import type { ControlExecute, ControlOperation } from "@space/contracts";
 
 describe("Space Autopilot Orchestrator", () => {
   const mockActor: ControlActor = { id: "user_test", role: "ADMIN" };
 
   it("runs full inspect -> decide -> dryRun preflight -> execute -> verify loop without external LLM", async () => {
     let inspectCount = 0;
-    const executeCalls: any[] = [];
+    const executeCalls: ControlExecute[] = [];
     let taskJudged = false;
 
     const mockSpaceControl = {
-      async inspect(actor: ControlActor, query: any) {
+      async inspect() {
         inspectCount++;
         return {
           revision: 42,
           state: { revision: 42, panes: [] }
         };
       },
-      async execute(actor: ControlActor, raw: any, waitForCompletion: boolean) {
+      async execute(actor: ControlActor, raw: ControlExecute) {
         executeCalls.push(raw);
         return {
           id: raw.requestId,
@@ -47,7 +47,7 @@ describe("Space Autopilot Orchestrator", () => {
     } as unknown as SpaceControl;
 
     const mockDecisionsService = {
-      async routeAgentTask(prompt: string) {
+      async routeAgentTask() {
         return {
           available: true,
           agent: "codex" as const,
@@ -55,14 +55,14 @@ describe("Space Autopilot Orchestrator", () => {
           tier: "frontier" as const
         };
       },
-      async evaluateModelTier(prompt: string) {
+      async evaluateModelTier() {
         return {
           tier: "standard" as const,
           score: 3,
           recommendedModel: "gemini-3.8-flash"
         };
       },
-      async evaluateConcurrencyConflict(input: any) {
+      async evaluateConcurrencyConflict() {
         return {
           available: true,
           action: "allow" as const,
@@ -70,7 +70,7 @@ describe("Space Autopilot Orchestrator", () => {
           confidence: 0.99
         };
       },
-      async judgeTaskCompletion(input: any) {
+      async judgeTaskCompletion() {
         taskJudged = true;
         return {
           available: true,
@@ -78,7 +78,7 @@ describe("Space Autopilot Orchestrator", () => {
           confidence: 0.95
         };
       },
-      async selectRecoveryAction(error: any) {
+      async selectRecoveryAction() {
         return {
           available: true,
           action: "retry_same_agent" as const,
@@ -104,8 +104,7 @@ describe("Space Autopilot Orchestrator", () => {
     expect(result.preflightValidated).toBe(true);
     expect(inspectCount).toBeGreaterThanOrEqual(2);
     expect(executeCalls).toHaveLength(2);
-    expect(executeCalls[0].dryRun).toBe(true);
-    expect(executeCalls[1].dryRun).toBe(false);
+    expect(executeCalls.map((call) => call.dryRun)).toEqual([true, false]);
     expect(result.verification.verified).toBe(true);
     expect(result.verification.taskJudgement?.status).toBe("YES");
     expect(taskJudged).toBe(true);
@@ -164,7 +163,7 @@ describe("Space Autopilot Orchestrator", () => {
       async evaluateModelTier() {
         return { tier: "frontier" as const, score: 5, recommendedModel: "claude-3.5-sonnet" };
       },
-      async evaluateConcurrencyConflict(input: any) {
+      async evaluateConcurrencyConflict() {
         return {
           available: true,
           action: "wait" as const,
@@ -194,14 +193,14 @@ describe("Space Autopilot Orchestrator", () => {
   it("selects recovery action when execution action fails", async () => {
     const mockSpaceControl = {
       async inspect() { return { revision: 1 }; },
-      async execute(actor: any, raw: any) {
+      async execute(_actor: unknown, raw: { dryRun?: boolean }) {
         if (raw.dryRun) {
-          return { status: "COMPLETED", results: [] } as any;
+          return { status: "COMPLETED", results: [] };
         }
         return {
           status: "FAILED",
           results: [{ index: 0, status: "FAILED", detail: "Network timeout", error: "TIMEOUT" }]
-        } as any;
+        };
       }
     } as unknown as SpaceControl;
 
@@ -213,7 +212,7 @@ describe("Space Autopilot Orchestrator", () => {
       async evaluateModelTier() {
         return { tier: "mini" as const, score: 1, recommendedModel: "gemini-3.8-flash-lite" };
       },
-      async selectRecoveryAction(error: any) {
+      async selectRecoveryAction() {
         recoverySelected = true;
         return {
           available: true,

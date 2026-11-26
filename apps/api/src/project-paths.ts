@@ -105,7 +105,7 @@ export async function mayCreatePaneDirectory(input: {
   const target = resolve(input.cwd);
   let worktreesRoot = resolve(input.worktreesRoot);
   try { worktreesRoot = await resolveExistingPrefix(worktreesRoot); } catch { /* keep configured value */ }
-  let effective = target;
+  let effective: string;
   try { effective = await resolveExistingPrefix(target); } catch { return false; }
   if (within(worktreesRoot, effective) && effective !== worktreesRoot) return true;
   const decision = await resolveProjectEnsureTarget({

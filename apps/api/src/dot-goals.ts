@@ -131,7 +131,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     }
     try { await deps.workflow.start(goal.goalId, request?.id); }
     catch {
-      goal = await finish(goal, "FAILED", "The Goal runtime could not start. Try again.");
+      await finish(goal, "FAILED", "The Goal runtime could not start. Try again.");
       throw new DotGoalError(503, "DOT_GOAL_RUNTIME", "The Goal runtime could not start. Try again.");
     }
     await deps.audit(request, "dot.goal.create", goal.roomId, { dotId, goalId: goal.goalId });

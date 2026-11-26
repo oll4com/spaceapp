@@ -32,6 +32,7 @@ function matchesSpaceService(unit: string): boolean {
 
 function safeDescription(value: unknown): string | null {
   if (typeof value !== "string" || !value.trim()) return null;
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point
   return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 400);
 }
 

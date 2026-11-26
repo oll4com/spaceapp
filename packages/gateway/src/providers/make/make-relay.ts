@@ -23,6 +23,9 @@ export const MAKE_AI_CREDIT_RATES: Record<string, readonly [number, number]> = {
 /** The plan's budget: 30K of the program's credits a month for AI through Make, so about 1,000 a day (operator rule 3/11: a daily cap that says when it is spent). */
 export const MAKE_DAILY_CREDITS_DEFAULT = 1000;
 
+/** Credit protection, not a quota: after the relay queued a call (scenario off), each further call would queue too and run later at credit cost
+ * that the daily cap never sees, so the gateway holds calls this long, then tries Make once again. */
+export const MAKE_RELAY_OFF_HOLD_MS = 10 * 60_000;
 
 /** The Vault's two handles (vault_key:tOuOCRTzDKx3fq_ua-DuvA the URL, vault_key:RMgSXCywsKGSjFDAqxQKvw the token), installed for the gateway's user `space` first, the agent home's copies second. */
 export async function readMakeRelayCredentials(): Promise<{ url: string; token: string } | null> {
@@ -65,6 +68,7 @@ export function registerMakeRelayRoutes(app: FastifyInstance, helpers: GatewayRo
   const model = `make/${options.model}`;
   const credits = (input: number, output: number) => input / rate![0] + output / rate![1];
   let today: { day: string; credits: number } | null = null;
+  let relayOffUntil = 0;
   const spentToday = async (day: string) => {
     if (today?.day !== day) {
       const used = await options.usedTokens(day);
@@ -123,6 +127,10 @@ export function registerMakeRelayRoutes(app: FastifyInstance, helpers: GatewayRo
       if (usage && options.settleKeyUsage) void options.settleKeyUsage(key.id, { ...usage, costMicros: 0, model, at }).catch(() => undefined);
     };
     const fail = (status: number, code: string, message: string) => { log("error", code, null); return reply.code(status).send(gatewayError(code, message)); };
+    if (startedAt < relayOffUntil) {
+      reply.header("retry-after", String(Math.ceil((relayOffUntil - startedAt) / 1000)));
+      return fail(503, "make_relay_no_answer", `Make's relay scenario was off; Space Gateway holds calls until ${new Date(relayOffUntil).toISOString()} so Make queues no more of them.`);
+    }
     const relay = await credentials();
     if (!relay) return fail(503, "make_not_configured", "Make AI's relay URL and token are not installed for Space Gateway.");
     const controller = new AbortController();
@@ -151,6 +159,7 @@ export function registerMakeRelayRoutes(app: FastifyInstance, helpers: GatewayRo
     const outputTokens = usageHeader(upstream.headers.get("x-make-output-tokens"));
     if (inputTokens === null || outputTokens === null) {
       await readBounded(upstream);
+      relayOffUntil = now() + MAKE_RELAY_OFF_HOLD_MS;
       return fail(503, "make_relay_no_answer", "Make's relay sent no answer: its scenario is off, and Make queued the call to run when it is on.");
     }
     const answer = await upstream.text();
@@ -160,5 +169,10 @@ export function registerMakeRelayRoutes(app: FastifyInstance, helpers: GatewayRo
     return reply.send({ id: `chatcmpl-${request.id}`, object: "chat.completion", created: Math.floor(startedAt / 1000), model,
       choices: [{ index: 0, message: { role: "assistant", content: answer }, finish_reason: "stop" }],
       usage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens } });
+  });
+
+  app.get("/pools/make/v1/models", async (request, reply) => {
+    if (!(await helpers.authenticate(request, reply))) return reply;
+    return { object: "list", data: options.model ? [{ id: model, object: "model", created: 0, owned_by: "make" }] : [] };
   });
 }

@@ -1,5 +1,5 @@
 import { api } from "../../api.js";
-import { VAULT_OLD_BROKER_DELEGATION_MAX, VaultInboxError, delegateVaultItems, importVaultPending, lockVaultKeys, vaultInboxKey, type UnlockedVault } from "./vault-client.js";
+import { VAULT_OLD_BROKER_DELEGATION_MAX, VaultInboxError, delegateVaultItems, importVaultPending, lockVaultKeys, repairWipedKeyItems, vaultInboxKey, type UnlockedVault } from "./vault-client.js";
 import { readVaultAutoLock, startVaultAutoLock, type VaultAutoLockReason } from "./vault-auto-lock.js";
 
 /**
@@ -52,16 +52,21 @@ export async function handOverToAgents(current: UnlockedVault | null = keys): Pr
   const older = (list: typeof records, error: unknown) => list.length > VAULT_OLD_BROKER_DELEGATION_MAX ? delegate(list.slice(0, VAULT_OLD_BROKER_DELEGATION_MAX)) : Promise.reject(error);
   // A broker from before cards (until its reinstall, plan clipboard:qf0P640vyLp2) refuses a delegation with one: logins go without.
   const logins = records.filter((record) => !record.metadata.card);
-  await delegate(records).catch((error) => logins.length < records.length ? delegate(logins).catch((again) => older(logins, again)) : older(records, error));
+  const done = await delegate(records).catch((error) => logins.length < records.length ? delegate(logins).catch((again) => older(logins, again)) : older(records, error));
+  const unreadable = done?.unreadable ?? [];
+  handOverProblem = unreadable.length ? `${unreadable.length} login${unreadable.length === 1 ? "" : "s"} (${unreadable.join(", ")}) cannot be opened with your keys, so agents cannot use them; a change agents make to one is added as a new copy. Check them and delete the ones you no longer need.` : null;
+  if (handOverProblem) emit({ kind: "inbox-error", message: vaultInboxProblem()! });
 }
 
 /** The last inbox problem, kept so a dock opened after the 30 s import failed still shows it; a clean import clears it. */
 let inboxProblem: string | null = null;
-export const vaultInboxProblem = (): string | null => inboxProblem;
+/** Logins the last hand-over left out because they do not open; kept until a hand-over finds none. */
+let handOverProblem: string | null = null;
+export const vaultInboxProblem = (): string | null => [inboxProblem, handOverProblem].filter(Boolean).join(" ") || null;
 /** Why a waiting login is still waiting after the last import, by its row id: the dock shows it on that row. */
 let rowProblems = new Map<string, string>();
 export const vaultInboxRowProblem = (id: string): string | null => rowProblems.get(id) ?? null;
-const reportInbox = (message: string) => { inboxProblem = message; emit({ kind: "inbox-error", message }); };
+const reportInbox = (message: string) => { inboxProblem = message; emit({ kind: "inbox-error", message: vaultInboxProblem()! }); };
 const names = (entries: Array<{ label: string }>) => entries.slice(0, 3).map((entry) => entry.label).join(", ");
 const logins = (count: number) => `${count} waiting login${count === 1 ? "" : "s"}`;
 
@@ -90,6 +95,8 @@ export async function importVaultInbox(current: UnlockedVault | null = keys): Pr
 
 /** After an unlock: the inbox key exists, saved logins are added, and agents get the current items, also when the import failed. */
 export async function openVaultInbox(current: UnlockedVault): Promise<void> {
+  // Items sealed under a wiped key (14/11) are sealed under the VRK first, so the waiting row the API queued for each joins it.
+  await repairWipedKeyItems(api, current, (await api.vaultItemRecords()).items).catch(() => undefined);
   // The import shows its own failure; the hand-over must not wait on it (30/10 16:46 UTC: a failed import skipped it at the unlock).
   if ((await importVaultInbox(current).catch(() => 0)) === 0) await handOverToAgents(current);
 }
@@ -121,6 +128,7 @@ export function lockVaultSession(reason: VaultLockReason): void {
   stopTimers?.();
   stopTimers = null;
   inboxProblem = null;
+  handOverProblem = null;
   rowProblems = new Map();
   if (!keys) return;
   lockVaultKeys(keys);

@@ -17,7 +17,7 @@ export function runGit(root: string, args: string[], options: CommandOptions = {
     };
     const ownProcessGroup = process.platform !== "win32";
     const child = spawnGroupWritableGit(["--no-optional-locks", "-c", `safe.directory=${root}`, "-c", "credential.helper=", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "protocol.ext.allow=never", "-c", "protocol.file.allow=never", "-C", root, ...args], env);
-    const stop = () => { try { if (ownProcessGroup && child.pid) process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL"); } catch {} };
+    const stop = () => { try { if (ownProcessGroup && child.pid) process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL"); } catch { /* already exited */ } };
     let output = ""; let error = ""; let exceeded = false; let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; stop(); }, options.timeout ?? 15000);
     const collect = (part: Buffer, stderr: boolean) => {
@@ -34,7 +34,7 @@ export function runGit(root: string, args: string[], options: CommandOptions = {
         // Credentials and hook output never enter an API response.
         const message = /non-fast-forward|fetch first|rejected/i.test(error) ? "Push rejected. Fetch and resolve outgoing commits before retrying."
           : /conflict|not possible to fast-forward/i.test(error) ? "Pull requires conflict resolution or a fast-forward."
-          : /Authentication failed|could not read Username|403|401/i.test(error) ? "Authentication failed or repository permission is insufficient."
+          : /Authentication failed|could not read Username|returned error: 40[13]\b/i.test(error) ? "Authentication failed or repository permission is insufficient."
           : /hook|identity|user.email|user.name/i.test(error) ? "Commit failed. Check the repository identity and commit hooks."
           : "Git operation failed. Check repository state, permissions and connectivity.";
         return reject(new GitControlError("GIT_FAILED", message, 409));
@@ -389,8 +389,8 @@ export class GitEngine {
       // Run real hooks against a private index; reject changes before Git writes HEAD.
       for (const hook of ["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"]) {
         const original = join(hooks, hook);
-        const check = hook === "post-commit" ? "" : `\ntree=$(git -c core.fsmonitor=false write-tree) || exit $?\n[ \"$tree\" = ${quote(tree)} ] || { printf '%s\\n' 'Commit hook changed the previewed staging.' >&2; exit 1; }\n`;
-        await writeFile(join(temporary, hook), `#!/bin/sh\nif [ -x ${quote(original)} ]; then ${quote(original)} \"$@\" || exit $?; fi\n${check}`, { mode: 0o700 });
+        const check = hook === "post-commit" ? "" : `\ntree=$(git -c core.fsmonitor=false write-tree) || exit $?\n[ "$tree" = ${quote(tree)} ] || { printf '%s\\n' 'Commit hook changed the previewed staging.' >&2; exit 1; }\n`;
+        await writeFile(join(temporary, hook), `#!/bin/sh\nif [ -x ${quote(original)} ]; then ${quote(original)} "$@" || exit $?; fi\n${check}`, { mode: 0o700 });
       }
       await runGit(root, ["-c", `core.hooksPath=${temporary}`, "commit", "-m", input.message!], { env, timeout: 30000 });
       // HEAD contains the approved tree. Preserve any normal post-commit index edits.

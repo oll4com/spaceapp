@@ -1,9 +1,13 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { nousSettingsSchema, type ClipboardItem, type NousDecision, type NousGlobalHold, type Pane, type Room, type SpaceNotification, type TaskItem } from "@space/contracts";
 import { InMemoryNousFollowupsRepository, InMemoryNousPaneCloseoutsRepository, InMemoryNousPlanMarksRepository, type NousPaneCheck, type NousPaneSummaryRow, type PaneReport } from "@space/db";
 import type { DashboardAgentsSample } from "../src/room-routes.js";
 import type { BoardPaneInput } from "../src/nous/pane-board.js";
-import { closeoutSince, closeoutSkipReason, createStandingOrders, keptOpenForTask, NOUS_SAVE_RETRY_TEXT, planWaitsFor, NOUS_SAVE_TEXT, savesToMemory, verifyMemorySave, type CloseoutBrowser, type StandingOrdersDeps, type SweepRequest } from "../src/nous/standing-orders.js";
+import { closeoutSince, closeoutSkipReason, createStandingOrders, keptOpenForTask, NOUS_SAVE_RETRY_TEXT, NOUS_SAVE_TEXT, NOUS_SWEEP_PANE_TITLE, paneBoundToWork, paneHasPendingTask, panePendingWorktrees, planWaitsFor, savesToMemory, verifyMemorySave, worktreeHasPendingDeliverables, type CloseoutBrowser, type StandingOrdersDeps, type SweepRequest } from "../src/nous/standing-orders.js";
 import { itemActed, type NousTurnItem } from "../src/nous/turn-items.js";
 import { deferralLines, localDayHour, renderDailyReview, type NousDeferral } from "../src/nous/daily-review.js";
 import { createNousFollowups } from "../src/nous/followups.js";
@@ -172,7 +176,7 @@ describe("finished panes (close-out candidates)", () => {
 function fixture(options: { panes?: PaneState[]; plans?: ClipboardItem[]; tasks?: TaskItem[]; reports?: PaneReport[]; summaries?: NousPaneSummaryRow[]; checks?: NousPaneCheck[]; notifications?: SpaceNotification[]; standing?: StandingOrdersDeps["standing"]; away?: boolean; planMap?: StandingOrdersDeps["planMap"];
   browsers?: Map<string, CloseoutBrowser> | null; utilizationLow?: StandingOrdersDeps["utilizationLow"]; reviewLoad?: (owner: string) => Promise<string | null>;
   spend?: Awaited<ReturnType<NonNullable<StandingOrdersDeps["spend"]>>>; requests?: StandingOrdersDeps["requests"]; executions?: Array<{ planId: string; paneId: string }>;
-  closePane?: StandingOrdersDeps["closePane"]; prompts?: ReadonlySet<string> | null; parked?: ClipboardItem[] } = {}) {
+  closePane?: StandingOrdersDeps["closePane"]; lastWorkReport?: StandingOrdersDeps["lastWorkReport"]; prompts?: ReadonlySet<string> | null; parked?: ClipboardItem[] } = {}) {
   let clock = T0;
   const closeouts = new InMemoryNousPaneCloseoutsRepository();
   const marks = new InMemoryNousPlanMarksRepository();
@@ -190,6 +194,7 @@ function fixture(options: { panes?: PaneState[]; plans?: ClipboardItem[]; tasks?
     collect,
     reportsSince: async (_owner, paneId, since) => state.reports.filter((entry) => entry.paneId === paneId && entry.at >= since),
     ...(options.planMap ? { planMap: options.planMap } : {}), ...(options.parked ? { parked: async () => options.parked! } : {}), ...(options.closePane ? { closePane: options.closePane } : {}),
+    ...(options.lastWorkReport ? { lastWorkReport: options.lastWorkReport } : {}),
     lowToken: async () => state.lowToken, standing, notice, paneRound: async () => null, away: async () => state.away, now: () => clock,
     ...(options.utilizationLow ? { utilizationLow: options.utilizationLow } : {}),
     ...(options.spend ? { spend: async () => state.spend! } : {}), ...(options.requests ? { requests: options.requests } : {}),
@@ -239,9 +244,25 @@ describe("a pane that reports it finished comes at once (operator 28/10 14:59 BK
     expect(awaitsOperator(turn(BOB_TAIL), false)).toContain("asks the operator");
     expect(awaitsOperator(turn("Θέλετε να το ανεβάσω στο dev;"), false)).toContain("asks the operator");
     expect(awaitsOperator(turn("Ready. Want me to submit it to the queue?"), false)).toContain("asks the operator");
+    expect(awaitsOperator(turn("Θες να τα στείλω στο dev;\n\n---\nΔεν έλεγξα τη βάση του spaceapp-hz."), false)).toContain("asks the operator");
+    expect(awaitsOperator(turn("Deployed.\n\n---\nΔεν έλεγξα τη βάση του spaceapp-hz."), false)).toBeNull();
     expect(awaitsOperator(turn("Fixed it:\nconst x = 1;"), false)).toBeNull();
     expect(awaitsOperator(turn("All done, tests green."), false)).toBeNull();
     expect(awaitsOperator(null, true)).toBe("the operator prompted it last and has not written since its answer");
+  });
+
+  // 14/11 21:41Z: Nous's save request to Cleo/Bob was refused on Bob's done report, whose "your call" was to Nous and whose last line a caveat.
+  const BOB_DONE = [
+    "Only an actual FAIL counts as an error (apps/api/src/nous/cli-update.ts:73).",
+    "Both stay in the error list only because it covers 7 days: the gemini failure drops off on 19/11 and the timeouts on 20/11. At least three earlier slices had already looked at these two and changed nothing. My suggestion is that the error list stop sending panes after a failure whose last occurrence came before its fix. That is a change to the scoring code, which I haven't made; it's your call.",
+    "I didn't open the 13/11 turn's transcript myself; the query text comes from the earlier slices' notes. I didn't create a worktree, so the hold on Paul's tools.ts never applied.",
+  ].join("\n");
+  it("reads a done report's closing caveats as done, never as a question to the operator", () => {
+    const turn = (body: string) => ({ status: "TURN_END", summary: body, body });
+    expect(awaitsOperator(turn(BOB_DONE), false)).toBeNull();
+    expect(awaitsOperator(turn("Deployed on dev.\nNot checked: the stable instance."), false)).toBeNull();
+    expect(awaitsOperator(turn("Which route do you want, A or B?\nI didn't run the full suite."), false)).toContain("Which route");
+    expect(awaitsOperator(turn("Deployed on dev.\nI didn't promote it; want me to?"), false)).toContain("asks the operator");
   });
 
   it("tells whose prompt a pane answered last: Space's or the operator's", () => {
@@ -353,7 +374,7 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
     expect(text).toContain("- Tool calls: 10; mistakes (failed calls that were not a gate holding back): 4; held by a gate: 1");
     expect(text).toContain("- Tools that failed most: space_send_to_pane 3 of 5, space_read_pane 1 of 3");
     // 2/11 REVIEW: each tool's first error per turn, so the review names the cause.
-    expect(text).toContain("- Error samples (up to 3 per tool per turn): space_send_to_pane: \"Not sent: Andy: the room is busy\" ×2; space_read_pane: \"Could not find Zed\"");
+    expect(text).toContain("- Error samples (each failed call's first line): space_send_to_pane: \"Not sent: Andy: the room is busy\" ×2; space_read_pane: \"Could not find Zed\"");
     expect(text).toContain("- Decisions the operator answered: 1 (approved 1, declined 0, in words 0); \"you could have decided this\": 1");
     expect(text).toContain("- Corrections by the operator: 1: \"Rename the room\"");
     // Ask last (goal ee5a573e): the questions the operator got in the last 24 hours.
@@ -444,7 +465,7 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
     expect(renderDailyReview({ since, day: "2026-10-28", hour: 3, facts: [], decisions, rails: null })).toContain("- The rails could not be read here.");
     expect(renderDailyReview({ since, day: "2026-10-28", hour: 3, facts: [], decisions })).not.toContain("every rail");
     const { createNousTools } = await import("../src/nous/tools.js");
-    const railDecisions = vi.fn(async (_owner: string, _since: string) => rails);
+    const railDecisions = vi.fn<(owner: string, since: string) => Promise<typeof rails>>(async () => rails);
     const tools = createNousTools({ rooms: async () => [], listPanes: async () => [], decisions: async () => decisions, railDecisions } as never);
     const summary = await tools.execute("space_nous_decisions", { summary: true }, { owner: "user:operator", turnId: "turn:1", callId: "call:1", traceId: "trace:1" });
     expect(summary.result).toContain("- Mail Copilot: reviews approve 3, edit 1; rules approve 1");
@@ -453,14 +474,15 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
   });
 
   it("brings the utilization-low line every 10 minutes while it stays low (the push, operator 3/11 23:11 BKK), and the REVIEW names the day's average (Load, plan clipboard:f4SH36t3fJ6c)", async () => {
-    const low = vi.fn(async (_owner: string, plans: number) => plans ? `Utilization stayed under the 90% target for 15 min. Waiting: ${plans} open plan` : null);
+    // 21/11: the count is runnable plans only; this one's pane is working, so 0 (the wiring decides whether other work waits).
+    const low = vi.fn(async (_owner: string, plans: number) => `Utilization stayed under the 90% target for 15 min. Runnable: ${plans} plans`);
     const f = fixture({ panes: [{ pane: andy, state: "working", since: iso(T0 - MIN) }], plans: [plan("clipboard:a", andy.id, 40, iso(T0 - 5 * MIN)) as ClipboardItem],
       utilizationLow: low, reviewLoad: async () => "## Utilization\n2026-10-20: average 41% of capacity in use" });
     f.state.settings = nousSettingsSchema.parse({ enabled: true });
     await f.orders.tickOwner(owner);
-    expect(low).toHaveBeenCalledWith(owner, 1, false);
+    expect(low).toHaveBeenCalledWith(owner, 0, false);
     // Hold A (plan clipboard:ZWJJdBgHm64Z): idle capacity is an item the turn acts on before it may answer NOTHING_NEW.
-    const idle = "Utilization stayed under the 90% target for 15 min. Waiting: 1 open plan";
+    const idle = "Utilization stayed under the 90% target for 15 min. Runnable: 0 plans";
     expect(f.notice).toHaveBeenCalledWith(owner, "utilization-low", idle, [{ key: "utilization", kind: "UTILIZATION", line: idle, always: true }], false);
     expect(f.standing.mock.calls.find((call) => call[1] === "REVIEW")?.[2]).toContain("## Utilization\n2026-10-20: average 41% of capacity in use");
     f.advance(5 * MIN);
@@ -489,7 +511,7 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
     const [, , text, items] = f.notice.mock.calls.find((call) => (call as unknown[])[1] === "utilization-low") as unknown as [string, string, string, Array<Record<string, unknown>>];
     expect(text).toBe(["Utilization stayed under the 90% target for 15 min.", "Plans not on a pane (open a pane for each now):", `- ${items[1]!.line}`,
       "Plans whose pane is idle or done (send each its next step now):", `- ${items[2]!.line}`, `- ${items[3]!.line}`, `- ${items[4]!.line}`].join("\n"));
-    expect(items).toEqual([{ key: "utilization", kind: "UTILIZATION", line: text, always: true },
+    expect(items).toEqual([{ key: "utilization", kind: "UTILIZATION", line: `${text}\n3 CLI panes are not working: this item moves by 3 dispatches (a pane each), helpers, or what blocks the rest recorded (space_nous_followup add naming utilization); "save to memory" is no dispatch.`, always: true, need: 3 },
       expect.objectContaining({ key: "plan:clipboard:n", line: expect.stringContaining("no open pane · next: 2. Step 2 (PENDING): open a pane for it now at the plan's minimum model (space_open_panes) and send it \"Implement the following plan. Plan ID: clipboard:n\"") }),
       expect.objectContaining({ key: "plan:clipboard:r", kind: "PLAN", plan: "clipboard:r", pane: andy.id, line: expect.stringContaining("Andy idle · next: 1. Step 1 (PENDING): send it to Andy now") }),
       expect.objectContaining({ key: "plan:clipboard:o", pane: bob.id, line: expect.stringContaining("Bob idle · next: 1. Step 1 (PENDING): send it to Bob now") }),
@@ -516,8 +538,11 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
     await f.orders.tickOwner(owner);
     const [, , text, items] = f.notice.mock.calls.find((call) => (call as unknown[])[1] === "utilization-low") as unknown as [string, string, string, Array<Record<string, unknown>>];
     // The line names each pane→step pair, and each is an item: Nous cannot answer NOTHING_NEW while one waits.
-    expect(text).toBe(["Utilization stayed under the 90% target for 15 min.", "Plans whose pane is idle or done (send each its next step now):", `- ${items[1]!.line}`, `- ${items[2]!.line}`].join("\n"));
-    expect(items).toEqual([{ key: "utilization", kind: "UTILIZATION", line: text, always: true },
+    // 21/11: Dana, whose plan can only wait on its BLOCKED step, is free capacity for other work.
+    expect(text).toBe(["Utilization stayed under the 90% target for 15 min.", "Free CLI panes (each gets work before it closes):", `- ${items[1]!.line}`,
+      "Plans whose pane is idle or done (send each its next step now):", `- ${items[2]!.line}`, `- ${items[3]!.line}`].join("\n"));
+    expect(items).toEqual([{ key: "utilization", kind: "UTILIZATION", line: expect.stringContaining(`${text}\n5 CLI panes are not working`), always: true, need: 5 },
+      expect.objectContaining({ key: `free:${dana.id}`, pane: dana.id }),
       expect.objectContaining({ key: "plan:clipboard:d", kind: "PLAN", plan: "clipboard:d", pane: andy.id, line: expect.stringContaining("Andy done · next: 2. Step 2 (PENDING): send it to Andy now") }),
       expect.objectContaining({ key: "plan:clipboard:i", kind: "PLAN", plan: "clipboard:i", pane: bob.id, line: expect.stringContaining("Bob idle · next: 2. Step 2 (IN_PROGRESS): send it to Bob now") })]);
     // Not stalled: the stalled nudges stay as they were.
@@ -696,6 +721,26 @@ describe("the standing orders tick", () => {
     expect(f.standing).not.toHaveBeenCalled();
   });
 
+  it("token audit 21/11: a finished pane whose newest own report is open asks for its next step or its wait, never a save or close the close tool refuses", async () => {
+    let last = { status: "PROGRESS", at: iso(T0 - 40 * MIN), summary: "Step 6 halfway:\nINBOX 27/h" };
+    const closePane = vi.fn<NonNullable<StandingOrdersDeps["closePane"]>>(async () => true);
+    const f = fixture({ closePane, lastWorkReport: async () => last });
+    expect(await f.orders.tickOwner(owner)).toMatchObject({ paneLines: 1, turn: null });
+    expect(f.finished()).toBe("- Main/Andy · done 31 min · last reported progress at 09:20 UTC (\"Step 6 halfway: INBOX 27/h\"), no done or failed report since: its work is open, so no save or close "
+      + "(space_close_pane refuses it) → send its next step (space_send_to_pane), or record its wait (space_pane_checked WAITING_OPERATOR, WAITING_DATE or BLOCKED with nextCheckInMinutes)");
+    // A save verified earlier: Space closes no pane with open work either.
+    await f.orders.saveRequested(owner, room.id, [andy.id]);
+    f.state.reports = [report(andy.id, iso(T0 + MIN), "Saved what I learned: space_memory:ab12cd34ef56.")];
+    f.advance(40 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(closePane).not.toHaveBeenCalled();
+    // Its done report: the close goes ahead as before.
+    last = { status: "DONE", at: iso(T0 + 2 * MIN), summary: "Step 6 done" };
+    f.advance(40 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(closePane).toHaveBeenCalledWith(owner, room.id, andy.id);
+  });
+
   it("closes a pane whose save it verified itself, with no turn; a refused close, or work after the save, goes back to Nous (plan qH5emwVaV6yO step 10)", async () => {
     const closePane = vi.fn<NonNullable<StandingOrdersDeps["closePane"]>>(async () => true);
     const f = fixture({ closePane });
@@ -799,6 +844,31 @@ describe("the standing orders tick", () => {
     expect((await f.closeouts.list(owner))[0]).toMatchObject({ state: "CLOSED", reason: "closed elsewhere" });
   });
 
+  it("refuses a save asked again before its 20 minutes, or a third time; new work typed since frees it (21/11: load 13-19 %, 25 saves against 9 work sends)", async () => {
+    const f = fixture();
+    const pane = "pane:repeat01"; // its own id: the prompt clock is module-wide
+    expect((await f.orders.saveRepeats(owner, [pane])).size).toBe(0);
+    await f.orders.saveRequested(owner, room.id, [pane]);
+    f.advance(5 * MIN);
+    expect((await f.orders.saveRepeats(owner, [pane])).get(pane)).toMatch(/^asked 10:00 UTC, .*after 20 min/);
+    f.advance(16 * MIN);
+    expect((await f.orders.saveRepeats(owner, [pane])).size).toBe(0);
+    await f.orders.saveRequested(owner, room.id, [pane]);
+    f.advance(30 * MIN);
+    expect((await f.orders.saveRepeats(owner, [pane])).get(pane)).toMatch(/^asked twice already \(last 10:21 UTC\)/);
+    noteSpacePrompt(pane, T0 + 52 * MIN);
+    expect((await f.orders.saveRepeats(owner, [pane])).size).toBe(0);
+    // 21/11 Dana: a verified save is not asked again until new work reaches the pane.
+    const rows = await f.closeouts.list(owner);
+    await f.closeouts.save(owner, { ...rows[0]!, state: "VERIFIED", verifiedMemoryId: "space_memory:d5361e10", updatedAt: iso(T0 + 53 * MIN) });
+    expect((await f.orders.saveRepeats(owner, [pane])).get(pane)).toBe("saved already (space_memory:d5361e10, 10:53 UTC): close it (space_close_pane) or give it its next work");
+    // Goal 5acd171d: only a verified save with nothing typed since starts its next work fresh.
+    expect(await f.orders.savedUnprompted(owner, [pane, "pane:other001"])).toEqual(new Set([pane]));
+    noteSpacePrompt(pane, T0 + 54 * MIN);
+    expect((await f.orders.saveRepeats(owner, [pane])).size).toBe(0);
+    expect((await f.orders.savedUnprompted(owner, [pane])).size).toBe(0);
+  });
+
   it("brings a pane the board says waits on the operator back to Nous once it is finished 30 minutes, until Nous records the wait", async () => {
     const f = fixture({ summaries: [summary("OPERATOR", iso(T0 - 5 * MIN))] });
     expect(await f.orders.tickOwner(owner)).toMatchObject({ paneLines: 1, turn: null });
@@ -892,7 +962,7 @@ describe("the standing orders tick", () => {
     expect(f.standing.mock.calls.slice(calls).some((call) => String(call[2]).includes("Parked plans waiting on you"))).toBe(false);
   });
 
-  it("the push: open requests whose pane is done or gone 30+ min come with the plans as items, never one whose pane works or rested less (operator 3/11 23:11 BKK)", async () => {
+  it("the push: open requests whose pane is done 30+ min come with the plans as items, never one whose pane works, rested less, or is closed or gone (operator 3/11 23:11 BKK)", async () => {
     const low = vi.fn(async () => "Utilization stayed under the 90% target for 15 min.");
     const request = (key: string, extra: Partial<SweepRequest>): SweepRequest => ({ key, messageId: `nous_msg:${key}`, words: `request ${key}`, openedAt: iso(T0 - 3 * 60 * MIN), ...extra });
     const open = [request("gone", { pane: "pane:gone0001" }), request("idle", { pane: andy.id, paneName: "Andy", paneState: "idle", paneSince: iso(T0 - 40 * MIN) }),
@@ -902,9 +972,57 @@ describe("the standing orders tick", () => {
     f.state.settings = nousSettingsSchema.parse({ enabled: true });
     await f.orders.tickOwner(owner);
     const [, , text, items] = f.notice.mock.calls.find((call) => (call as unknown[])[1] === "utilization-low") as unknown as [string, string, string, Array<Record<string, unknown>>];
-    expect(text).toContain("Open requests whose pane is done or gone 30+ min:");
-    expect(items.slice(1)).toEqual([expect.objectContaining({ key: "request:gone", kind: "REQUEST", requestKey: "gone", messageId: "nous_msg:gone", line: expect.stringContaining("pane:gone0001 closed or gone") }),
-      expect.objectContaining({ key: "request:idle", paneName: "Andy", line: expect.stringContaining("Andy idle since") })]);
+    expect(text).toContain("Open requests whose pane is done 30+ min:");
+    expect(items.slice(1)).toEqual([expect.objectContaining({ key: "request:idle", kind: "REQUEST", requestKey: "idle", messageId: "nous_msg:idle", paneName: "Andy", line: expect.stringContaining("Andy idle since") })]);
+  });
+
+  it("the push never carries a request whose pane is closed or gone, unchanged or changed, every 10 min: request-done's one line routes it (21/11 REVIEW: 521 INBOX turns/24h)", async () => {
+    const low = vi.fn(async () => "Utilization stayed under the 90% target for 15 min.");
+    const openedAt = iso(T0 - 3 * 60 * MIN);
+    const open: SweepRequest[] = [{ key: "gone", messageId: "nous_msg:gone", words: "request gone", openedAt, pane: "pane:gone0001" },
+      { key: "idle", messageId: "nous_msg:idle", words: "request idle", openedAt, pane: andy.id, paneName: "Andy", paneState: "idle", paneSince: iso(T0 - 40 * MIN) }];
+    const f = fixture({ panes: [{ pane: andy, state: "idle", since: iso(T0 - 40 * MIN) }], utilizationLow: low,
+      requests: { zone: async () => "UTC", open: async () => open, progress: async () => {} } });
+    f.state.settings = nousSettingsSchema.parse({ enabled: true });
+    const keys: string[][] = [];
+    for (let round = 0; round < 4; round += 1) {
+      if (round === 3) open[0] = { ...open[0]!, report: "new step reported" };
+      const before = f.notice.mock.calls.length;
+      await f.orders.tickOwner(owner);
+      const call = f.notice.mock.calls.slice(before).find((entry) => (entry as unknown[])[1] === "utilization-low") as unknown as [string, string, string, Array<{ key: string }>];
+      keys.push(call[3].map((item) => item.key).filter((key) => key.startsWith("request:")));
+      f.advance(11 * MIN);
+    }
+    expect(keys).toEqual([["request:idle"], ["request:idle"], ["request:idle"], ["request:idle"]]);
+  });
+
+  it("a requests sweep with no item (every request's pane working) starts no turn of its own and waits 30 minutes (goal 5acd171d)", async () => {
+    const working: SweepRequest = { key: "busy", messageId: "nous_msg:busy", words: "request busy", openedAt: iso(T0 - 60 * MIN), pane: "pane:cody0001", paneName: "Main/Cody",
+      paneState: "working", paneSince: iso(T0 - 10 * MIN), report: null, evidence: null };
+    let requests = [working];
+    const open = vi.fn(async () => requests);
+    const f = fixture({ panes: [], requests: { zone: async () => "Asia/Bangkok", open, progress: async () => {} } });
+    await f.orders.tickOwner(owner);
+    expect(f.standing).not.toHaveBeenCalled();
+    // Swept: the next tick within 30 minutes does not read it again; once a request needs an act, the sweep is a turn.
+    f.advance(10 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(open).toHaveBeenCalledTimes(1);
+    requests = [{ ...working, paneState: "idle" }];
+    f.advance(21 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(f.text()).toContain("Main/Cody idle");
+  });
+
+  it("the requests sweep never lists a request whose closed pane request-done already told (paneGone): no turn for it every 8 hours (21/11 REVIEW)", async () => {
+    const gone: SweepRequest = { key: "gone", messageId: "nous_msg:gone", words: "request gone", openedAt: iso(T0 - 3 * 60 * MIN), pane: "pane:gone0001", goneTold: true };
+    const f = fixture({ panes: [], requests: { zone: async () => "Asia/Bangkok", open: async () => [gone], progress: async () => {} } });
+    await f.orders.tickOwner(owner);
+    expect(f.standing).not.toHaveBeenCalled();
+    // Not yet told: it is still swept.
+    const told = fixture({ panes: [], requests: { zone: async () => "Asia/Bangkok", open: async () => [{ ...gone, goneTold: false }], progress: async () => {} } });
+    await told.orders.tickOwner(owner);
+    expect(told.text()).toContain("pane:gone0001 closed or gone");
   });
 
   it("runs each owner on its own interval from the minute tick, and the Away round every 30 minutes while the operator is away", async () => {
@@ -1011,6 +1129,27 @@ describe("standing orders move work on their own (plan clipboard:ZWJJdBgHm64Z, o
     expect(renderDailyReview({ facts: [], decisions: [], since: "2026-10-30T20:00:00.000Z", day: "2026-11-01", hour: 3 })).not.toContain("## Operator requests");
   });
 
+  it("2026-11-16 REVIEW (15/11: nous_msg:a6bd8d9a ×8 follow-ups): a second open follow-up naming the same operator message or plan is refused, replaces swaps it", async () => {
+    const followups = createNousFollowups({ repository: new InMemoryNousFollowupsRepository(), notice: async () => {} });
+    const tools = createNousTools({ followups } as unknown as NousToolDeps);
+    const ctx = { owner: "user:operator", turnId: "nous_turn:fu16", callId: "call:1", traceId: "trace:1" };
+    const add = (args: Record<string, unknown>) => tools.execute("space_nous_followup", { op: "add", inMinutes: 30, ...args }, ctx);
+    const first = await add({ note: "Answer the operator's nous_msg:a6bd8d9a01 once Cody reports" });
+    expect(first.ok).toBe(true);
+    const firstId = first.result.match(/nous_followup:[A-Za-z0-9_-]+/)![0];
+    const again = await add({ note: "Re-check nous_msg:a6bd8d9a01: did Cody report?" });
+    expect(again).toMatchObject({ ok: false, display: `${firstId} already follows nous_msg:a6bd8d9a01`, result: expect.stringContaining(`pass replaces: ${firstId}`) });
+    expect((await add({ note: "Plan clipboard:1NF6u6gcCwtj step 4 check" })).ok).toBe(true);
+    expect((await add({ note: "Plan clipboard:1NF6u6gcCwtj again" })).ok).toBe(false);
+    // replaces cancels the open one and sets the new one: one open follow-up per request.
+    expect((await add({ note: "Re-check nous_msg:a6bd8d9a01: did Cody report?", replaces: firstId })).ok).toBe(true);
+    const open = (await tools.execute("space_nous_followup", { op: "list" }, ctx)).result.split("\n").filter((line) => line.includes("OPEN") && line.includes("nous_msg:a6bd8d9a01"));
+    expect(open).toHaveLength(1);
+    expect(open[0]).toContain("did Cody report?");
+    // A different request is not a duplicate.
+    expect((await add({ note: "Answer nous_msg:f4e7160001" })).ok).toBe(true);
+  });
+
   it("R22-5 (goal 35813e48 «Μην αφήνεις για αύριο ότι μπορείς να κάνεις σήμερα τώρα!!»): the REVIEW lists the day's deferrals, justified or not, and counts the misses", async () => {
     // The tools record each deferral on their row: a plan's or goal's DATE wait, a follow-up on a time.
     const plan = { id: "clipboard:plan0001", source: "PLAN", title: "S6 push proof", executionStatus: "IN_PROGRESS", progressPercentage: 40, steps: [],
@@ -1069,11 +1208,19 @@ describe("standing orders move work on their own (plan clipboard:ZWJJdBgHm64Z, o
     // 14/11 REVIEW item 6: a plan or goal wait an hour or less ahead is a check like a follow-up; another job owning the slot is a running job's hold.
     expect(deferralLines([
       { at, kind: "PLAN", id: "clipboard:bpqbhztxAFG3", until: "2026-11-01T23:00:00.000Z", what: "public-host emulator slot: Bob's battery measurement owns it until ~22:57 UTC" },
+      { at, kind: "FOLLOWUP", id: "nous_followup:vm105", until: "2026-11-01T23:00:00.000Z", what: "Send Hector/Dana 'resume option A' once pve-az public-host restic/vzdump backup finishes (~04:15 UTC)" },
       { at, kind: "GOAL", id: "nous_goal:7365014c", until: "2026-11-01T21:45:00.000Z", what: "morning batch" }], "2026-11-01T20:00:00.000Z"))
-      .toEqual([expect.stringContaining("→ justified (a running job's ETA)"), "- Could have run today: 0 of 1"]);
+      .toEqual([expect.stringContaining("→ justified (a running job's ETA)"), expect.stringContaining("→ justified (a running job's ETA)"), "- Could have run today: 0 of 2"]);
     expect(reasoned.map((line) => line.split("→ ")[1] ?? line)).toEqual(["HELD ONLY BY YOUR REASON", "justified (the operator's hands)", "COULD HAVE RUN TODAY",
       "- Could have run today: 1 of 3 (each one is a miss: run it in this turn, or record what really holds it)",
       "- Held only by the reason you gave: 1 (judge each: a reason that holds nothing is a lesson and the work runs now; no code item)"]);
+    // 16/11 REVIEW (nous_msg:a6bd8d9a ×8): the waits of one request are one line, its newest, with their count.
+    const repeated = deferralLines([
+      { at, kind: "FOLLOWUP", id: "nous_followup:aaaaa1", until: "2026-11-02T02:00:00.000Z", what: "Answer nous_msg:a6bd8d9a4b2c" },
+      { at: "2026-11-01T21:30:00.000Z", kind: "FOLLOWUP", id: "nous_followup:aaaaa2", until: "2026-11-02T02:10:00.000Z", what: "Answer nous_msg:a6bd8d9a again" },
+      { at, kind: "FOLLOWUP", id: "nous_followup:bbbbb1", until: "2026-11-02T02:00:00.000Z", what: "Answer nous_msg:f4e71600" }], "2026-11-01T20:00:00.000Z");
+    expect(repeated).toEqual([expect.stringContaining("nous_followup:bbbbb1 until"),
+      expect.stringContaining("21:30 UTC followup nous_followup:aaaaa2 (×2: nous_followup:aaaaa1, nous_followup:aaaaa2) until"), "- Could have run today: 2 of 2 (each one is a miss: run it in this turn, or record what really holds it)"]);
     const plan = { id: "clipboard:plan0006", source: "PLAN", title: "Proof", executionStatus: "IN_PROGRESS", progressPercentage: 40, roomId: "room:main0001", paneId: "pane:andy0001",
       steps: [{ order: 1, title: "Build", status: "COMPLETED" }, { order: 2, title: "Measure", status: "PENDING" }],
       waitsOn: { kind: "DATE", what: "Measure tomorrow", until: "2099-11-02T02:00:00.000Z" } } as unknown as ClipboardItem;
@@ -1086,6 +1233,13 @@ describe("standing orders move work on their own (plan clipboard:ZWJJdBgHm64Z, o
     expect((await wait()).result).toContain('This wait holds the whole plan and no pane works on it now; still open: step 2 "Measure".');
     state = "RUNNING";
     expect((await wait()).result).not.toContain("This wait holds the whole plan");
+    // 15/11 correction 57d56dcf: without a reason, a third-party wait on open steps no pane works on is held until they are sent.
+    state = "IDLE";
+    const bare = () => tools.execute("space_plan_update", { plan: plan.id, waitsOn: { kind: "THIRD_PARTY", what: "IONOS reply" } }, ctx);
+    expect(await bare()).toMatchObject({ ok: false, result: expect.stringContaining('still open: step 2 "Measure"') });
+    expect((await tools.execute("space_plan_update", { plan: plan.id, waitsOn: { kind: "OPERATOR", what: "Your answer" } }, ctx)).ok).toBe(true);
+    state = "RUNNING";
+    expect((await bare()).ok).toBe(true);
   });
 });
 
@@ -1153,5 +1307,147 @@ describe("R43-1: roomCloseouts lists a room's finished panes, oldest finished fi
     expect(by.Cody).toMatchObject({ closable: false, save: "save not asked" });
     expect(by.Dana).toMatchObject({ closable: false, skip: "keep-open" });
     expect(by.Emma).toMatchObject({ closable: false, skip: "always-on" });
+  });
+});
+
+describe("2026-11-25 REVIEW: protect task-bound panes and pending deliverables from sweep assignment and closeout", () => {
+  const base = { since: () => iso(T0 - 45 * MIN), tasks: [] as TaskItem[], executions: [] as Array<{ planId: string; paneId: string }>, summaries: [] as NousPaneSummaryRow[], now: T0, finishedAfterMs: 30 * MIN };
+
+  it("keeps panes with RUNNING tasks, uncompleted ran tasks, multi-task due soon, or pending worktree deliverables out of closeout and auto-close", async () => {
+    const runningUnscheduled = { ...task(andy.id, null), id: "task:run1", status: "RUNNING" } as unknown as TaskItem;
+    const ranOnce = { ...task(andy.id, { kind: "ONCE", lastRunAt: iso(T0 - 20 * MIN), nextRunAt: null }), id: "task:once1", status: "OPEN" } as unknown as TaskItem;
+    const farScheduled = { ...task(andy.id, { kind: "DAILY", nextRunAt: iso(T0 + 5 * 60 * MIN) }), id: "task:far1", status: "OPEN" } as unknown as TaskItem;
+    const dueScheduled = { ...task(andy.id, { kind: "DAILY", nextRunAt: iso(T0 + 20 * MIN) }), id: "task:due1", status: "OPEN" } as unknown as TaskItem;
+    const doneTask = { ...task(andy.id, { kind: "DAILY", nextRunAt: iso(T0 + 10 * MIN) }), id: "task:done1", status: "DONE" } as unknown as TaskItem;
+
+    expect(paneHasPendingTask(andy.id, [runningUnscheduled], T0)).toBe(true);
+    expect(paneHasPendingTask(andy.id, [ranOnce], T0)).toBe(true);
+    expect(paneHasPendingTask(andy.id, [farScheduled, dueScheduled], T0)).toBe(true);
+    expect(paneHasPendingTask(andy.id, [doneTask], T0)).toBe(false);
+
+    expect(closeoutSkipReason(input(andy, "done"), { ...base, tasks: [runningUnscheduled] })).toBe("task");
+    expect(closeoutSkipReason(input(andy, "done"), { ...base, tasks: [ranOnce] })).toBe("task");
+    expect(closeoutSkipReason(input(andy, "done"), { ...base, tasks: [farScheduled, dueScheduled] })).toBe("task");
+    expect(closeoutSkipReason(input(andy, "done"), { ...base, tasks: [doneTask] })).toBeNull();
+
+    // Pending worktree deliverables protect the pane; a failed read (null) protects CLI panes conservatively without blocking browsers.
+    const web = cli("pane:web00001", "Web", { mode: "BROWSER", terminalRuntimeId: null, updatedAt: iso(T0 - 60 * MIN) } as Partial<Pane>);
+    expect(closeoutSkipReason(input(andy, "done"), { ...base, pendingWorktrees: new Set([andy.id]) })).toBe("pending-deliverables");
+    expect(closeoutSkipReason(input(andy, "done"), { ...base, pendingWorktrees: null })).toBe("pending-deliverables");
+    expect(closeoutSkipReason(input(web, "idle"), { ...base, pendingWorktrees: null })).toBeNull();
+
+    // Even with a verified memory save, Space never auto-closes a pane with a pending task or pending worktree deliverables.
+    const closePane = vi.fn<NonNullable<StandingOrdersDeps["closePane"]>>(async () => true);
+    const bob = cli("pane:bob00001", "Bob");
+    const closeouts = new InMemoryNousPaneCloseoutsRepository();
+    const verifiedRow = (paneId: string) => ({ paneId, roomId: room.id, state: "VERIFIED" as const, requestedAt: iso(T0 - 10 * MIN), retriedAt: null,
+      verifiedMemoryId: "space_memory:ab12cd34ef56", closedAt: null, reason: null, updatedAt: iso(T0 - 5 * MIN) });
+    await closeouts.save(owner, verifiedRow(andy.id));
+    await closeouts.save(owner, verifiedRow(bob.id));
+    const orders = createStandingOrders({
+      closeouts, marks: new InMemoryNousPlanMarksRepository(),
+      settings: async () => nousSettingsSchema.parse({ enabled: true, standingOrders: { dailyReview: false } }),
+      owners: async () => [owner],
+      collect: async () => ({
+        rooms: [{ room, sample: sample([{ pane: andy, state: "done", since: iso(T0 - 40 * MIN) }, { pane: bob, state: "done", since: iso(T0 - 40 * MIN) }]) }],
+        reports: [], notifications: [], decisions: [], copilotItems: [], plans: [], checks: [],
+        tasks: [runningUnscheduled], executions: [], summaries: [], pendingWorktrees: new Set([bob.id])
+      }),
+      reportsSince: async () => [], closePane, standing: async () => "STARTED", notice: async () => {}, now: () => T0
+    });
+    await orders.tickOwner(owner);
+    expect(closePane).not.toHaveBeenCalled();
+    const list = await orders.roomCloseouts(owner, room.id);
+    expect(list.find((entry) => entry.pane.id === andy.id)).toMatchObject({ closable: false, skip: "task" });
+    expect(list.find((entry) => entry.pane.id === bob.id)).toMatchObject({ closable: false, skip: "pending-deliverables" });
+  });
+
+  it("never dispatches hygiene sweeps to panes owning a task, open plan, managed execution, open request, or pending worktree deliverables — even with NOUS_SWEEP_PANE_TITLE", async () => {
+    const sweepPaneOf = (id: string, name: string) => cli(id, name, { title: NOUS_SWEEP_PANE_TITLE, titleSource: "manual" } as Partial<Pane>);
+    const taskPane = sweepPaneOf("pane:task0001", "TaskSweep");
+    const planPane = sweepPaneOf("pane:plan0001", "PlanSweep");
+    const reqPane = sweepPaneOf("pane:req00001", "ReqSweep");
+    const dirtyPane = sweepPaneOf("pane:dirt0001", "DirtySweep");
+    const cleanSweep = sweepPaneOf("pane:free0001", "CleanSweep");
+
+    const openTask = task(taskPane.id, { kind: "DAILY", nextRunAt: iso(T0 + 6 * 60 * MIN) });
+    const blockedPlan = plan("clipboard:blk1", planPane.id, 50, iso(T0 - 60 * MIN), ["COMPLETED", "BLOCKED"]);
+    // Fresh open request (< 30 min idle): not in requestItems yet, but still bound to reqPane.
+    const freshRequest: SweepRequest = { key: "req:fresh", messageId: "nous_msg:fresh1", words: "Finish feature X", pane: reqPane.id, paneName: "Main/ReqSweep",
+      paneState: "idle", paneSince: iso(T0 - 10 * MIN), openedAt: iso(T0 - 20 * MIN) };
+
+    expect(paneBoundToWork(taskPane.id, { tasks: [openTask] })).toBe(true);
+    expect(paneBoundToWork(planPane.id, { plans: [blockedPlan] })).toBe(true);
+    expect(paneBoundToWork(reqPane.id, { requests: [freshRequest] })).toBe(true);
+    expect(paneBoundToWork(dirtyPane.id, { pendingWorktrees: new Set([dirtyPane.id]) })).toBe(true);
+    expect(paneBoundToWork(cleanSweep.id, { tasks: [openTask], plans: [blockedPlan], requests: [freshRequest], pendingWorktrees: new Set([dirtyPane.id]) })).toBe(false);
+
+    const dispatch = vi.fn<NonNullable<StandingOrdersDeps["dispatch"]>>(async () => true);
+    const paneStates = [taskPane, planPane, reqPane, dirtyPane, cleanSweep].map((pane) => ({ pane, state: "idle", since: iso(T0 - 20 * MIN) }));
+    const details = Object.fromEntries(paneStates.map((entry) => [entry.pane.id, { status: entry.state, since: entry.since, source: "native", modelId: "gemini-4-neon-high" }]));
+    const orders = createStandingOrders({
+      closeouts: new InMemoryNousPaneCloseoutsRepository(), marks: new InMemoryNousPlanMarksRepository(),
+      settings: async () => nousSettingsSchema.parse({ enabled: true, standingOrders: { dailyReview: false, closeFinishedPanes: false } }),
+      owners: async () => [owner],
+      collect: async () => ({
+        rooms: [{ room, sample: { data: paneStates.map((entry) => entry.pane), sampledAt: iso(T0), activity: Object.fromEntries(paneStates.map((entry) => [entry.pane.id, entry.state])) as never, details: details as never } }],
+        reports: [], notifications: [], decisions: [], copilotItems: [], plans: [blockedPlan], checks: [],
+        tasks: [openTask], executions: [], summaries: [], pendingWorktrees: new Set([dirtyPane.id])
+      }),
+      requests: { zone: async () => "UTC", open: async () => [freshRequest], progress: async () => {} },
+      utilizationLow: async () => "Utilization stayed under the 90% target for 15 min.",
+      dispatch, sweep: () => [{ key: "sweep:a", text: "Sweep a" }, { key: "sweep:b", text: "Sweep b" }],
+      reportsSince: async () => [], standing: async () => "STARTED", notice: async () => {}, now: () => T0
+    });
+    await orders.tickOwner(owner);
+    // Only cleanSweep receives a sweep; none of the bound or dirty panes receives one.
+    expect(dispatch.mock.calls).toEqual([[owner, room.id, cleanSweep.id, "Sweep a"]]);
+  });
+
+  it("detects dirty files and unmerged commits in managed worktrees via panePendingWorktrees without flagging clean or root-repo panes", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "space-standing-wt-"));
+    const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe" }).toString().trim();
+    try {
+      const repo = join(tmp, "repo");
+      const wtRoot = join(tmp, "worktrees");
+      const wtClean = join(wtRoot, "space", "wt-clean");
+      const wtDirty = join(wtRoot, "space", "wt-dirty");
+      const wtAhead = join(wtRoot, "space", "wt-ahead");
+      git(tmp, ["init", "-b", "dev", repo]);
+      git(repo, ["config", "user.name", "Test"]);
+      git(repo, ["config", "user.email", "test@example.com"]);
+      writeFileSync(join(repo, "README.md"), "base\n");
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "init"]);
+      git(repo, ["worktree", "add", "-b", "feat/clean", wtClean, "dev"]);
+      git(repo, ["worktree", "add", "-b", "feat/dirty", wtDirty, "dev"]);
+      git(repo, ["worktree", "add", "-b", "feat/ahead", wtAhead, "dev"]);
+
+      writeFileSync(join(wtDirty, "deliverable.txt"), "uncommitted\n");
+      writeFileSync(join(wtAhead, "committed.txt"), "ahead\n");
+      git(wtAhead, ["add", "."]);
+      git(wtAhead, ["commit", "-m", "pending deliverable"]);
+
+      expect(await worktreeHasPendingDeliverables(wtClean)).toBe(false);
+      expect(await worktreeHasPendingDeliverables(wtDirty)).toBe(true);
+      expect(await worktreeHasPendingDeliverables(wtAhead)).toBe(true);
+
+      // Registry lookup also catches a pane whose cwd is the root repo while its recorded worktree has pending deliverables.
+      const registryPath = join(wtRoot, ".worktree-registry.json");
+      writeFileSync(registryPath, JSON.stringify({ version: 1, worktrees: { [wtAhead]: { paneId: "pane:reg00001", worktreePath: wtAhead, status: "ACTIVE" } } }));
+      const pending = await panePendingWorktrees([
+        { id: "pane:root0001", cwd: repo },
+        { id: "pane:clean001", cwd: wtClean },
+        { id: "pane:dirty001", cwd: wtDirty },
+        { id: "pane:reg00001", cwd: repo }
+      ], { worktreesRoot: wtRoot, registryPath });
+      expect([...pending].sort()).toEqual(["pane:dirty001", "pane:reg00001"]);
+
+      // Once merged into dev, the ahead worktree is no longer pending.
+      git(repo, ["merge", "--ff-only", "feat/ahead"]);
+      expect(await worktreeHasPendingDeliverables(wtAhead)).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

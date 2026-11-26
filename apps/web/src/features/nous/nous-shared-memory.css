@@ -14,3 +14,12 @@
 .nous-shared-memory-editor input, .nous-shared-memory-editor textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: .65rem; font: inherit; color: var(--room-text); background: var(--room-panel); border: 1px solid var(--room-border); border-radius: .4rem; }
 .nous-shared-memory-editor textarea { resize: vertical; }
 .nous-shared-memory [role="alert"] { color: var(--room-danger, var(--room-text)); }
+.nous-shared-memory-row { cursor: pointer; }
+.nous-shared-memory-dialog { box-sizing: border-box; width: min(48rem, calc(100vw - 2rem)); max-width: none; max-height: min(85vh, 56rem); margin: auto; padding: 1rem; overflow: auto; color: var(--room-text); background: var(--room-panel, var(--room-surface)); border: 1px solid var(--room-border); border-radius: .75rem; }
+.nous-shared-memory-dialog:not([open]) { display: none; }
+.nous-shared-memory-dialog::backdrop { background: rgb(0 0 0 / .45); }
+.nous-shared-memory-filters { display: grid; gap: .5rem; margin-top: .75rem; }
+.nous-shared-memory-dialog article { padding: .65rem .8rem; }
+.nous-shared-memory-dialog .nous-shared-memory-entries { gap: .5rem; }
+.nous-shared-memory-dialog .nous-shared-memory-body { margin: .35rem 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.nous-shared-memory-dialog .nous-shared-memory-actions { margin-top: .5rem; }

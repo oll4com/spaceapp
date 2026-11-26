@@ -85,9 +85,11 @@ export function NousPaneBoard({ active, decisions, overview, renderDecision, onS
   // Each dropdown counts within the other's choice, so its numbers are what picking it shows.
   const inRoom = roomId === "ALL" ? panes : board.rooms.find((entry) => entry.roomId === roomId)!.panes;
   const count = (value: WaitsFilter) => inRoom.filter((pane) => matches(pane, value)).length;
-  const rooms = board.rooms.map((entry) => ({ ...entry, panes: entry.panes.filter((pane) => matches(pane, filter)) }));
+  // A stored wait no pane has any more reads as any wait, like a closed room (nous_msg:eb36261e: "Waits on a promote · 0" opened empty).
+  const waits = count(filter) ? filter : "ALL";
+  const rooms = board.rooms.map((entry) => ({ ...entry, panes: entry.panes.filter((pane) => matches(pane, waits)) }));
   const shown = rooms.filter((entry) => (roomId === "ALL" || entry.roomId === roomId) && entry.panes.length);
-  const filtered = filter !== "ALL" || roomId !== "ALL";
+  const filtered = waits !== "ALL" || roomId !== "ALL";
   const refresh = async () => {
     setRefreshing(true);
     try { await api.refreshNousPaneBoard(); } catch (err) { setError(messageOf(err, "The refresh could not start.")); } finally { setRefreshing(false); }
@@ -102,9 +104,9 @@ export function NousPaneBoard({ active, decisions, overview, renderDecision, onS
             {rooms.filter((entry) => entry.panes.length || entry.roomId === roomId).map((entry) => <option key={entry.roomId} value={entry.roomId}>{entry.name} · {entry.panes.length}</option>)}
           </select>
         ) : null}
-        <select className="dock-kit-select" aria-label="Waits on" value={filter} onChange={(event) => setFilter(event.currentTarget.value as WaitsFilter)}>
+        <select className="dock-kit-select" aria-label="Waits on" value={waits} onChange={(event) => setFilter(event.currentTarget.value as WaitsFilter)}>
           <option value="ALL">Any wait · {inRoom.length}</option>
-          {WAITS_FILTERS.filter((value) => count(value) > 0 || filter === value).map((value) => <option key={value} value={value}>{FILTER_LABELS[value]} · {count(value)}</option>)}
+          {WAITS_FILTERS.filter((value) => count(value) > 0 || waits === value).map((value) => <option key={value} value={value}>{FILTER_LABELS[value]} · {count(value)}</option>)}
         </select>
         {filtered ? <DockIconButton label="Clear the filters" icon={X} onClick={() => { setFilter("ALL"); setRoom("ALL"); }} /> : null}
         <DockIconButton label="Refresh the summaries" icon={RefreshCw} busy={refreshing} onClick={() => void refresh()} />
@@ -193,19 +195,19 @@ function BoardPaneRow({ pane, roomName, check, decisions, renderDecision, onSent
       {pane.model || pane.plan || pane.keptOpenForTask ? (
         <div className="nous-board-pane-meta">
           {pane.model ? <span className="nous-board-model">{pane.model}</span> : null}
-          {pane.plan ? <span className="nous-board-pane-plan" data-sensitive-masked="manual" title={pane.plan.nextStep ? `Next: ${pane.plan.nextStep}` : pane.plan.title}>{pane.plan.title} · {pane.plan.progress}%</span> : null}
+          {pane.plan ? <span className="nous-board-pane-plan" title={pane.plan.nextStep ? `Next: ${pane.plan.nextStep}` : pane.plan.title}>{pane.plan.title} · {pane.plan.progress}%</span> : null}
           {/* A finished pane a scheduled task is bound to stays open (operator decision 2026-10-21). */}
           {pane.keptOpenForTask ? <span className="nous-pane-badge" title={`Scheduled task: ${pane.keptOpenForTask.title}`}>Task: {pane.keptOpenForTask.title}</span> : null}
         </div>
       ) : null}
       <p className="nous-board-line">
         <span className={`nous-waits is-${summary.waitsOn.toLowerCase()}`} title="Waits on">{WAITS_LABELS[summary.waitsOn]}{summary.until ? ` · ${formatUserTime(summary.until)}` : ""}</span>
-        <span className="nous-board-line-text" data-sensitive-masked="manual">{summary.line}</span>
+        <span className="nous-board-line-text">{summary.line}</span>
         <span className="nous-muted nous-board-line-time" title={summary.source === "MODEL" ? `Summary by ${summary.model ?? "the summary model"}` : "Space's own line from the newest report"}>
           {formatUserTime(summary.generatedAt)}{summary.source === "FALLBACK" ? " · Space" : ""}
         </span>
       </p>
-      {summary.detail ? <p className="nous-muted nous-board-detail" data-sensitive-masked="manual">{summary.detail}</p> : null}
+      {summary.detail ? <p className="nous-muted nous-board-detail">{summary.detail}</p> : null}
       {check ? (
         <p className="nous-muted nous-board-check">
           <span>{check.checkedAt ? `Nous checked ${formatUserTime(check.checkedAt)}` : "Nous never checked it"}{check.verdict ? ` · ${VERDICTS[check.verdict] ?? check.verdict}` : ""}{check.note ? `: ${check.note}` : ""}</span>
@@ -213,7 +215,7 @@ function BoardPaneRow({ pane, roomName, check, decisions, renderDecision, onSent
         </p>
       ) : null}
       {cards.length || decisions.length || pane.copilotItems.length ? (
-        <ul className="nous-board-items" data-sensitive-masked="manual">
+        <ul className="nous-board-items">
           {cards.map((item) => (
             <li key={item.id}>
               <button type="button" className={`nous-board-item${item.card ? " is-card" : ""}`} onClick={goTo} title={item.body || item.title}>

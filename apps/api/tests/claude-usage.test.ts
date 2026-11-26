@@ -395,6 +395,23 @@ describe("Claude usage account provider", () => {
     expect(gatewayAccounts).toHaveBeenCalledTimes(1);
   });
 
+  it("links a signed-in profile to the gateway account of its e-mail, with that account's week reset credits", async () => {
+    const provider = createClaudeUsageAccountProvider({
+      listProfiles: async () => [{ profileId: "crew", displayName: "crew" }, { profileId: "lab", displayName: "lab" }],
+      readUsage: async (profileId) => ({ status: "CONNECTED" as const, email: `${profileId}@spaceapp.dev`, plan: "Team", fiveHourUsedPercent: 10,
+        fiveHourResetAt: null, weeklyUsedPercent: 100, weeklyResetAt: null, weeklyScope: null }),
+      gatewayAccounts: async () => [record("crew", { resetCreditsAvailable: 4, resetCreditGrants: [
+        { kind: "weekly", left: 1, endsAt: null }, { kind: "full", left: 1, endsAt: null }, { kind: "session", left: 1, endsAt: null },
+        { kind: "fable", left: 1, endsAt: "2027-03-09T07:59:00.000Z" }] })],
+      now: () => now
+    });
+    const [crew, lab] = (await provider()).data;
+    // A session or Fable reset gives no fresh week (dev@ 14/11 stayed at 93%), so the count is 2 of the 4 grants.
+    expect(crew).toMatchObject({ id: "crew", gatewayAccountId: "gw_account:crew", resetCredits: 2 });
+    expect(lab).not.toHaveProperty("gatewayAccountId");
+    expect(lab).not.toHaveProperty("resetCredits");
+  });
+
   it("keeps the gateway profile without a pool when the gateway cannot be read", async () => {
     const provider = createClaudeUsageAccountProvider({
       listProfiles: async () => [{ profileId: "space-gateway", displayName: "Space Gateway (pooled)" }],
@@ -422,11 +439,11 @@ describe("Claude usage account provider", () => {
     ], now.getTime());
     expect(pool).toEqual([
       { label: "crew", signInRequired: false, fiveHourRemainingPercent: 0, fiveHourResetAt: "2026-10-11T03:30:00.000Z",
-        weeklyRemainingPercent: 71, weeklyResetAt: "2026-10-16T02:00:00.000Z" },
+        weeklyRemainingPercent: 71, weeklyResetAt: "2026-10-16T02:00:00.000Z", resetCredits: 0 },
       { label: "dev", signInRequired: false, fiveHourRemainingPercent: 0, fiveHourResetAt: "2026-10-11T01:05:00.000Z",
-        weeklyRemainingPercent: null, weeklyResetAt: null },
-      { label: "Lab", signInRequired: false, fiveHourRemainingPercent: 100, fiveHourResetAt: null, weeklyRemainingPercent: null, weeklyResetAt: null },
-      { label: "ops", signInRequired: true, fiveHourRemainingPercent: null, fiveHourResetAt: null, weeklyRemainingPercent: null, weeklyResetAt: null }
+        weeklyRemainingPercent: null, weeklyResetAt: null, resetCredits: 0 },
+      { label: "Lab", signInRequired: false, fiveHourRemainingPercent: 100, fiveHourResetAt: null, weeklyRemainingPercent: null, weeklyResetAt: null, resetCredits: 0 },
+      { label: "ops", signInRequired: true, fiveHourRemainingPercent: null, fiveHourResetAt: null, weeklyRemainingPercent: null, weeklyResetAt: null, resetCredits: 0 }
     ]);
   });
 
@@ -603,16 +620,16 @@ describe("Claude usage account provider", () => {
       gatewayAccounts,
       now: () => new Date(clock)
     });
-    // Signed in with a live token: the profile's own reading, and the gateway is not consulted.
-    expect((await provider()).data[0]).toMatchObject({ fiveHourRemainingPercent: 33, weeklyRemainingPercent: 88, weeklyScope: "Opus", sampledAt: now.toISOString() });
-    expect(gatewayAccounts).not.toHaveBeenCalled();
+    // Signed in with a live token: the profile's own reading; the gateway is read only for the account's reset button.
+    expect((await provider()).data[0]).toMatchObject({ fiveHourRemainingPercent: 33, weeklyRemainingPercent: 88, weeklyScope: "Opus", sampledAt: now.toISOString(),
+      gatewayAccountId: "gw_account:lab" });
     status = "IDLE";
     clock = Date.parse("2026-10-11T01:11:00.000Z");
     expect((await afterRefresh(provider)).data[0]).toMatchObject({
       status: "CONNECTED", fiveHourRemainingPercent: 20, fiveHourResetAt: "2026-10-11T04:49:59.732Z", weeklyRemainingPercent: 80,
       weeklyScope: null, sampledAt: "2026-10-11T01:11:00.000Z"
     });
-    expect(gatewayAccounts).toHaveBeenCalledTimes(1);
+    expect(gatewayAccounts).toHaveBeenCalledTimes(2);
   });
 
   it("marks a profile unavailable when the wrapper output is invalid", async () => {

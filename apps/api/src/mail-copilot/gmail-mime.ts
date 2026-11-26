@@ -60,10 +60,10 @@ function mailbox(name: string | undefined, address: string): string {
   const clean = (name ?? "").replace(/[\r\n"\\]+/g, " ").trim();
   return clean ? `${/^[\x20-\x7e]*$/.test(clean) ? `"${clean}"` : encodeHeader(clean)} <${addresses([address])}>` : addresses([address]);
 }
-/** Plain text as minimal HTML, so clients that prefer HTML show the same message. */
-function textToHtml(text: string): string {
-  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return `<div style="white-space:pre-wrap;font-family:inherit">${escaped.replace(/\r?\n/g, "<br>")}</div>`;
+const escapeHtml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** Plain text as minimal HTML, so clients that prefer HTML show the same message (a tracked mail adds its pixel after it). */
+export function textToHtml(text: string): string {
+  return `<div style="white-space:pre-wrap;font-family:inherit">${escapeHtml(text).replace(/\r?\n/g, "<br>")}</div>`;
 }
 
 /** A file part of an outgoing message (a review's attachments, copied from the Gmail message that held them). */
@@ -75,7 +75,8 @@ const base64Lines = (data: Buffer) => data.toString("base64").replace(/.{76}(?=.
  * reply (`In-Reply-To`, `References`) when the replied message is known; with attachments, multipart/mixed around them.
  */
 export function buildMime(input: { from: string; fromName?: string; to: string[]; cc?: string[]; bcc?: string[]; subject: string; text: string;
-  inReplyTo?: string | null; references?: string | null; attachments?: MimeAttachment[] }): string {
+  /** The HTML part when it is not the text's own (a tracked mail's); the text part stays `text`. */
+  html?: string; inReplyTo?: string | null; references?: string | null; attachments?: MimeAttachment[] }): string {
   const boundary = `space-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const mixed = `${boundary}-mixed`;
   const files = input.attachments ?? [];
@@ -87,8 +88,8 @@ export function buildMime(input: { from: string; fromName?: string; to: string[]
     "MIME-Version: 1.0",
     ...(files.length ? [`Content-Type: multipart/mixed; boundary="${mixed}"`, "", `--${mixed}`] : []),
     `Content-Type: multipart/alternative; boundary="${boundary}"`, "",
-    `--${boundary}`, "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "", Buffer.from(input.text, "utf8").toString("base64"),
-    `--${boundary}`, "Content-Type: text/html; charset=UTF-8", "Content-Transfer-Encoding: base64", "", Buffer.from(textToHtml(input.text), "utf8").toString("base64"),
+    `--${boundary}`, "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "", base64Lines(Buffer.from(input.text, "utf8")),
+    `--${boundary}`, "Content-Type: text/html; charset=UTF-8", "Content-Transfer-Encoding: base64", "", base64Lines(Buffer.from(input.html ?? textToHtml(input.text), "utf8")),
     `--${boundary}--`,
     ...files.flatMap((file) => {
       const name = encodeHeader(file.filename).replace(/"/g, "");

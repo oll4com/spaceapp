@@ -295,7 +295,7 @@ function dedupeSimilar(lines: readonly LogLine[]): LogLine[] {
 // Rust's `\d` and `\w` are Unicode-aware.
 const digitRun = /\p{Nd}+/gu;
 const hexAddress = /0x[0-9a-fA-F]+/gu;
-const pathRun = /\/[\p{Alphabetic}\p{M}\p{Nd}\p{Pc}\p{Join_Control}\/]+\//gu;
+const pathRun = /\/[\p{Alphabetic}\p{M}\p{Nd}\p{Pc}\p{Join_Control}/]+\//gu;
 
 function normalizeForDedupe(content: string): string {
   const split = content.search(/[:=]/);

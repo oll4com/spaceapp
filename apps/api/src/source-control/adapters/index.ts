@@ -20,6 +20,7 @@ export function repositoryGitLogin(provider: RepositoryProviderId, login: string
 }
 export function createRepositoryProvider(provider: RepositoryProviderId, serverUrl: string, credentials: RepositoryCredentials, policy: ProviderUrlPolicy, exchange: ProviderExchange = policy.exchange): RepositoryProviderAdapter {
   const server = repositoryServer(provider, serverUrl, policy), token = credentials.token;
+  // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
   if (!token || /[\x00-\x1f\x7f]/.test(token)) throw new GitControlError("INVALID_TOKEN", "Enter a valid API token.");
   let adapter: RepositoryProviderAdapter;
   switch (provider) {

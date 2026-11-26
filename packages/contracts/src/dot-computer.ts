@@ -75,6 +75,7 @@ export type DotComputerStopResult = z.infer<typeof dotComputerStopResultSchema>;
 
 /** A path inside a Dot's workspace: relative, without `.` or `..` segments, backslashes or control characters. */
 export const dotWorkspaceRelativePathSchema = z.string().trim().min(1).max(500)
+  // eslint-disable-next-line no-control-regex -- rejects control characters in workspace paths on purpose
   .refine((path) => !path.startsWith("/") && !path.includes("\\") && !/[\u0000-\u001f]/.test(path), "Use a path relative to the workspace.")
   .refine((path) => path.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== ".."), "Use a path inside the workspace.");
 export const dotWorkspaceFolderSchema = z.object({

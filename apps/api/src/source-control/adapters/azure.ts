@@ -18,7 +18,7 @@ export class AzureAdapter extends AdapterBase implements RepositoryProviderAdapt
   }
   private visibilities = new Map<string, Promise<"public" | "private">>();
   /** Shallow project/repository payloads omit visibility; read it from the existing project once. */
-  private visibility(project: Record<string, any>): Promise<"public" | "private"> {
+  private visibility(project: Record<string, unknown>): Promise<"public" | "private"> {
     if (project.visibility === "public" || project.visibility === "private") return Promise.resolve(project.visibility);
     const id = guid(text(project.id));
     let pending = this.visibilities.get(id);

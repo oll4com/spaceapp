@@ -34,6 +34,13 @@ describe("space_task_update with a title or a near id", () => {
     expect((await nous.execute("space_task_update", { task: "task:zz9xyy", status: "DONE" }, ctx)).result).toContain("Task task:Zz9xYy876543 is DONE");
   });
 
+  it("takes an id copied with space_tasks' brackets and a lowercase status (slice 12)", async () => {
+    const { update, nous } = setup();
+    const answer = await nous.execute("space_task_update", { task: "[task:Zz9xYy876543]", status: "done" }, ctx);
+    expect(answer).toMatchObject({ ok: true, result: expect.stringContaining("Task task:Zz9xYy876543 is DONE") });
+    expect(update).toHaveBeenLastCalledWith(owner, "task:Zz9xYy876543", { status: "DONE" });
+  });
+
   it("keeps the error for invented ids and titles several tasks share", async () => {
     const invented = await setup().nous.execute("space_task_update", { task: "task:nth-0123456789abcdef", status: "DONE" }, ctx);
     // Daily Nous errors 13/11 (8 of 15 failed in 48 h): the answer lists the real ids, so it is a refusal, not a failed call.
@@ -90,5 +97,12 @@ describe("space_files_read and space_files_list on a path that does not exist", 
       expect(answer).toMatchObject({ ok: false, refused: true, display: expect.stringContaining("no such path") });
       expect(answer.result).toContain("reports");
     }
+  });
+
+  it("refuses a binary file as the score does, not as a failed call (slice 12)", async () => {
+    writeFileSync(join(root, "reports", "blob.bin"), Buffer.from([1, 0, 2, 0]));
+    const answer = await tools({ rooms: async () => [alpha], listPanes: async () => [], files }).execute("space_files_read", { path: "reports/blob.bin" }, ctx);
+    expect(answer).toMatchObject({ ok: false, refused: true, display: expect.stringContaining("refused") });
+    expect(answer.result).toContain("is a binary file");
   });
 });

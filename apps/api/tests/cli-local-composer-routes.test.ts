@@ -25,7 +25,7 @@ function fixture(sessionOverrides: Partial<PaneCliSession> = {}, userOverrides: 
   const headers = { "x-space-cli-control-lease-id": lease.leaseId, "x-space-cli-browser-client-id": lease.browserClientId,
     "x-space-cli-tab-lineage-id": lease.tabLineageId, "x-space-cli-page-client-id": lease.pageClientId };
   const sendInput = vi.fn(async () => ({ turnMarker: null, markerAtMs: 1 }));
-  const wait = vi.fn(async (_ms: number) => undefined);
+  const wait = vi.fn<(ms: number) => Promise<undefined>>(async () => undefined);
   const repository = new InMemoryControlRepository();
   const app = Fastify();
   apps.push(app);

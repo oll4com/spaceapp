@@ -8,7 +8,7 @@ import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 // Shared (operator request 31/10 00:31 BKK, plan clipboard:RQSrp1EczBbV): the Agent Files Nous shared for a while, in their own dock tab with
 // a count; a click opens the Agent Files preview, Remove ends only the share (DELETE /api/nous/shared-files/:id, never the artifact).
 const state: NousState = { status: "IDLE", settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false,
-  mayApproveWarm: false, maySecurityHotfix: false, askOwnHostChanges: false, maySend: false, mayDeleteOwn: false, mayPublish: false, mayRestartHosts: false, neverRefuse: false, shell: false, alwaysApprove: [],
+  mayApproveWarm: false, maySecurityHotfix: false, askOwnHostChanges: false, maySend: false, mayDeleteOwn: false, mayPublish: false, mayRestartHosts: false, neverBuy: false, mayCleanSystem: false, neverRefuse: false, shell: false, alwaysApprove: [],
   paneBoard: nousPaneBoardSettingsSchema.parse({}), standingOrders: nousStandingOrdersSettingsSchema.parse({}), models: nousModelsSettingsSchema.parse({}), fallbackModel: "none",
   telegramInbound: false, copilotQuestionsNousFirst: true, goals: nousGoalsSettingsSchema.parse({}) }, model: "claude-fable-5-1", effort: "max", running: null, turnsThisHour: 0,
   lastError: null, openDecisions: 0, inbox: 0 };

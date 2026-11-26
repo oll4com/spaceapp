@@ -1,9 +1,12 @@
 import { randomBytes } from "node:crypto";
 import type {
   FreelanceAccount, FreelanceChannel, FreelanceEvent, FreelanceLead, FreelanceLeadStatus, FreelanceMailboxConfig, FreelanceMemory, FreelanceMemoryQuery, FreelanceMessage,
-  FreelanceMessageStatus, FreelanceRule, FreelanceRun
+  FreelanceMessageKind, FreelanceMessageStatus, FreelanceRule, FreelanceRun
 } from "@space/contracts";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
+
+/** What the daily cap counts (operator 14/11): applications, never follow-ups or client messages. */
+const CAPPED_KINDS: FreelanceMessageKind[] = ["PROPOSAL", "APPLICATION"];
 
 // Freelance Copilot's own storage: leads, the proposals and messages exchanged with clients (review state and
 // sending evidence), platform accounts, memory with full-text recall, the activity feed whose briefs and mails are
@@ -41,6 +44,7 @@ export interface FreelanceCopilotRepository {
   createMessage(input: FreelanceMessageCreateRecord): Promise<FreelanceMessage>;
   updateMessage(owner: string, id: string, patch: FreelanceMessagePatch, fromStatus?: FreelanceMessageStatus[]): Promise<FreelanceMessage | null>;
   /** Outgoing messages on a channel since a time: SENT ones by their send time, SENDING ones in flight. */
+  /** Proposals and applications in flight or sent since `since` (the daily cap); follow-ups and client messages are not counted. */
   countSends(owner: string, channel: FreelanceChannel, since: string): Promise<number>;
   /** Connects spent since a time (SENDING and SENT proposals). */
   sumConnects(owner: string, since: string): Promise<number>;
@@ -136,7 +140,7 @@ export class InMemoryFreelanceCopilotRepository implements FreelanceCopilotRepos
     return [...this.messages.values()].filter((row) => row.ownerUserId === owner && row.direction === "OUT"
       && (row.status === "SENDING" || (row.status === "SENT" && (row.sentAt ?? row.updatedAt) >= since)));
   }
-  async countSends(owner: string, channel: FreelanceChannel, since: string) { return this.sent(owner, since).filter((row) => row.channel === channel).length; }
+  async countSends(owner: string, channel: FreelanceChannel, since: string) { return this.sent(owner, since).filter((row) => row.channel === channel && CAPPED_KINDS.includes(row.kind)).length; }
   async sumConnects(owner: string, since: string) { return this.sent(owner, since).reduce((sum, row) => sum + (row.connects ?? 0), 0); }
   async listAccounts(owner: string) { return [...this.accounts.values()].filter((row) => row.ownerUserId === owner).map((row) => ({ ...row })); }
   async upsertAccount(owner: string, channel: FreelanceChannel, patch: FreelanceAccountPatch) {
@@ -368,7 +372,7 @@ export class PostgresFreelanceCopilotRepository implements FreelanceCopilotRepos
   }
   async countSends(owner: string, channel: FreelanceChannel, since: string) {
     const row = (await this.pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM freelance_copilot_messages WHERE owner_user_id=$1 AND channel=$2 AND direction='OUT'
-      AND (status='SENDING' OR (status='SENT' AND coalesce(sent_at, updated_at) >= $3))`, [owner, channel, since])).rows[0];
+      AND kind = ANY($4::text[]) AND (status='SENDING' OR (status='SENT' AND coalesce(sent_at, updated_at) >= $3))`, [owner, channel, since, CAPPED_KINDS])).rows[0];
     return Number.parseInt(row?.count ?? "0", 10);
   }
   async sumConnects(owner: string, since: string) {

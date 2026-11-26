@@ -16,9 +16,13 @@ export function boundedTaskText(value: string, limit: number): string {
 export function cleanTaskText(value: string): string {
   return value
     .slice(0, 50_000)
+    // eslint-disable-next-line no-control-regex -- strips OSC escape sequences on purpose
     .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, " ")
+    // eslint-disable-next-line no-control-regex -- strips ANSI CSI escape sequences on purpose
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, " ")
     .replace(/<(?:environment_context|system-reminder|INSTRUCTIONS|instructions|turn_aborted)\b[^>]*>[\s\S]*?<\/(?:environment_context|system-reminder|INSTRUCTIONS|instructions|turn_aborted)>/gi, " ")
+    // Paste and handoff wrappers (<pasted_content id="…">): keep the pasted text, drop the tags.
+    .replace(/<\/?pasted_content\b[^>]*>/gi, " ")
     .replace(/<image\b[^>]*>([\s\S]*?)<\/image>/gi, " ")
     .replace(/<image\b[^>]*>/gi, " ")
     .replace(/\[(?:image|file|attachment|εικόνα|εικονα|αρχείο|αρχειο|συνημμένο)\s*#?\s*\d+\]/giu, " ")
@@ -26,6 +30,7 @@ export function cleanTaskText(value: string): string {
     .replace(/(?:αρχείο|αρχειο|εικόνα|εικονα|συνημμένο)\s*#?\s*\d+/giu, " ")
     .replace(/(['"]?)(?:https?:\/\/[^\s<>]*\/)?(?:\/[^\s<>]*)?\/cli-uploads\/[^\s<>"']+\1/gi, " ")
     .replace(/\b(?:upload[_-][\w-]+|clipboard-image-\d+)\.[\w]+\b/gi, " ")
+    // eslint-disable-next-line no-control-regex -- strips control characters on purpose
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .replace(/\s+/g, " ")
     .trim();

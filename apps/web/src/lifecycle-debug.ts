@@ -110,6 +110,7 @@ function readLifecycleDebugEventsInternal(): LifecycleDebugEvent[] {
 }
 
 function flushLifecycleDebugEvents() {
+  if (!flushQueued) return;
   flushQueued = false;
   if (!cachedEvents) return;
   try {
@@ -237,8 +238,12 @@ export function recordLifecycleDebugEvent(input: RecordLifecycleDebugEventInput)
     cachedEvents.events = [...cachedEvents.events, nextEvent].slice(-LIFECYCLE_DEBUG_MAX_EVENTS);
     if (!flushQueued) {
       flushQueued = true;
-      queueMicrotask(flushLifecycleDebugEvents);
+      // W1 (Nous-approved Warm change, 2026-11-21): the write cost ~53 ms inside the room-switch frame; it waits for idle time.
+      if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(flushLifecycleDebugEvents, { timeout: 1000 });
+      else window.setTimeout(flushLifecycleDebugEvents, 250);
     }
+    // The tab may be gone before idle time: the reload-suspect events are written now.
+    if (input.type === "window_pagehide" || input.type === "window_beforeunload") flushLifecycleDebugEvents();
   }
   if (input.notify !== false) window.dispatchEvent(new CustomEvent(LIFECYCLE_DEBUG_UPDATED_EVENT));
 }

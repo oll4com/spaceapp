@@ -16,6 +16,10 @@ describe("Room Agent approval guardrails", () => {
     ["Bash: /opt/spaceapp/bin/space-version bump core patch", "PROTECTED", "version bump"],
     ["Read /opt/spaceapp/.env", "PROTECTED", "secrets and credentials"],
     ["Write /opt/spaceapp/apps/api/src/app.ts", "PROTECTED", "live Space checkout"],
+    ["Edit /opt/spaceapp/scripts/space-progress.mjs", "PROTECTED", "live Space checkout"],
+    ["Bash: node /opt/spaceapp/scripts/space-progress.mjs done \"x\"; sed -i s/a/b/ /opt/spaceapp/apps/api/src/app.ts", "PROTECTED", "live Space checkout"],
+    ["Bash: bash /opt/spaceapp/scripts/space-plan-ops.sh complete clipboard:abc", "PROTECTED", "live Space checkout"],
+    ["Bash: node -e \"import { signRelease } from '/opt/spaceapp/scripts/space-app-studio-build.mjs'\"", "PROTECTED", "live Space checkout"],
     ["Bash: sudo systemctl restart codex-pane-host.service", "PROTECTED", "host service restart"],
     ["Bash: rm -rf build", "DESTRUCTIVE", "recursive delete"],
     ["Bash: git reset --hard origin/dev", "DESTRUCTIVE", "git history rewrite"],
@@ -32,6 +36,9 @@ describe("Room Agent approval guardrails", () => {
     "Edit /opt/spaceapp/var/worktrees/space/wt-abc/apps/api/src/room-agent.ts",
     "Bash: space-queue submit --worktree /opt/spaceapp/var/worktrees/space/wt-abc --summary \"fix\" --wait",
     "Bash: git commit -m \"feat: add room snapshot\"",
+    // Jack 23/11 14:20: the screen cut the command's start, then cd'd into the agent workspace.
+    "…/opt/spaceapp/scripts/space-progress.mjs started \"UnboxExpert: regions\" >/dev/null 2>&1; cd /var/lib/spaceapp-user/agent-workspace",
+    "Bash: [ \"$new\" != \"$cur\" ] && bash /opt/spaceapp/scripts/space-plan-ops.sh step clipboard:kTV3y2lwO-99 9 COMPLETED",
     "Ready to code? Here is the plan: add a pane strip to the dock. Would you like to proceed?"
   ])("lets the Room Agent decide %s", (body) => {
     expect(classifyPaneApproval(prompt(body))).toEqual({ level: "SAFE", reasons: [] });

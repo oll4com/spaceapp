@@ -126,7 +126,13 @@ export async function browserCensus(deps: {
           })
     };
   }));
-  return { capacity: deps.capacity?.() ?? null, sessions: rows, totalTabs: rows.reduce((sum, row) => sum + row.tabs.length, 0) };
+  // 2026-11-15 REVIEW: an idle closed-pane or blank-only browser (about:blank, no tab) held the guarded Browser Host restart for 9 h.
+  const idle = (row: typeof rows[number]) => !row.control && !row.handoff && !row.agent?.active;
+  const blank = (row: typeof rows[number]) => row.tabs.every((tab) => "url" in tab && (tab.url === null || tab.url === "about:"));
+  const restartHolders = rows.filter((row) => !(idle(row) && (row.paneClosed || blank(row)))).map((row) => ({
+    paneId: row.paneId, roomId: row.roomId, paneName: row.paneName, mode: row.mode, tabs: row.tabs.map((tab) => "url" in tab ? tab.url : "fenced")
+  }));
+  return { capacity: deps.capacity?.() ?? null, sessions: rows, totalTabs: rows.reduce((sum, row) => sum + row.tabs.length, 0), restartHolders };
 }
 
 export function registerBrowserCensusRoutes(app: FastifyInstance, options: {

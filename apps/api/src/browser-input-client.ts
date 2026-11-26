@@ -1,7 +1,12 @@
 import { BrowserHostClient } from "@space/browser-host";
-import { withBrowserHostErrorText } from "./browser-host-errors.js";
+import { keepBrowserHostErrorMessages, withBrowserHostErrorText } from "./browser-host-errors.js";
 import { createBrowserHostProxy, type BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
 import type { SpaceApiConfig } from "./config.js";
+
+/** The proxy's own default client and bounds, keeping the host's error messages (browser-host-errors.ts); its input goes below. */
+export const messageKeepingBrowserHostClient = (config: SpaceApiConfig) => keepBrowserHostErrorMessages(new BrowserHostClient({
+  socketPath: config.browserHostSocketPath, requestTimeoutMs: 30_000, healthTimeoutMs: 3_000, closeTimeoutMs: 1_000
+}));
 
 /**
  * Operator input on its own Browser Host socket whose timeout outlasts the host's own 30 s bound, so the host answers a
@@ -11,7 +16,7 @@ import type { SpaceApiConfig } from "./config.js";
 export function withHostBoundBrowserInput(
   manager: BrowserSessionManagerWithHostHealth,
   config: SpaceApiConfig,
-  client = new BrowserHostClient({ socketPath: config.browserHostSocketPath, requestTimeoutMs: 35_000, closeTimeoutMs: 1_000 })
+  client = keepBrowserHostErrorMessages(new BrowserHostClient({ socketPath: config.browserHostSocketPath, requestTimeoutMs: 35_000, closeTimeoutMs: 1_000 }))
 ): BrowserSessionManagerWithHostHealth {
   if (config.browserHostTransport !== "unix") return manager;
   const input = createBrowserHostProxy({ config, client });

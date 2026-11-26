@@ -1,6 +1,6 @@
 ---
 name: space-wshobson-skills
-description: Seventeen specialist skills from wshobson/agents for TypeScript/JavaScript (advanced types, modern patterns, Node.js backends, Jest/Vitest testing), security (STRIDE threat modeling, attack trees, security requirements, threat-to-control mapping, SAST setup with Semgrep/SonarQube/CodeQL), incidents (runbooks, on-call handoffs, blameless postmortems, network connectivity triage) and observability (Prometheus, Grafana dashboards, distributed tracing, SLIs/SLOs and error budgets). Use when a task needs one of these specialties.
+description: "Specialist skills: TypeScript and Node patterns and testing, threat modeling and SAST, incident runbooks and postmortems, Prometheus, Grafana, tracing, SLOs."
 metadata:
   category: WORKFLOW
 ---

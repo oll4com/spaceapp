@@ -121,4 +121,16 @@ describe("space_copilot_control", () => {
     await expect(f.control("user:operator", pane("TERMINAL"), "start_agent")).rejects.toThrow("not a copilot pane");
     expect(f.invoke).not.toHaveBeenCalled();
   });
+
+  it("names the pane, the action and the next step when a copilot route answers a bare 500 (Daily Nous errors 13/11 19:10, Bob run_start in Dino)", async () => {
+    const failing = (message: string) => createCopilotControl({ invoke: async () => { throw new Error(message); },
+      store: { getActivePaneCliSession: async () => session(), listPaneCliSessions: async () => [] } as never });
+    await expect(failing("The request could not be completed.")("user:operator", pane("JOB_APPLY"), "run_start"))
+      .rejects.toThrow(/^Bob \(JOB_APPLY\): run_start hit an internal error in Space.*space_copilot_state.*start_agent first.*try run_start once more/);
+    // 14/11: controlInvoke's NOT CONFIRMED answer keeps its op and cause in the same text.
+    await expect(failing("NOT CONFIRMED POST /api/panes/pane%3Ab/cli/session: TypeError: x is undefined (request req_1). It may have run in part: read the pane before repeating it.")("user:operator", pane("JOB_APPLY"), "run_start"))
+      .rejects.toThrow("Bob (JOB_APPLY): run_start hit an internal error in Space, not in the pane (POST /api/panes/pane%3Ab/cli/session: TypeError: x is undefined (request req_1)). Read the copilot");
+    // A route's own answer already says why: it passes unchanged (Nous's ready and control-lease gates read it).
+    await expect(failing("The CLI has not opened its input yet.")("user:operator", pane("JOB_APPLY"), "run_start")).rejects.toThrow(/^The CLI has not opened/);
+  });
 });

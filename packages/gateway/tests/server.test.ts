@@ -51,7 +51,8 @@ describe("credential cipher", () => {
     expect(() => createCredentialCipher(Buffer.alloc(16))).toThrow();
     const envelope = cipher.encrypt("x", "a");
     const parts = envelope.split(".");
-    parts[3] = Buffer.from("y").toString("base64url");
+    // Flip a bit: a fixed replacement byte equals the real 1-byte ciphertext 1 time in 256 and is then no tamper.
+    parts[3] = Buffer.from(parts[3] ?? "", "base64url").map((byte) => byte ^ 1).toString("base64url");
     expect(() => cipher.decrypt(parts.join("."), "a")).toThrow();
   });
 });
@@ -110,6 +111,16 @@ describe("gateway server", () => {
     await repository.updateApiKey(key.id, { isActive: true });
     repository.keys[0]!.expiresAt = "2029-01-01T00:00:00.000Z";
     expect((await server.app.inject({ url: "/v1/models", headers: { authorization: `Bearer ${plainKey}` } })).json().error.message).toMatch(/expired/);
+  });
+
+  it("keeps admitting a key it already knows while the database fails (23/11: a 1143 s Postgres fsync stopped every model request)", async () => {
+    const { server, repository, plainKey } = await setup();
+    const call = (key: string) => server.app.inject({ method: "POST", url: "/v1/responses", headers: { authorization: `Bearer ${key}` }, payload: {} });
+    expect((await call(plainKey)).json().error.code).toBe("no_accounts");
+    repository.findApiKeyByHash = () => Promise.reject(new Error("timeout exceeded when trying to connect"));
+    expect((await call(plainKey)).json().error.code).toBe("no_accounts");
+    // A key never seen before still needs the database.
+    expect((await call("sk-sgw-neverseenneverseen")).statusCode).toBe(503);
   });
 
   it("stops admitting proxy requests while draining", async () => {

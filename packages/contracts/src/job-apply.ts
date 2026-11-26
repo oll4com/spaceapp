@@ -324,7 +324,9 @@ export type JobApplicationUpdate = z.infer<typeof jobApplicationUpdateSchema>;
 export const jobApplicationListQuerySchema = z.object({
   status: jobApplicationStatusSchema.optional(),
   // Every application when omitted (until 31/10 the newest 200, at most 2,000; the tracker asked for 1,000).
-  limit: z.coerce.number().int().min(1).optional()
+  limit: z.coerce.number().int().min(1).optional(),
+  // The `version` of the answer the caller holds: the same version answers `applications: null` (browser route only).
+  unless: z.string().max(64).optional()
 }).strict();
 
 /** The browser's IANA zone: the per-day history is counted in the operator's own days. */
@@ -337,7 +339,7 @@ const jobApplyDayCountsSchema = z.object({
   failed: z.number().int().min(0)
 }).strict();
 /** Why a day fell behind its daily target, recorded by the target keeper and the run when they happen (operator 13/11). */
-export const JOB_APPLY_TARGET_MISSES = ["QUEUE_EMPTY", "QUEUE_DEFERRED", "CLI_BUSY", "WAITS_ON_OPERATOR", "NO_CLI", "MODEL_UNAVAILABLE"] as const;
+export const JOB_APPLY_TARGET_MISSES = ["QUEUE_EMPTY", "QUEUE_DEFERRED", "CLI_BUSY", "WAITS_ON_OPERATOR", "NO_CLI", "MODEL_UNAVAILABLE", "NO_PANE"] as const;
 export type JobApplyTargetMiss = (typeof JOB_APPLY_TARGET_MISSES)[number];
 const jobApplyEarlierCountsSchema = z.object({ sent: z.number().int().min(0), failed: z.number().int().min(0) }).strict();
 /** Applications since the first day (or the last reset), per day, and the earlier history kept apart. */
@@ -737,7 +739,9 @@ export const jobApplyReportOutcomeSchema = z.enum(JOB_APPLY_REPORT_OUTCOMES);
 export type JobApplyReportOutcome = z.infer<typeof jobApplyReportOutcomeSchema>;
 
 export const jobApplyNextRequestSchema = z.object({
-  waitMs: z.number().int().min(0).max(120_000).default(60_000)
+  waitMs: z.number().int().min(0).max(120_000).default(60_000),
+  // The profileHash of this session's space_job_profile_get: the packet then leaves out the facts it already holds.
+  profileHash: z.string().regex(/^[a-f0-9]{16}$/).optional()
 }).strict();
 export const jobApplyReportRequestSchema = z.object({
   runId: runIdSchema.optional(),
@@ -806,8 +810,9 @@ export const jobApplyRunViewSchema = z.object({
 }).strict();
 export type JobApplyRunView = z.infer<typeof jobApplyRunViewSchema>;
 
-// Discovery: public ATS job boards (JSON, no auth) searched by board token; results are deduped against the tracker.
-export const JOB_APPLY_DISCOVERY_SITES = ["greenhouse", "lever", "ashby"] as const;
+// Discovery: public ATS job boards (JSON, no auth) searched by board token, and the Himalayas, LinkedIn (guest job search) and Workable
+// (jobs.workable.com) searches by query; results are deduped against the tracker.
+export const JOB_APPLY_DISCOVERY_SITES = ["greenhouse", "lever", "ashby", "himalayas", "linkedin", "workable"] as const;
 export const jobApplyDiscoverySiteSchema = z.enum(JOB_APPLY_DISCOVERY_SITES);
 export type JobApplyDiscoverySite = z.infer<typeof jobApplyDiscoverySiteSchema>;
 
@@ -815,11 +820,15 @@ const boardTokenSchema = z.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,80}$/i)
 export const jobApplyDiscoverRequestSchema = z.object({
   /** Title keywords; every word must appear in the title (case-insensitive). Empty returns every posting. */
   query: z.string().trim().max(300).optional(),
-  sites: z.array(jobApplyDiscoverySiteSchema).min(1).max(3).default([...JOB_APPLY_DISCOVERY_SITES]),
+  sites: z.array(jobApplyDiscoverySiteSchema).min(1).max(JOB_APPLY_DISCOVERY_SITES.length).default([...JOB_APPLY_DISCOVERY_SITES]),
   /** Board tokens (company slugs) to scan, in addition to the ones remembered as SITE memories tagged board-token. */
   tokens: z.array(boardTokenSchema).max(40).default([]),
   location: z.string().trim().max(120).optional(),
+  /** Unset or true: only postings the board marks fully remote (hybrid, on-site and unknown are left out); false: every workplace. */
   remote: z.boolean().optional(),
+  /** Whole words or phrases that drop a posting when its title or location has them: the copilot's negate list (stacks, roles) and
+   *  geography ban list ("rust", "c#", "us only", "brazil"). Bounded at this trust boundary: each word becomes a scan over every posting. */
+  exclude: z.array(z.string().trim().min(1).max(80)).max(500).optional(),
   limit: z.number().int().min(1).max(200).default(50)
 }).strict();
 export type JobApplyDiscoverRequest = z.infer<typeof jobApplyDiscoverRequestSchema>;

@@ -30,6 +30,7 @@ const RECOVERABLE_SELECTION = new Set(["T3_THREAD_NOT_FOUND", "T3_THREAD_PROJECT
 
 // Sidebar label for a pane-owned project: which room and pane it belongs to.
 function projectTitle(scope: T3PaneScope) {
+  // eslint-disable-next-line no-control-regex -- control characters in room or pane names become spaces on purpose
   const clean = (value: unknown) => typeof value === "string" ? value.replace(/[\x00-\x1f\x7f]+/g, " ").replace(/\s+/g, " ").trim() : "";
   const title = [clean(scope.room.name), clean(scope.pane.paneName ?? scope.pane.title)].filter(Boolean).join(" · ");
   return (title || "Space project").slice(0, 120);
@@ -91,7 +92,7 @@ export async function registerT3Bindings(app: FastifyInstance, options: T3Bindin
   };
   const status = async (scope: T3PaneScope): Promise<T3CodeServiceStatus> => {
     let environmentId: string | null = null;
-    try { environmentId = (await upstream.descriptor(scope)).environmentId; } catch {}
+    try { environmentId = (await upstream.descriptor(scope)).environmentId; } catch { /* T3 unreachable: environmentId stays null and the state reads unavailable */ }
     const runtime = await installedT3Version(), ready = options.enabled && environmentId !== null;
     const workspaceAllowed = ready ? await unboundWorkspaceAllowed(scope) : true;
     return t3CodeServiceStatusSchema.parse({ version: 1, enabled: options.enabled, state: !options.enabled ? "disabled" : ready ? "ready" : "unavailable",

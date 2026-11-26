@@ -221,4 +221,32 @@ describe("Space web API recovery proxy", () => {
     expect(responses.map((response) => response.status)).toEqual([200, 200]);
     expect(readinessProbes).toBe(1);
   });
+
+  // 21–22/11 outages: a 128-socket proxy pool filled with open event streams and every later /api request queued forever.
+  it("still answers API requests while many long-lived streams are open", async () => {
+    const apiPort = await reservePort();
+    const held: http.ServerResponse[] = [];
+    await startApi(apiPort, (incoming, response) => {
+      if (incoming.url === "/api/stream") {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(": open\n\n");
+        held.push(response);
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+    const webPort = await startWeb(apiPort, 1_000);
+    const streamAgent = new http.Agent({ maxSockets: Infinity });
+    const streams = await Promise.all(Array.from({ length: 200 }, () => new Promise<http.IncomingMessage>((resolve, reject) => {
+      http.get({ host: "127.0.0.1", port: webPort, path: "/api/stream", agent: streamAgent }, resolve).on("error", reject);
+    })));
+
+    const response = await request(webPort, "GET", "/api/ping");
+
+    expect(response.status).toBe(200);
+    for (const stream of streams) stream.destroy();
+    for (const response of held) response.end();
+    streamAgent.destroy();
+  }, 15_000);
 });

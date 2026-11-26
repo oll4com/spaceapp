@@ -1,6 +1,6 @@
 ---
 name: space-ui-ux-pro-max
-description: "UI/UX design intelligence for product interfaces (web apps, dashboards, mobile, desktop) from a local searchable dataset of styles, palettes, font pairings, UX guidelines and stack advice. Use when designing, building or reviewing an interface's layout, visual style, accessibility or interaction. For marketing landing pages see space-taste-skill."
+description: "UI/UX guidance for product interfaces (web apps, dashboards, mobile, desktop): styles, palettes, fonts, UX and accessibility. Landing pages: space-taste-skill."
 metadata:
   category: WORKFLOW
 ---

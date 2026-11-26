@@ -93,7 +93,9 @@ export function registerRoomListRoutes(app: FastifyInstance, options: {
   app.get("/api/rooms/:id/dashboard-agents", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     await assertRoomAccess(params.id, request.user);
-    return readDashboardAgents(params.id);
+    // sampledAt has no reader on the page and changed the body every 2.5 s, so a poll never got its 304 (poll-etag).
+    const { sampledAt: _sampledAt, ...shown } = await readDashboardAgents(params.id);
+    return shown;
   });
   app.get("/api/rooms/cli-activity", defaultRouteRateLimitOptions, async (request) => {
     const runtimeIds = await visibleCliRuntimeIds();
@@ -110,7 +112,7 @@ export function registerRoomListRoutes(app: FastifyInstance, options: {
     ]);
     const activityByRoomId = new Map(activity.map((item) => [
       item.roomId,
-      item as typeof item & { runtimeIds?: string[] }
+      item
     ]));
     return roomCliActivityResponseSchema.parse({
       data: rooms.map((room) => {
@@ -119,7 +121,8 @@ export function registerRoomListRoutes(app: FastifyInstance, options: {
           roomId: room.id,
           runningCliCount: roomActivity?.runningCliCount ?? 0,
           paneCount: roomActivity?.paneCount ?? 0,
-          runtimeIds: roomActivity?.runtimeIds ?? []
+          runtimeIds: roomActivity?.runtimeIds ?? [],
+          paneModes: roomActivity?.paneModes ?? []
         };
       }),
       sampledAt: nowIso()
@@ -252,9 +255,10 @@ export function registerRoomManagementRoutes(app: FastifyInstance, options: {
   youtubeAccountStore: YouTubeAccountStore;
   browserAccountStore: YouTubeAccountStore;
   assertPaneMayClose?: (pane: Pane) => Promise<void>;
+  /** An urgent line in the room owner's Nous inbox (its turn starts within seconds). */
+  nousNotice?: (owner: string, key: string, line: string) => Promise<void>;
 }) {
-  const { config, store, browserSessionManager, cliTerminalManager, routeOptions: defaultRouteRateLimitOptions,
-    assertRoomAccess, cliRenderAi, youtubePlaybackStore, youtubeAccountStore, browserAccountStore } = options;
+  const { config, store, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess } = options;
   app.post("/api/rooms/reorder", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(reorderRoomsInputSchema, request.body);
     return store.reorderRooms(input.roomIds, request.requestIdForSpace);
@@ -274,7 +278,7 @@ export function registerRoomManagementRoutes(app: FastifyInstance, options: {
   });
   app.patch("/api/rooms/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
-    await assertRoomAccess(params.id, request.user);
+    const before = await assertRoomAccess(params.id, request.user);
     const input = parseBody(updateRoomInputSchema, request.body);
     if (typeof input.projectPath === "string") {
       const trimmed = input.projectPath.trim();
@@ -297,6 +301,13 @@ export function registerRoomManagementRoutes(app: FastifyInstance, options: {
       targetId: room.id,
       metadata: { name: room.name }
     });
+    // Operator 22/11: turning "Keep Nous out" off hands the room straight back to Nous, which reviews everything open there at once.
+    if (before.nousExcluded && !room.nousExcluded && room.ownerUserId) {
+      await options.nousNotice?.(room.ownerUserId, `room-nous-back:${room.id}`, `The operator just turned "Keep Nous out" off for room "${room.name}" (${room.id}): `
+        + "it is yours again. Take it back now: read every pane there (working, waiting, finished, stuck), its open plans and steps, Needs you cards, "
+        + "decisions, queue tickets and unfinished tasks; act on what needs doing and tell the operator in the chat what you found open and what you do about it.")
+        .catch((error: unknown) => request.log.warn({ err: error, roomId: room.id }, "Nous room hand-back notice failed"));
+    }
     return room;
   });
   app.post("/api/projects/ensure", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -322,9 +333,9 @@ export function registerRoomManagementRoutes(app: FastifyInstance, options: {
         request.log.warn({ err: gitErr, targetPath }, "Failed to auto-init git in project directory");
       }
       return reply.send({ ok: true, path: targetPath, name: target.name });
-    } catch (err: any) {
+    } catch (err) {
       request.log.error({ err, targetPath }, "Failed to ensure project directory");
-      return reply.status(500).send({ ok: false, error: `Failed to create directory: ${err?.message || String(err)}` });
+      return reply.status(500).send({ ok: false, error: `Failed to create directory: ${(err as Error)?.message || String(err)}` });
     }
   });
   app.put("/api/rooms/:id/pane-layout", defaultRouteRateLimitOptions, async (request) => {

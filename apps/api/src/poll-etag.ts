@@ -2,7 +2,15 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 
 /** The GETs the web polls every few seconds (desktop lag brief 11/11: 40-1400 KB a call even when nothing changed). */
-export const POLLED_ROUTES = new Set(["/api/nous", "/api/nous/messages", "/api/nous/decisions", "/api/notifications", "/api/notifications/pending"]);
+export const POLLED_ROUTES = new Set([
+  "/api/nous", "/api/nous/messages", "/api/nous/decisions", "/api/nous/overview", "/api/nous/pane-board", "/api/nous/requests",
+  "/api/notifications", "/api/notifications/pending",
+  "/api/inbox", "/api/inbox/threads/:id",
+  "/api/rooms", "/api/system-health", "/api/admin/system-analytics/health",
+  // The busiest polls on 21/11 whose body is a list that rarely changes (model catalog, panes, files, clipboard, plan runs).
+  "/api/panes/:id/cli/model-settings/status", "/api/rooms/:id/dashboard-agents", "/api/artifacts", "/api/panes", "/api/clipboard-items",
+  "/api/panes/:id/plan-executions"
+]);
 
 /**
  * A polled answer carries a weak ETag of its JSON; a poll whose If-None-Match names it gets 304 and no body. Root onSend: it runs after the

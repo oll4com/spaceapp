@@ -102,7 +102,8 @@ export function createProgramMeters(deps: { importUsage(document: ProgramMeterDo
     const fresh = !last || at - last.at >= METER_EVERY_MS;
     if (fresh) last = { at, document: await (deps.read ?? (() => readProgramMeters({ warn: deps.warn })))() };
     if (!fresh && !results.some((result) => result.page !== "usage")) return;
-    const { problems } = await deps.importUsage(last!.document);
+    // 1.2.2 clean-install lab 22/11: an install without these programs (every public one) warned "livekit-startup-program: no such program" at boot.
+    const problems = (await deps.importUsage(last!.document)).problems.filter((problem) => !problem.endsWith(": no such program"));
     if (problems.length) deps.warn?.(new Error(problems.join("\n")), "Startup program meters not laid on.");
   };
 }

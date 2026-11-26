@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { AuthMe } from "@space/contracts";
 import { api, SpaceApiError } from "../../api.js";
 import type { ModernColorMode } from "../../ui-theme.js";
@@ -22,6 +22,20 @@ export function LoginScreen({
   const [notice, setNotice] = useState<string | null>(null);
   const [resetToken, setResetToken] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
+  // Forgot password? (operator 17/11, nous_msg:db5f61cafe3847b1ad5f59f6): a form with only the email. The desktop app, whose links open in
+  // another browser, then takes the mailed link pasted back with the new password (the bind cookie is in this app's session).
+  const [forgot, setForgot] = useState<null | "ask" | "paste">(null);
+  const [link, setLink] = useState("");
+  const desktop = "spaceDesktop" in window;
+  // A server that cannot mail reset links (no trusted origin or no sender, 17/11 spaceapp-hz) says so instead of "check your mail".
+  const [mailUnavailable, setMailUnavailable] = useState(false);
+  useEffect(() => {
+    if (forgot !== "ask") return;
+    let live = true;
+    void Promise.resolve().then(() => api.passwordResetAvailable())
+      .then((answer) => { if (live) setMailUnavailable(answer?.available === false); }, () => undefined);
+    return () => { live = false; };
+  }, [forgot]);
 
   useEffect(() => {
     // The mailed link carries the token in the fragment: take it and drop it from the address bar at once.
@@ -52,6 +66,109 @@ export function LoginScreen({
 
   const linkButton = { background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: "0.78rem", textAlign: "center", color: "var(--room-accent, #67e8f9)" } as const;
   const plainError = (err: unknown, fallback: string) => (err instanceof Error ? err.message.replace(/^[A-Z_]+: /, "") : fallback);
+
+  const shell = (children: ReactNode) => (
+    <main
+      className={modern ? "login-shell modern-theme-page" : "login-shell"}
+      data-ui-theme={modern ? "modern" : undefined}
+      data-color-mode={modern ? colorMode ?? undefined : undefined}
+    >
+      {children}
+    </main>
+  );
+  const backToSignIn = (
+    <button type="button" style={linkButton} onClick={() => { setForgot(null); setError(null); setLink(""); setNewPassword(""); }}>
+      Back to sign in
+    </button>
+  );
+
+  if (forgot === "ask") {
+    return shell(
+      <form
+        className="login-panel"
+        aria-label="Reset your password"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setError(null);
+          api
+            .requestPasswordReset(email.trim(), desktop)
+            .then(() => {
+              setNotice(desktop
+                ? "If that is the owner's address, a reset link is on its way. Copy it from the mail within 30 minutes and paste it here."
+                : "If that is the owner's address, a reset link is on its way. Open it in this browser within 30 minutes.");
+              if (desktop) setForgot("paste");
+              else setForgot(null);
+            })
+            .catch((err: unknown) => {
+              if (String((err as Error)?.message ?? err).includes("RESET_MAIL_UNAVAILABLE")) { setMailUnavailable(true); return; }
+              setError(plainError(err, "The reset link was not sent"));
+            });
+        }}
+      >
+        <div className="brand login-brand">
+          <Lock aria-hidden="true" />
+          <div>
+            <h1>Space</h1>
+            <span>Reset your password</span>
+          </div>
+        </div>
+        {mailUnavailable ? <>
+          <p className="form-error" role="alert">This server cannot send reset mail.{auth.googleAuthEnabled ? " Sign in with Google instead." : " Ask the owner of this SpaceApp to reset your password."}</p>
+          {auth.googleAuthEnabled ? <a className="button google-login-button" href="/api/auth/google/start">Sign in with Google</a> : null}
+        </> : <>
+          <label htmlFor="reset-email">
+            Email
+            <input id="reset-email" name="email" value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="username" required autoFocus />
+          </label>
+          {error ? <p className="form-error">{error}</p> : null}
+          <button type="submit">Email me a reset link</button>
+        </>}
+        {backToSignIn}
+      </form>
+    );
+  }
+
+  if (forgot === "paste") {
+    return shell(
+      <form
+        className="login-panel"
+        aria-label="Reset your password"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setError(null);
+          const token = /(?:password-reset=)?([A-Za-z0-9_-]{32,})$/.exec(link.trim())?.[1];
+          if (!token) return setError("Paste the whole link from the mail.");
+          api
+            .completePasswordReset(token, newPassword)
+            .then(() => {
+              setForgot(null); setLink(""); setNewPassword("");
+              setNotice("Your password is reset and every other session is signed out. Sign in with your new password.");
+            })
+            .catch((err: unknown) => setError(plainError(err, "The password was not reset")));
+        }}
+      >
+        <div className="brand login-brand">
+          <Lock aria-hidden="true" />
+          <div>
+            <h1>Space</h1>
+            <span>Reset your password</span>
+          </div>
+        </div>
+        {notice ? <p role="status" style={{ fontSize: "0.8rem" }}>{notice}</p> : null}
+        <label htmlFor="reset-link">
+          Link from the mail
+          <input id="reset-link" name="reset-link" value={link} onChange={(event) => setLink(event.target.value)} type="text" autoComplete="off" spellCheck={false} required autoFocus />
+        </label>
+        <label htmlFor="reset-paste-new-password">
+          New password
+          <input id="reset-paste-new-password" name="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} type="password" autoComplete="new-password" minLength={12} required />
+        </label>
+        {error ? <p className="form-error">{error}</p> : null}
+        <button type="submit">Set new password</button>
+        {backToSignIn}
+      </form>
+    );
+  }
 
   if (resetToken) {
     return (
@@ -210,28 +327,14 @@ export function LoginScreen({
         {error ? <p className="form-error">{error}</p> : null}
         {notice ? <p role="status" style={{ fontSize: "0.8rem" }}>{notice}</p> : null}
         <button type="submit">Enter</button>
-        {/* The link must open in this same browser (a cookie binds it), so the desktop app, whose links open elsewhere, leaves it out. */}
-        {!("spaceDesktop" in window) ? (
-          <button
-            type="button"
-            className="login-reset-mail"
-            style={linkButton}
-            onClick={() => {
-              setError(null);
-              if (!email.trim()) {
-                setNotice(null);
-                setError("Type the owner's email above first.");
-                return;
-              }
-              api
-                .requestPasswordReset(email.trim())
-                .then(() => setNotice("If that is the owner's address, a reset link is on its way. Open it in this browser within 30 minutes."))
-                .catch((err: unknown) => setError(plainError(err, "The reset link was not sent")));
-            }}
-          >
-            Forgot password? Email me a reset link
-          </button>
-        ) : null}
+        <button
+          type="button"
+          className="login-reset-mail"
+          style={linkButton}
+          onClick={() => { setError(null); setNotice(null); setPassword(""); setForgot("ask"); }}
+        >
+          Forgot password? Email me a reset link
+        </button>
         {/* The second route: a fresh sign-in of the linked Google account opens Settings › Login password. The desktop app drops the reset from Google's start. */}
         {auth.googleAuthEnabled && !("spaceDesktop" in window) ? (
           <a className="login-forgot-password" href="/api/auth/google/start?reset=password" onClick={rememberPasswordStepUp}

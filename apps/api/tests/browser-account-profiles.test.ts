@@ -32,6 +32,9 @@ async function fixture() {
       if (child.waiting.has(sessionId) && method !== 'Runtime.runIfWaitingForDebugger') await new Promise<void>(r => child.held.push(r));
       if (method === 'Runtime.runIfWaitingForDebugger' && child.waiting.delete(sessionId)) child.held.splice(0).forEach((r: () => void) => r());
       let result: any = {};
+      const custom = await child.respond?.(method, params);
+      if (custom?.error) { socket.send(JSON.stringify({ id, error: custom.error })); return; }
+      if (custom) result = custom.result;
       if (method === 'Target.createTarget') { await targetGate; const targetId = `page-${++seq}`; pages.set(targetId, { targetId, type: 'page', url: params.url }); result = { targetId }; }
       if (method === 'Target.attachToTarget') result = { sessionId: `cdp-${params.targetId}` };
       if (method === 'Target.getTargets') result = { targetInfos: [...pages.values()] };
@@ -183,6 +186,54 @@ describe('verified account browser profiles', () => {
       expect((await f.manager.closePage!(f.panes[0]!, opener, 'trace')).activePageId).toBe(first);
       chrome.socket.send(JSON.stringify({ method: 'Target.detachedFromTarget', params: { sessionId: `cdp-${opener}`, targetId: opener } }));
       expect((await f.manager.listPages!(f.panes[0]!)).activePageId).toBe(first);
+    } finally { await f.cleanup(); }
+  });
+  it('waits for the move off a detached active tab instead of using its dead CDP session (Work/Emma 20/11)', async () => {
+    const f = await fixture();
+    try {
+      await f.start();
+      const dead = (await f.manager.listPages!(f.panes[0]!)).activePageId!;
+      const chrome = f.children[0];
+      // The pane's only tab goes away under it; the tab that replaces it is slow to open.
+      f.holdTarget();
+      chrome.pages.delete(dead);
+      chrome.socket.send(JSON.stringify({ method: 'Target.detachedFromTarget', params: { sessionId: `cdp-${dead}`, targetId: dead } }));
+      await vi.waitFor(() => expect(f.commands.filter(c => c.method === 'Target.createTarget')).toHaveLength(2));
+      const from = f.commands.length;
+      // The operator's view reads the session meanwhile (Chrome answered "Session with given id not found").
+      const read = f.manager.getActive(f.panes[0]!);
+      await new Promise(r => setTimeout(r, 50));
+      f.releaseTarget();
+      const response = await read;
+      expect(f.commands.slice(from).filter(c => c.sessionId === `cdp-${dead}`)).toEqual([]);
+      expect((await f.manager.listPages!(f.panes[0]!)).activePageId).not.toBe(dead);
+      expect(response?.session.status).not.toBe('CLOSED');
+    } finally { f.releaseTarget(); await f.cleanup(); }
+  });
+  it('delivers a tap held by a page that paints no frame after a move of its window, and takes a resent end as done (Work/Hugo 20/11)', async () => {
+    const f = await fixture();
+    try {
+      await f.start();
+      const chrome = f.children[0];
+      // Like Chrome: a touch waits for a painted frame, and an end with no touch active is refused.
+      let active = false; let moves = 0; let painted: () => void = () => {};
+      const frame = new Promise<void>(r => { painted = r; });
+      chrome.respond = async (method: string, params: any) => {
+        if (method === 'Browser.getWindowForTarget') return { result: { windowId: 7, bounds: { left: 0, top: 0, windowState: 'normal' } } };
+        if (method === 'Browser.setWindowBounds' && ++moves === 2) painted();
+        if (method !== 'Input.dispatchTouchEvent') return undefined;
+        if (params.type !== 'touchStart' && !active) return { error: { code: -32000, message: 'Must send a TouchStart first to start a new touch.' } };
+        active = params.type === 'touchStart';
+        await frame;
+        return { result: {} };
+      };
+      const lease = await f.manager.acquireControl!(f.panes[0]!, { holderType: 'OPERATOR', holderId: f.user.id, reason: null, ttlSeconds: 30 }, 'trace');
+      const tap = (eventType: 'touchStart' | 'touchEnd') => f.manager.dispatchInput!(f.panes[0]!, { type: 'TOUCH', eventType, touchPoints: eventType === 'touchStart' ? [{ x: 10, y: 20 }] : [], leaseId: lease.leaseId }, 'trace');
+      await tap('touchStart');
+      expect(f.commands.filter(c => c.method === 'Browser.setWindowBounds').map(c => c.params.bounds)).toEqual([{ windowState: 'minimized' }, { windowState: 'normal' }]);
+      await tap('touchEnd');
+      // The operator's app resends the end its first try timed out on.
+      await tap('touchEnd');
     } finally { await f.cleanup(); }
   });
   it('shows a popup opened by the page the pane shows, but not one opened by a background tab', async () => {

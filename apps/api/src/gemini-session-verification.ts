@@ -8,6 +8,7 @@ import {
 } from "./gemini-native-session.js";
 import type { Pane, PaneCliSession } from "@space/contracts";
 import { SPACE_AGENT_HOME, SPACE_INSTALL_ROOT } from "@space/contracts";
+import { sameModelId } from "./pane-guards.js";
 
 export interface GeminiVerificationEvidence {
   processFound: boolean;
@@ -152,9 +153,9 @@ export async function inspectProcessFds(
         if (!result.logFile && geminiLogFilePattern.test(target)) {
           result.logFile = target;
         }
-      } catch {}
+      } catch { /* fd vanished mid-scan */ }
     }
-  } catch {}
+  } catch { /* no fd dir: process gone or not ours */ }
   return result;
 }
 
@@ -268,7 +269,7 @@ export async function findGeminiProcessTree(
           .filter((v) => Number.isSafeInteger(v) && v > 0);
         pending.push(...children);
       }
-    } catch {}
+    } catch { /* process exited before its tasks were read */ }
   }
 
   return bestProc;
@@ -291,7 +292,7 @@ export async function readPaneStateRecord(cleanPaneId: string): Promise<{
       const raw = await readFile(filename, "utf8");
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object") return parsed;
-    } catch {}
+    } catch { /* missing or corrupt record: try the next name */ }
   }
   return null;
 }
@@ -305,7 +306,7 @@ export async function findLatestLogForHome(homePath?: string | null): Promise<st
     if (logFiles.length > 0) {
       return join(logDir, logFiles[0]!);
     }
-  } catch {}
+  } catch { /* no log dir yet */ }
   return null;
 }
 
@@ -354,7 +355,7 @@ export async function scanForPaneGeminiProcess(
         if (info) return info;
       }
     }
-  } catch {}
+  } catch { /* /proc unreadable: no live process evidence */ }
   return null;
 }
 
@@ -428,8 +429,8 @@ export async function verifyGeminiPaneSession(options: {
 
   let accountProfileId: string | null = liveAccountProfileId ?? configuredAccountProfileId;
   let accountEmail: string | null = null;
-  let accountVerificationStatus: "VERIFIED" | "UNVERIFIED" | "UNKNOWN" = "UNKNOWN";
-  let accountSource: GeminiVerificationEvidence["accountSource"] = "unknown";
+  let accountVerificationStatus: "VERIFIED" | "UNVERIFIED" | "UNKNOWN";
+  let accountSource: GeminiVerificationEvidence["accountSource"];
   let staleMetadata = false;
 
   let logEmail: string | null = null;
@@ -526,7 +527,7 @@ export async function verifyGeminiPaneSession(options: {
 
   if (modelVerificationStatus === "VERIFIED") {
     detailsParts.push(`Live model "${effectiveModelId}" verified via ${modelSource}${liveModelLabel ? ` (${liveModelLabel})` : ""}`);
-    if (configuredModelId && configuredModelId !== effectiveModelId) {
+    if (configuredModelId && !sameModelId(configuredModelId, effectiveModelId)) {
       detailsParts.push(`Configured model was "${configuredModelId}" (discrepancy detected)`);
     }
   } else {

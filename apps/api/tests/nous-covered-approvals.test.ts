@@ -55,6 +55,8 @@ describe("approvals \"May send\" covers are Nous's, never the operator's (operat
     expect(isNousApproval({ source: "SECURITY_COPILOT", kind: "REVIEW_REQUESTED" })).toBe(false);
     expect(isNousApproval({ source: "MONITORING_COPILOT", kind: "MONITORING_REVIEW" })).toBe(false);
     expect(isNousApproval({ source: "MARKETING_COPILOT", kind: "QUESTION" })).toBe(false);
+    // Audit §4 item 1: a Marketing campaign proposal is Nous's too; a rule proposal stays the operator's.
+    expect([isNousApproval({ source: "MARKETING_COPILOT", kind: "CAMPAIGN_PROPOSED" }), isNousApproval({ source: "MARKETING_COPILOT", kind: "RULE_PROPOSED" })]).toEqual([true, false]);
     // Held under the allowance it stays held past its hour (the hour is only Nous's re-wake).
     expect(heldForNous({ payload: { heldForNous: { until: "2026-11-02T08:00:00.000Z", allowance: "maySend" } } }, Date.parse("2026-11-03T00:00:00.000Z"))).toBe(true);
     expect(heldForNous({ payload: { heldForNous: { until: "2026-11-02T08:00:00.000Z" } } }, Date.parse("2026-11-03T00:00:00.000Z"))).toBe(false);

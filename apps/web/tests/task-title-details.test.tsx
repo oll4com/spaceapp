@@ -143,8 +143,11 @@ describe("task title details", () => {
     expect(css).toMatch(
       /\.pane-title-details > summary,\s*\.space-shell \.pane-title-details > summary\s*\{[^}]*width:\s*fit-content;[^}]*max-width:\s*100%;/s,
     );
+    expect(css).toMatch(
+      /\.space-shell \.task-title-popover\s*\{[^}]*width:\s*max-content;[^}]*max-width:\s*min\(520px,\s*calc\(100vw - 32px\)\);/s,
+    );
   });
-  it("lists every summarized title line with the CLI's saved title", () => {
+  it("lists every summarized title line with the CLI's saved title and shows only the task title without the pane name", () => {
     const pane = {
       ...fixture(),
       paneName: "Oscar",
@@ -162,8 +165,12 @@ describe("task title details", () => {
         ],
       },
     } as Pane;
-    render(<TaskTitleDetails pane={pane} titleRef={createRef()} onRename={() => {}} onUpdated={() => {}} />);
+    render(<TaskTitleDetails pane={pane} displayTitle="Oscar" titleRef={createRef()} onRename={() => {}} onUpdated={() => {}} />);
     fireEvent.click(screen.getByLabelText("Show task details Oscar - Login 500 error fix"));
+    const popover = screen.getByRole("region", { name: "Task details" });
+    // The current title line carries the title; no heading repeats it.
+    expect(popover.querySelector(".task-title-heading")).toBeNull();
+    expect(popover.style.width).toBe("max-content");
     expect(screen.getByText("Saved in Claude Code")).toBeTruthy();
     expect(screen.getByText("Αναβάθμιση τίτλων task")).toBeTruthy();
     const lines = screen.getByRole("list", { name: "Task title lines" }).querySelectorAll("li");
@@ -173,6 +180,28 @@ describe("task title details", () => {
     ]);
     expect(lines[1]!.getAttribute("aria-current")).toBe("step");
     expect(screen.queryByText("Repair the failing login.", { selector: ".task-title-description" })).toBeNull();
+  });
+  it("does not open any popover when the pane has no title beyond its pane name or default mode label", () => {
+    vi.useFakeTimers();
+    const bobPane = {
+      id: "pane:bob",
+      paneName: "Bob",
+      title: "Job Copilot 3",
+      titleSource: "auto",
+      mode: "JOB_APPLY",
+      taskMetadata: null,
+    } as unknown as Pane;
+    render(<TaskTitleDetails pane={bobPane} displayTitle="Bob" titleRef={createRef()} onRename={() => {}} onUpdated={() => {}} />);
+    const text = screen.getByText("Bob");
+    const details = text.closest("details")!;
+    expect(details.getAttribute("data-has-title")).toBe("false");
+    fireEvent.pointerEnter(details, { pointerType: "mouse" });
+    act(() => vi.advanceTimersByTime(500));
+    expect(details.open).toBe(false);
+    expect(screen.queryByRole("region", { name: "Task details" })).toBeNull();
+    fireEvent.click(text.closest("summary")!);
+    expect(details.open).toBe(false);
+    expect(screen.queryByRole("region", { name: "Task details" })).toBeNull();
   });
   it("never shows the raw prompt while the first summary is pending", () => {
     const pane = {

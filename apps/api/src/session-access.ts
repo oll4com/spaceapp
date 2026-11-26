@@ -1,6 +1,8 @@
-import type { FastifyBaseLogger } from "fastify";
+import type { FastifyBaseLogger, FastifyReply, FastifyRequest, HookHandlerDoneFunction } from "fastify";
+import { TENANT_LOCAL, withTenant } from "@space/db";
 import type { AuthUser } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
+import { sendApiError } from "./http-errors.js";
 
 const ACCESS_CACHE_TTL_MS = 60_000;
 
@@ -59,5 +61,25 @@ export function createSessionAccess(options: { store: Pick<SpaceStore, "getContr
       roleCache.delete(userId);
       disabledCache.delete(userId);
     }
+  };
+}
+
+// K1 M6 (plan clipboard:ZGz1LnD51ELH step 17, packages/db/src/tenant-context.ts): with SPACE_TENANCY_ENABLED=1 a signed-in
+// request (session, phone channel, CLI control token) runs in its user's users.tenant_id, so row-level security shows only that
+// tenant's rows. A preHandler after the auth preHandler, because the CLI control token sets request.user there.
+export function requestTenantHook(store: Pick<SpaceStore, "getUserTenantId">) {
+  const tenants = new Map<string, string>(); // a user's tenant is set once (M0, K2 sign-up) and never moves
+  return (request: FastifyRequest, reply: FastifyReply, done: HookHandlerDoneFunction) => {
+    const userId = request.user?.id;
+    if (!userId) return done();
+    const known = tenants.get(userId);
+    if (known) return withTenant(known, done);
+    // The in-memory store has no row-level security (design §2.5): one tenant.
+    Promise.resolve(store.getUserTenantId ? store.getUserTenantId(userId) : TENANT_LOCAL).then((tenant) => {
+      // Fail closed: a user without a row would otherwise act as the owner, who sees every tenant.
+      if (!tenant) return void sendApiError(reply, 403, "TENANT_UNKNOWN", "This account belongs to no tenant.");
+      tenants.set(userId, tenant);
+      withTenant(tenant, done);
+    }, (error: Error) => done(error));
   };
 }

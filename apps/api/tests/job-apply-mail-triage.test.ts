@@ -295,6 +295,16 @@ describe("gmail organize client", () => {
       .rejects.toThrow(/needs full Gmail access/);
   });
 
+  it("retries a Gmail 5xx answered as HTML and reports its status, not a JSON parse error", async () => {
+    let calls = 0;
+    const flaky = vi.fn(async () => (++calls === 1 ? new Response("<html>502 Bad Gateway</html>", { status: 502 })
+      : Response.json({ emailAddress: "a@example.com", historyId: "9" }))) as unknown as typeof fetch;
+    await expect(createGmailClient({ accessToken: "t", fetchImpl: flaky, retryDelayMs: 0 }).profile()).resolves.toEqual({ emailAddress: "a@example.com", historyId: "9" });
+    const down = vi.fn(async () => new Response("<html>502 Bad Gateway</html>", { status: 502 })) as unknown as typeof fetch;
+    await expect(createGmailClient({ accessToken: "t", fetchImpl: down, retryDelayMs: 0 }).profile()).rejects.toThrow("Gmail request failed (502).");
+    expect(down).toHaveBeenCalledTimes(4);
+  });
+
   it("maps gmail.modify to MAIL_ORGANIZE and accepts it in consent requests", () => {
     expect(connectorCapabilities("GOOGLE", ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.readonly"]).sort())
       .toEqual(["MAIL_ORGANIZE", "MAIL_READ"]);

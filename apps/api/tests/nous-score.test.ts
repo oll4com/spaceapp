@@ -1,13 +1,16 @@
 // Nous's Score (operator 3/11 23:11 BKK, plan clipboard:1NF6u6gcCwtj): points that can go negative; open plans and operator requests cost
 // points while they stay open, finished work and the scorecard give them.
-import { nousDecisionSchema, nousTurnFactsSchema } from "@space/contracts";
+import { nousDecisionSchema, nousTurnFactsSchema, type NousScore } from "@space/contracts";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemoryNousRepository } from "@space/db";
 import { SpaceEventBus } from "@space/runtime";
+import { NEVER_BUY_ANSWER } from "../src/nous/allowances.js";
 import { NOUS_PERSONA, NOUS_SCORE_FIRST_RULE } from "../src/nous/service.js";
-import { createNousScore, nousScore, nousScoreErrors, nousScoreLeversText, paneDaysOf, NOUS_SCORE_EVENT_DELAY_MS, NOUS_SCORE_STARTUP_MS, NOUS_SCORE_SNAPSHOT_MS, nousScoreLine, NOUS_SCORE_WEIGHTS, registerNousScoreRoutes, parseScoreReset,
-  type NousScoreInput, type NousScoreReset } from "../src/nous/score.js";
+import { addToolErrorSample, toolFailureCause } from "../src/nous/progress.js";
+import { CLOSE_PARKED } from "../src/nous/score-push.js";
+import { createNousScore, goalProgressDays, nousScore, nousScoreErrors, nousScoreLeversText, paneDaysOf, NOUS_SCORE_EVENT_DELAY_MS, NOUS_SCORE_STARTUP_MS, NOUS_SCORE_SNAPSHOT_MS, nousScoreLine, NOUS_SCORE_WEIGHTS, registerNousScoreRoutes, parseScoreReset,
+  type NousScoreInput, type NousScoreLever, type NousScoreReset } from "../src/nous/score.js";
 
 const owner = "user:operator";
 const NOW = Date.parse("2026-11-03T16:00:00.000Z");
@@ -87,6 +90,22 @@ describe("nousScore", () => {
     expect(score).toBe(-60);
   });
 
+  // Plan clipboard:nLYbDf3TqBPm step 1 (W47 audit, Open plans −105): SzUQxpr8eu8z and NdUqdzgGp_BR waited on dates and were charged "no working pane".
+  it("a recorded wait is not 'no working pane'; a plan past 24 h with neither a working pane nor a recorded wait is pushed", () => {
+    const plan = (id: string, hoursAgo: number, extra: Partial<NousScoreInput["plans"][number]> = {}) => ({ id, title: id, createdAt: at(hoursAgo * HOUR), working: false, stalled: null, ...extra });
+    const { tiles, paneless } = nousScore(input({ plans: [plan("clipboard:date", 4 * 24, { held: "waits on a date: batch 7 sends Mon 14:00", waits: "6. Pilots (BLOCKED)" }),
+      plan("clipboard:none", 25, { waits: "7. Rollout (BLOCKED)" }), plan("clipboard:young", 23), plan("clipboard:worked", 48, { working: true })] }));
+    const items = tiles.find((tile) => tile.key === "plans")!.items;
+    // −2 −2×4² and no −3: its wait is named instead.
+    expect(items.find((item) => item.id === "clipboard:date")).toMatchObject({ points: -34, detail: "open 4 d · waits on a date: batch 7 sends Mon 14:00" });
+    expect(items.find((item) => item.id === "clipboard:none")).toMatchObject({ points: -7, detail: "open 1 d · no working pane" });
+    expect(paneless).toEqual([{ id: "clipboard:none", title: "clipboard:none", points: -7, age: "1 d" }]);
+    // 21/11 (Score −2980, Open plans 70%): a wait recorded on the plan itself is pushed to be closed parked, not left open to age.
+    const parked = nousScore(input({ plans: [plan("clipboard:park", 10 * 24, { held: "waits on a third party: Braintrust reply", parkable: true }), plan("clipboard:young", 23, { held: "waits on you: go", parkable: true })] }));
+    expect(parked.paneless).toEqual([{ id: "clipboard:park", title: "clipboard:park", points: -202, age: "10 d", held: "waits on a third party: Braintrust reply" }]);
+    expect(parked.levers.find((lever) => lever.id === "clipboard:park")!.action).toBe(`it waits on a third party: Braintrust reply and no pane works on it: ${CLOSE_PARKED}`);
+  });
+
   it("Score levers now (operator 5/11 12:32 BKK): every open item a move removes or stops growing, costliest by tomorrow first, with its move", () => {
     const day = 24 * HOUR;
     const quiet = { calls: 5, failed: 3, refused: 0, corrections: 0, lessons: 0, declined: 0, predictionMisses: 0, couldHaveDecided: 0, chatErrors: 0, decisionsFailed: 0 };
@@ -108,12 +127,23 @@ describe("nousScore", () => {
     expect(levers.at(-1)!.action).toBe("Alex works on it: send the next step the moment it reports");
     // 13/11: a plan whose open steps all wait gets nothing from the 90 % push, so its lever says so instead of "send it its next step now".
     const waits = nousScore(input({ plans: [{ id: "clipboard:w", title: "Waits", createdAt: at(2 * HOUR), working: false, stalled: null, progress: 40, pane: "Bruno", waits: "sign-in" }] }));
-    expect(waits.levers.find((lever) => lever.id === "clipboard:w")!.action).toBe("every open step waits (next: sign-in): nothing to send; unblock its step when the wait ends (space_plan_update)");
+    expect(waits.levers.find((lever) => lever.id === "clipboard:w")!.action).toBe("every open step waits (next: sign-in) and no wait is recorded: record it (space_plan_update waitsOn), unblock its step when the wait ends");
     // 13/11: a plan waiting on the operator (its waitsOn «continue») opens no pane.
     const held = nousScore(input({ plans: [{ id: "clipboard:h", title: "Held", createdAt: at(2 * HOUR), working: false, stalled: null, progress: 40, pane: null, held: "waits on you: continue" }] }));
     expect(held.levers.find((lever) => lever.id === "clipboard:h")!.action).toBe("it waits on you: continue: no pane to open or send; clear the wait (you: one ask; a third party: follow up; a date or another plan: nothing until then)");
     const text = nousScoreLeversText(levers);
-    expect(text.split("\n")[1]).toBe("- Plan [clipboard:a] \"Release\" 97% · −167 now → −205 tomorrow · complete it with its proof (space_plan_update), it removes all of it");
+    // 20/11 (token saving): the two requests' shared move is written once and named on their lines.
+    expect(text.split("\n").slice(1, 4)).toEqual(["Moves several lines share (a line ending in [move N] takes that move):",
+      "[move 1] deliver it and record it Done (space_request_done); a pane on it now if none works on it; if it waits on a release or ticket, report it PENDING with release or tickets so its shipping brings it back",
+      "- Plan [clipboard:a] \"Release\" 97% · −167 now → −205 tomorrow · complete it with its proof (space_plan_update), it removes all of it"]);
+    expect(text).toContain("- Request [nous_msg:3] «seven hours» · −8 now → −16 tomorrow · [move 1]");
+    expect(text.match(/deliver it and record it Done/g)).toHaveLength(1);
+    // A shared tail after ": " is named too; each line keeps its own words before it.
+    const wait = (id: string, held: string): NousScoreLever => ({ id, label: id, points: -5, perDay: -1,
+      action: `it ${held}: no pane to open or send; clear the wait (you: one ask; a third party: follow up; a date or another plan: nothing until then)` });
+    expect(nousScoreLeversText([wait("p1", "waits on a date: 7/12"), wait("p2", "waits on a third party: X (reason: Y)")]).split("\n").slice(2)).toEqual([
+      "[move 1] no pane to open or send; clear the wait (you: one ask; a third party: follow up; a date or another plan: nothing until then)",
+      "- p1 · −5 now → −6 tomorrow · it waits on a date: 7/12: [move 1]", "- p2 · −5 now → −6 tomorrow · it waits on a third party: X (reason: Y): [move 1]"]);
     // 13/11: no cost is left to the window: the errors name their causes with counts for a code-fix pane.
     expect(text).not.toContain("No move removes");
     expect(text).toContain("- Daily Nous errors (2.6% of the negative) · −6 now → −6.9 tomorrow · open or brief a code-fix pane with these causes and counts: failed tools ×3 (−6)");
@@ -145,6 +175,31 @@ describe("nousScore", () => {
     expect(score).toBe(0.5);
   });
 
+  it("14/11 (nous_msg:cf45a823): 24 h, 7 days and 30 days each count their own window; what is open now is the same in every range", () => {
+    const task = { id: "task:daily", title: "Daily check", createdAt: at(40 * 24 * HOUR), time: "10:00", timeZone: "UTC", nextRunAt: "2026-11-03T10:00:00.000Z" };
+    const extra: Partial<NousScoreInput> = {
+      plans: [{ id: "clipboard:p", title: "Open", createdAt: at(HOUR), working: true, stalled: null }],
+      completedPlans: [{ id: "c1", title: "A", at: at(2 * HOUR) }, { id: "c2", title: "B", at: at(3 * 24 * HOUR) }, { id: "c3", title: "C", at: at(20 * 24 * HOUR) }],
+      done: [{ id: "n1", title: "X", at: at(10 * 24 * HOUR) }],
+      // Every day's run from 2/11 back 40 days left its text out of the pane.
+      dailyTasks: [task], taskRuns: Array.from({ length: 40 }, (_, day) => ({ taskId: task.id, dueAt: new Date(Date.parse("2026-11-02T10:00:00.000Z") - day * 24 * HOUR).toISOString(), typed: false }))
+    };
+    const view = (windowDays: number) => nousScore(input({ ...extra, windowDays }));
+    const tiles = (windowDays: number) => Object.fromEntries(view(windowDays).tiles.map((tile) => [tile.key, [tile.points, tile.detail]]));
+    expect([1, 7, 30].map((days) => [tiles(days).completed, tiles(days).done, tiles(days).dailyTasks, tiles(days).plans])).toEqual([
+      [[5, "1 in 24 h"], [0, "0 in 24 h"], [-5, "1 daily · 1 missed days in 24 h"], [-2, "1 open"]],
+      [[10, "2 in 7 days"], [0, "0 in 7 days"], [-35, "1 daily · 7 missed days in 7 days"], [-2, "1 open"]],
+      [[15, "3 in 30 days"], [3, "1 in 30 days"], [-150, "1 daily · 30 missed days in 30 days"], [-2, "1 open"]]]);
+    // No window is the 7 days', as before.
+    expect(nousScore(input(extra))).toEqual(view(7));
+    // Each range's errors start at its own first hour: a failure 30 h ago is in 7 days, not in 24 h.
+    const fact = (endedAt: string) => nousTurnFactsSchema.parse({ turnId: endedAt, ownerUserId: owner, reason: "OPERATOR", status: "DONE", startedAt: endedAt, endedAt,
+      planPoints: 0, tools: { read: { calls: 1, failed: 1, refused: 0 } }, outcomes: [] });
+    const failed = (windowDays: number) => nousScoreErrors({ now: NOW, timeZone: "UTC", facts: [fact(at(HOUR)), fact(at(30 * HOUR)), fact(at(20 * 24 * HOUR))], decisions: [], lessons: [], windowDays })
+      .reduce((sum, day) => sum + day.failed, 0);
+    expect([failed(1), failed(7), failed(30)]).toEqual([1, 2, 3]);
+  });
+
   it("Idle open panes (operator 13/11 09:48 BKK): every started hour past 60 min doing nothing, the Mail Copilot and a pane under Idle open browsers excepted", () => {
     const result = nousScore(input({ panes: [
       { id: "pane:working", title: "Working", idleSince: null },
@@ -172,8 +227,9 @@ describe("nousScore", () => {
     expect(tile.items.map((item) => [item.id, item.points])).toEqual([["pane:dino", -6], ["pane:bob", -2], ["pane:finn", -2]]);
     expect(tile).toMatchObject({ label: "Idle open browsers", points: -10, detail: "2 open unused past 30 min · 1 closed by Space in 7 days" });
     const levers = nousScoreLeversText(result.levers, result);
-    expect(levers).toContain("- Browser of Dino (Job Copilot 6) unused 3 h · −6 now → −54 tomorrow · close it: close its pane if it is done, or its tabs (space_browser_close_tab)");
-    expect(levers).toContain("- Browser of Bob (Browser 2) unused 45 min · −2 now → −50 tomorrow · close it");
+    expect(levers).toContain("[move 1] close it: close its pane if it is done, or its tabs (space_browser_close_tab)");
+    expect(levers).toContain("- Browser of Dino (Job Copilot 6) unused 3 h · −6 now → −54 tomorrow · [move 1]");
+    expect(levers).toContain("- Browser of Bob (Browser 2) unused 45 min · −2 now → −50 tomorrow · [move 1]");
     expect(nousScoreLine({ at: at(0), score: result.score, change24h: null, change7d: null, tiles: result.tiles, breakdown: result.breakdown }))
       .toContain(", Idle open browsers: 2 open unused past 30 min · 1 closed by Space in 7 days (−10)");
     // Nothing idle: the tile costs nothing.
@@ -216,7 +272,8 @@ describe("nousScore", () => {
     // The lever names which send and why, so the cause gets fixed once.
     const result = nousScore(input({ approvals: { decisions: [decision("nous_decision:b", 5), decision("nous_decision:g", 5, { refs: {}, outcome: "Failed: pane closed" })], sends: {} } }));
     const levers = nousScoreLeversText(result.levers, result);
-    expect(levers).toContain("- Approved [nous_decision:b] «Reply nous_decision:b»: no send of ours a@x.com thread t-nous_decision:b since the approval · −7.2 now → −187.2 tomorrow · run it now and confirm it (space_mail_read SENT)");
+    expect(levers).toContain("- Approved [nous_decision:b] «Reply nous_decision:b»: no send of ours a@x.com thread t-nous_decision:b since the approval · −7.2 now → −187.2 tomorrow · [move 1]");
+    expect(levers).toContain("[move 1] run it now and confirm it (space_mail_read SENT)");
     expect(levers).toContain("- Approved [nous_decision:g] «Reply nous_decision:g»: Failed: pane closed · −7.2 now");
     // 13/11 (3fac478d, 2f27149c, 453972c2): with a reset 2 days ago the window still takes the approval itself, as approvalStates' send check
     // does: 8 days ago is out (no send entry, never charged); 3 days ago is in and counts from the reset (48 h: −5 − 0.25 × 46² = −534).
@@ -259,6 +316,23 @@ describe("nousScore", () => {
     expect(nousScore(input({ goals: [{ ...goal, createdAt: at(HOUR), limit: null, progressDays: [] }] })).score).toBe(0);
   });
 
+  it("counts a day a pane reported PROGRESS or DONE on one of the goal's plans as goal progress (plan W48 step 3)", () => {
+    const goal = { id: "nous_goal:g1", planIds: ["clipboard:planA001"] };
+    const days = goalProgressDays(goal, [
+      { goalId: "nous_goal:g1", kind: "NOTE", at: "2026-11-20T03:00:00Z" },
+      { goalId: "nous_goal:g1", kind: "WAITS", at: "2026-11-19T03:00:00Z" },
+      { goalId: "nous_goal:other", kind: "PROGRESS", at: "2026-11-18T03:00:00Z" }
+    ], [
+      { planId: "clipboard:planA001", status: "DONE", at: "2026-11-21T20:00:00Z" },
+      { planId: "clipboard:planA001", status: "PROGRESS", at: "2026-11-20T05:00:00Z" },
+      { planId: "clipboard:planA001", status: "HEARTBEAT", at: "2026-11-17T03:00:00Z" },
+      { planId: "clipboard:planB001", status: "DONE", at: "2026-11-16T03:00:00Z" },
+      { planId: null, status: "DONE", at: "2026-11-15T03:00:00Z" }
+    ], "Asia/Bangkok");
+    // 21/11 20:00Z is 22/11 in Bangkok; a heartbeat, another plan's or a planless report and a WAITS event are no progress.
+    expect(days.sort()).toEqual(["2026-11-20", "2026-11-22"]);
+  });
+
   it("uses the owner's calendar for goal inactivity across a DST day and never charges today before it ends", () => {
     const result = nousScore(input({ now: Date.parse("2026-11-02T05:30:00Z"), timeZone: "America/New_York", goals: [{
       id: "nous_goal:dsttest", text: "DST", status: "ACTIVE", createdAt: "2026-10-31T16:00:00Z", limit: null, progressDays: ["2026-11-01"] }] }));
@@ -275,14 +349,25 @@ describe("nousScore", () => {
     const dailyErrors = nousScoreErrors({ now: NOW, timeZone: "Asia/Bangkok", facts: [fact(at(HOUR)), fact(at(25 * HOUR)), fact(at(8 * 24 * HOUR)), fact(at(-HOUR))],
       decisions: [decision], lessons: [{ key: "lessons-score", createdAt: at(2 * HOUR), updatedAt: at(2 * HOUR) }, { key: "other", createdAt: at(HOUR), updatedAt: at(HOUR) }] });
     expect(dailyErrors).toEqual([
-      { day: "2026-11-02", calls: 8, failed: 2, refused: 2, corrections: 1, lessons: 0, declined: 0, predictionMisses: 0, couldHaveDecided: 0, chatErrors: 0, decisionsFailed: 0 },
-      // 13/11 (Kevin's mail): the declined ask is charged once, as declined, never also as one it could have decided.
-      { day: "2026-11-03", calls: 8, failed: 2, refused: 2, corrections: 1, lessons: 1, declined: 1, predictionMisses: 1, couldHaveDecided: 0, chatErrors: 0, decisionsFailed: 0 }
+      { day: "2026-11-02", calls: 8, failed: 2, refused: 2, corrections: 1, lessons: 0, declined: 0, predictionMisses: 0, couldHaveDecided: 0, chatErrors: 0, decisionsFailed: 0,
+        records: ["correction (no message): Operator corrected this"], last: { read: at(25 * HOUR), corrections: at(25 * HOUR) } },
+      // 13/11 (Kevin's mail): the declined ask is charged once, as declined, never also as one it could have decided or a missed prediction (14/11).
+      { day: "2026-11-03", calls: 8, failed: 2, refused: 2, corrections: 1, lessons: 1, declined: 1, predictionMisses: 0, couldHaveDecided: 0, chatErrors: 0, decisionsFailed: 0,
+        records: ["correction (no message): Operator corrected this", "lesson lessons-score 2026-11-03T14:00:00.000Z"],
+        last: { read: at(HOUR), corrections: at(HOUR), declined: at(HOUR), lessons: at(2 * HOUR) } }
     ].map((day) => ({ ...day, tools: { read: 2 } })));
     expect(nousScoreErrors({ now: NOW, timeZone: "Asia/Bangkok", facts: [], lessons: [], decisions: [{ ...decision, status: "APPROVED", answer: "Yes" }] })
       .find((day) => day.day === "2026-11-03")).toMatchObject({ declined: 0, couldHaveDecided: 1 });
+    expect(nousScoreErrors({ now: NOW, timeZone: "Asia/Bangkok", facts: [], lessons: [], decisions: [{ ...decision, status: "ANSWERED", answer: "No" }] })
+      .find((day) => day.day === "2026-11-03")).toMatchObject({ declined: 0, predictionMisses: 1, records: ["prediction miss nous_decision:abcdef123456: No"] });
+    // 22/11 (d43fff0e + d4924b41): free grant auto-declined by Never buy on negated «δεν πληρώνουν» is excused as ruleMisfire.
+    const misfire = { ...decision, id: "nous_decision:d43fff0e91f94fdc902069b6", category: "EXTERNAL" as const,
+      title: "Codex for Open Source (OpenAI): να υποβληθεί η δωρεάν αίτηση με αυτά ακριβώς τα πεδία;",
+      recommendation: "Τα API credits είναι δωρεάν tokens που δεν πληρώνουν τίποτε άλλο.", status: "DECLINED" as const, answer: NEVER_BUY_ANSWER };
+    expect(nousScoreErrors({ now: NOW, timeZone: "Asia/Bangkok", facts: [], lessons: [], decisions: [misfire] })
+      .find((day) => day.day === "2026-11-03")).toMatchObject({ declined: 0 });
     const result = nousScore(input({ dailyErrors, timeZone: "Asia/Bangkok" }));
-    expect(result.tiles.find((tile) => tile.key === "dailyErrors")).toMatchObject({ points: -31, detail: expect.stringContaining("Today: 6 · 7 days: 9") });
+    expect(result.tiles.find((tile) => tile.key === "dailyErrors")).toMatchObject({ points: -28, detail: expect.stringContaining("Today: 5 · 7 days: 8") });
     // No second charge through the legacy Corrections / Asked, could decide tiles.
     expect(result.tiles.some((tile) => ["corrections", "couldHaveDecided"].includes(tile.key))).toBe(false);
   });
@@ -315,7 +400,194 @@ describe("nousScore", () => {
       turn("Claude: API Error: 500 timeout exceeded when trying to connect. (earlier: Codex: ECONNREFUSED)"),
       turn("Codex: ECONNREFUSED 127.0.0.1:4920"),
       turn("Codex: exceeded retry limit, last status: 429 Too Many Requests (earlier: database system is starting up)")] });
-    expect(dailyErrors).toMatchObject([{ day: "2026-11-03", chatErrors: 2 }]);
+    // The gateway connection refusal and 429 are transient holds too, including facts recorded before that distinction.
+    expect(dailyErrors).toMatchObject([{ day: "2026-11-03", chatErrors: 0 }]);
+  });
+
+  it("reclassifies historical caller/state holds from their recorded samples, without rewriting facts or forgiving unsampled failures", () => {
+    const holds: Record<string, string[]> = {
+      space_db_query: ['Postgres: relation "space_memory" does not exist (code 42P01)', 'Postgres: syntax error in jsonpath input (code 42601)',
+        'Postgres: column "title" does not exist (code 42703)', 'Postgres: operator does not exist: text ->> unknown (code 42883)',
+        'Postgres: column reference "status" is ambiguous (code 42702)', 'Postgres: more than one row returned by a subquery used as an expression (code 21000)',
+        'Connection terminated unexpectedly'],
+      space_task_update: ['Task item task:gone was not found.', 'No task gone.', 'gone is no task id. Open tasks: task:open'],
+      space_ask_operator: ['file.md is inside nous, a folder the agent that made it keeps private (mode 700): Space can read …',
+        'mailrev:gone: No file or folder mailrev:gone under the agent workspace.', 'file.png: file.png is a binary…',
+        'The action approves no ticket. Have the pane submit the hotfix first.', 'The action\'s room "old" is not one of the operator\'s rooms.',
+        'replaces names nous_decision:old, which is not an open decision of yours: nothing to replace.', 'Invalid arguments: prediction: Invalid input: expected object, received string'],
+      space_pane_checked: ['No open pane named "Dana" in Cleo.', 'WAITING_DATE needs nextCheckInMinutes: when to look again.'],
+      space_look: ['Dana has no live browser session: nothing to look at.', 'The Browser Host is unavailable.',
+        'No Xvfb display is available for a headed browser session.', 'BROWSER_ROUTE: another pane uses this browser account on another network route;',
+        'app.apk (artifact:app) is application/vnd.android.package-archive, not an image (PNG, JPEG, WebP or GIF): read text with space_files_read.'],
+      space_read_pane: ['No open pane named "Andy" in Bruno.', 'No room named "gone". Rooms: Alex.'],
+      space_execute: ['FAILED status: Watch ID is required.', 'FAILED status: Watch not found.', 'FAILED configure pane:old: The CLI session changed during the model switch.', 'FAILED configure pane:old: Pane has no active session.'],
+      space_files_read: ['No Agent Files or Media artifact artifact:gone in your rooms.', 'file.txt is 46 MB; files up to 8 MB are read.', 'Only files under /var/lib/spaceapp-user/agent-workspace can be read.'],
+      space_copilot_answer: ['"old question" is neither the id nor the words of an open MAIL question. Open now: none. An…', 'The question was not found.'],
+      space_answer_pane: ['Bob is not waiting for an answer (state IDLE). It is at an empty prompt.', 'Dana is not waiting for an answer (state EXITED). Read the pane again.', 'The pane\'s question changed since it was inspected; inspect it again before answering.'],
+      space_send_to_pane: ['Not sent: Andy: The CLI has not opened its input yet; no input was sent.', 'Not sent: Bob: The CLI kept the text as an unsent draft after Enter; it was not submitted.'],
+      space_programs: ['No program aws-activate. Ids with its words: other.', 'braintrust-startups: reapply.when: Not a date', 'Only Nous changes the programs registry'],
+      space_plan_update: ['Clipboard item clipboard:gone was not found.', 'Give a status, a percentage, a step, new steps, a title or text, a link, the plan map (dependsOn, dueAt, waitsOn) or park.', 'Invalid arguments: dueAt: Invalid ISO datetime']
+    };
+    for (const [name, samples] of Object.entries(holds)) for (const error of samples) {
+      const fact = nousTurnFactsSchema.parse({ turnId: 'historical', ownerUserId: owner, reason: 'OPERATOR', status: 'DONE', startedAt: at(HOUR), endedAt: at(HOUR), planPoints: 0, outcomes: [],
+        tools: { [name]: { calls: 4, failed: 3, refused: 1, errors: [error] } } });
+      const before = structuredClone(fact);
+      const [day] = nousScoreErrors({ now: NOW, timeZone: 'UTC', facts: [fact], decisions: [], lessons: [] });
+      expect(day, `${name}: ${error}`).toMatchObject({ calls: 4, failed: 1, refused: 2, tools: { [name]: 1 } });
+      expect(fact).toEqual(before);
+    }
+  });
+
+  it("slice 6 (11-14/11): the cut 200-character samples of answers tools.ts now holds are held; real failures stay charged", () => {
+    const receipt = (detail: string) => `{"status":"FAILED","operationId":"${"6b1a270d".repeat(8)}","results":[{"paneId":"pane:XOu-5N6yjLGv","status":"FAILED","detail":"${detail}"}]} The pane keeps its current model.`;
+    const tail = `\n{"dotId":"dot:fb378243c320313db0ffaf09c8d77e02","id":"${"ce5920b7".repeat(8)}","actorId":"user:operator","roomId":"room:HrUVNdg"}`;
+    const zod = (key: string) => `FAILED panes.open: [\n  {\n    "code": "unrecognized_keys",\n    "keys": [\n      "${key}"\n    ],\n    "path": [],\n    "message": "Unrecognized key: \\"${key}\\""\n  }\n]${tail}`;
+    const sample = (text: string) => { const tool = { calls: 1, failed: 1, refused: 0 }; addToolErrorSample(tool, text); return (tool as { errors: string[] }).errors[0]!; };
+    const cases: Array<[string, string, boolean]> = [
+      ["space_execute", `FAILED status: Watch ID is required.${tail}`, true],
+      ["space_execute", `FAILED status pane:3870_EI5q5rn, pane:GkbF-AeyuY4-: Watch ID is required.${tail}`, true],
+      ["space_execute", `FAILED status: Watch not found.${tail}`, true],
+      ["space_execute", `FAILED configure pane:Fl2655iXeKLh: Pane has no active session.${tail}`, true],
+      ["space_execute", `FAILED configure pane:ehGlvXqoPK_1: The CLI session changed during the model switch.${tail}`, true],
+      ["space_execute", zod("mail_copilot"), true],
+      ["space_execute", zod("jobcopilot"), true],
+      ["space_set_pane_model", receipt("The CLI session changed during the model switch."), true],
+      ["space_set_pane_model", receipt("Claude is working; change its model after the current turn."), true],
+      ["space_set_pane_model", receipt("Codex rejected the requested pre-thread model settings."), true],
+      ["space_set_pane_model", receipt("Live Codex model control is unavailable; the current CLI session was left unchanged."), true],
+      ["space_close_pane", receipt("Pane pane:cS8DBIi-HTIU stays open: its Marketing Copilot has 1 approved post scheduled"), true],
+      ["space_copilot_control", "The CLI has not opened its input yet (still starting, or waiting for sign-in or a question); no input was sent.", true],
+      ["space_programs", "Only Nous changes the programs registry", true],
+      ["space_programs", "No program fulcrum", true],
+      // 14/11: the entry's own problems (fields, twin, operator lock) and missing arguments save nothing and name the fix.
+      ["space_programs", "braintrust-startups: reapply.when: Not a date", true],
+      ["space_programs", "acme: a new program needs parent, program and status", true],
+      ["space_programs", "sentry2: Sentry › Sentry for Startups is already recorded as sentry-startups; update sentry-startups instead (nothing was saved)", true],
+      ["space_programs", "upcloud-for-startups: amount locked by the operator; change or unlock it only with a new source in sources (the operator's message or mail that says so); nothing was saved", true],
+      ["space_programs", "mail: date: Invalid input: expected string, received undefined", true],
+      ["space_programs", "add_mail needs id and mail", true],
+      // 14/11 (7/11 15:45 ×6, 7/11 14:51, 8/11 06:30, 14/11 01:54): a short id, a branch no repository has and a path not at that revision.
+      ["space_git", "git: error: short object ID 2e50 is ambiguous", true],
+      ["space_git", "git: fatal: ambiguous argument 'fix/snip-held-video-paste^...fix/snip-held-video-paste': unknown revision or path not in the working tree.", true],
+      ["space_git", "git: fatal: no such path apps/web/src/features/agent-files/AgentFileLinks.tsx in HEAD", true],
+      ["space_git", "git: fatal: path 'apps/api/src/mail-copilot-routes.ts' does not exist in 'HEAD'", true],
+      ["space_git", "git: fatal: path 'apps/api/src/cli-routes.ts' does not exist in 'HEAD'\nNearest paths at HEAD: apps/api/src/cli-account-routes.ts, apps/api/src/cli-auth-handoff-routes.ts.", true],
+      ["space_appointment_add", "Appointment refused, its notes miss: the account HOW TO JOIN signs in with (or \"no sign-in\"). Add them and retry.", true],
+      ["space_plan_update", "clipboard:7S_jA46vDkU9 is not parked with a condition c1; park it first (park).", true],
+      ["space_notify_operator", "clipboard:mmeF0-e3x4G is no plan of yours: name it by its clipboard id (space_plans lists them).", true],
+      ["space_request_done", "No such plan", true],
+      ["space_settle_decision", "nous_decision:c25803f2 is not one of your decisions.", true],
+      ["space_tool_result", "No long answer of call toolu_0179HqQAZRGmZSgkW73mjq2f is kept (a turn's answers over 2,000 characters are kept while it runs)", true],
+      ["space_tool_result", "No answer of space_world is kept: only answers over 2,000 characters are kept (a shorter one was shown whole)", true],
+      ["space_resolve_notification", "No open notification notification:9ba1c247c64a4f7a8e1d3f05.", true],
+      ["space_nous_share_file", "No Agent File KzndPmwLS2_k in your rooms: only the operator's Agent Files are shared.", true],
+      ["space_subagents", "Give tasks to start helpers, or the runId of a run you started to read it; not both.", true],
+      ["space_nous_followup", "Give exactly one trigger: at or inMinutes, ticket, or room and pane.", true],
+      ["space_codex_reset_redeem", "ntheogr@gmail.com is back by itself Sat 14 Nov, 02:16 Asia/Bangkok, within 6 hours: a credit now would be wasted. Nothing spent.", true],
+      ["space_mail_read", "info@example.invalid: info@example.invalid: Gmail no longer has that message or thread. Connected Gmail accounts: info@example.invalid. Next: find it with space_mail_search.", true],
+      ["space_mail_search", "crew@spaceapp.dev is not a mail account of this pane.", true],
+      // 14/11 slice 11: answers that name the next call (another pane, a key, a pane kind, a field) or a state Space holds today.
+      ["space_set_pane_model", receipt("This Claude Code version cannot change the model for one pane only."), true],
+      ["space_set_pane_model", receipt('\\"gemini-4-argon\\" is no Claude model: Claude offers claude:sonnet (low/medium/high/xhigh/max).'), true],
+      ["space_set_pane_model", "This CLI cannot list claude-opus-5-5; open a Claude Code pane. Nothing changed or queued.", true],
+      ["space_set_pane_model", "space-gateway-claude/claude-opus-5-5 bills the paid Claude API key, and Claude Max still has room (its best account has at least 10% of both windows). Open a Claude Code pane", true],
+      ["space_notes", "No note has the key goal-e803-daily-20261109; space_notes {} lists every key.", true],
+      ["space_browser_set_route", "Pane pane:eA-QB5jgetcT is TERMINAL; browser sessions require BROWSER, YOUTUBE, JOB_APPLY, MARKETING_COPILOT or FREELANCE_COPILOT panes.", true],
+      ["space_browser_close_tab", "No open tab 7F80260BA4121ED0166978B5166978B5148E50A8 in that browser: read space_browser_tabs again.", true],
+      ["space_browser_close_tab", "The Browser Host is unavailable.", true],
+      ["space_web_search", "Web search HTTP 429: Rate limit exceeded. Try again in 300s. Web search is out of quota until 2026-11-11 05:35 UTC (Space Gateway's Codex accounts): nothing was searched", true],
+      ["space_notify_operator", '"Paired?" has options and no recommended one: Every decision carries a prediction (goal 7365014c criterion 3)', true],
+      // Real failures: a cut detail that names no hold, a host or network fault, a slow query, a broken write, a rolled-back update.
+      ["space_restart_pane", receipt("CLI session cli_session:WoPtbmC2nMfP closed before input could be sent."), false],
+      ["space_execute", "FAILED panes.open: [", false],
+      ["space_copilot_control", "The request could not be completed.", false],
+      ["space_db_query", "Postgres: canceling statement due to statement timeout (code 57014)", false],
+      ["space_memory_save", "EACCES: permission denied, open '/opt/spaceapp/docs/space_memory_2026-11.md'", false],
+      ["space_net_check", "DNS A spaceapp.example failed: ETIMEOUT.", false],
+      ["space_git", "git took longer than 15 s.", false],
+      ["space_programs", "The programs registry is unavailable", false],
+      ["space_programs", "Postgres: canceling statement due to statement timeout (code 57014)", false]
+    ];
+    for (const [name, text, held] of cases) {
+      const error = sample(text);
+      const fact = nousTurnFactsSchema.parse({ turnId: 'slice6', ownerUserId: owner, reason: 'OPERATOR', status: 'DONE', startedAt: at(HOUR), endedAt: at(HOUR), planPoints: 0, outcomes: [],
+        tools: { [name]: { calls: 1, failed: 1, refused: 0, errors: [error] } } });
+      const [day] = nousScoreErrors({ now: NOW, timeZone: 'UTC', facts: [fact], decisions: [], lessons: [] });
+      expect(day?.failed ?? 0, `${name}: ${error}`).toBe(held ? 0 : 1);
+    }
+  });
+
+  // Queue 1053 (5 samples of 3 turns read only "FAILED panes.open: ["): a first line that opens a JSON list or object goes on with the rest.
+  it("slice 11: a failed call's cause keeps the JSON its first line opens, spaces collapsed, within 200 characters", () => {
+    const zod = 'FAILED panes.open: [\n  {\n    "code": "unrecognized_keys",\n    "keys": [\n      "mail_copilot"\n    ],\n    "path": []\n  }\n]';
+    const cause = toolFailureCause(zod);
+    expect(cause).toBe('FAILED panes.open: [ { "code": "unrecognized_keys", "keys": [ "mail_copilot" ], "path": [] } ]');
+    const tool = { calls: 1, failed: 1, refused: 0 }; addToolErrorSample(tool, cause);
+    const fact = nousTurnFactsSchema.parse({ turnId: 'slice11', ownerUserId: owner, reason: 'OPERATOR', status: 'DONE', startedAt: at(HOUR), endedAt: at(HOUR), planPoints: 0, outcomes: [],
+      tools: { space_execute: tool } });
+    expect(nousScoreErrors({ now: NOW, timeZone: 'UTC', facts: [fact], decisions: [], lessons: [] })[0]?.failed ?? 0).toBe(0);
+    expect(toolFailureCause("\nNo note has the key x; space_notes {} lists every key.\nMore.")).toBe("No note has the key x; space_notes {} lists every key.");
+    expect(toolFailureCause(`FAILED panes.open: [\n${"x ".repeat(300)}`)).toHaveLength(200);
+    expect(toolFailureCause("")).toBe("");
+  });
+
+  // Plan clipboard:1NF6u6gcCwtj step 4: receipts recorded as `{"status":"FAILED","operationId":…` cut at 200 (restart_pane 11/11, close_pane 9/11).
+  it("a failed call whose first line is a Space Control receipt records its first unfinished result, not the JSON", () => {
+    const restart = '{"status":"FAILED","operationId":"9d8a6339","results":[{"paneId":"pane:hnZS2v9Km4Js","status":"FAILED","detail":"CLI session cli_session:WoPtbmC2nMfP closed before input could be sent."}]}';
+    expect(toolFailureCause(restart)).toBe("FAILED pane:hnZS2v9Km4Js: CLI session cli_session:WoPtbmC2nMfP closed before input could be sent.");
+    const partial = '{"status":"PARTIAL","operationId":"7aef","results":[{"paneId":"pane:t-kpKsFYscEj","status":"COMPLETED","detail":"Pane control applied."},'
+      + '{"paneId":"pane:b","status":"UNKNOWN","detail":"Not confirmed.","error":"Room lock\\ntimed out."}]}';
+    expect(toolFailureCause(partial)).toBe("UNKNOWN pane:b: Room lock timed out.");
+    const model = '{"status":"FAILED","operationId":"1305","results":[{"paneId":"pane:-RzMl5rto98Z","status":"FAILED","detail":"Claude is working; change its model after the current turn."}]} The pane keeps its current model.\nMore.';
+    expect(toolFailureCause(model)).toBe("FAILED pane:-RzMl5rto98Z: Claude is working; change its model after the current turn.");
+    const execute = JSON.stringify({ id: "op", status: "FAILED", results: [{ index: 0, status: "COMPLETED", detail: "ok" }, { index: 1, status: "FAILED", detail: "Pane pane:x was not found." }],
+      command: { actions: [{ kind: "pane", operation: "start" }, { kind: "browser", operation: "browser.content" }] } });
+    expect(toolFailureCause(execute)).toBe("FAILED browser.content: Pane pane:x was not found.");
+    // Not a receipt with an unfinished result: the old rule (first line, JSON it opens).
+    expect(toolFailureCause('{"status":"FAILED","results":[]}')).toBe('{"status":"FAILED","results":[]}');
+    expect(toolFailureCause("{ not json }")).toBe("{ not json }");
+  });
+
+  it("keeps genuine, mixed, unknown and cut-off failures charged; legacy error is one sample, errors takes precedence", () => {
+    const tools = {
+      space_db_query: { calls: 5, failed: 5, refused: 1, errors: ['Connection terminated unexpectedly', 'Postgres: canceling statement due to statement timeout (code 57014)', 'unexpected query execution failure'] },
+      space_execute: { calls: 1, failed: 1, refused: 0, errors: ['FAILED panes.open: ['] },
+      space_look: { calls: 1, failed: 1, refused: 0, errors: ['The Browser Host is running but failed this request (BROWSER_HOST_INTERNAL_ERROR).'] },
+      space_task_update: { calls: 2, failed: 2, refused: 0, error: 'No task old.' },
+      space_plan_update: { calls: 1, failed: 1, refused: 0, error: 'Invalid arguments: dueAt: Invalid ISO datetime', errors: ['Unexpected storage error'] },
+      unknown: { calls: 1, failed: 1, refused: 0 }
+    };
+    const fact = nousTurnFactsSchema.parse({ turnId: 'mixed', ownerUserId: owner, reason: 'OPERATOR', status: 'DONE', startedAt: at(HOUR), endedAt: at(HOUR), planPoints: 0, outcomes: [], tools });
+    const [day] = nousScoreErrors({ now: NOW, timeZone: 'UTC', facts: [fact], decisions: [], lessons: [] });
+    expect(day).toMatchObject({ calls: 11, failed: 8, refused: 3, tools: { space_db_query: 3, space_execute: 1, space_look: 1, space_task_update: 1, space_plan_update: 1, unknown: 1 } });
+    // Slice 8: each counted tool names its latest counted sample; a count whose samples were all held (task_update) names none.
+    expect(day!.causes).toEqual({ space_db_query: 'unexpected query execution failure', space_execute: 'FAILED panes.open: [',
+      space_look: 'The Browser Host is running but failed this request (BROWSER_HOST_INTERNAL_ERROR).', space_plan_update: 'Unexpected storage error' });
+  });
+
+  it("leaves historical provider holds and tool allowlist refusals out of chat errors, but keeps auth, unknown and real timeouts", () => {
+    const held = ['Codex: exceeded retry limit, last status: 429 Too Many Requests — not retried on another route: this run had already acted.',
+      'Space Gateway answered 503: Service Unavailable', 'Codex: ECONNREFUSED 127.0.0.1:4920', 'Gemini requested a tool outside the Nous allowlist.',
+      'Claude: 403 Forbidden: 5-hour limit reached', 'Claude Opus 5.5 · Claude via OpenCode: Waiting for the selected VPN connection...',
+      'gemini-4-argon-high · Gemini Argon (Antigravity): Gemini needs a new sign-in.', 'gemini-4-argon-high · Gemini Argon (Antigravity): Gemini returned HTTP 404.',
+      // 18/11 and 23/11: route faults the router fails over on, failing only when every route had one.
+      'gemini-3.8-flash-high · Gemini 3.8 Flash (Antigravity): Gemini returned HTTP 403.', 'Gemini returned an empty answer.',
+      'Claude Sonnet 5.5 · Claude via OpenCode: OpenCode requested a tool outside Nous.', 'Claude sent no reply within 5 minutes of the start: the route was unavailable.'];
+    const charged = ['401 invalid_api_key (earlier: Codex: 429 Too Many Requests)', 'An unexpected bug (earlier: no available tokens)',
+      'Claude Opus 5.5 · Claude: No answer within 20 minutes.'];
+    const facts = [...held, ...charged].map((error, i) => nousTurnFactsSchema.parse({ turnId: `turn:${i}`, ownerUserId: owner, reason: 'OPERATOR', status: 'FAILED', startedAt: at(HOUR), endedAt: at(HOUR), planPoints: 0, tools: {}, outcomes: [], error }));
+    facts.push({ ...facts[0]!, turnId: 'timeout', status: 'TIMEOUT', error: 'Timed out after 20 minutes. (earlier: quota exhausted)' });
+    expect(nousScoreErrors({ now: NOW, timeZone: 'UTC', facts, decisions: [], lessons: [] })).toMatchObject([{ chatErrors: charged.length + 1 }]);
+  });
+
+  it("holds a turn the pve-az resize shutdowns of 12/11 cut (05:33:00, 05:42:04 UTC), never a turn that failed outside them or a timeout in them", () => {
+    const now = Date.parse("2026-11-14T00:00:00Z");
+    const fact = (turnId: string, endedAt: string, status = "FAILED") => nousTurnFactsSchema.parse({ turnId, ownerUserId: owner, reason: "OPERATOR", status, startedAt: endedAt,
+      endedAt, planPoints: 0, tools: {}, outcomes: [], error: 'Claude Opus 5.5 · Claude: "input_json_delta","partial_json":", \\"pane"}}' });
+    const errors = (facts: Array<ReturnType<typeof nousTurnFactsSchema.parse>>) => nousScoreErrors({ now, timeZone: "UTC", facts, decisions: [], lessons: [] }).reduce((sum, day) => sum + day.chatErrors, 0);
+    expect(errors([fact("cut1", "2026-11-12T05:33:00.335Z"), fact("cut2", "2026-11-12T05:42:04.848Z")])).toBe(0);
+    expect(errors([fact("before", "2026-11-12T05:29:34.000Z"), fact("between", "2026-11-12T05:38:00.000Z"), fact("other-day", "2026-11-13T05:33:00.000Z"),
+      fact("timeout", "2026-11-12T05:42:04.000Z", "TIMEOUT")])).toBe(4);
   });
 
   it("counts a lesson on its creation and each incident it gained, never on a rewrite or the merge that moved it", () => {
@@ -353,6 +625,20 @@ describe("nousScore", () => {
       // No bound message: each still counts.
       turn("unbound", 2 * HOUR, [{}, {}])];
     expect(nousScoreErrors({ now: NOW, timeZone: "UTC", facts, decisions: [], lessons: [] })).toMatchObject([{ day: "2026-11-03", corrections: 4 }]);
+  });
+
+  it("charges a complaint again about a mistake already charged as that one correction (14/11: intratrade ×2, provider ×3, load ×5)", () => {
+    const turn = (id: string, endedHoursAgo: number, messageId: string, repeats?: string) => nousTurnFactsSchema.parse({ turnId: id, ownerUserId: owner, reason: "OPERATOR",
+      status: "DONE", startedAt: at(endedHoursAgo + 0.5), endedAt: at(endedHoursAgo), planPoints: 0, tools: {},
+      outcomes: [{ summary: "Wrong", outcome: "SELF", correction: true, messageIds: [messageId], ...(repeats ? { repeats } : {}) }] });
+    const facts = [turn("first", 5 * HOUR, "nous_msg:aaaaaaaa"), turn("again", 4 * HOUR, "nous_msg:bbbbbbbb", "nous_msg:aaaaaaaa"),
+      // A chain: the third names the second, which is charged through the first.
+      turn("third", 3 * HOUR, "nous_msg:cccccccc", "nous_msg:bbbbbbbb"),
+      // Naming a message no correction charged is a correction of its own.
+      turn("other", 2 * HOUR, "nous_msg:dddddddd", "nous_msg:zzzzzzzz"),
+      // Naming its own message is no repeat.
+      turn("self", HOUR, "nous_msg:eeeeeeee", "nous_msg:eeeeeeee")];
+    expect(nousScoreErrors({ now: NOW, timeZone: "UTC", facts, decisions: [], lessons: [] })).toMatchObject([{ day: "2026-11-03", corrections: 3 }]);
   });
 
   it("charges each judged day a DAILY task's text never reached its pane, and judges a day only once its next run is due (the scheduler runs it late until then)", () => {
@@ -412,7 +698,8 @@ describe("nousScore", () => {
     const tile = result.tiles.find((entry) => entry.key === "response")!;
     expect(tile.items.map((item) => [item.label, item.points])).toEqual([["Today (2026-11-03)", -10], ["2026-11-02", -6]]);
     expect(tile.items[0]!.detail).toBe("5 messages · first answer median 5 min, slowest 25 min, 3 over 2 min (2 still unanswered) · Done 2, median 7 h, 1 over 6 h");
-    expect(tile).toMatchObject({ points: -16, detail: expect.stringMatching(/^Today: 5 messages/) });
+    // 14/11: the window's −16 beside "Today: …" read as today's; today's own −10 and the earlier days' −6 are named apart.
+    expect(tile).toMatchObject({ points: -16, detail: expect.stringMatching(/^Today −10: 5 messages .* · earlier days −6, past: they leave as the window moves$/) });
   });
 
   it("leaves the time a request waited on the operator alone (their phone test) out of its Done time", () => {
@@ -433,18 +720,22 @@ describe("nousScore", () => {
     expect(tile([ask, { ...followUp, doneId: "done:other" }]).points).toBe(-4);
   });
 
-  it("charges the Startup programs by their success rate and each program still open; no programs cost nothing", () => {
-    // One row since the oll4.com funding page went (operator 7/11, nous_msg:e9c06cd838de45f4bccda467); a row left on its page counts there.
+  it("one-time jump of ~+160 from the 14/11 reweighting, not real progress (nous_msg:cbc40ebc): each programs page by its answered applications' success rate; a waiting application costs −0.2 like one not applied, a DRAFT −1; no programs cost nothing", () => {
+    // One Startup row since the oll4.com funding page went (operator 7/11, nous_msg:e9c06cd838de45f4bccda467); a row left on its page counts there.
+    // The Affiliate page (14/11) is its own row: its approvals no longer lift Startup programs' rate.
     const program = (id: string, page: string, status: string) => ({ id, page: page as "startup", parent: "Parent", program: id, status: status as never, appliedAt: null, createdAt: at(HOUR) });
     const result = nousScore(input({ programs: [program("a", "startup", "APPROVED"), program("b", "startup", "REJECTED"), program("c", "startup", "APPLIED"),
-      program("d", "startup", "DRAFT"), program("e", "startup", "CANCELLED"), program("f", "oll4-funding", "NOT_APPLIED")] }));
+      program("d", "startup", "DRAFT"), program("e", "startup", "CANCELLED"), program("f", "oll4-funding", "NOT_APPLIED"),
+      program("g", "affiliate", "APPROVED"), program("h", "affiliate", "APPLIED")] }));
     const tile = result.tiles.find((entry) => entry.key === "projects")!;
-    // 1 of 3 sent approved: 66.7 points short × 0.2.
+    // 1 of 2 answered approved (the APPLIED one waits, the CANCELLED one was withdrawn): 50 points short × 0.2. Affiliate: 1 of 1, nothing.
     expect(tile.items.map((item) => [item.label, item.points])).toEqual([
-      ["Startup programs: 1 of 3 applications approved (33 %)", -13.3], ["Parent › c", -1], ["Parent › d", -1], ["Parent › f", -0.2]]);
+      ["Startup programs: 1 of 2 answered applications approved (50 %)", -10], ["Parent › d", -1],
+      ["Parent › c", -0.2], ["Parent › f", -0.2], ["Parent › h", -0.2], ["Affiliate programs: 1 of 1 answered applications approved (100 %)", 0]]);
     expect(tile.items.some((item) => item.label.includes("oll4.com funding"))).toBe(false);
-    // A program not applied to yet costs a fifth of one in progress (nous_msg:44e3fd48): new candidates do not swamp the Score.
-    expect(tile).toMatchObject({ points: -15.5, detail: "1 projects · lower success and more days cost more" });
+    // Applying never costs more than not applying. Stable 14/11: 232 waiting at −1 → −0.2 (+185.6) and 78/403 → 78/171 answered (+5.7): ~+190, Nous said ~+160.
+    expect(tile).toMatchObject({ points: -11.6, detail: "2 projects · lower success and more days cost more" });
+    expect(tile.items.find((item) => item.id === "h")!.detail).toBe("Affiliate programs · applied");
     expect(nousScore(input()).tiles.find((entry) => entry.key === "projects")).toMatchObject({ points: 0, items: [] });
   });
 
@@ -457,12 +748,12 @@ describe("nousScore", () => {
     const items = result.tiles.find((entry) => entry.key === "projects")!.items;
     // 0 %: 100 × 0.2 + 89 days × 1; 25 %: 75 × 0.2 + 0.75 × 20 days; 100 %: nothing; funding: 10 days since the application, not 40 since the entry.
     expect(items.map((item) => [item.label, item.points])).toEqual([["Job applications: 0 of 3428 sent got an offer (0 %)", -109],
-      ["Startup programs: 0 of 1 applications approved (0 %)", -30], ["Crypto methods: 1 of 4 tested passed (25 %)", -30], ["Freelance: 2 of 2 proposals won a contract (100 %)", 0]]);
+      ["Startup programs: 0 of 1 answered applications approved (0 %)", -30], ["Crypto methods: 1 of 4 tested passed (25 %)", -30], ["Freelance: 2 of 2 proposals won a contract (100 %)", 0]]);
     expect(items[0]!.detail).toBe("89 d since the first · -0.2 a point below 100 % success, -1 a day × the share short");
     // The breakdown: every costing tile and each project on its own, biggest first, with its share of the negative and the number behind it.
     expect(result.breakdown).toEqual([
       { label: "Job applications", points: -109, share: 64.5, detail: "0 of 3428 sent got an offer, 0 % · 89 d" },
-      { label: "Startup programs", points: -30, share: 17.8, detail: "0 of 1 applications approved, 0 % · 10 d" },
+      { label: "Startup programs", points: -30, share: 17.8, detail: "0 of 1 answered applications approved, 0 % · 10 d" },
       { label: "Crypto methods", points: -30, share: 17.8, detail: "1 of 4 tested passed, 25 % · 20 d" }]);
     const more = nousScore(input({ projects: [{ name: "Job applications", succeeded: 0, tried: 10, what: "sent got an offer", since: at(90 * 24 * HOUR) }],
       plans: [{ id: "clipboard:p", title: "P", createdAt: at(HOUR), working: true, stalled: null }] }));
@@ -479,14 +770,53 @@ describe("nousScore", () => {
     expect(old.breakdown).toEqual([expect.objectContaining({ label: "Big projects", points: -5 })]);
   });
 
+  it("Bob 14/11: the errors lever names each cause's last occurrence and when it leaves the window; points stay the same", () => {
+    const fact = (endedAt: string, correction: boolean) => nousTurnFactsSchema.parse({ turnId: endedAt, ownerUserId: owner, reason: "OPERATOR", status: "DONE", startedAt: endedAt, endedAt, planPoints: 0,
+      tools: { space_remote: { calls: 1, failed: 1, refused: 0, errors: ["That SpaceApp closed the link: code 1011."] } }, outcomes: correction ? [{ summary: "x", outcome: "SELF", correction: true }] : [] });
+    const dailyErrors = nousScoreErrors({ now: NOW, timeZone: "UTC", facts: [fact("2026-11-01T02:08:00.000Z", false), fact("2026-10-31T05:00:00.000Z", true)], decisions: [], lessons: [] });
+    const result = nousScore(input({ dailyErrors }));
+    const action = result.levers.find((lever) => lever.label.startsWith("Daily Nous errors"))!.action;
+    expect(action).toContain('space_remote failed ×2 (−4; latest: "That SpaceApp closed the link: code 1011."; last 01/11 02:08Z, leaves the window 08/11 02:08Z)');
+    expect(action).toContain("corrections ×1 (−5; last 31/10 05:00Z, leaves the window 07/11 05:00Z)");
+    expect(result.tiles.find((tile) => tile.key === "dailyErrors")!.points).toBe(-9);
+  });
+
+  it("20/11: a pane's finished report on Daily Nous errors takes the causes last seen before it out of the brief; their points stay, a recurring one briefs again", () => {
+    const fact = (endedAt: string, correction: boolean) => nousTurnFactsSchema.parse({ turnId: endedAt, ownerUserId: owner, reason: "OPERATOR", status: "DONE", startedAt: endedAt, endedAt, planPoints: 0,
+      tools: { space_remote: { calls: 1, failed: 1, refused: 0, errors: ["Peer answered 502."] } }, outcomes: correction ? [{ summary: "x", outcome: "SELF", correction: true }] : [] });
+    const dailyErrors = nousScoreErrors({ now: NOW, timeZone: "UTC", facts: [fact("2026-11-01T02:08:00.000Z", false), fact("2026-10-31T05:00:00.000Z", true)], decisions: [], lessons: [] });
+    const run = (finished: NousScoreInput["finished"]) => nousScore(input({ dailyErrors, finished }));
+    const lever = (finished: NousScoreInput["finished"]) => run(finished).levers.find((entry) => entry.label.startsWith("Daily Nous errors"));
+    // Reviewed between the two: the correction is out, space_remote (newer) still briefs.
+    const between = lever([{ at: "2026-11-01T01:00:00.000Z", text: "Daily Nous errors seventh pass: fixed or explained" }])!.action;
+    expect(between).toContain("space_remote failed ×2");
+    expect(between).not.toContain("corrections");
+    // Reviewed after both: no lever, no push; the tile keeps its points.
+    const after = run([{ at: "2026-11-01T03:00:00.000Z", text: "Daily Nous errors: every cause fixed or explained" }]);
+    expect(after.levers.find((entry) => entry.label.startsWith("Daily Nous errors"))).toBeUndefined();
+    expect(after.unworked).toEqual([]);
+    expect(after.tiles.find((tile) => tile.key === "dailyErrors")!.points).toBe(-9);
+    // A report on other work reviews nothing.
+    expect(lever([{ at: "2026-11-01T03:00:00.000Z", text: "Response time done" }])!.action).toContain("corrections ×1");
+  });
+
   it("13/11: while the Score is negative, a variable worth over 5 % of it that no pane works on is the top lever; a working pane covers it", () => {
     const errors = [{ day: "2026-11-03", calls: 40, failed: 20, refused: 0, corrections: 0, lessons: 0, declined: 0, predictionMisses: 0, couldHaveDecided: 0, chatErrors: 0, decisionsFailed: 0, tools: { space_plan_update: 12 } }];
     const plans = [{ id: "clipboard:a", title: "A", createdAt: at(2 * HOUR), working: true, stalled: null }];
     const open = nousScore(input({ dailyErrors: errors, plans }));
+    // Slice 8: the latest day's counted sample names the cause.
+    const named = nousScore(input({ dailyErrors: [{ ...errors[0]!, day: "2026-11-02", failed: 0, tools: {}, causes: { space_plan_update: "old" } }, { ...errors[0]!, causes: { space_plan_update: "Unexpected storage error" } }], plans }));
+    expect(named.levers[0]!.action).toContain('space_plan_update failed ×12 (−24; latest: "Unexpected storage error")');
     expect(open.levers[0]).toMatchObject({ label: "Daily Nous errors (95.2% of the negative)", points: -40 });
     expect(open.levers[0]!.action).toMatch(/^no pane works on it: open or brief a code-fix pane with these causes and counts: space_plan_update failed ×12 \(−24\), failed tools ×8 \(−16\)/);
     const worked = nousScore(input({ dailyErrors: errors, plans, working: ["Fix the daily Nous errors"] }));
     expect(worked.levers[0]!.action).toMatch(/^open or brief a code-fix pane/);
+    // 1071 (13/11: a follow-up naming the variable was pushed again 15 min later): an open follow-up's wait is no push; the lever still reads unworked.
+    expect(open.unworked.map((entry) => entry.label)).toEqual(["Daily Nous errors"]);
+    const waiting = nousScore(input({ dailyErrors: errors, plans, waits: ["Daily Nous errors: Andy's slice 7 ships with q-1, check at 12:00"] }));
+    expect(waiting.unworked).toEqual([]);
+    expect(waiting.levers[0]!.action).toMatch(/^no pane works on it: /);
+    expect(nousScore(input({ dailyErrors: errors, plans, waits: ["Big projects: wait for the mails"] })).unworked).toHaveLength(1);
   });
 
   it("14/11: a pane's finished report on Response time after today's newest slow case ends the brief; its points stay, a newer slow case briefs again", () => {
@@ -729,6 +1059,25 @@ describe("the Score service", () => {
     expect(tile).toMatchObject({ points: -5.8, detail: "2 open · 9.5 open a day on average" });
     expect(tile.items.filter((item) => !item.id).map((item) => [item.label, item.points, item.detail])).toEqual([
       ["2026-11-02", -3, "15 open on average · peak 20 · -0.2 a pane a day"], ["2026-11-01", -0.8, "4 open on average · peak 4 · -0.2 a pane a day"]]);
+  });
+
+  it("14/11 (nous_msg:cf45a823): the view carries 24 h and 30 days' own tiles and score from the same reads; the 7 days' stay the score", async () => {
+    const repository = new InMemoryNousRepository();
+    await repository.addScoreSnapshot({ ownerUserId: owner, at: "2026-10-20T12:00:00.000Z", score: 0, parts: { openPanes: 99 } }); // in 30 days only
+    await repository.addScoreSnapshot({ ownerUserId: owner, at: "2026-11-02T20:00:00.000Z", score: 0, parts: { openPanes: 10 } });
+    const failure = { day: "2026-11-03", calls: 1, failed: 1, refused: 0, corrections: 0, lessons: 0, declined: 0, predictionMisses: 0, couldHaveDecided: 0, chatErrors: 0, decisionsFailed: 0 };
+    const score = createNousScore({ repository, owners: async () => [owner], now: () => NOW, input: async () => ({ ...input({
+      completedPlans: [{ id: "c1", title: "A", at: at(2 * HOUR) }, { id: "c2", title: "B", at: at(3 * 24 * HOUR) }, { id: "c3", title: "C", at: at(20 * 24 * HOUR) }] }),
+    // The loader cuts each range's errors itself; a range without its own takes the 7 days'.
+    periods: { "24h": { dailyErrors: [failure] } } }) });
+    await score.snapshot();
+    const view = score.cached(owner)!;
+    const points = (tiles: NousScore["tiles"]) => Object.fromEntries(tiles.filter((tile) => ["completed", "panes", "dailyErrors"].includes(tile.key)).map((tile) => [tile.key, tile.points]));
+    expect(points(view.tiles)).toEqual({ completed: 10, panes: -2, dailyErrors: 0 });
+    expect(points(view.periods!["24h"]!.tiles)).toEqual({ completed: 5, panes: -2, dailyErrors: -2 });
+    expect(points(view.periods!["30d"]!.tiles)).toEqual({ completed: 15, panes: -21.8, dailyErrors: 0 });
+    expect([view.score, view.periods!["24h"]!.score, view.periods!["30d"]!.score]).toEqual([8, 1, -6.8]);
+    expect((await repository.listScoreSnapshots(owner, at(HOUR))).at(-1)!.score).toBe(8);
   });
 
   it("keeps each owner's score and range cache separate", async () => {

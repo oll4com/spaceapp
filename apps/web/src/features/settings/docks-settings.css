@@ -5,9 +5,29 @@
 
 .docks-toggle-label-wrap {
   display: inline-flex;
+  /* UI review 22/11: in a narrow dock the badge moved under the label instead of being clipped to "ALWA VISIB". */
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.25rem 0.5rem;
   min-width: 0;
+}
+
+/* A long name wraps beside its icon instead of dropping under it. 1.5rem = the icon and the gap.
+   min-content: one word wider than that ("Notifications") moves under the icon instead of running into the ⓘ. */
+.docks-toggle-label-wrap > .dock-toggle-icon + span {
+  max-width: calc(100% - 1.5rem);
+  min-width: min-content;
+}
+
+.docks-toggle-list {
+  container-type: inline-size;
+}
+
+/* Under ~16rem the "Enabled" word left the label column too narrow for its own name and badge; the switch still shows the state. */
+@container (max-width: 16rem) {
+  .dock-visibility-row .space-toggle-state {
+    display: none;
+  }
 }
 
 .dock-toggle-icon {
@@ -122,6 +142,11 @@
   align-items: center;
   column-gap: 0.35rem;
   border-top: 1px solid var(--room-border, #303437);
+}
+
+/* Panes and Widgets rows have no drag handle: without this the toggle sat in the handle's auto column and each switch followed its label's width. */
+.dock-item-row-container:not(:has(> .dock-order-handle)) {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .settings-flat-card .dock-item-row-container > .dock-visibility-row {

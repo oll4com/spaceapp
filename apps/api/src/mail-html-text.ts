@@ -48,7 +48,7 @@ export function htmlToText(html: string): string {
     .replace(/<li\b[^>]*>/gi, "\n- ")
     .replace(/<[^>]+>/g, " ");
   return decodeHtmlEntities(text)
-    .replace(/[ \t ]+/g, " ")
+    .replace(/[ \t\u00a0]+/g, " ")
     .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

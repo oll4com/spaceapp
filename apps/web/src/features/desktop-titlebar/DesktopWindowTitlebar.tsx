@@ -53,6 +53,29 @@ interface DesktopSystemInfo {
   isWayland?: boolean;
 }
 
+type InstallerResult = { success?: boolean; error?: string; reason?: string } | null | undefined;
+/** The desktop shell's preload bridge (window.spaceDesktop); older app versions lack some members. */
+interface DesktopBridge {
+  isDesktop?: boolean;
+  displays?: unknown;
+  isMaximized?: () => Promise<boolean>;
+  onMaximizeChange?: (listener: (max: boolean) => void) => (() => void) | void;
+  getSystemInfo?: () => Promise<DesktopSystemInfo>;
+  setAspectRatio?: (preset: string) => Promise<{ success?: boolean } | null>;
+  getWindowMediaSourceId?: () => Promise<{ success?: boolean; sourceId?: string } | null>;
+  saveRecording?: (input: { buffer: Uint8Array; filename: string }) => Promise<{ success?: boolean } | null>;
+  capturePage?: () => Promise<{ success?: boolean; dataUrl?: string } | null>;
+  installUpdate?: (input: { version: string; url?: string }) => Promise<boolean | { savedTo?: string } | null>;
+  runInstaller?: (input: { version: string }) => Promise<InstallerResult>;
+  openDownloadsFolder?: () => Promise<unknown>;
+  openDiagnosticLogs?: () => Promise<unknown>;
+  toggleMaximize?: () => Promise<boolean>;
+  minimizeWindow?: () => void;
+  minimizeToTray?: () => void;
+  closeWindow?: () => void;
+}
+const spaceDesktop = () => (window as unknown as { spaceDesktop?: DesktopBridge }).spaceDesktop;
+
 export function DesktopWindowTitlebar({
   activeRoomName,
   activeRoomId,
@@ -61,17 +84,17 @@ export function DesktopWindowTitlebar({
 }: DesktopWindowTitlebarProps) {
   const [isDesktop, setIsDesktop] = useState(() => {
     if (typeof window === "undefined") return false;
-    const bridge = (window as any).spaceDesktop;
+    const bridge = spaceDesktop();
     return Boolean(bridge?.isDesktop || bridge?.displays || bridge);
   });
   const [isWindowMaximized, setIsWindowMaximized] = useState(true);
 
-  const desktopBridge = typeof window !== "undefined" ? (window as any).spaceDesktop : null;
+  const desktopBridge = typeof window !== "undefined" ? spaceDesktop() : null;
 
   useEffect(() => {
     const checkBridge = () => {
-      const bridge = typeof window !== "undefined" ? (window as any).spaceDesktop : null;
-      if (Boolean(bridge?.isDesktop || bridge?.displays || bridge)) {
+      const bridge = typeof window !== "undefined" ? spaceDesktop() : null;
+      if (bridge?.isDesktop || bridge?.displays || bridge) {
         setIsDesktop(true);
       }
     };
@@ -108,7 +131,7 @@ export function DesktopWindowTitlebar({
     const isMac = ua.includes("mac");
     const platform = isLinux ? "linux" : isMac ? "darwin" : "win32";
     return {
-      platform: platform as any,
+      platform,
       arch: "x64",
       version: "",
       electronVersion: ""
@@ -164,7 +187,7 @@ export function DesktopWindowTitlebar({
   }, [isDesktop]);
 
   useEffect(() => {
-    let interval: any = null;
+    let interval: ReturnType<typeof setInterval> | null = null;
     if (isRecording) {
       interval = setInterval(() => {
         setRecordingSeconds((prev) => prev + 1);
@@ -301,7 +324,7 @@ export function DesktopWindowTitlebar({
                   minFrameRate: 30,
                   maxFrameRate: 60
                 }
-              } as any
+              } as MediaTrackConstraints
             });
           } catch (gumErr) {
             console.warn("getUserMedia with sourceId notice:", gumErr);
@@ -351,7 +374,7 @@ export function DesktopWindowTitlebar({
           if (recorder.state === "recording") {
             try {
               recorder.stop();
-            } catch {}
+            } catch { /* recorder already stopping */ }
           }
         };
       }
@@ -361,7 +384,7 @@ export function DesktopWindowTitlebar({
       mediaStreamRef.current = stream;
       setIsRecording(true);
       setRecordingSeconds(0);
-    } catch (err: any) {
+    } catch (err) {
       console.warn("Could not start recording:", err);
       setIsRecording(false);
     }
@@ -376,7 +399,7 @@ export function DesktopWindowTitlebar({
     try {
       if (desktopBridge?.saveRecording) {
         let arrayBuffer: ArrayBuffer;
-        if (typeof (recordedBlob as any).arrayBuffer === "function") {
+        if (typeof recordedBlob.arrayBuffer === "function") {
           arrayBuffer = await recordedBlob.arrayBuffer();
         } else if (typeof Response !== "undefined") {
           arrayBuffer = await new Response(recordedBlob).arrayBuffer();
@@ -431,12 +454,12 @@ export function DesktopWindowTitlebar({
           await window.navigator.clipboard.write([
             new ClipboardItem({ "image/png": blob })
           ]);
-        } catch {}
+        } catch { /* clipboard denied: the snapshot is still saved below */ }
       }
 
       if (desktopBridge?.saveRecording) {
         let arrayBuffer: ArrayBuffer;
-        if (typeof (blob as any).arrayBuffer === "function") {
+        if (typeof blob.arrayBuffer === "function") {
           arrayBuffer = await blob.arrayBuffer();
         } else if (typeof Response !== "undefined") {
           arrayBuffer = await new Response(blob).arrayBuffer();
@@ -490,22 +513,22 @@ export function DesktopWindowTitlebar({
 
   const handleOpenDownloads = async () => {
     try {
-      if ((desktopBridge as any)?.openDownloadsFolder) {
-        await (desktopBridge as any).openDownloadsFolder();
+      if (desktopBridge?.openDownloadsFolder) {
+        await desktopBridge.openDownloadsFolder();
       }
     } catch (err) {
       console.warn("Could not open downloads folder:", err);
     }
   };
 
-  const installerFailure = (res: any) =>
+  const installerFailure = (res: InstallerResult) =>
     res?.error ?? (res?.reason === "file-not-found" ? "Setup was not downloaded." : "Setup did not start.");
 
   const handleRunInstaller = async () => {
     let failure = "Setup did not start.";
     try {
-      if ((desktopBridge as any)?.runInstaller) {
-        const res = await (desktopBridge as any).runInstaller({ version: targetVersion });
+      if (desktopBridge?.runInstaller) {
+        const res = await desktopBridge.runInstaller({ version: targetVersion });
         if (res?.success) return;
         failure = installerFailure(res);
       }
@@ -541,8 +564,8 @@ export function DesktopWindowTitlebar({
         }
       }
       // Linux apps before 0.1.25 started the new AppImage while still holding the single-instance lock, so it quit.
-      if (!isLinuxDesktop && (desktopBridge as any)?.runInstaller) {
-        const res = await (desktopBridge as any).runInstaller({ version: targetVersion });
+      if (!isLinuxDesktop && desktopBridge?.runInstaller) {
+        const res = await desktopBridge.runInstaller({ version: targetVersion });
         if (res?.success) return;
         if (systemInfo?.platform === "win32") failure = installerFailure(res);
       }
@@ -687,7 +710,7 @@ export function DesktopWindowTitlebar({
                   {typeof desktopBridge?.openDiagnosticLogs === "function" && (
                     <button type="button" className="desktop-window-app-menu-item" role="menuitem" onClick={() => {
                       setIsAppMenuOpen(false);
-                      void desktopBridge.openDiagnosticLogs();
+                      void desktopBridge.openDiagnosticLogs!();
                     }}>
                       <FolderOpen aria-hidden="true" style={{ width: 14, height: 14 }} />
                       <div className="desktop-window-app-menu-item-text">

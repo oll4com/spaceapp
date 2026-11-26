@@ -24,6 +24,8 @@ export async function hibernatablePanes(deps: {
   readDetails: (roomId: string) => Promise<Record<string, DashboardActivityDetail>>;
   /** Session ids among these whose CLI runs a background job; unknown (no /proc view, e.g. dev's private PID namespace) counts as none. */
   backgroundJobs: (sessions: PaneCliSession[]) => Promise<Set<string>>;
+  /** True while the pane has a needs-you request waiting on the operator (Needs you). */
+  waitsOnOperator: (ownerUserId: string, paneId: string) => Promise<boolean>;
   now?: number;
 }): Promise<HibernatablePane[]> {
   const now = deps.now ?? Date.now();
@@ -45,7 +47,9 @@ export async function hibernatablePanes(deps: {
       // 13/11 Felix/Max: a pane slept 27 s after the scheduler typed its task (reopened 24 s before), on the idle start the dashboard still had from
       // before. A session started, or given a prompt by Space (scheduler, Nous, Space Control), is idle at most since then.
       const lastTyped = spaceTypedTexts(session.sessionId, now).at(-1)?.at ?? 0;
-      if (now - Math.max(Date.parse(session.startedAt), lastTyped) >= minutes * 60_000) candidates.push({ pane, session, ownerUserId });
+      if (now - Math.max(Date.parse(session.startedAt), lastTyped) < minutes * 60_000) continue;
+      // 15/11 Cleo/Andy: a pane that asked the operator for a sign-in reads native "idle"; asleep, it showed "Not running" and was restarted.
+      if (!await deps.waitsOnOperator(ownerUserId, pane.id)) candidates.push({ pane, session, ownerUserId });
     }
   }
   if (candidates.length === 0) return [];

@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { rmSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,103 @@ export const disposablePostgresImage = process.env.SPACE_TEST_PG_IMAGE ?? "pgvec
 
 function docker(args: string[], timeout = 30_000): string {
   return execFileSync("docker", args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+const activeContainers = new Set<string>();
+const activeRoots = new Set<string>();
+let processCleanupRegistered = false;
+
+/** Synchronously force-removes all tracked disposable containers and cleans their socket dirs. */
+export function cleanupActiveContainersSync(): string[] {
+  const cleaned: string[] = [];
+  for (const name of activeContainers) {
+    try {
+      execFileSync("docker", ["rm", "--force", "--volumes", name], { timeout: 15_000, stdio: "ignore" });
+      cleaned.push(name);
+    } catch { /* ignore */ }
+  }
+  activeContainers.clear();
+  for (const root of activeRoots) {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch { /* ignore */ }
+  }
+  activeRoots.clear();
+  return cleaned;
+}
+
+/** Registers process-level signal and exit handlers so active test containers are torn down on exit, crash or signal. */
+export function registerProcessCleanup(): void {
+  if (processCleanupRegistered) return;
+  processCleanupRegistered = true;
+  process.once("exit", () => {
+    cleanupActiveContainersSync();
+  });
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.once(signal, () => {
+      cleanupActiveContainersSync();
+      process.kill(process.pid, signal);
+    });
+  }
+}
+
+/** Tracks a disposable container for guaranteed process-level cleanup. Returns an untrack callback. */
+export function trackDisposableContainer(name: string, rootDir?: string): () => void {
+  registerProcessCleanup();
+  activeContainers.add(name);
+  if (rootDir) activeRoots.add(rootDir);
+  return () => {
+    activeContainers.delete(name);
+    if (rootDir) activeRoots.delete(rootDir);
+  };
+}
+
+/** Sweeps dead or leaked test containers labeled `space.disposable-test=1`.
+ * Exited or dead containers, created containers older than 1 minute, and abandoned
+ * running containers older than maxAgeMs (default 15 minutes) are force-removed. */
+export function sweepDeadTestContainers({ maxAgeMs = 15 * 60_000, now = Date.now() }: { maxAgeMs?: number; now?: number } = {}): string[] {
+  let output: string;
+  try {
+    output = execFileSync("docker", [
+      "ps", "-a", "--filter", "label=space.disposable-test=1",
+      "--format", "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.CreatedAt}}"
+    ], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+  } catch {
+    return [];
+  }
+  if (!output) return [];
+
+  const removed: string[] = [];
+  for (const line of output.split("\n")) {
+    const parts = line.split("\t");
+    const id = parts[0]?.trim();
+    const name = parts[1]?.trim();
+    const state = parts[2]?.trim().toLowerCase();
+    const createdAtStr = parts[3]?.trim();
+    if (!id || !state) continue;
+
+    const createdAt = new Date(createdAtStr || "").getTime();
+    const ageMs = !Number.isNaN(createdAt) ? now - createdAt : Infinity;
+
+    const isExited = state === "exited" || state === "dead";
+    const isStaleCreated = state === "created" && ageMs > 60_000;
+    const isOrphanedRunning = state === "running" && ageMs > maxAgeMs;
+
+    if (isExited || isStaleCreated || isOrphanedRunning) {
+      try {
+        execFileSync("docker", ["rm", "--force", "--volumes", id], { timeout: 15_000, stdio: "ignore" });
+        removed.push(name || id);
+      } catch { /* ignore */ }
+    }
+  }
+  return removed;
+}
+
+let initialSweepDone = false;
+export function ensureDeadTestContainersSwept(): void {
+  if (initialSweepDone) return;
+  initialSweepDone = true;
+  sweepDeadTestContainers();
 }
 
 /** Why a disposable PostgreSQL container cannot run here, or null when it can.
@@ -46,20 +144,23 @@ export interface DisposablePostgres {
  * createSpacePgPool against it: that factory may redirect to the live socket. */
 export async function startDisposablePostgres(label: string, { restartable = false } = {}): Promise<DisposablePostgres> {
   if (!/^[a-z0-9-]{1,24}$/.test(label)) throw new Error("label must be short lowercase kebab-case");
+  ensureDeadTestContainersSwept();
   const root = await mkdtemp(path.join(os.tmpdir(), "space-pg-"));
   const socketDir = path.join(root, "socket");
   await mkdir(socketDir);
   await chmod(socketDir, 0o777);
   if (`${socketDir}/.s.PGSQL.5432`.length > 103) throw new Error("TMPDIR is too long for a PostgreSQL Unix socket path.");
   const name = `space-test-${label}-${randomBytes(4).toString("hex")}`;
+  const untrack = trackDisposableContainer(name, root);
   const pools: pg.Pool[] = [];
   let created = false;
 
   const stop = async () => {
+    untrack();
     await Promise.allSettled(pools.map((pool) => pool.end()));
     if (created) {
       try { docker(["exec", "--user", "root", name, "chmod", "0777", "/var/run/postgresql"]); } catch { /* container already gone */ }
-      docker(["rm", "--force", "--volumes", name], 60_000);
+      try { docker(["rm", "--force", "--volumes", name], 60_000); } catch { /* container already gone */ }
       created = false;
     }
     await rm(root, { recursive: true, force: true });
@@ -90,14 +191,16 @@ export async function startDisposablePostgres(label: string, { restartable = fal
   // Data on tmpfs: initdb and test writes never touch the host disk (public-host IO starvation, docs/agents/app-data-disk.md).
   // A restartable server keeps its data across a restart, so it stays in a volume with initdb's syncs off.
   try {
+    // 90s, not 30s: parallel suites hit daemon stalls >30s (ETIMEDOUT), killing the CLI between create and start and leaking a "Created" container; fits the usual 120s beforeAll.
     docker([
-      "run", ...(restartable ? ["--env", "POSTGRES_INITDB_ARGS=--no-sync"] : ["--tmpfs", "/var/lib/postgresql/data"]), "--detach", "--pull=never", "--name", name, "--label", "space.disposable-test=1", "--network", "none",
+      "run", ...(restartable ? ["--env", "POSTGRES_INITDB_ARGS=--no-sync"] : ["--rm", "--tmpfs", "/var/lib/postgresql/data"]), "--detach", "--pull=never", "--name", name, "--label", "space.disposable-test=1", "--network", "none",
       "--mount", `type=bind,source=${socketDir},target=/var/run/postgresql`,
       "--env", "POSTGRES_HOST_AUTH_METHOD=trust", disposablePostgresImage, "-c", "listen_addresses=", "-c", "fsync=off"
-    ]);
+    ], 90_000);
     created = true;
     await waitUntilReady();
   } catch (error) {
+    untrack();
     // A `docker run` that timed out may still have created the container.
     if (!created) try { docker(["rm", "--force", "--volumes", name], 60_000); } catch { /* never created */ }
     await stop();

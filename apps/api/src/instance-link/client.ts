@@ -27,6 +27,17 @@ const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
 export class InstanceLinkError extends Error {}
 
+/** A request the other side sends this way (AI lending, plan step 6): its Claude panes' model calls to this side's Gateway. */
+export type LinkServeRequest = { m: string; p: string; h: Record<string, string> };
+export type LinkServeReply = { head(status: number, headers: Record<string, string>): void; data(bytes: Uint8Array): void; end(): void };
+/** `accepts` answers at a request's first frame, before its body is held (security review 15/11: 16 × 32 MiB from a link that may not ask). */
+export type LinkServe = ((request: LinkServeRequest, body: Uint8Array, reply: LinkServeReply, signal: AbortSignal) => Promise<void>) & { accepts?: (request: LinkServeRequest) => boolean };
+/** The Gateway's own body limit (packages/gateway/src/server.ts bodyLimit): a longer request would be refused there anyway. */
+const SERVE_BODY_MAX = 32 * 1024 * 1024;
+/** As many as the other side's channel lets this side send at once (mobile/channel.ts IN_FLIGHT_MAX). */
+const SERVE_IN_FLIGHT_MAX = 16;
+const SERVE_HEADERS = ["content-type", "content-length", "content-range", "retry-after"];
+
 /** The keys and address a link keeps (instance_links), the private key opened. */
 export interface LinkKeys { origins: readonly string[]; noisePublic: string; identityPublic: string; deviceId: string; devicePrivate: Uint8Array }
 
@@ -37,7 +48,8 @@ export interface LinkKeys { origins: readonly string[]; noisePublic: string; ide
 async function dial(origins: readonly string[], path: string, headers: Record<string, string>) {
   let failure: unknown = new Error("no address");
   for (const origin of origins) {
-    const ws = new WebSocket(`${origin.replace(/^http/, "ws")}${path}`, { headers, handshakeTimeout: HANDSHAKE_MS, maxPayload: MESSAGE_MAX_BYTES });
+    // No permessage-deflate: frames are ciphertext, which deflate only grows, and a full frame then passes maxPayload on the wire (1009).
+    const ws = new WebSocket(`${origin.replace(/^http/, "ws")}${path}`, { headers, handshakeTimeout: HANDSHAKE_MS, maxPayload: MESSAGE_MAX_BYTES, perMessageDeflate: false });
     const inbox: Uint8Array[] = [];
     let wake = () => {}, closed: number | null = null;
     ws.on("message", (data: Buffer, binary: boolean) => { if (binary) inbox.push(new Uint8Array(data)); wake(); });
@@ -90,18 +102,23 @@ export async function pairInstanceLink(code: string, deviceName: string, appVers
   } finally { socket.ws.close(1000); }
 }
 
+/** One answer: parsed JSON (text otherwise; null for bytes), the raw bytes and the content-type/length/range headers its side passes. */
+export type InstanceLinkReply = { status: number; body: unknown; bytes: Buffer; headers: Record<string, string> };
 /** An open link: requests into the other SpaceApp's API as this link's device, answered by status and parsed JSON (text otherwise). */
 export interface InstanceLinkSession {
   scopes: string[];
   /** The other side's new keys when it answered with a routine rotation signed by the identity key this link pinned. */
   rotated: { noisePublic: string; identityPublic: string } | null;
-  closed(): boolean;
-  request(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string, body?: unknown, requestId?: string): Promise<{ status: number; body: unknown }>;
+  /** Its close code (4400: it refused a message), null while open. */
+  closed(): number | null;
+  /** A Uint8Array body goes as it is (application/octet-stream unless `headers` names a type); `headers` adds range or content-type (plan step 5). */
+  request(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string, body?: unknown, requestId?: string, headers?: Record<string, string>): Promise<InstanceLinkReply>;
   close(): void;
 }
 
 /** Connects with Noise IK on the pinned instance key, with a fresh hello the other side checks for time and replay. */
-export async function connectInstanceLink(keys: LinkKeys, appVersion: string, headers: Record<string, string> = {}): Promise<InstanceLinkSession> {
+export async function connectInstanceLink(keys: LinkKeys, appVersion: string, headers: Record<string, string> = {}, serve?: LinkServe,
+  onScopes?: (scopes: string[]) => void): Promise<InstanceLinkSession> {
   const handshake = new MobileNoiseHandshake({ pattern: "IK", initiator: true, prologue: mobileHandshakePrologue("ik", null, null), s: noiseKeyPair(keys.devicePrivate),
     rs: b64.decode(keys.noisePublic) });
   const socket = await dial(keys.origins, "/api/mobile/channel?m=ik", headers);
@@ -119,17 +136,50 @@ export async function connectInstanceLink(keys: LinkKeys, appVersion: string, he
   }
   const session = { scopes: welcome.scopes as string[], rotated };
   const send = (frame: MobileFrame) => { if (socket.ws.readyState === WebSocket.OPEN) socket.ws.send(transport.encrypt(encodeMobileFrame(frame))); };
-  const waiting = new Map<number, { status: number; parts: Uint8Array[]; size: number; resolve: (answer: { status: number; body: unknown }) => void; reject: (error: Error) => void }>();
+  const waiting = new Map<number, { status: number; headers: Record<string, string>; parts: Uint8Array[]; size: number; resolve: (answer: InstanceLinkReply) => void; reject: (error: Error) => void }>();
   let nextId = 1, heard = Date.now();
   const silence = setInterval(() => { if (Date.now() - heard > SILENCE_MS) socket.ws.terminate(); }, PING_MS);
   silence.unref();
   const finish = (id: number) => {
     const entry = waiting.get(id)!;
     waiting.delete(id);
-    const raw = text(Buffer.concat(entry.parts));
+    const bytes = Buffer.concat(entry.parts);
+    const type = entry.headers["content-type"];
+    const raw = !type || /json|text/i.test(type) ? text(bytes) : "";
     let body: unknown = raw || null;
     try { body = raw ? JSON.parse(raw) : null; } catch { /* not JSON: the text */ }
-    entry.resolve({ status: entry.status, body });
+    entry.resolve({ status: entry.status, body, bytes, headers: entry.headers });
+  };
+  // Requests from the other side, by its id, until their last chunk; then until their answer ends or it cancels them.
+  const incoming = new Map<number, { header: LinkServeRequest; parts: Uint8Array[]; size: number; seq: number; abort: AbortController }>();
+  const plain = (status: number, message: string) => utf8(JSON.stringify({ type: "error", error: { type: status === 413 ? "request_too_large" : "permission_error", message } }));
+  const answerOnce = (id: number, status: number, message: string) => {
+    incoming.delete(id);
+    for (const frame of mobileFrames("res", { id, s: status, h: { "content-type": "application/json" } }, plain(status, message))) send(frame);
+  };
+  const start = (id: number) => {
+    const entry = incoming.get(id)!;
+    if (!serve) return answerOnce(id, 403, "This SpaceApp lends no AI accounts over this link.");
+    let seq = 0;
+    const live = () => incoming.get(id) === entry;
+    const piece = MOBILE_FRAME_MAX_PLAINTEXT - 100; // room for a chunk frame's header
+    const reply: LinkServeReply = {
+      head(status, h) {
+        if (!live() || seq) return;
+        send({ type: "res", header: { id, s: status, h: Object.fromEntries(SERVE_HEADERS.flatMap((name) => h[name] ? [[name, h[name]!.slice(0, 200)]] : [])), more: true }, body: new Uint8Array(0) });
+        seq = 1;
+      },
+      data(bytes) {
+        for (let at = 0; live() && seq && at < bytes.length; at += piece) send({ type: "chunk", header: { id, seq: seq++, more: true }, body: bytes.subarray(at, at + piece) });
+      },
+      end() { if (live() && seq) send({ type: "chunk", header: { id, seq, more: false }, body: new Uint8Array(0) }); incoming.delete(id); }
+    };
+    const body = Buffer.concat(entry.parts);
+    entry.parts = [];
+    void serve(entry.header, body, reply, entry.abort.signal).catch(() => undefined).finally(() => {
+      if (live() && !seq) answerOnce(id, 502, "This SpaceApp's Gateway did not answer.");
+      else reply.end();
+    });
   };
   void (async () => {
     try {
@@ -141,12 +191,32 @@ export async function connectInstanceLink(keys: LinkKeys, appVersion: string, he
           const op = frame.header.op;
           if (op === "ping") send({ type: "ctl", header: { op: "pong" }, body: new Uint8Array(0) });
           else if (op === "rekey") transport.rekeyReceive();
-          else if (op === "scopes" && Array.isArray(frame.header.scopes)) session.scopes = frame.header.scopes.map(String);
+          else if (op === "scopes" && Array.isArray(frame.header.scopes)) { session.scopes = frame.header.scopes.map(String); onScopes?.(session.scopes); }
           else if (op === "busy" && waiting.has(id)) { waiting.get(id)!.reject(new InstanceLinkError("That SpaceApp is busy; try again in a moment.")); waiting.delete(id); }
+          else if (op === "cancel" && incoming.has(id)) { incoming.get(id)!.abort.abort(); incoming.delete(id); }
           else if (op === "bye") socket.ws.close(1000);
+        } else if (frame.type === "req" || (frame.type === "chunk" && incoming.has(id))) {
+          if (frame.type === "req") {
+            if (incoming.has(id) || incoming.size >= SERVE_IN_FLIGHT_MAX) { answerOnce(id, 429, "Too many model requests at once over this link."); continue; }
+            const h = frame.header.h && typeof frame.header.h === "object" ? frame.header.h as Record<string, string> : {};
+            const header = { m: String(frame.header.m), p: String(frame.header.p), h };
+            if (!serve || serve.accepts?.(header) === false) { answerOnce(id, 403, "This SpaceApp lends no AI accounts, or not this route, over this link."); continue; }
+            incoming.set(id, { header, parts: [], size: 0, seq: 0, abort: new AbortController() });
+          } else if (frame.header.seq !== incoming.get(id)!.seq + 1) throw new InstanceLinkError("That SpaceApp sent a request's pieces out of order.");
+          const entry = incoming.get(id)!;
+          if (frame.type === "chunk") entry.seq += 1;
+          entry.parts.push(frame.body);
+          entry.size += frame.body.length;
+          // A refused request's later chunks match no id any more and are skipped below.
+          if (entry.size > SERVE_BODY_MAX) answerOnce(id, 413, "The request is over the Gateway's 32 MiB.");
+          else if (!frame.header.more) start(id);
         } else if ((frame.type === "res" || frame.type === "chunk") && waiting.has(id)) {
           const entry = waiting.get(id)!;
-          if (frame.type === "res") entry.status = Number(frame.header.s);
+          if (frame.type === "res") {
+            entry.status = Number(frame.header.s);
+            const h = frame.header.h;
+            if (h && typeof h === "object") entry.headers = Object.fromEntries(Object.entries(h).filter(([, value]) => typeof value === "string")) as Record<string, string>;
+          }
           entry.parts.push(frame.body);
           entry.size += frame.body.length;
           if (entry.size > ANSWER_MAX_BYTES) { waiting.delete(id); entry.reject(new InstanceLinkError("That SpaceApp's answer is over 64 MiB.")); }
@@ -158,21 +228,24 @@ export async function connectInstanceLink(keys: LinkKeys, appVersion: string, he
       socket.ws.terminate();
       for (const entry of waiting.values()) entry.reject(error instanceof InstanceLinkError ? error : new InstanceLinkError("The link to that SpaceApp broke."));
       waiting.clear();
+      for (const entry of incoming.values()) entry.abort.abort();
+      incoming.clear();
     }
   })();
   return {
     get scopes() { return session.scopes; },
     rotated,
-    closed: () => socket.closed() !== null,
-    request(method, path, body, requestId) {
+    closed: () => socket.closed(),
+    request(method, path, body, requestId, extra = {}) {
       if (socket.closed() !== null) return Promise.reject(new InstanceLinkError("The link to that SpaceApp is closed."));
       const id = nextId++;
-      const answer = new Promise<{ status: number; body: unknown }>((resolve, reject) => waiting.set(id, { status: 0, parts: [], size: 0, resolve, reject }));
+      const answer = new Promise<InstanceLinkReply>((resolve, reject) => waiting.set(id, { status: 0, headers: {}, parts: [], size: 0, resolve, reject }));
       // Its pings keep a hung request's socket alive: an answer not complete within the silence window fails, so no Nous turn or background read waits forever.
       setTimeout(() => { const entry = waiting.get(id); if (entry) { waiting.delete(id); entry.reject(new InstanceLinkError("That SpaceApp did not answer in time.")); } }, SILENCE_MS).unref();
-      const h = { ...(body === undefined ? {} : { "content-type": "application/json" }), ...(requestId ? { "x-space-link-request": requestId } : {}) };
+      const raw = body instanceof Uint8Array;
+      const h = { ...(body === undefined ? {} : { "content-type": raw ? "application/octet-stream" : "application/json" }), ...extra, ...(requestId ? { "x-space-link-request": requestId } : {}) };
       const header = { id, m: method, p: path, ...(Object.keys(h).length ? { h } : {}) };
-      for (const frame of mobileFrames("req", header, body === undefined ? new Uint8Array(0) : utf8(JSON.stringify(body)))) send(frame);
+      for (const frame of mobileFrames("req", header, body === undefined ? new Uint8Array(0) : raw ? body : utf8(JSON.stringify(body)))) send(frame);
       return answer;
     },
     close() { send({ type: "ctl", header: { op: "bye" }, body: new Uint8Array(0) }); socket.ws.close(1000); }

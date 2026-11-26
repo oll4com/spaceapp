@@ -300,6 +300,48 @@ describe("browser realtime stream API", () => {
     }
   });
 
+  it("closes the viewer socket when the Browser Host connection drops while the host lives on (Emma 20/11)", async () => {
+    const { store, pane, session } = browserFixture();
+    let endStream: () => void = () => undefined;
+    const stop = vi.fn(async () => undefined);
+    const manager = Object.assign(realtimeManager(session, async () => undefined), {
+      startFrameStream: async () => ({
+        id: "browser_stream:test",
+        profile: { requestedMode: "AUTO", resolvedMode: "INTERACTIVE", framesPerSecond: 10, format: "jpeg", quality: 70 },
+        ended: new Promise<void>((resolve) => { endStream = resolve; }),
+        stop
+      })
+    }) as BrowserSessionManager;
+    const ticket = manager.issueFrameTicket(pane.id, session.sessionId, 60_000);
+    const { app, cookie } = await authedApp(store, manager);
+    const messages: BrowserStreamWebSocketServerMessage[] = [];
+    let closed: { code: number; reason: string } | null = null;
+    try {
+      await app.injectWS(
+        `/api/panes/${encodeURIComponent(pane.id)}/browser/stream?sessionId=${encodeURIComponent(session.sessionId)}` +
+          `&token=${encodeURIComponent(ticket.token)}&mode=AUTO`,
+        { headers: { cookie } },
+        {
+          onInit(ws) {
+            ws.on("message", (raw, isBinary) => {
+              if (!isBinary) messages.push(browserStreamWebSocketServerMessageSchema.parse(JSON.parse(String(raw))));
+            });
+            ws.on("close", (code, reason) => { closed = { code, reason: reason.toString() }; });
+          }
+        }
+      );
+      await waitForMessage(messages, (message) => message.type === "ready");
+      expect(closed).toBeNull();
+      endStream();
+      const deadline = Date.now() + 5_000;
+      while (!closed && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(closed).toEqual({ code: 1011, reason: "Browser Host unavailable" });
+      expect(stop).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("does not send silent audio blocks", async () => {
     const { store, pane, session } = browserFixture();
     let emit: ((chunk: { data: Buffer }) => void) | undefined;

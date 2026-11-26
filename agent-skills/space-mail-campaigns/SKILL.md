@@ -1,6 +1,6 @@
 ---
 name: space-mail-campaigns
-description: "Mail Campaigns for every agent, copilot and Nous: newsletters, offers and any bulk e-mail through the space_mailcampaigns tools: campaign e-mail templates (versioned, cleaned for sending, fingerprinted), mailing lists with an honest consent basis, one contact per address whose health every list shares, imports from CSV, text or a Mail Copilot thread, the global do-not-mail list and the owner's sender identities. Nothing reaches a customer until the operator approves the exact campaign. Use when a task needs bulk or campaign e-mail, a mailing list, an e-mail template or an address's health."
+description: "Bulk mail, newsletters and campaigns through space_mailcampaigns (templates, consented lists, contacts, senders); the operator approves each campaign before anything is sent."
 metadata:
   category: DOMAIN_POLICY
 ---
@@ -54,6 +54,8 @@ Bulk e-mail is reputation work: one careless send can put the operator's domains
 SMTP on our own Plesk server for oll4.com / spaceapp.dev), status, warm-up stage and caps. Consumer @gmail.com senders are not for bulk.
 
 - A sender is SETUP until `space_mail_sender_check` passes (a sign-in or a Send-as proof; nothing is sent).
+- A wrong sender password is yours to fix, never a Vault edit for the operator: keep the right one with `space_vault_key_save`, bind it with
+  `space_mail_sender_update {senderId, vaultKeyId}`, then run `space_mail_sender_check`.
 - A campaign of its own on oll4.com or spaceapp.dev (e.g. `offers@example.invalid`): `node /opt/spaceapp/scripts/space-mail-identity.mjs plesk-mailbox
   <address> --name "<display name>" --footer "<company, postal address>"`. It creates the mailbox on public-host, keeps the generated password
   in the Vault (you never see it), adds the SMTP sender and checks it. Replies and bounces to it arrive in public-host's `work@example.invalid`.
@@ -78,7 +80,7 @@ SMTP on our own Plesk server for oll4.com / spaceapp.dev), status, warm-up stage
 - A plain-text mail: leave `html` empty. Pacing: `intervalSeconds` (360 = one every 6 minutes), `perDay`, `maxHardBounces`; the lists'
   order is the send order (put the priority group first).
 4. After their yes the server sends by itself in the campaign's hours, one message per recipient, at the pace of the sender's warm-up,
-   and never twice. Follow it with `space_mail_campaign_get`. It pauses itself on hard bounces over 3 % or on complaints; only the operator
+   and never twice. Follow it with `space_mail_campaign_get`. It pauses itself on hard bounces over 2 % or on complaints; only the operator
    resumes. `space_mail_campaign_pause` / `_stop` are yours when something looks wrong.
 - Every message gets the unsubscribe headers and footer from the server; a reply asking to stop is an opt-out: add it to the suppressions.
 

@@ -123,7 +123,8 @@ async function runQueue(options: ReleasesOptions, args: string[], operatorOp?: s
 /** Queues the verified dev commit for stable; the stable queue ships it through the protected pipeline. */
 export async function promoteDev(options: ReleasesOptions = defaultReleasesOptions): Promise<ReleaseActionResponse> {
   if (!options.managedHere) throw new ReleaseActionError("Releases are managed from the stable instance.", 409);
-  const output = await runQueue(options, ["promote", "--json"], "promote");
+  // The operator's own Releases click is the operator's ask: the hourly promote limit holds only Nous's own promotes.
+  const output = await runQueue(options, ["promote", "--json", "--urgent"], "promote");
   if (!output.startsWith("{")) {
     return releaseActionResponseSchema.parse({ status: "ALREADY_LIVE", ticketId: null, message: "Stable already runs the latest dev commit." });
   }

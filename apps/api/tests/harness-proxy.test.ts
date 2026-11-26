@@ -21,7 +21,7 @@ import {
 
 const temporaryRoots: string[] = [];
 
-function testConfig(override: Partial<SpaceApiConfig> = {}): SpaceApiConfig {
+function testConfig(): SpaceApiConfig {
   return getApiConfig({
     SPACE_INTERNAL_API_TOKEN: "harness-proxy-test-internal-token",
     SPACE_HARNESS_ENABLED: "true",
@@ -400,7 +400,7 @@ describe("harness proxy", () => {
       expect(response.body).toContain("data-space-harness-shared-events");
       expect(response.body.indexOf("data-space-harness-shared-events")).toBeLessThan(response.body.indexOf("client.js"));
       expect(response.body).toContain("dsh.sessions.current.space-pane-testPane123");
-      expect(response.body).toContain('\\\"sessionId\\\":\\\"space-pane-testPane123\\\"');
+      expect(response.body).toContain('\\"sessionId\\":\\"space-pane-testPane123\\"');
       expect(response.body).toContain('src="/api/harness/assets/client.js"');
       expect(response.body).toContain("Harness original");
       expect(response.body.indexOf("data-space-harness-pane-session")).toBeLessThan(response.body.indexOf("client.js"));

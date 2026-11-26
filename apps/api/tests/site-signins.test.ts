@@ -27,7 +27,11 @@ describe("shared site sign-in API",()=>{
    expect((await post({site:"upwork.com",outcome:"SUCCESS",method:"GOOGLE",googleAccountEmail:"sso@example.com"})).statusCode).toBe(200);
    const get=await app.inject({url:"/api/cli/site-signins?site=auth.upwork.com",headers:{"x-test-token":"a"}});
    expect(get.json().signin).toMatchObject({method:"GOOGLE",successCount:1,lastSuccessBy:"FREELANCE_COPILOT:pane:a"});
+   const cred=await app.inject({url:`/api/cli/site-signins?site=${encodeURIComponent("https://u:pw@www.upwork.com/nx/login")}`,headers:{"x-test-token":"a"}});
+   expect(cred.json().signin).toMatchObject({site:"upwork.com",method:"GOOGLE"});expect(cred.body).not.toMatch(/u:pw|pw@/);
    expect((await app.inject({url:"/api/cli/site-signins?site=upwork.com",headers:{"x-test-token":"b"}})).json()).toEqual({signin:null});
+   const name=await app.inject({url:"/api/cli/site-signins?site=Braintrust",headers:{"x-test-token":"a"}});
+   expect(name.statusCode).toBe(200);expect(name.json()).toMatchObject({signin:null,note:expect.stringMatching(/^"Braintrust" is not a site domain/)});
    expect((await post({site:"upwork.com",outcome:"CHANGED",password:"synthetic-should-never-be-stored"})).statusCode).toBeGreaterThanOrEqual(400);
    expect((await app.inject({url:"/api/cli/site-signins?site=upwork.com"})).statusCode).toBe(401);
   }finally{await app.close();}
@@ -64,6 +68,26 @@ describe("shared site sign-in API",()=>{
    const got=await nous.execute("space_site_signin_get",{site:"example.com"},ctx);
    expect(JSON.parse(got.result)).toMatchObject({site:"example.com",method:"GOOGLE",lastSuccessBy:"NOUS:nous_turn:test"});
    expect((await nous.execute("space_site_signin_get",{site:"example.com"},{...ctx,owner:"user:b"})).result).toBe("null");
+   const name=await nous.execute("space_site_signin_get",{site:"Braintrust"},ctx);
+   expect(name).toMatchObject({ok:true});expect(name.result).toMatch(/^null: "Braintrust" is not a site domain/);
+   await repo.record("user:a",{site:"usebraintrust.com",accountLabel:"main",outcome:"SUCCESS",method:"GOOGLE"},"seed");
+   expect(JSON.parse((await nous.execute("space_site_signin_get",{site:"Braintrust"},ctx)).result)).toMatchObject({site:"usebraintrust.com",method:"GOOGLE"});
+   expect((await nous.execute("space_site_signin_get",{site:"Braintrust"},{...ctx,owner:"user:b"})).result).toMatch(/^null: "Braintrust" is not a site domain/);
+   for(const form of ["APP.UseBraintrust.com.","usebraintrust.com/login?next=1","HTTPS://usebraintrust.com./x"]) expect(JSON.parse((await nous.execute("space_site_signin_get",{site:form},ctx)).result)).toMatchObject({site:"usebraintrust.com"});
+   // 2026-11-22 REVIEW: a public URL with credentials and a path reads its domain's recipe; the credentials never echo.
+   const cred=await nous.execute("space_site_signin_get",{site:"https://user:pw@app.usebraintrust.com/login?next=1"},ctx);
+   expect(JSON.parse(cred.result)).toMatchObject({site:"usebraintrust.com"});expect(cred.result+cred.display).not.toMatch(/user:|pw@/);
+   const local=await nous.execute("space_site_signin_get",{site:"https://user:pw@localhost"},ctx);expect(local.display).toBe("No site sign-in for https://localhost");
+   for(const site of ["user:pw@10.0.0.1","https://user:pw@intranet","https://user:p@ss@intranet"]) expect((await nous.execute("space_site_signin_get",{site},ctx)).display).not.toMatch(/user|pw|ss@/);
+   expect(local.result).toBe('null: "localhost" is not a site domain or http(s) URL of a public site (no IP address, localhost or local name) and must carry no user name or password; ask again with its public domain (e.g. app.example.com)');
+   for(const form of ["Braintrust (usebraintrust.com)","<https://app.usebraintrust.com/login>","\"usebraintrust.com\""]) expect(JSON.parse((await nous.execute("space_site_signin_get",{site:form},ctx)).result)).toMatchObject({site:"usebraintrust.com"});
+   // Daily Nous errors 21/11 (02:19Z ZodError on a bare site): a bare name or bare domain of one stored site answers with that site, never a failure.
+   await repo.record("user:a",{site:"upwork.com",accountLabel:"main",outcome:"SUCCESS",method:"VAULT_LOGIN"},"seed");
+   for(const form of ["upwork","Upwork","upwork.com","UPWORK.COM","www.upwork.com/nx/find-work/"]){const got=await nous.execute("space_site_signin_get",{site:form},ctx);expect(got.ok).toBe(true);expect(JSON.parse(got.result)).toMatchObject({site:"upwork.com",method:"VAULT_LOGIN"});}
+   expect((await nous.execute("space_site_signin_get",{site:"usebraintrust.com or example.com"},ctx)).result).toMatch(/^null: .* is not a site domain/);
+   // record: a non-domain site is a hold (refused, no ZodError failure); one domain in the text is recorded under it; credentials never echo.
+   for(const site of ["Braintrust","https://user:pw@usebraintrust.com"]){const r=await nous.execute("space_site_signin_record",{site,outcome:"SUCCESS",method:"GOOGLE"},ctx);expect(r).toMatchObject({ok:false,refused:true});expect(r.result).toMatch(/^Nothing recorded: /);expect(r.result).not.toMatch(/user:|pw@/);}
+   expect(JSON.parse((await nous.execute("space_site_signin_record",{site:"Acme (app.acme-signin.com)",outcome:"SUCCESS",method:"GOOGLE"},ctx)).result)).toMatchObject({site:"acme-signin.com"});
   }finally{await app.close();}
  });
  it("includes the mandatory read/save rule in bootstrap and every copilot persona",()=>{

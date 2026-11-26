@@ -97,6 +97,32 @@ export function approvedTotals(programs: NousProgram[]): { cash: string | null; 
   return { cash: sumByCurrency(approved.filter(isCash).flatMap(worth), 2), credits: sumByCurrency(creditPrograms.flatMap(worth), 2), creditPrograms };
 }
 
+/** Whether we use a program (operator 26/11 10:14 BKK, nous_msg:36bdf34f), from the registry's benefit lines: "used" when an active line has
+ * usage above zero or a project it is allocated to; "unused" when nothing is granted (not approved, awaiting completion, only pending/used-up/expired
+ * lines) or every active line measured zero; otherwise "unknown" (no line, or no usage measured). */
+export type ProgramUsage = "used" | "unused" | "unknown";
+export function programUsage(program: NousProgram): ProgramUsage {
+  if (program.status !== "APPROVED") return "unused";
+  const spent = (line: NousProgramBenefit) => line.used?.value ?? (typeof line.total?.value === "number" && typeof line.remaining?.value === "number" ? line.total.value - line.remaining.value : null);
+  const active = program.benefits.filter((line) => line.status === "ACTIVE");
+  if (active.some((line) => (spent(line) ?? 0) > 0 || line.allocations.length > 0)) return "used";
+  if (awaitingCompletion(program) || (program.benefits.length > 0 && program.benefits.every((line) => line.status !== "ACTIVE" && line.status !== "NOT_VERIFIED"))
+    || (active.length > 0 && active.every((line) => spent(line) === 0))) return "unused";
+  return "unknown";
+}
+const USAGE_LABELS: Record<ProgramUsage, string> = { used: "In use", unused: "Not in use", unknown: "Usage unknown" };
+
+/** The amount ranges (operator 26/11, nous_msg:36bdf34f) by the card's value: worth() summed over currencies (€ counts as its number, no conversion
+ * exists here); null when the program names no number. */
+export type AmountRange = "over10k" | "5k-10k" | "1k-5k" | "under1k";
+const AMOUNT_RANGES: Array<[AmountRange, string]> = [["over10k", "> 10,000"], ["5k-10k", "5,000–10,000"], ["1k-5k", "1,000–5,000"], ["under1k", "< 1,000"]];
+export function amountRange(program: NousProgram): AmountRange | null {
+  const values = worth(program).flatMap((amount) => typeof amount?.value === "number" && amount.currency ? [amount.value] : []);
+  if (!values.length) return null;
+  const value = values.reduce((sum, next) => sum + next, 0);
+  return value > 10_000 ? "over10k" : value >= 5_000 ? "5k-10k" : value >= 1_000 ? "1k-5k" : "under1k";
+}
+
 /** The soonest date still ahead (a reply due, a re-apply date, an expiry), or a reply already overdue. */
 export function nextDate(program: NousProgram, now = Date.now()): { label: string; at: string; overdue?: boolean } | null {
   const today = new Date(now).setHours(0, 0, 0, 0);
@@ -114,6 +140,9 @@ export function NousPrograms({ page, active }: { page: NousProgramPage; active: 
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [tag, setTag] = useState<NousProgramTag | null>(null);
+  const [company, setCompany] = useState<string | null>(null);
+  const [usage, setUsage] = useState<ProgramUsage | null>(null);
+  const [ranges, setRanges] = useState<ReadonlySet<AmountRange>>(new Set());
   const [query, setQuery] = useState("");
   const [groupBy, setGroupBy] = useState<"parent" | "project">("parent");
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
@@ -131,9 +160,16 @@ export function NousPrograms({ page, active }: { page: NousProgramPage; active: 
   }, [active, load]);
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const matching = (programs ?? []).filter((program) => words.every((word) => [program.parent, program.program, program.project, program.account,
-    program.statusReason, program.notes, program.nextAction, program.whatItIs, program.howWeUse, program.affiliate?.network, program.affiliate?.publisherId, ...program.contacts].some((field) => field?.toLowerCase().includes(word))));
+    program.company, program.statusReason, program.notes, program.nextAction, program.whatItIs, program.howWeUse, program.affiliate?.network, program.affiliate?.publisherId, ...program.contacts].some((field) => field?.toLowerCase().includes(word))));
   // A type chip (6/11) and a status chip combine; the status counts follow the type, the type counts the status (operator 7/11, nous_msg:e7255379).
-  const tagged = (list: NousProgram[]) => tag ? list.filter((program) => programTags(program).includes(tag)) : list;
+  // Usage (one chip) and amount ranges (any OR-ed) join them with AND (operator 26/11, nous_msg:36bdf34f); each row's counts follow the other filters.
+  const byTag = (program: NousProgram) => !tag || programTags(program).includes(tag);
+  const byCompany = (program: NousProgram) => !company || program.company === company;
+  const byUsage = (program: NousProgram) => !usage || programUsage(program) === usage;
+  const byRange = (program: NousProgram) => { const range = amountRange(program); return ranges.size === 0 || (range !== null && ranges.has(range)); };
+  const tagged = (list: NousProgram[]) => list.filter((program) => byTag(program) && byCompany(program) && byUsage(program) && byRange(program));
+  // The applying company (operator 16/11, nous_msg:52aab269) filters like a type chip; only the companies some program names are offered.
+  const companies = [...new Set((programs ?? []).flatMap((program) => program.company ? [program.company] : []))].sort();
   const inScope = tagged(matching);
   const inStatus = matching.filter(FILTERS.find(([id]) => id === filter)![2]);
   const shown = tagged(inStatus);
@@ -149,7 +185,7 @@ export function NousPrograms({ page, active }: { page: NousProgramPage; active: 
   const Icon = page === "startup" ? Rocket : Handshake;
 
   return (
-    <div className="nous-decisions nous-programs" data-sensitive-masked="manual">
+    <div className="nous-decisions nous-programs">
       {error ? <div><p role="alert">{t(error)}</p><DockButton onClick={() => void load()}>{t("Retry")}</DockButton></div> : null}
       {programs === null && !error ? <DockState kind="loading" title={t("Loading the programs")} /> : null}
       {programs?.length === 0 ? <DockState kind="empty" icon={Icon} title={t("No programs yet")}
@@ -159,11 +195,42 @@ export function NousPrograms({ page, active }: { page: NousProgramPage; active: 
           options={FILTERS.map(([id, label, test]) => ({ id, label: t(label), count: inScope.filter(test).length, ...(id === "reapply" ? { tone: "attention" as const } : {}) }))} />
         {page === "startup" ? <div className="dock-kit-chips nous-programs-tags" role="group" aria-label={t("Program types")}>
           {NOUS_PROGRAM_TAGS.map((id) => {
-            const count = inStatus.filter((program) => programTags(program).includes(id)).length;
+            const count = inStatus.filter((program) => programTags(program).includes(id) && byCompany(program) && byUsage(program) && byRange(program)).length;
             return (
               <button key={id} type="button" className="dock-kit-chip" aria-pressed={tag === id} disabled={count === 0 && tag !== id} onClick={() => setTag((on) => on === id ? null : id)}
                 {...(id === "cash-grants" ? { title: t("Only money paid into our account: grants, prizes, bounties paid, investment") } : {})}>
                 {t(TAG_LABELS[id])}<span className="dock-kit-chip-count">{count}</span>
+              </button>
+            );
+          })}
+        </div> : null}
+        {page === "startup" ? <div className="dock-kit-chips nous-programs-tags" role="group" aria-label={t("Program usage")}>
+          {(Object.keys(USAGE_LABELS) as ProgramUsage[]).map((id) => {
+            const count = inStatus.filter((program) => programUsage(program) === id && byTag(program) && byCompany(program) && byRange(program)).length;
+            return (
+              <button key={id} type="button" className="dock-kit-chip" aria-pressed={usage === id} disabled={count === 0 && usage !== id} onClick={() => setUsage((on) => on === id ? null : id)}>
+                {t(USAGE_LABELS[id])}<span className="dock-kit-chip-count">{count}</span>
+              </button>
+            );
+          })}
+        </div> : null}
+        {page === "startup" ? <div className="dock-kit-chips nous-programs-tags" role="group" aria-label={t("Program amounts")}>
+          {AMOUNT_RANGES.map(([id, label]) => {
+            const count = inStatus.filter((program) => amountRange(program) === id && byTag(program) && byCompany(program) && byUsage(program)).length;
+            return (
+              <button key={id} type="button" className="dock-kit-chip" aria-pressed={ranges.has(id)} disabled={count === 0 && !ranges.has(id)}
+                onClick={() => setRanges((on) => { const next = new Set(on); if (next.has(id)) next.delete(id); else next.add(id); return next; })}>
+                {label}<span className="dock-kit-chip-count">{count}</span>
+              </button>
+            );
+          })}
+        </div> : null}
+        {companies.length ? <div className="dock-kit-chips nous-programs-tags" role="group" aria-label={t("Applying companies")}>
+          {companies.map((id) => {
+            const count = inStatus.filter((program) => program.company === id && byTag(program) && byUsage(program) && byRange(program)).length;
+            return (
+              <button key={id} type="button" className="dock-kit-chip" aria-pressed={company === id} disabled={count === 0 && company !== id} onClick={() => setCompany((on) => on === id ? null : id)}>
+                {id}<span className="dock-kit-chip-count">{count}</span>
               </button>
             );
           })}
@@ -218,6 +285,8 @@ function ProgramRow({ program, other, pool, expanded, onToggle, t }: { program: 
         <span className="nous-program-chevron" aria-hidden="true">{expanded ? <ChevronDown /> : <ChevronRight />}</span>
         <span className="nous-program-name">{program.program}{other ? <small>{other}</small> : null}</span>
         {program.page === "startup" ? programTags(program).map((id) => <span key={id} className={`nous-program-tag is-${id}`}>{TAG_LABELS[id as NousProgramTag] ? t(TAG_LABELS[id as NousProgramTag]) : id}</span>) : null}
+        {program.page === "startup" ? <span className={`nous-program-tag is-usage-${programUsage(program)}`}>{t(USAGE_LABELS[programUsage(program)])}</span> : null}
+        {program.company ? <span className="nous-program-tag is-company" title={t("Company that applied")}>{program.company}</span> : null}
         {program.affiliate?.network || program.affiliate?.commission ? <span className="nous-program-amount">{[program.affiliate.network, program.affiliate.commission].filter(Boolean).join(" · ")}</span> : null}
         <span className={`nous-program-status is-${program.status.toLowerCase()}`}>{t(awaitingCompletion(program) ? "Approved · waiting for completion" : STATUS_LABELS[program.status])}</span>
         {program.amount ? <span className="nous-program-amount">{program.amount.text}</span> : null}
@@ -237,7 +306,7 @@ function ProgramRow({ program, other, pool, expanded, onToggle, t }: { program: 
           {program.tiers.length || program.nextAction ? <Tiers tiers={program.tiers} nextAction={program.nextAction} t={t} /> : null}
           {program.benefits.length ? <Benefits benefits={program.benefits} t={t} /> : null}
           <dl className="nous-goal-facts">
-            {fact("Parent organization", program.parent)}{fact("Project", program.project)}{fact("Why", program.statusReason)}
+            {fact("Parent organization", program.parent)}{fact("Applying company", program.company)}{fact("Project", program.project)}{fact("Why", program.statusReason)}
             {fact("Applied", day(program.appliedAt))}{fact("Reply expected by", day(program.expectedReplyBy))}{fact("Decided", day(program.decidedAt))}
             {fact("Valid until", day(program.validUntil))}{fact("Amount", program.amount?.text)}{fact("Commitments", program.commitments)}
             {fact("Account", program.account)}{fact("Contacts", program.contacts.join(", "))}{fact("Next action", program.nextAction)}

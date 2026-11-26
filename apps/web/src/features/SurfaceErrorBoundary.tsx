@@ -28,7 +28,7 @@ export class SurfaceErrorBoundary extends Component<{
       <p>{stale ? "A required file is unavailable. Reload Space to get the latest version." : "Try opening this view again. If the problem continues, reload Space."}</p>
       {Boolean(this.state.error) && (
         <pre style={{ margin: "8px 0", padding: "8px", background: "rgba(0,0,0,0.4)", color: "#ff6b6b", fontSize: "11px", maxHeight: "120px", overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all", borderRadius: "4px", textAlign: "left" }}>
-          {String((this.state.error as any)?.message || this.state.error)}
+          {String((this.state.error as { message?: unknown } | null)?.message || this.state.error)}
         </pre>
       )}
       {!stale && <button type="button" onClick={() => this.setState({ error: null, failed: false })}>Try again</button>}

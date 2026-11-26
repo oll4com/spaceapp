@@ -11,8 +11,10 @@ import { browserAccountTabsFile, googleBrowserProfilePathFor, type BrowserSessio
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import {
   cliBrowserCdpChallengePath, cliBrowserCdpCloseCodes, cliBrowserCdpPath, cliBrowserCdpProxyIdBase, cliBrowserCdpStatusPath, cliBrowserPasswordRedaction, createCliBrowserCdpTargetFilter,
-  createCliBrowserDocumentMarks, readChromeAutomationEndpoint
+  createCliBrowserCdpProxy, createCliBrowserDocumentMarks, readChromeAutomationEndpoint
 } from "../src/cli-browser-cdp.js";
+import { isBrowserPane } from "../src/pane-guards.js";
+import { createVaultProtection } from "../src/vault/protection.js";
 import { getApiConfig } from "../src/config.js";
 import { registerVaultFenceHooks } from "../src/vault/fence-hooks.js";
 import { fakeRepository } from "./support/vault-fakes.js";
@@ -257,6 +259,44 @@ describe("CLI browser CDP proxy", () => {
     }
   });
 
+  it("never lets a copilot reach another running copilot's own browser, and starts its own (15/11: Jack's Job Copilot drove Max's Freelance Copilot browser)", async () => {
+    const chrome = await fakeChrome();
+    const { app, store, config, room, session } = await fixture(chrome.port);
+    try {
+      const agent = (title: string, mode: "JOB_APPLY" | "FREELANCE_COPILOT") => {
+        const pane = store.createPane({ roomId: room.id, title, mode, terminalRuntimeId: "cli:codex" });
+        const cli = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:codex", providerId: "codex", agentId: "codex", status: "RUNNING", purpose: "NORMAL" });
+        return { pane, token: issueCliBrowserBridgeToken(config, { roomId: room.id, paneId: pane.id, cliSessionId: cli.sessionId })! };
+      };
+      // Jack's own browser is stopped; Max's runs in the same room.
+      const jack = agent("Jack", "JOB_APPLY");
+      const max = agent("Max", "FREELANCE_COPILOT");
+      store.createPaneBrowserSession({ paneId: max.pane.id, roomId: room.id, agentNumber: 2, profileId: "profile:test", profilePath: session.profilePath, viewport: "desktop" });
+      const headers = { [cliBrowserBridgeTokenHeader]: jack.token, "content-type": "application/json" };
+      const post = (url: string, payload: Record<string, unknown>) => app.inject({ method: "POST", url, headers, payload });
+
+      const context = await app.inject({ method: "GET", url: "/api/cli/browser/context", headers });
+      expect(context.statusCode).toBe(200);
+      expect(context.body).not.toContain(max.pane.id);
+      expect((await post("/api/cli/browser/session", { targetPaneId: max.pane.id })).statusCode).toBe(409);
+      const action = await post("/api/cli/browser/actions", { actions: [{ toolId: "browser:navigate", targetPaneId: max.pane.id, action: { type: "navigate", url: "https://example.com/" } }] });
+      expect(action.json().results[0]).toMatchObject({ status: "FAILED", statusReason: expect.stringContaining("another agent's") });
+      expect((await post("/api/cli/browser/commands", { targetPaneId: max.pane.id, command: { type: "HANDOFF_STATUS" } })).statusCode).toBe(409);
+      const status = await app.inject({ method: "GET", url: `${cliBrowserCdpStatusPath}?paneId=${encodeURIComponent(max.pane.id)}`, headers });
+      expect(status.json()).toMatchObject({ ready: false, reason: "PANE_NOT_FOUND" });
+
+      // No target: Jack's own pane, not a room browser or a new "CLI Browser" pane; Max keeps its own browser.
+      expect((await post("/api/cli/browser/session", {})).statusCode).toBe(200);
+      expect(await store.findLatestAuditEvent({ action: "pane.cli.browser_session", targetType: "pane", targetId: jack.pane.id })).toBeTruthy();
+      expect(store.listPanes(room.id, false).some((pane) => pane.title === "CLI Browser")).toBe(false);
+      expect((await app.inject({ method: "GET", url: cliBrowserCdpStatusPath, headers: { [cliBrowserBridgeTokenHeader]: max.token } })).json())
+        .toMatchObject({ ready: true, paneId: max.pane.id });
+    } finally {
+      await app.close();
+      await chrome.close();
+    }
+  });
+
   it("refuses a plain CLI pane's automation while its room's browser pane holds a Vault fence, named or not (Vault review 2026-10-22)", async () => {
     const chrome = await fakeChrome();
     const repository = fakeRepository();
@@ -277,6 +317,28 @@ describe("CLI browser CDP proxy", () => {
       expect((await app.inject({ method: "GET", url: cliBrowserCdpStatusPath, headers })).json()).toMatchObject({ ready: false, reason: "VAULT_PROTECTED" });
       expect(await (await attach(app, null, token)).closed).toBe(cliBrowserCdpCloseCodes.VAULT_PROTECTED);
       expect(chrome.received).toHaveLength(0);
+    } finally {
+      await app.close();
+      await chrome.close();
+    }
+  });
+
+  it("DEV3D-065: another agent's Vault flow hold refuses the connection only while the flow's tab is open; a closed flow tab ends it", async () => {
+    const chrome = await fakeChrome();
+    const { app, store, config, room, token, session } = await fixture(chrome.port);
+    try {
+      const browserPane = store.createPane({ roomId: room.id, title: "Browser", mode: "BROWSER" });
+      store.createPaneBrowserSession({ paneId: browserPane.id, roomId: room.id, agentNumber: 2, profileId: "profile:test", profilePath: session.profilePath, viewport: "desktop" });
+      const protection = createVaultProtection(null);
+      protection.holdFlow(browserPane.id, "cli:cli_session:other01", "tab-flow");
+      let pages = [{ pageId: "tab-flow" }, { pageId: "tab-other" }];
+      const proxy = createCliBrowserCdpProxy({ store, config, isBrowserPane, vaultProtection: protection,
+        vaultFlowBrowser: { listPages: async () => ({ activePageId: "tab-other", pages }) } });
+      const request = { headers: { [cliBrowserBridgeTokenHeader]: token }, query: { paneId: browserPane.id } } as never;
+      expect(await proxy.resolve(request)).toMatchObject({ refused: "VAULT_FLOW_HELD" });
+      pages = [{ pageId: "tab-other" }];
+      expect(await proxy.resolve(request)).not.toMatchObject({ refused: "VAULT_FLOW_HELD" });
+      expect(protection.flowHold(browserPane.id)).toBeNull();
     } finally {
       await app.close();
       await chrome.close();
@@ -852,15 +914,16 @@ describe("CLI browser CDP proxy", () => {
   });
 
   // Operator nous_msg:243370cb (7/11 20:27 ICT): "Solve the check on hub.upcloud.com" reached the operator for an e-mailed code.
-  const handoffOnPage = async (page: { host: string; text: string; widget: boolean }) => {
+  const handoffOnPage = async (page: { host: string; url?: string; text: string; widget: boolean },
+    ask: { kind: string; reason: string; triedStored?: boolean; currentUrl?: string } = { kind: "CAPTCHA", reason: "hub.upcloud.com: solve the check to continue" }) => {
     const chrome = await fakeChrome((message) => ({ "Target.attachToTarget": { sessionId: "s1" }, "Page.getFrameTree": { frameTree: { frame: { id: "f1" } } },
       "Page.createIsolatedWorld": { executionContextId: 1 }, "Runtime.evaluate": { result: { value: page } } } as Record<string, unknown>)[message.method] ?? {});
     const { app, store, room, token, jobPane, session } = await fixture(chrome.port);
     try {
-      store.updatePaneBrowserSession(session.sessionId, { currentUrl: `https://${page.host}/verify`, activePageId: "p1", pages: [{ pageId: "p1", kind: "PAGE", url: `https://${page.host}/verify`,
+      store.updatePaneBrowserSession(session.sessionId, { currentUrl: ask.currentUrl ?? `https://${page.host}/verify`, activePageId: "p1", pages: [{ pageId: "p1", kind: "PAGE", url: `https://${page.host}/verify`,
         title: "UpCloud", isActive: true, openerPageId: null, canGoBack: false, canGoForward: false }] });
       const reply = await app.inject({ method: "POST", url: "/api/cli/browser/commands", headers: { [cliBrowserBridgeTokenHeader]: token, "content-type": "application/json" },
-        payload: { targetPaneId: jobPane.id, command: { type: "REQUEST_HANDOFF", kind: "CAPTCHA", reason: "hub.upcloud.com: solve the check to continue" } } });
+        payload: { targetPaneId: jobPane.id, command: { type: "REQUEST_HANDOFF", kind: ask.kind, reason: ask.reason, ...(ask.triedStored ? { triedStored: true } : {}) } } });
       return { reply: reply.json(), handoffs: await store.listBrowserHandoffRequests(room.id),
         raised: (await store.listEvents(room.id)).filter((event) => event.type === "BROWSER_HANDOFF_REQUESTED") };
     } finally {
@@ -875,6 +938,17 @@ describe("CLI browser CDP proxy", () => {
     expect(reply).toMatchObject({ status: "MAIL_CODE", message: expect.stringContaining("space_mail_search from:upcloud.com") });
     expect(handoffs).toEqual([]);
     expect(raised).toEqual([]);
+  });
+
+  // 19/11 Braintrust (browser_handoff:tFFAGPQrr8bX): the tab had moved into another account's browser, the session still read google.com, and
+  // the sign-in form's "Email" label under the 2-step dialog made the guard ask for a mailed code.
+  it("hands an authenticator code to the operator, naming the live page's site and the app (Braintrust)", async () => {
+    const { reply, handoffs } = await handoffOnPage({ host: "app.usebraintrust.com", url: "https://app.usebraintrust.com/auth/login/", widget: false,
+      text: "Sign in\nEmail\nPassword\n2-step authentication\nEnter the 6-digit code generated by your authenticator app.\nUse backup code instead\nCancel\nVerify" },
+    { kind: "MFA", reason: "Braintrust: one code from your phone.", triedStored: true, currentUrl: "https://www.google.com/" });
+    expect(reply.handoff?.reason).toMatch(/^MFA: \[site:usebraintrust\.com\] .*The page asks for the code from your authenticator app\. Braintrust: one code/);
+    expect(reply.handoff.reason).not.toContain("google.com");
+    expect(handoffs).toHaveLength(1);
   });
 
   it("hands a real Turnstile check to the operator", async () => {

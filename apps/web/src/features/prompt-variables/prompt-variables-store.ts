@@ -316,7 +316,7 @@ export function syncPromptVariablesFromServer(now = Date.now()): void {
     const runtime = getSpaceRuntime();
     if (!runtime?.api?.userSettings) return;
     lastServerSyncAt = now;
-    runtime.api.userSettings().then((serverSettings: any) => {
+    runtime.api.userSettings().then((serverSettings) => {
       if (serverSettings && Array.isArray(serverSettings.promptVariables)) {
         applyServerPromptVariablesSettings({
           variables: serverSettings.promptVariables,

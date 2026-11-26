@@ -17,14 +17,24 @@ export const publicPaths = new Set([
   "/api/auth/google/callback",
   "/api/auth/google/credential",
   "/api/auth/desktop-handoff", "/api/auth/app-handoff", "/api/mobile/channel", "/api/mobile/demo-offer",
+  // Nous Live's voice relay: a WebSocket the Nous app opens with the one-use ticket POST /api/nous/live/realtime gave it (nous/live/relay.ts).
+  "/api/nous/live/relay/:ticket",
   "/api/auth/logout",
   "/api/auth/logout-all",
   "/logout",
   "/api/setup/status",
   "/api/setup/claim",
   "/api/auth/invites/accept",
-  "/api/auth/password-reset/request", "/api/auth/password-reset/complete",
+  "/api/auth/password-reset/request", "/api/auth/password-reset/available", "/api/auth/password-reset/complete",
   "/api/public/waitlist",
+  // Mail open tracking (mail-campaigns/open-tracking.ts): the pixel (the same gif for every token) and a tracked link's redirect.
+  "/api/public/mail/hit",
+  // The UnboxExpert admin's read-only Mail Campaigns view (mail-campaigns/site-feed.ts): public-host only, with the site key.
+  "/api/public/mail/site-feed",
+  // One-click unsubscribes a site's /u/ page passes on (mail-campaigns/site-feed.ts): public-host only, the token signs itself.
+  "/api/public/mail/unsubscribe",
+  // A sent mail's "view in browser" page a site's /m/ relay asks for (mail-campaigns/site-feed.ts): public-host only, the token signs itself.
+  "/api/public/mail/web",
   "/api/demo-projects/preview/:runId/:token",
   "/api/demo-projects/preview/:runId/:token/*",
   // Demo connector routes: authenticated via x-demo-run-token header inside the route handler

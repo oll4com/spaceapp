@@ -254,6 +254,28 @@ describe("PaneWorkingTimeBadge component", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(request).not.toHaveBeenCalled();
   });
+
+  it("reads nothing while the pane is hidden or minimized and reads once when it is shown again (PERF-002)", async () => {
+    vi.useFakeTimers();
+    const { installSpaceRuntime } = await import("../src/runtime/SpaceRuntime.js");
+    const { liveRuntime } = await import("../src/live/live-runtime.js");
+    installSpaceRuntime(liveRuntime);
+    const request = vi.spyOn(liveRuntime.api, "paneWorkingTime").mockResolvedValue({ paneId: "pane-hidden", cumulativeWorkingMs: 0, isWorking: false, state: "IDLE" });
+    try {
+      const view = render(<PaneWorkingTimeBadge paneId="pane-hidden" isWorking={false} isVisible={false} />);
+      window.dispatchEvent(new Event("focus"));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).not.toHaveBeenCalled();
+      view.rerender(<PaneWorkingTimeBadge paneId="pane-hidden" isWorking={false} isVisible />);
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(request).toHaveBeenCalledTimes(1);
+      view.rerender(<PaneWorkingTimeBadge paneId="pane-hidden" isWorking={false} isVisible={false} />);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("Pane working time eligibility by pane mode", () => {

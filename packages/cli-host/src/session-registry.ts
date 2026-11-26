@@ -540,7 +540,8 @@ export class CliHostSessionRegistry {
 // Keep wrap/whitespace branches disjoint: nested optional whitespace can
 // catastrophically backtrack on PTY padding and block every hosted session.
 export const CLI_UPLOAD_WRAPPED_PATH_PATTERN =
-  /(?<![ \t\r\n])(?:[ \t\r\n]|\x1b\[[0-9;?]*[ -/]*[@-~])*['"]?(?:\/opt\/spaceapp\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
+  // eslint-disable-next-line no-control-regex -- PTY output: ESC (\x1b) starts the CSI sequences these paths are wrapped in
+  /(?<![ \t\r\n])(?:[ \t\r\n]|\x1b\[[0-9;?]*[ -/]*[@-~])*['"]?(?:\/opt\/spaceapp\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_./-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
 
 const CLI_UPLOAD_MARKER = "/cli-uploads/";
 const CLI_UPLOAD_ARTIFACT_ROOT = "/opt/spaceapp/var/artifacts";
@@ -549,7 +550,9 @@ const CLI_UPLOAD_PATH_MAX_HOLD_CHARS = 1_024;
 // Same alternatives as the path body of CLI_UPLOAD_WRAPPED_PATH_PATTERN, plus
 // an unfinished trailing CSI or padding: the chunk may stop anywhere inside.
 const CLI_UPLOAD_PATH_CONTINUATION_PATTERN =
-  /^(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))*(?:\x1b(?:\[[0-9;?]*[ -/]*)?|[ \t]+)?$/;
+  // eslint-disable-next-line no-control-regex -- PTY output: ESC (\x1b) starts the CSI sequences these paths are wrapped in
+  /^(?:[a-zA-Z0-9_./-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))*(?:\x1b(?:\[[0-9;?]*[ -/]*)?|[ \t]+)?$/;
+// eslint-disable-next-line no-control-regex -- same ESC-introduced CSI sequences as above
 const CLI_UPLOAD_PATH_SEPARATOR_PATTERN = /(\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t\r\n])/;
 const CLI_UPLOAD_PATH_START_PATTERN = /(?=\/opt\/spaceapp\/var\/artifacts\/cli-uploads\/)|(?<!\/opt\/spaceapp\/var\/artifacts)(?=\/cli-uploads\/)/;
 export const CLI_UPLOAD_PATH_HOLD_MS = 150;

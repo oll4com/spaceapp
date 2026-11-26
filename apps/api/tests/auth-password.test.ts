@@ -35,7 +35,7 @@ describe("POST /api/auth/password", () => {
       const login = (password: string) => app.inject({ method: "POST", url: "/api/auth/login", payload: { email: owner.email, password } });
       const web = as(signSession(owner, secret, Date.now() - 2000)), other = as(signSession(owner, secret, Date.now() - 1000));
       expect((await app.inject({ method: "POST", url: "/api/auth/password", payload: { newPassword } })).statusCode).toBe(401);
-      expect((await change(web, { newPassword })).json()).toMatchObject({ error: { code: "STEP_UP_REQUIRED", details: { stepUpUrl: "/api/auth/google/start?stepUp=mobile" } } });
+      expect((await change(web, { newPassword })).json()).toMatchObject({ error: { code: "STEP_UP_REQUIRED", details: { stepUpUrl: "/api/auth/google/start?stepUp=mobile", mailUrl: "/api/auth/step-up/mail/request" } } });
       expect((await change(web, { currentPassword: "wrong words", newPassword })).statusCode).toBe(401);
       expect((await change(web, { currentPassword: oldPassword, newPassword: "short" })).statusCode).toBe(400);
 
@@ -58,7 +58,11 @@ describe("POST /api/auth/password", () => {
     const { owner, app } = await ownerApp();
     try {
       const web = as(signSession(owner, secret));
+      const status = async () => (await app.inject({ method: "GET", url: "/api/auth/password", headers: web })).json();
+      expect(await status()).toMatchObject({ hasPassword: true, stepUpUntil: null });
       expect((await app.inject({ method: "POST", url: "/api/auth/step-up/password", headers: web, payload: { password: oldPassword } })).json()).toMatchObject({ steppedUp: true });
+      const { stepUpUntil } = await status();
+      expect(Date.parse(stepUpUntil) - Date.now()).toBeGreaterThan(4 * 60_000);
       expect((await app.inject({ method: "POST", url: "/api/auth/password", headers: web, payload: { newPassword } })).json()).toEqual({ ok: true });
       expect((await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: owner.email, password: newPassword } })).statusCode).toBe(200);
     } finally { await app.close(); }
@@ -108,6 +112,26 @@ describe("POST /api/auth/password", () => {
       expect((await login(recovered, newPassword)).statusCode).toBe(401);
       expect((await login(recovered, "host recovery words")).statusCode).toBe(200);
     } finally { await recovered.close(); }
+  });
+
+  it("finds the .env operator whose users row carries its Google address: a fresh step-up saves without the current password (stable 17/11)", async () => {
+    const store = new InMemorySpaceStore();
+    const app = await createApp({ store, config: getApiConfig({ SPACE_LOG_LEVEL: "silent", SPACE_CONNECTOR_KEY_FILE: keyFile }),
+      auth: { sessionSecret: secret, devLogin: false, secureCookies: false, operatorEmail: "operator@example.test", operatorPasswordHash: await hashPassword(oldPassword) } });
+    try {
+      const login = (password: string) => app.inject({ method: "POST", url: "/api/auth/login", payload: { email: "operator@example.test", password } });
+      const operatorId = (await login(oldPassword)).json().user.id as string;
+      (store as unknown as { users: Map<string, { email: string }> }).users.get(operatorId)!.email = "operator.google@example.test";
+      const web = as(signSession({ id: operatorId, email: "operator.google@example.test", role: "ADMIN" }, secret));
+      const change = (payload: object) => app.inject({ method: "POST", url: "/api/auth/password", headers: web, payload });
+      // Without a fresh step-up the current password stays required.
+      expect((await change({ newPassword })).json()).toMatchObject({ error: { code: "STEP_UP_REQUIRED" } });
+      expect((await app.inject({ method: "POST", url: "/api/auth/step-up/password", headers: web, payload: { password: oldPassword } })).json()).toMatchObject({ steppedUp: true });
+      expect((await change({ newPassword })).json()).toEqual({ ok: true });
+      expect((await login(oldPassword)).statusCode).toBe(401);
+      expect((await login(newPassword)).json().user.id).toBe(operatorId);
+      expect((await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: "operator.google@example.test", password: newPassword } })).json().user.id).toBe(operatorId);
+    } finally { await app.close(); }
   });
 
   it("is rate limited like the password step-up", async () => {
@@ -181,6 +205,25 @@ describe("password reset through a fresh Google sign-in", () => {
         expect((await google.inject({ method: "GET", url: `/api/auth/google/start?reset=password${extra}&json=true`, headers: as(cookieOf(changed)!) })).json())
           .toMatchObject({ error: { code: "RESET_UNAVAILABLE" } });
       }
+    } finally { await google.close(); }
+  });
+
+  it("lets the Google-only owner set a first password after a fresh Google step-up, never without one (stable 17/11: 409 PASSWORD_NOT_STORED)", async () => {
+    const { store, owner: member, app } = await ownerApp();
+    await app.close();
+    // As on stable: the claimed owner signs in only with Google, no .env operator, no password.
+    (store as unknown as { userPasswordHashes: Map<string, string> }).userPasswordHashes.delete(member.id);
+    await store.linkGoogleAccount(member.id, { sub: "google-member", email: member.email });
+    const google = await createApp({ store, config: getApiConfig({ SPACE_LOG_LEVEL: "silent", SPACE_CONNECTOR_KEY_FILE: keyFile }),
+      auth: { sessionSecret: secret, devLogin: false, secureCookies: false, googleClientId: clientId } });
+    try {
+      const plain = as(signSession(member, secret));
+      expect((await google.inject({ method: "GET", url: "/api/auth/password", headers: plain })).json()).toMatchObject({ hasPassword: false, stepUpUntil: null });
+      expect((await google.inject({ method: "POST", url: "/api/auth/password", headers: plain, payload: { newPassword } })).json()).toMatchObject({ error: { code: "STEP_UP_REQUIRED" } });
+      expect((await google.inject({ method: "POST", url: "/api/auth/password", headers: plain, payload: { currentPassword: oldPassword, newPassword } })).json()).toMatchObject({ error: { code: "PASSWORD_NOT_STORED" } });
+      const signedIn = await resetVia(google, { sub: "google-member", email: member.email, auth_time: fresh() });
+      expect((await google.inject({ method: "POST", url: "/api/auth/password", headers: as(cookieOf(signedIn)!), payload: { newPassword } })).json()).toEqual({ ok: true });
+      expect((await google.inject({ method: "POST", url: "/api/auth/login", payload: { email: member.email, password: newPassword } })).json().user.id).toBe(member.id);
     } finally { await google.close(); }
   });
 

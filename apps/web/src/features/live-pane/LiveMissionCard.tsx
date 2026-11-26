@@ -42,7 +42,8 @@ export function LiveMissionCard({ roomId, className = "" }: { roomId?: string; c
       }
     };
     void load();
-    return () => { disposed = true; generation.current++; if (timer) clearTimeout(timer); };
+    const loads = generation; // the ref object itself: cleanup must bump the live counter, not a copy
+    return () => { disposed = true; loads.current++; if (timer) clearTimeout(timer); };
   }, [roomId, refresh]);
 
   const current = view.roomId === roomId ? view : { snapshot: null, error: null, loaded: false };

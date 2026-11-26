@@ -1,8 +1,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { defaultNotificationSettings, type Appointment, type AppointmentList, type Pane } from "@space/contracts";
+import { appointmentContentMissing, appointmentScheduleMissing, defaultNotificationSettings, type Appointment, type AppointmentList, type Pane } from "@space/contracts";
 import { AppointmentsPane } from "../src/features/appointments/AppointmentsPane.js";
-import { APPOINTMENT_KIND_COLORS, appointmentCountdown, appointmentShortDay, zonedInputToIso } from "../src/features/appointments/appointments-view.js";
+import { APPOINTMENT_KIND_COLORS, appointmentCountdown, appointmentDayFromText, appointmentDayText, appointmentNotesWithAfterCall, appointmentShortDay, appointmentTimeFromText, appointmentTimeText,
+  zonedInputToIso } from "../src/features/appointments/appointments-view.js";
 import { NotificationSettingsCard, parseLeadTimes } from "../src/features/notifications/NotificationSettingsCard.js";
 import { NousAppointments, searchAppointments } from "../src/features/nous/NousAppointments.js";
 import { applyServerDateTimeSettings, DATE_TIME_SETTINGS_STORAGE_KEY } from "../src/features/date-time-settings/date-time-settings.js";
@@ -16,7 +17,7 @@ import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 const at = (iso: string, fields: Partial<Appointment> = {}): Appointment => ({ id: `appointment:${iso}`, ownerUserId: "user:operator", title: "IP Fabric Teams call", startsAt: iso, endsAt: null,
   timeZone: "Asia/Bangkok", kind: "CALL", location: "https://teams.microsoft.com/l/meetup-join/abc", notes: null, sourceRef: "task:5qjhOhB2wnvV", status: "UPCOMING",
   format: "LIVE_HUMAN_VIDEO", timing: "FIXED", deadlineAt: null, remindersSent: [], createdAt: "2026-11-02T08:00:00.000Z", updatedAt: "2026-11-02T08:00:00.000Z", ...fields });
-const upcoming: AppointmentList = { timeZone: "Asia/Bangkok", pane: { roomId: "room:main0001", paneId: "pane:appt0001" }, appointments: [
+const upcoming: AppointmentList = { timeZone: "Asia/Bangkok", hours: { start: "11:00", end: "20:00", timeZone: "Asia/Bangkok" }, pane: { roomId: "room:main0001", paneId: "pane:appt0001" }, appointments: [
   at("2026-11-02T15:05:00.000Z", { id: "appointment:turing", title: "Turing tests", kind: "DEADLINE", format: "TEST", timing: "FLEXIBLE", deadlineAt: "2026-11-02T15:05:00.000Z", location: null, sourceRef: "task:1roMnBz-yIz6", notes: "Complete the assessment before the deadline." }),
   at("2026-11-09T14:30:00.000Z", { endsAt: "2026-11-09T15:00:00.000Z", location: "https://teams.microsoft.com/meet/346?p=abc (Meeting ID 346 917, passcode 9JN2)", notes: "Bring your questions about the role.\nAllow a few minutes to check the meeting link and microphone." })
 ] };
@@ -74,7 +75,14 @@ it("lists upcoming appointments by day with their link and source, shows past on
   fireEvent.click(screen.getByRole("button", { name: "Add appointment" }));
   const form = screen.getByRole("form", { name: "Add appointment" });
   fireEvent.change(within(form).getByLabelText("Title"), { target: { value: "WIM Engineering quick chat" } });
-  fireEvent.change(within(form).getByLabelText("Starts"), { target: { value: "2026-11-04T12:00" } });
+  // Typed in the Settings format (DD/MM/YYYY, 24h), never the native US mm/dd/yyyy picker (operator 26/11, nous_msg:cfce1783).
+  const starts = within(form).getByLabelText("Starts") as HTMLInputElement;
+  expect([starts.placeholder, starts.getAttribute("aria-describedby") && document.getElementById(starts.getAttribute("aria-describedby")!)?.textContent]).toEqual(["DD/MM/YYYY", "DD/MM/YYYY"]);
+  fireEvent.change(starts, { target: { value: "31/02/2026" } });
+  expect(starts.getAttribute("aria-invalid")).toBe("true");
+  fireEvent.change(starts, { target: { value: "04/11/2026" } });
+  expect(starts.getAttribute("aria-invalid")).toBeNull();
+  fireEvent.change(within(form).getByLabelText("Starts time"), { target: { value: "12:00" } });
   // The notes start with the sections the server requires (nous_msg:a6016259).
   const notesBox = within(form).getByLabelText("Notes") as HTMLTextAreaElement;
   expect(notesBox.value).toBe("WHAT IT IS: \nTIME: \nHOW TO JOIN: \nWHY IT MATTERS: \nWHAT YOU NEED: \nSOURCE: ");
@@ -82,7 +90,7 @@ it("lists upcoming appointments by day with their link and source, shows past on
   fireEvent.change(notesBox, { target: { value: filled } });
   fireEvent.click(within(form).getByRole("button", { name: "Add" }));
   await waitFor(() => expect(calls.find((call) => call.method === "POST")?.body).toEqual({ title: "WIM Engineering quick chat", startsAt: "2026-11-04T05:00:00.000Z",
-    endsAt: null, kind: "CALL", location: null, notes: filled, format: "LIVE_HUMAN_VIDEO", timing: "FIXED", deadlineAt: null }));
+    endsAt: null, kind: "CALL", location: null, notes: filled, format: "LIVE_HUMAN_VIDEO", timing: "FIXED", deadlineAt: null, recurrence: null }));
 
   fireEvent.click(screen.getByRole("button", { name: "Cancel IP Fabric Teams call" }));
   await waitFor(() => expect(calls.find((call) => call.method === "PATCH")).toMatchObject({ url: "/api/appointments/appointment%3A2026-11-09T14%3A30%3A00.000Z",
@@ -180,9 +188,9 @@ it("shows every upcoming appointment in Nous's fullscreen card and opens the App
   const card = screen.getByRole("region", { name: "Appointments" });
   const items = await within(card).findAllByRole("listitem");
   expect(items.map((item) => item.textContent)).toEqual([
-    // Operator 6/11 (nous_msg:ea6f0792): its format, strict or flexible time, and a time outside 11:00-18:00 Bangkok (21:30) as text.
+    // Operator 6/11 (nous_msg:ea6f0792): its format, strict or flexible time, and a time outside the appointment hours, 11:00-20:00 Bangkok (21:30) as text.
     "22:05Turing testsDeadline · in 6 h 35 min📝 Test ⏳ Flexible until Mon 2/11 22:05",
-    "21:30IP Fabric Teams callCall · in 7 d 6 h👤 Live with a person ⏰ Strict time ⚠️ Outside 11:00–18:00"]);
+    "21:30IP Fabric Teams callCall · in 7 d 6 h👤 Live with a person ⏰ Strict time ⚠️ Outside 11:00–20:00"]);
   // Grouped by day (nous_msg:ea247fe8): the day heads the group once, today named as such.
   expect(within(card).getByRole("group", { name: "Mon, 02/11/2026" }).querySelector("h4")?.textContent).toBe("Today Mon, 02/11/2026");
   expect(within(within(card).getByRole("group", { name: "Mon, 09/11/2026" })).getAllByRole("listitem")).toHaveLength(1);
@@ -231,7 +239,7 @@ it("expands a row of Nous's card in place and marks it Completed there without o
   fireEvent.click(row);
   expect(row.getAttribute("aria-expanded")).toBe("true");
   const detail = document.getElementById(row.getAttribute("aria-controls")!)!;
-  expect(detail.textContent).toContain("Call · 21:30–22:00 (Asia/Bangkok)");
+  expect(detail.textContent).toContain("Call · Mon, 09/11/2026 21:30–22:00 (Asia/Bangkok)");
   expect(detail.textContent).toContain("Allow a few minutes to check the meeting link and microphone.");
   expect(within(detail).getByRole("link", { name: "https://teams.microsoft.com/meet/346?p=abc" }).getAttribute("href")).toBe("https://teams.microsoft.com/meet/346?p=abc");
   fireEvent.click(within(detail).getByRole("button", { name: "Mark IP Fabric Teams call completed" }));
@@ -251,7 +259,7 @@ it("switches Nous's card to a week and a month calendar whose appointments open 
 
   // Week: Monday first in his zone; 00:30 Bangkok on Friday is Thursday 17:30 UTC; done ones show too (the "all" list).
   fireEvent.click(within(views).getByRole("button", { name: "Week" }));
-  expect(await within(card()).findByRole("heading", { name: "2 Nov – 8 Nov 2026" })).toBeTruthy();
+  expect(await within(card()).findByRole("heading", { name: "02/11/2026 – 08/11/2026" })).toBeTruthy();
   await waitFor(() => expect(calls.some((call) => call.url === "/api/appointments?when=all")).toBe(true));
   const friday = await within(card()).findByRole("group", { name: "Fri, 06/11/2026" });
   const early = await within(friday).findByRole("button", { name: "Early call, Fri, 06/11/2026 00:30" });
@@ -261,16 +269,16 @@ it("switches Nous's card to a week and a month calendar whose appointments open 
   const row = within(agenda).getByRole("button", { name: "Early call, Fri, 06/11/2026 00:30" });
   expect(row.getAttribute("aria-expanded")).toBe("true");
   const detail = document.getElementById(row.getAttribute("aria-controls")!)!;
-  expect(detail.textContent).toContain("Webinar · 00:30 (Asia/Bangkok)");
+  expect(detail.textContent).toContain("Webinar · Fri, 06/11/2026 00:30 (Asia/Bangkok)");
   fireEvent.click(within(detail).getByRole("button", { name: "Cancel Early call" }));
   await waitFor(() => expect(calls.find((call) => call.method === "PATCH")).toMatchObject({ url: "/api/appointments/appointment%3Aearly", body: { status: "CANCELLED" } }));
   fireEvent.click(within(card()).getByRole("button", { name: "Next week" }));
-  expect(within(card()).getByRole("heading", { name: "9 Nov – 15 Nov 2026" })).toBeTruthy();
+  expect(within(card()).getByRole("heading", { name: "09/11/2026 – 15/11/2026" })).toBeTruthy();
   expect(within(within(card()).getByRole("group", { name: "Thu, 12/11/2026" })).getAllByRole("button", { name: /^Busy/ })).toHaveLength(4);
 
   // Month: the weeks that hold November, a day's button names its count, a click lists that day; a done one has no actions.
   fireEvent.click(within(views).getByRole("button", { name: "Month" }));
-  expect(within(card()).getByRole("heading", { name: "November 2026" })).toBeTruthy();
+  expect(within(card()).getByRole("heading", { name: "11/2026" })).toBeTruthy();
   const month = card().querySelector(".nous-appointments-month")!;
   // November 2026 starts on a Sunday: six weeks; December starts on a Tuesday: five.
   expect(month.querySelectorAll(".nous-appointments-month-day")).toHaveLength(42);
@@ -280,13 +288,13 @@ it("switches Nous's card to a week and a month calendar whose appointments open 
   expect(within(document.getElementById(old.getAttribute("aria-controls")!)!).queryByRole("button", { name: "Mark Old call completed" })).toBeNull();
   expect(within(card()).getByRole("button", { name: "Thursday, 12/11/2026: 4 appointments" })).toBeTruthy();
   fireEvent.click(within(card()).getByRole("button", { name: "Next month" }));
-  expect(within(card()).getByRole("heading", { name: "December 2026" })).toBeTruthy();
+  expect(within(card()).getByRole("heading", { name: "12/2026" })).toBeTruthy();
   expect(card().querySelectorAll(".nous-appointments-month-day")).toHaveLength(35);
 
   // The view survives a reload of the card.
   first.unmount();
   render(<NousAppointments />);
-  expect(await within(card()).findByRole("heading", { name: "November 2026" })).toBeTruthy();
+  expect(await within(card()).findByRole("heading", { name: "11/2026" })).toBeTruthy();
 });
 
 it("moves Nous's week and month with a horizontal wheel or swipe, one step per flick, and leaves vertical scroll alone (operator 6/11, nous_msg:e3776676)", async () => {
@@ -297,22 +305,22 @@ it("moves Nous's week and month with a horizontal wheel or swipe, one step per f
   await within(card()).findAllByRole("listitem");
   const views = within(card()).getByRole("group", { name: "Appointments view" });
   fireEvent.click(within(views).getByRole("button", { name: "Week" }));
-  await within(card()).findByRole("heading", { name: "2 Nov – 8 Nov 2026" });
+  await within(card()).findByRole("heading", { name: "02/11/2026 – 08/11/2026" });
   const grid = () => card().querySelector<HTMLElement>(".nous-appointments-week, .nous-appointments-month")!;
 
   // Mostly vertical: the page scrolls, the week stays. A flick's events add up to one step; its momentum moves nothing more.
   fireEvent.wheel(grid(), { deltaX: 40, deltaY: 120 });
-  heading("2 Nov – 8 Nov 2026");
+  heading("02/11/2026 – 08/11/2026");
   fireEvent.wheel(grid(), { deltaX: 30 });
   fireEvent.wheel(grid(), { deltaX: 30 });
-  heading("9 Nov – 15 Nov 2026");
+  heading("09/11/2026 – 15/11/2026");
   expect(grid().classList.contains("is-slide-next")).toBe(true);
   fireEvent.wheel(grid(), { deltaX: 200 });
-  heading("9 Nov – 15 Nov 2026");
+  heading("09/11/2026 – 15/11/2026");
   // After a pause a new flick to the left goes back.
   vi.setSystemTime(Date.now() + 400);
   fireEvent.wheel(grid(), { deltaX: -80 });
-  heading("2 Nov – 8 Nov 2026");
+  heading("02/11/2026 – 08/11/2026");
   expect(grid().classList.contains("is-slide-prev")).toBe(true);
 
   // A finger 80 px to the left is the next week; a short or slanted one is nothing.
@@ -321,17 +329,17 @@ it("moves Nous's week and month with a horizontal wheel or swipe, one step per f
     fireEvent.pointerUp(grid(), { clientX: to[0], clientY: to[1] });
   };
   swipe([200, 50], [120, 60]);
-  heading("9 Nov – 15 Nov 2026");
+  heading("09/11/2026 – 15/11/2026");
   swipe([200, 50], [170, 50]);
   swipe([200, 50], [120, 130]);
-  heading("9 Nov – 15 Nov 2026");
+  heading("09/11/2026 – 15/11/2026");
   // Month: a swipe to the right is the month before; the arrows still work.
   fireEvent.click(within(views).getByRole("button", { name: "Month" }));
-  heading("November 2026");
+  heading("11/2026");
   swipe([100, 50], [200, 55]);
-  heading("October 2026");
+  heading("10/2026");
   fireEvent.click(within(card()).getByRole("button", { name: "Next month" }));
-  heading("November 2026");
+  heading("11/2026");
 });
 
 it("writes a chip's deadline as a short day in Bangkok, the interface language and the chosen date order (operator 6/11 11:02 BKK)", () => {
@@ -351,12 +359,12 @@ it("draws Nous's card and its badges in the Interface language, never the Agent 
     render(<NousAppointments />);
     const card = screen.getByRole("region", { name: "Appointments" });
     const items = await within(card).findAllByRole("listitem");
-    expect(items[1]!.textContent).toBe("21:30IP Fabric Teams callCall · in 7 d 6 h👤 Live with a person ⏰ Strict time ⚠️ Outside 11:00–18:00");
+    expect(items[1]!.textContent).toBe("21:30IP Fabric Teams callCall · in 7 d 6 h👤 Live with a person ⏰ Strict time ⚠️ Outside 11:00–20:00");
     expect(card.textContent).not.toMatch(/[\u0370-\u03ff]/);
     // The same card follows the Interface language when it changes, words and badges alike.
     act(() => announceUiLanguage("el"));
     const greek = await screen.findByRole("region", { name: "Ραντεβού" });
-    expect(within(greek).getAllByRole("listitem")[1]!.textContent).toBe("21:30IP Fabric Teams callΚλήση · σε 7 ημ 6 ώ👤 Άνθρωπος live ⏰ Αυστηρή ώρα ⚠️ εκτός 11:00–18:00");
+    expect(within(greek).getAllByRole("listitem")[1]!.textContent).toBe("21:30IP Fabric Teams callΚλήση · σε 7 ημ 6 ώ👤 Άνθρωπος live ⏰ Αυστηρή ώρα ⚠️ εκτός 11:00–20:00");
     expect(within(greek).getByRole("button", { name: "Εβδομάδα" })).toBeTruthy();
   } finally {
     act(() => { announceUiLanguage("en"); announceAgentLanguage("en"); });
@@ -373,7 +381,7 @@ it("turns appointment reminders off and on and saves the lead times from Setting
   render(<NotificationSettingsCard suppressNotifications={false} onSuppressNotificationsChange={() => undefined} />);
   const toggle = await screen.findByRole("switch", { name: /Appointment reminders/ });
   await waitFor(() => expect((toggle as HTMLInputElement).disabled).toBe(false));
-  expect(screen.getByText(/Before every appointment: 1d, 3h, 1h\./)).toBeTruthy();
+  expect(screen.getByText(/Before every appointment: 1d, 3h, 1h, 30m\./)).toBeTruthy();
   const leads = screen.getByLabelText("Remind me before") as HTMLInputElement;
   fireEvent.change(leads, { target: { value: "2d, 3h, 30m" } });
   fireEvent.keyDown(leads, { key: "Enter" });
@@ -400,9 +408,10 @@ it("uses date/time settings on both surfaces and regroups calendars immediately 
   expect(list.getByText("America/New_York")).toBeTruthy();
   expect(nous.getByText("Call · in 7 d 6 h")).toBeTruthy();
   fireEvent.click(list.getByRole("button", { name: "Edit IP Fabric Teams call" }));
-  expect((list.getByLabelText("Starts") as HTMLInputElement).value).toBe("2026-11-09T09:30");
+  const field = (name: string) => (list.getByLabelText(name) as HTMLInputElement).value;
+  expect([field("Starts"), field("Starts time")]).toEqual(["11/09/2026", "9:30 AM"]);
   act(() => applyServerDateTimeSettings({ timeZone: "Asia/Bangkok", timeFormat: "24h", dateFormat: "YYYY-MM-DD" }));
-  expect((list.getByLabelText("Starts") as HTMLInputElement).value).toBe("2026-11-09T21:30");
+  expect([field("Starts"), field("Starts time")]).toEqual(["2026-11-09", "21:30"]);
   fireEvent.click(list.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(calls.find(call => call.method === "PATCH")?.body).toMatchObject({
     startsAt: "2026-11-09T14:30:00.000Z", endsAt: "2026-11-09T15:00:00.000Z"
@@ -448,6 +457,44 @@ it("opens the join link from the location or the ΕΙΣΟΔΟΣ line as a button
   } finally {
     upcoming.appointments.pop();
   }
+});
+
+it("saves post-call notes and sets a recontact date from Nous's card and the pane's record (operator 25/11, nous_msg:805b3110)", async () => {
+  const calls = serve();
+  render(<NousAppointments />);
+  const row = await screen.findByRole("button", { name: "IP Fabric Teams call, Mon, 09/11/2026 21:30" });
+  fireEvent.click(row);
+  const detail = document.getElementById(row.getAttribute("aria-controls")!)!;
+  fireEvent.change(within(detail).getByRole("textbox", { name: "Post-call notes" }), { target: { value: "Call again end of January." } });
+  fireEvent.click(within(detail).getByRole("button", { name: "Save notes" }));
+  await waitFor(() => expect(calls.find((call) => call.method === "PATCH")?.body).toEqual({
+    notes: "Bring your questions about the role.\nAllow a few minutes to check the meeting link and microphone.\nΣΗΜΕΙΩΣΕΙΣ ΜΕΤΑ ΤΗΝ ΚΛΗΣΗ: Call again end of January." }));
+  fireEvent.change(within(detail).getByLabelText("Recontact"), { target: { value: "29/01/2027" } });
+  fireEvent.click(within(detail).getByRole("button", { name: "Set recontact" }));
+  await waitFor(() => expect(calls.filter((call) => call.method === "PATCH")).toHaveLength(2));
+  const followUp = calls.find((call) => call.method === "POST")!.body as Appointment;
+  // Operator 26/11 (nous_msg:cfce1783): the whole record is copied (title, kind, format, link, notes with the post-call notes and their
+  // Agent Files mentions), a FLEXIBLE call that day within 11:00-20:00 Bangkok that the server's write checks accept, linked back.
+  expect(followUp).toMatchObject({ title: "IP Fabric Teams call", kind: "CALL", format: "LIVE_HUMAN_VIDEO", timing: "FLEXIBLE", location: "https://teams.microsoft.com/meet/346?p=abc (Meeting ID 346 917, passcode 9JN2)",
+    startsAt: "2027-01-29T04:00:00.000Z", deadlineAt: "2027-01-29T13:00:00.000Z", sourceRef: "followup:appointment:2026-11-09T14:30:00.000Z" });
+  expect(followUp.notes).toContain("Bring your questions about the role.\nAllow a few minutes to check the meeting link and microphone.\nΣΗΜΕΙΩΣΕΙΣ ΜΕΤΑ ΤΗΝ ΚΛΗΣΗ: Call again end of January.");
+  expect(followUp.notes).toContain("ΣΥΝΕΧΕΙΑ ΤΟΥ: «IP Fabric Teams call» 09/11/2026 (appointment:2026-11-09T14:30:00.000Z)");
+  expect(appointmentContentMissing({ status: "UPCOMING", notes: followUp.notes })).toEqual([]);
+  // The old one is completed and points to the new one, which opens with a visible confirmation.
+  expect(calls.filter((call) => call.method === "PATCH").at(-1)).toMatchObject({ url: "/api/appointments/appointment%3A2026-11-09T14%3A30%3A00.000Z", body: { status: "DONE",
+    notes: expect.stringContaining("ΕΠΑΝΕΠΙΚΟΙΝΩΝΙΑ: 29/01/2027 (appointment:2026-11-04T05:00:00.000Z)") } });
+  await waitFor(() => expect(document.body.textContent).toContain("Recontact set for 29/01/2027: «IP Fabric Teams call» copied there, this one completed."));
+  expect(appointmentScheduleMissing({ ...followUp, status: "UPCOMING" }, upcoming.hours)).toEqual([]);
+  // A second save replaces the section instead of adding another; empty text drops it.
+  const once = appointmentNotesWithAfterCall("ΤΙ ΕΙΝΑΙ: x", "first");
+  expect(appointmentNotesWithAfterCall(once, "second")).toBe("ΤΙ ΕΙΝΑΙ: x\nΣΗΜΕΙΩΣΕΙΣ ΜΕΤΑ ΤΗΝ ΚΛΗΣΗ: second");
+  expect(appointmentNotesWithAfterCall(once, " ")).toBe("ΤΙ ΕΙΝΑΙ: x");
+  cleanup();
+  render(<AppointmentsPane />);
+  fireEvent.click(await screen.findByRole("button", { name: "IP Fabric Teams call: open details" }));
+  const record = screen.getByRole("article", { name: "IP Fabric Teams call: details" });
+  expect(within(record).getByRole("textbox", { name: "Post-call notes" })).toBeTruthy();
+  expect(within(record).getByLabelText("Recontact")).toBeTruthy();
 });
 
 it("opens an appointment's whole record from its row: every section, its links, the account and the mail it came from", async () => {
@@ -545,4 +592,36 @@ it("regroups and displays flexible appointments by their exact final deadline wh
   expect(paneToggle.getAttribute("aria-pressed")).toBe("false");
   expect(await screen.findByRole("region", { name: "Sun, 01/11/2026" })).toBeTruthy();
   expect(screen.getByText("14:00")).toBeTruthy();
+});
+
+it("reads and writes typed dates and times in the Settings format, refusing a day that does not exist (operator 26/11, nous_msg:cfce1783)", () => {
+  expect([appointmentDayText("2027-01-29", "DD/MM/YYYY"), appointmentDayText("2027-01-29", "MM/DD/YYYY"), appointmentDayText("2027-01-29", "YYYY-MM-DD")]).toEqual(["29/01/2027", "01/29/2027", "2027-01-29"]);
+  expect([appointmentDayFromText("29/01/2027", "DD/MM/YYYY"), appointmentDayFromText("1/29/27", "MM/DD/YYYY"), appointmentDayFromText("2027-01-29", "YYYY-MM-DD")]).toEqual(["2027-01-29", "2027-01-29", "2027-01-29"]);
+  expect([appointmentDayFromText("01/29/2027", "DD/MM/YYYY"), appointmentDayFromText("31/02/2027"), appointmentDayFromText("29-01")]).toEqual([null, null, null]);
+  expect([appointmentTimeText("14:30", "12h"), appointmentTimeText("00:05", "12h"), appointmentTimeText("14:30", "24h")]).toEqual(["2:30 PM", "12:05 AM", "14:30"]);
+  expect([appointmentTimeFromText("2:30 pm"), appointmentTimeFromText("12:05 AM"), appointmentTimeFromText("9"), appointmentTimeFromText("25:00"), appointmentTimeFromText("13 pm")]).toEqual(["14:30", "00:05", "09:00", null, null]);
+});
+
+it("shows a recurring appointment's rule and asks in the interface language before Completed ends every repetition (operator 26/11, nous_msg:cfce1783)", async () => {
+  upcoming.appointments.push(at("2026-11-02T10:00:00.000Z", { id: "appointment:daily", title: "EF-Start daily", recurrence: { every: "WEEKDAY", until: "2026-11-06" } }));
+  try {
+    const calls = serve();
+    announceUiLanguage("el");
+    render(<AppointmentsPane />);
+    expect(await screen.findByText("Εργάσιμες έως 06/11/2026")).toBeTruthy();
+    const patches = () => calls.filter((call) => call.method === "PATCH");
+    const complete = () => fireEvent.click(screen.getByRole("button", { name: "Mark EF-Start daily completed" }));
+    complete();
+    const dialog = await screen.findByRole("alertdialog", { name: "Ολοκλήρωση όλης της περιόδου;" });
+    expect(dialog.textContent).toContain("06/11/2026");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Άκυρο" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(patches()).toEqual([]);
+    complete();
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Ναι" }));
+    await waitFor(() => expect(patches()).toMatchObject([{ url: "/api/appointments/appointment%3Adaily", body: { status: "DONE" } }]));
+  } finally {
+    upcoming.appointments.pop();
+    announceUiLanguage("en");
+  }
 });

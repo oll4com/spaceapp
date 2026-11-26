@@ -58,7 +58,7 @@ const SETTINGS_FILES = [
 ];
 
 /** Product names a label shows as written in every language. */
-const NAMES = new Set(["Liquid Glass"]);
+const NAMES = new Set(["Liquid Glass", "Nous", "Vault"]);
 const features = fileURLToPath(new URL("../src/features/", import.meta.url));
 const read = (file: string) => readFileSync(join(features, file), "utf8");
 const all = (source: string, pattern: RegExp) => [...source.matchAll(pattern)].map((match) => match[1]!);

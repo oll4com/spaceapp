@@ -27,7 +27,9 @@ export default [
       "var/**", "backups/**", "bin/**", "secrets/**", "deploy/**",
       "apps/mobile/**", "apps/desktop/release/**", "**/*.min.js", "apps/web/public/**",
       // the public 1.2.0 restore, kept byte for byte as the round-trip test's target
-      "scripts/tests/fixtures/spaceapp-1.2/**"
+      "scripts/tests/fixtures/spaceapp-1.2/**",
+      // esbuild bundle of space-import-config.mjs and the packages it imports (linted at their source); 875 warnings of generated code
+      "scripts/space-import-standalone.mjs"
     ]
   },
   ...warnOnly([
@@ -38,7 +40,9 @@ export default [
       rules: {
         // TypeScript checks these already.
         "no-undef": "off",
-        "no-redeclare": "off"
+        "no-redeclare": "off",
+        // `const { secret: _secret, ...safe } = row` is how this codebase drops a field; only that sibling is exempt.
+        "@typescript-eslint/no-unused-vars": ["warn", { ignoreRestSiblings: true }]
       }
     },
     {

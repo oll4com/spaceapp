@@ -1,5 +1,5 @@
 import type { SecurityInventory } from "@space/contracts";
-import { parseFeed, parseNvdCve, parseOsvVuln, PRODUCT_CPE, type KevEntry, type NewsItem, type NvdCve, type OsvVuln } from "./matcher.js";
+import { parseCveRecord, parseFeed, parseNvdCve, parseOsvVuln, PRODUCT_CPE, type KevEntry, type NewsItem, type NvdCve, type OsvVuln } from "./matcher.js";
 
 // Security Copilot feed readers (plan clipboard:8ce8_URHW9Dk step 4). The hosts are fixed constants, not user URLs, so the global
 // fetch with a timeout is enough (link-inspect-routes.ts does the same); a body that does not parse counts as a feed error.
@@ -76,6 +76,12 @@ export function createFeeds(fetchImpl: FeedFetch = defaultFeedFetch, now: () => 
       if (!/^CVE-\d{4}-\d{4,8}$/.test(id)) return null;
       const body = await json("NVD", `https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${id}`) as { vulnerabilities?: unknown[] };
       return body.vulnerabilities?.[0] ? parseNvdCve(body.vulnerabilities[0]) : null;
+    },
+    /** What a CVE's CVE 5 record names as affected (parseCveRecord); null while it has no record yet (404: reserved, not published). */
+    async cveRecord(id: string): Promise<string[] | null> {
+      if (!/^CVE-\d{4}-\d{4,8}$/.test(id)) return null;
+      const body = await json("CVE", `https://cveawg.mitre.org/api/cve/${id}`).catch((error: Error) => (/404/.test(error.message) ? null : Promise.reject(error)));
+      return body ? parseCveRecord(body) : null;
     },
     /** OSV ids per library (querybatch answers ids only), then each distinct record once. */
     async osvLibraries(libraries: SecurityInventory["libraries"]): Promise<Array<{ library: SecurityInventory["libraries"][number]; vuln: OsvVuln }>> {

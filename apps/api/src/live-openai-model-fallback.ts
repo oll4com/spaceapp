@@ -76,7 +76,7 @@ async function verify(baseUrl: string, apiKey: string, model: string, effort: De
     if (response.ok) return { works: true, reason: "", at: Date.now() };
     const text = await response.text();
     let reason = `HTTP ${response.status}`;
-    try { reason = (JSON.parse(text) as { error?: { message?: string } }).error?.message || reason; } catch {}
+    try { reason = (JSON.parse(text) as { error?: { message?: string } }).error?.message || reason; } catch { /* A body that is not JSON keeps the HTTP status as the reason. */ }
     if (response.status === 401) throw new Error(`OpenAI rejected the Live API key: ${reason}`);
     if (response.status === 429 && /insufficient_quota|credit_balance_exhausted|quota/i.test(text)) {
       throw new Error("OpenAI API quota or credit balance exhausted. Please verify API key credits in the active organization.");

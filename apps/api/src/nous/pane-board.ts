@@ -24,7 +24,7 @@ export interface PaneBoardSnapshot {
   rooms: Array<{ room: Room; sample: DashboardAgentsSample | null }>;
   /** The newest report of each pane. */
   reports: PaneReport[];
-  /** The owner's OPEN and READ notifications. */
+  /** The owner's OPEN and READ notifications on a pane, above INFO. */
   notifications: SpaceNotification[];
   /** Nous's OPEN decisions. */
   decisions: NousDecision[];
@@ -101,7 +101,8 @@ export function boardPanes(snapshot: PaneBoardSnapshot, options: { showClosed: b
   return panes.map(({ room, pane, sample }) => ({
     room, pane,
     // R11-5: a CLI whose model shows unavailable is not "working", whatever its activity reads.
-    state: pane.isClosed ? "closed" : modelUnavailable(pane.id) ? "model unavailable" : sample.activity[pane.id] ?? "idle",
+    // 21/11 (load 89 %, Bruno/Iris "waiting" an hour on a server_error): a CLI whose turn ended on an API error sits at its prompt, free for work.
+    state: pane.isClosed ? "closed" : modelUnavailable(pane.id) ? "model unavailable" : sample.details[pane.id]?.reason === "API error" ? "idle" : sample.activity[pane.id] ?? "idle",
     model: sample.details[pane.id]?.modelId ?? pane.modelId ?? null,
     report: reports.get(pane.id) ?? null,
     plan: snapshot.plans.find((plan) => plan.paneId === pane.id) ?? null,
@@ -400,7 +401,7 @@ export function createPaneBoard(deps: PaneBoardDeps) {
         plan: input.plan ? { id: input.plan.id, title: clip(input.plan.title ?? input.plan.text.replace(/\s+/g, " "), 120), progress: input.plan.progressPercentage, nextStep: nextPlanStep(input.plan) } : null,
         keptOpenForTask: keptOpenBy(input, snapshot.tasks ?? []),
         summary,
-        report: input.report ? { at: input.report.at, status: input.report.status, summary: input.report.summary } : null,
+        report: input.report ? { at: input.report.at, status: input.report.status, summary: input.report.summary, planId: input.report.planId } : null,
         prompt: panePrompt(input),
         notifications: input.notifications.map((item) => ({ id: item.id, source: item.source, kind: item.kind, severity: item.severity, title: item.title,
           body: clip(item.body, 600), card: item.source === "NOUS" && Boolean(item.dedupeKey?.startsWith("nous:pane:")) })),

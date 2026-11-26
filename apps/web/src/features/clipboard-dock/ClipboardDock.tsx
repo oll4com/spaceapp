@@ -16,7 +16,7 @@ import {
 } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardItem, ClipboardSource, PlanStep } from "@space/contracts";
-import { clipboardTextMaxCharacters, planIsParked } from "@space/contracts";
+import { clipboardTextMaxCharacters, planIsParked, planShownStatus } from "@space/contracts";
 import { uiText, useUiLanguage } from "../ui-language/ui-language.js";
 import { api } from "../../api.js";
 import { fetchEveryPage } from "../../paged.js";
@@ -403,8 +403,9 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
             const isLong = item.characterCount > 360;
             const isPlan = item.source === "PLAN";
             const isNote = item.source === "MANUAL_NOTE" || item.source === "AGENT_NOTE";
-            const planStatus = item.executionStatus ?? (item.isCompleted ? "COMPLETED" : "PLANNED");
             const planProgress = item.progressPercentage ?? (item.isCompleted ? 100 : 0);
+            // Parking closes a plan: a parked one or one closed with steps left reads Parked, never Completed (operator 23/11).
+            const planStatus = planShownStatus({ status: item.executionStatus ?? (item.isCompleted ? "COMPLETED" : "PLANNED"), progress: planProgress, steps: item.steps, parked: item.parked }).status;
             const assignee = isPlan ? planAssignee(item, undefined, roomNames, openPanes) : null;
             const planModel = item.minimumModel ? `${item.minimumModel}${item.minimumReasoning ? ` · ${item.minimumReasoning}` : ""}` : null;
             const steps = isPlan && item.steps ? orderedSteps(item.steps) : [];
@@ -426,14 +427,15 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
               >
                 <div className="dock-kit-meta">
                   <span className={`dock-kit-badge${isPlan ? " is-accent clipboard-source-plan" : ""}`}>{sourceLabels[item.source]}</span>
-                  {item.isCompleted ? <span className="dock-kit-badge is-success clipboard-status-completed">Completed</span> : null}
+                  {isPlan && planStatus === "PARKED" ? <span className="dock-kit-badge is-warning">{uiText(language, "Parked")}</span>
+                    : item.isCompleted ? <span className="dock-kit-badge is-success clipboard-status-completed">Completed</span> : null}
                   <span className="dock-kit-meta-text clipboard-meta-text">
                     {assignee ? null : <span className="clipboard-meta-origin">{item.paneTitle ?? "Space"}</span>}
                     <span className="clipboard-meta-time">{assignee ? "" : " · "}{timeLabel(item.lastUsedAt)}</span>
                   </span>
                   {item.occurrenceCount > 1 ? <span className="dock-kit-badge">Used {item.occurrenceCount}×</span> : null}
                 </div>
-                {item.title ? <div className="dock-kit-card-title" data-sensitive-masked="manual">{item.title}</div> : null}
+                {item.title ? <div className="dock-kit-card-title">{item.title}</div> : null}
                 {isPlan ? (
                   <div className="clipboard-plan-progress-container">
                     <div className="clipboard-plan-progress-header">
@@ -454,7 +456,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                       />
                     </div>
                     {planIsParked(item) ? (
-                      <div className="clipboard-plan-assignee clipboard-plan-parked" data-sensitive-masked="manual"
+                      <div className="clipboard-plan-assignee clipboard-plan-parked"
                         title={item.parked.conditions.map((condition) => `${condition.state} ${condition.who}: ${condition.what}`).join("\n")}>
                         {uiText(language, "Parked: {reason} · {met}/{total} conditions met", { reason: item.parked.reason,
                           met: item.parked.conditions.filter((condition) => condition.state === "MET").length, total: item.parked.conditions.length })}
@@ -492,7 +494,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                           return (
                             <div className={`clipboard-plan-step-item is-${step.status.toLowerCase()}`} key={step.id}>
                               <span className={`clipboard-plan-step-bullet is-${step.status.toLowerCase()}`} />
-                              <span className="clipboard-plan-step-title" data-sensitive-masked="manual" title={step.title}>{stepTitleWithoutModel(step.title)}</span>
+                              <span className="clipboard-plan-step-title" title={step.title}>{stepTitleWithoutModel(step.title)}</span>
                               {step.progress > 0 && step.status !== "COMPLETED" ? (
                                 <span className="clipboard-plan-step-pct">{step.progress}%</span>
                               ) : null}
@@ -527,7 +529,6 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                     toggleExpanded(item.id);
                   }}
                   aria-label="Copy clip text"
-                  data-sensitive-masked="manual"
                   title="Click to copy, double-click to expand or collapse"
                 >
                   {snippet ? <span className="clipboard-card-snippet">{snippet}</span> : item.text}

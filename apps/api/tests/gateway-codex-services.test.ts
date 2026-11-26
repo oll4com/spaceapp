@@ -62,12 +62,21 @@ describe("Codex quotas and reset credits from Space Gateway", () => {
     const gatewayAdmin = vi.fn(async () => ({ status: 200, body: { outcome: "RESET", windowsReset: 1 } }));
     const service = createGatewayCodexResetCreditsService({ repository, admin: { gatewayAdmin }, now });
     expect(await service.availability()).toMatchObject({ source: "space-gateway", data: [{ accountId: `gw_account:${"1".repeat(32)}`, availableCreditCount: 2 },
-      { accountId: `gw_account:${"2".repeat(32)}`, availableCreditCount: null }] });
+      { accountId: `gw_account:${"2".repeat(32)}`, availableCreditCount: null },
+      // Claude's limit resets ride the same route (nous_msg:2cdc2f9a).
+      { accountId: `gw_account:${"3".repeat(32)}`, availableCreditCount: null }] });
+    // The live grant on crew@, ops@, lab@ and ntheo@ (14/11): one Fable reset is no week reset, and the answer names its kind.
+    await repository.saveResetCredits(`gw_account:${"3".repeat(32)}`, 1, [{ kind: "fable" as const, left: 1, endsAt: "2027-03-09T07:59:00.000Z" }]);
+    expect((await service.availability()).data[2]).toEqual({ accountId: `gw_account:${"3".repeat(32)}`, availableCreditCount: 0, grants: [{ kind: "fable", left: 1 }] });
     const key = "6f9619ff-8b86-4011-b42d-00c04fc964ff";
     const result = await service.redeem(`gw_account:${"1".repeat(32)}`, key);
     expect(result).toEqual({ response: { accountId: `gw_account:${"1".repeat(32)}`, outcome: "RESET", completedAt: "2030-01-10T00:00:00.000Z" },
       audit: { outcome: "RESET", usageVerified: true, creditIdHash: null } });
     expect(gatewayAdmin).toHaveBeenCalledWith(`/__space-gateway/admin/accounts/gw_account:${"1".repeat(32)}/reset-credit`, { idempotencyKey: key });
+    // dev@ 14/11: a Claude "reset" that left the week used names what it cleared, for the dialog and the audit row.
+    gatewayAdmin.mockResolvedValueOnce({ status: 200, body: { outcome: "RESET", windowsReset: ["five_hour", "seven_day_overage_included"] } } as never);
+    expect(await service.redeem(`gw_account:${"3".repeat(32)}`, key)).toMatchObject({ response: { outcome: "RESET", windowsReset: ["five_hour", "seven_day_overage_included"] },
+      audit: { windowsReset: ["five_hour", "seven_day_overage_included"] } });
     gatewayAdmin.mockResolvedValueOnce({ status: 502, body: { error: {} } } as never);
     await expect(service.redeem(`gw_account:${"1".repeat(32)}`, key)).rejects.toBeInstanceOf(CodexResetCreditsError);
     await expect(service.redeem("vm214-account", key)).rejects.toBeInstanceOf(CodexResetCreditsError);

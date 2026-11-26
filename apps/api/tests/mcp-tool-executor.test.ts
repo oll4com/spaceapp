@@ -30,7 +30,7 @@ async function fixture(mode: string) {
   config.mcpToolExecutionEnabled = mode !== "disabled";
   config.mcpAllowlistedSchemaHashes = mode === "unallowlisted" ? [] : [hash];
   config.mcpServerConfigs = mode === "missing-config" ? [] : [{ id: "fixture", displayName: "Fixture", transport: "stdio",
-    command: process.execPath, args: [fixturePath, "call-ok-count-start", callCountPath], enabled: true }];
+    command: process.execPath, args: [fixturePath, mode === "tool-error" ? "call-error" : "call-ok-count-start", callCountPath], enabled: true }];
   const app = Fastify();
   cleanups.push(() => app.close());
   app.addHook("onRequest", async request => {
@@ -105,4 +105,14 @@ it("resolves a stored MCP result to the file the executor wrote, and a permanent
   expect(() => localArtifactFilePath({ artifactRoot: root, artifact: { ...artifact, storageUri: "space-artifact://mcp-executions/..%2F..%2Fescape/result.json" } }))
     .not.toThrow();
   expect(localArtifactFilePath({ artifactRoot: root, artifact: { ...artifact, storageUri: "space-artifact://mcp-executions/..%2F..%2Fescape/result.json" } }).startsWith(`${root}/mcp-executions/`)).toBe(true);
+});
+
+// 15/11: Nous's ops.logs read only "MCP tool returned an error result."; the tool's own reason now reaches the caller.
+it("names the tool's own reason when the tool answers isError", async () => {
+  const { app } = await fixture("tool-error");
+  const response = await app.inject({ method: "POST", url: "/execute", payload: {
+    toolId: "fixture:list_files", arguments: { path: "/fixture" }, approvalReason: "Fixture approval"
+  } });
+  expect(response.json()).toMatchObject({ status: "FAILED", code: "TOOL_RETURNED_ERROR",
+    message: "MCP tool returned an error: Service is not allowlisted." });
 });

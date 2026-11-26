@@ -239,7 +239,7 @@ export class PostgresMailCopilotRepository implements MailCopilotRepository {
         AND ($2::text IS NULL OR search @@ websearch_to_tsquery('simple', $2))
       ORDER BY pinned DESC, rank DESC, (contact_email IS NOT NULL) DESC, uses DESC, updated_at DESC LIMIT $7`,
       [owner, text, query.kinds?.length ? query.kinds : null, query.contactEmail ?? null, query.domain ?? null, query.pinnedOnly === true, query.limit ?? null])).rows;
-    return rows.map(({ rank: _rank, ...row }) => memoryRow(row));
+    return rows.map((row) => { delete row.rank; return memoryRow(row); });
   }
   async getMemory(owner: string, id: string) {
     const row = (await this.pool.query<Record<string, unknown>>(`SELECT ${memoryColumns} FROM mail_copilot_memory WHERE owner_user_id=$1 AND id=$2`, [owner, id])).rows[0];

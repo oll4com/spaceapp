@@ -3,7 +3,6 @@ import type {
   DatabaseCatalog,
   DatabaseColumnMeta,
   DatabaseForeignKeyMeta,
-  DatabaseIndexMeta,
   DatabaseTableDataResponse,
   DatabaseTableMeta
 } from "@space/contracts";

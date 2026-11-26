@@ -1,7 +1,9 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
-import { fetchPublicUrl, isPublicAddress, PublicUrlRefusedError } from "../src/public-url-fetch.js";
+import { createNousWeb } from "../src/nous/web.js";
+import { fetchPublicUrl, isPublicAddress, PublicUrlRedirectError, PublicUrlRefusedError } from "../src/public-url-fetch.js";
 
 describe("fetchPublicUrl", () => {
   let server: Server | undefined;
@@ -37,5 +39,39 @@ describe("fetchPublicUrl", () => {
     const page = await fetchPublicUrl(`http://public.example:${port}/`, options);
     expect(page).toMatchObject({ status: 200, ok: true, text: "<title>Public</title>" });
     await expect(fetchPublicUrl(`http://public.example:${port}/hop`, options)).rejects.toBeInstanceOf(PublicUrlRefusedError);
+  });
+
+  it("decodes a gzip or brotli body the server sent unasked (platform.minimax.io read as binary, 16/11) and cuts at maxBytes decoded", async () => {
+    const html = `<title>Compressed</title>${"x".repeat(5_000)}`;
+    server = createServer((request, response) => {
+      const br = request.url === "/br";
+      response.writeHead(200, { "content-type": "text/html", "content-encoding": br ? "br" : "gzip" });
+      response.end(br ? brotliCompressSync(html) : gzipSync(html));
+    });
+    await new Promise<void>(resolve => server!.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const options = { timeoutMs: 2000, resolver: async () => [{ address: "127.0.0.1", family: 4 }], allowAddress: (address: string) => address === "127.0.0.1" };
+    expect((await fetchPublicUrl(`http://public.example:${port}/`, options)).text).toBe(html);
+    expect((await fetchPublicUrl(`http://public.example:${port}/br`, options)).text).toBe(html);
+    expect((await fetchPublicUrl(`http://public.example:${port}/`, { ...options, maxBytes: 100 })).text).toBe(html.slice(0, 100));
+  });
+
+  it("names a redirect loop's chain, and space_net_check / space_web_read answer it instead of failing (nousapp.dev 16/11 05:19Z)", async () => {
+    server = createServer((request, response) => {
+      response.writeHead(301, { location: request.url === "/a" ? "/b" : "/a", ...(request.url === "/b" ? { "set-cookie": "sid=secret; Path=/" } : {}) });
+      response.end();
+    });
+    await new Promise<void>(resolve => server!.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const base = `http://public.example:${port}`;
+    const error = await fetchPublicUrl(`${base}/a`, { timeoutMs: 2000, resolver: async () => [{ address: "127.0.0.1", family: 4 }], allowAddress: () => true })
+      .catch((caught: unknown) => caught) as PublicUrlRedirectError;
+    expect(error).toBeInstanceOf(PublicUrlRedirectError);
+    expect(error).toMatchObject({ loop: true, next: `${base}/a`, chain: [{ url: `${base}/a`, status: 301, setCookie: false }, { url: `${base}/b`, status: 301, setCookie: true }] });
+    const web = createNousWeb({ resolve: async () => [{ address: "127.0.0.1", family: 4 }], allowAddress: () => true, checkTimeoutMs: 2000 });
+    const check = await web.check({ check: "http", host: `${base}/a` } as never);
+    expect(check).toContain(`GET ${base}/a → redirect loop, last HTTP 301:\n1. ${base}/a → HTTP 301\n2. ${base}/b → HTTP 301 (sets a cookie; none is sent back)\nnext: ${base}/a`);
+    expect(check).not.toContain("secret");
+    expect(await web.read({ url: `${base}/b` } as never)).toMatch(/^GET .*\/b → redirect loop, last HTTP 301:/);
   });
 });

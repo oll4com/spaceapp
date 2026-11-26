@@ -244,7 +244,12 @@ export function createVideoService(options: VideoServiceOptions) {
   function sweepJobs() {
     for (const [id, job] of jobs) if (job.endedAt && now() - Date.parse(job.endedAt) > JOB_KEEP_MS) jobs.delete(id);
   }
-  const publicJob = ({ ownerUserId: _owner, waiters: _waiters, ...job }: JobRow): VideoJob => structuredClone(job);
+  const publicJob = (row: JobRow): VideoJob => {
+    const job: Partial<JobRow> = { ...row };
+    delete job.ownerUserId;
+    delete job.waiters;
+    return structuredClone(job) as VideoJob;
+  };
   function jobOf(owner: string, id: string): JobRow {
     const job = jobs.get(id);
     if (!job || job.ownerUserId !== owner) throw new SpaceNotFoundError(`Video job ${id} was not found (finished jobs stay for an hour).`);
@@ -307,7 +312,7 @@ export function createVideoService(options: VideoServiceOptions) {
     return done.result ?? {};
   }
   const sourceList = (sources: ResolvedSource[]) => sources.map((source) => ({ path: source.path }));
-  const sourceView = (sources: ResolvedSource[]) => sources.map(({ path: _path, ...source }) => source);
+  const sourceView = (sources: ResolvedSource[]) => sources.map(({ index, artifactId, label, kind, mimeType }) => ({ index, artifactId, label, kind, mimeType }));
 
   // ---- routing and the run kickoff -----------------------------------------------------------------
   /** Open Video panes of the owner's rooms: the requester's room first, then unpaused ones, then the most recently active. */
@@ -679,7 +684,7 @@ export function createVideoService(options: VideoServiceOptions) {
     /** A request from the operator, a CLI pane, Nous, a Dot, Live or Marketing Copilot, routed to a Video pane of the owner's rooms. */
     async createRequest(owner: string, requester: VideoRequester, raw: VideoRequestCreateInput) {
       const input = videoRequestCreateSchema.parse(raw);
-      let pane: Pane | null = null;
+      let pane: Pane | null;
       if (input.videoPaneId) {
         pane = await paneOrNull(input.videoPaneId);
         if (!pane || pane.mode !== "VIDEO" || pane.isClosed || await options.roomOwner(pane.roomId) !== owner) throw new SpaceNotFoundError(`Video pane ${input.videoPaneId} was not found in your rooms.`);

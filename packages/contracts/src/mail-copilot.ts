@@ -265,6 +265,8 @@ export const mailThreadSummarySchema = z.object({
   hasAttachment: z.boolean(),
   messageCount: z.number().int().min(1),
   labelIds: z.array(z.string()),
+  /** The newest message's own labels (labelIds is the whole thread's): whether it is a DRAFT or SENT. */
+  newestLabelIds: z.array(z.string()).optional(),
   /** The thread's own (user) labels by name, for the list's chips. */
   labels: z.array(mailThreadLabelSchema).optional()
 }).strict();
@@ -345,7 +347,9 @@ export const mailComposeInputSchema = z.object({
   text: z.string().max(100_000),
   /** Reply or forward: the thread the message joins and the message it answers (threading headers come from it). */
   threadId: z.string().min(1).max(200).optional(),
-  inReplyToMessageId: z.string().min(1).max(200).optional()
+  inReplyToMessageId: z.string().min(1).max(200).optional(),
+  /** Open tracking (operator 22/11): one mail per To address, each with its own pixel and tracked links; names are the recipients' display names. */
+  track: z.object({ names: z.record(z.string().trim().toLowerCase().email().max(320), z.string().trim().max(200)).default({}) }).strict().optional()
 }).strict();
 export type MailComposeInput = z.infer<typeof mailComposeInputSchema>;
 

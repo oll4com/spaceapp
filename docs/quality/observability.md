@@ -66,6 +66,10 @@ What changed in this package:
    - The agent runs of those workflows, then their background continuations
      (`continuationOf` names the run each one continues), and the Room Agent
      missions and task runs created under the ID.
+   - `workflowTaskFaults`: each of those workflows whose Temporal history holds
+     workflow-task failures (nondeterminism, unhandled commands), with Temporal's
+     cause name, the count and the last time; never the failure message
+     (2026-11-22, EXT-G-5). An unreachable Temporal adds none.
    - Ready-made log queries.
 
    It returns only IDs, codes, statuses and times. Event messages, payload
@@ -222,7 +226,9 @@ each endpoint at `GET /api/metrics/scrape/<target>` (`worker`, `worker-temporal`
 `/api/metrics/scrape`: the collector's bearer token from a private-network address. The
 ports are the units' (`WORKER_METRICS_TARGETS` in `apps/api/src/metrics-scrape.ts`, a test
 keeps them equal); an unknown target answers 404, a silent endpoint 503. Dev relays nothing,
-because its loopback would answer with stable's workers.
+because its loopback would answer with stable's workers. Checked 2026-11-22: CT 210's
+Prometheus scrapes all four (`space_worker`, `space_worker_temporal`, `space_memory_maintenance`,
+`space_memory_mutation`), each `up`.
 
 Without the endpoint, every activity still writes `activity.started` and
 `activity.finished` records to journald.
@@ -301,6 +307,7 @@ No credential or transcript export was added.
 | `packages/db/tests/trace-records.test.ts` | Bounded, parameterized PostgreSQL trace lookup |
 | `packages/db/tests/room-agent-trace-postgres.test.ts` | Migrations 0206 and 0258 on a disposable PostgreSQL: mission trace and first error code, a continuation found from its source run, CLI sessions by the request that allocated them |
 | `apps/api/tests/cli-terminal-control.test.ts` | "links the request that allocated a CLI session …": the session's request id finds it, its task and revision in `/api/admin/traces/:traceId`; a rejoin does not |
+| `apps/api/tests/trace-workflow-faults.test.ts` | Workflow-task faults from a real decoded Temporal history: cause name, count, last time, no failure message; a missing workflow adds nothing |
 | `apps/api/tests/trace-correlation.test.ts` | W3C context, log bindings, starter memo and input, Room Agent propagation, start-failure category, lookup projection |
 | `apps/api/tests/observability-metrics.test.ts` | New API metrics, `/metrics` access rule, redaction, CLI disconnect and reconnect counters |
 | `apps/api/src/__tests__/files-search-errors.test.ts` | `EMPTY_RESULT`/`OK` and each failure code |
@@ -358,9 +365,13 @@ No credential or transcript export was added.
   theirs (Room Agent, Council, Nous web search, chess, the card translator, the YouTube
   summary, Design images), and `GET /api/admin/traces/:traceId` answers the matching rows as
   `gatewayRequests` (provider, model, status, error code, latency; no text, account or key).
-  The shared gateway writes stable's database, so dev's lookup shows none. Not covered: CLI
-  panes' own gateway calls, task titles (no request), Nous step translations, the benchmark
-  and arena routes, and gateway spans.
+  The shared gateway writes stable's database, so dev's lookup shows none. Task titles send
+  the task's key (2d312be153); Nous step translations, the benchmark and the arena routes send
+  the request that started them (78b1e7b1d4). Since 2026-11-22 a traced CLI session's own gateway
+  calls come too, marked `cliSessionId`: the CLIs send no request id, but each pane tags its calls
+  with its pane id (`x-space-project`, `project`; Claude since 27/10, Codex 5/11, Gemini 21/11), so the
+  lookup returns the pane's rows within the session's span (newest first, the trace limit; the rest by
+  that pane in the Gateway request log; migration 0352 indexes `project`). Not covered: gateway spans.
 - **Hosts are observed from the API, not instrumented.** Since 2026-10-12 the
   API's `/metrics` carries `space_host_up`, `space_host_start_time_seconds`,
   `space_host_observed_timestamp_seconds`, `space_host_resident_memory_bytes` and
@@ -376,11 +387,6 @@ No credential or transcript export was added.
   each serves its activity counters on its own loopback endpoint, like the main
   worker's: `SPACE_MEMORY_MAINTENANCE_METRICS_PORT` (9470) and
   `SPACE_MEMORY_MUTATION_METRICS_PORT` (9471) in their units.
-- **Some workflow-level faults are not in the trace lookup.** Workflow-task
-  failures and nondeterminism appear only in Temporal history. Since 2026-10-16
-  the lookup also returns the Space-native agent runs (`space_agent_runs`) of the
-  trace's workflows, joined by workflow id, with their status and error code, and
-  names a failed run's code as the cause when no event carries one.
 - **Hosts emit no spans.** Since 2026-10-16 the OTLP exporter sends API SERVER
   spans and worker activity spans (the worker and both memory workers); the CLI
   and Browser Hosts join traces through log lines only. Since 2026-11-02 (OBS-001)
@@ -403,11 +409,6 @@ No credential or transcript export was added.
   none: the terminal socket drives them, with no request behind them.
 - **Recovery counters are partial.** Recovery counters exist for plan model
   retries, CLI terminal reconnects and worker activity retries only.
-- **Worker endpoints are not scraped yet.** Stable's `deploy/space-worker.service`
-  enables `127.0.0.1:9469/metrics` (worker activities) and `127.0.0.1:9464`
-  (Temporal SDK); on 2026-10-16 both answered on stable (`space_process_*` series,
-  and 53 `temporal_*` lines). The memory workers' units enable 9470 and 9471 (2026-10-28).
-  Dev and public installs keep them off (off by default). No collector scrapes them yet.
 - **`/metrics` access on live, checked 2026-10-12 (d5af82d2d2).** Through the web
   origin that the public proxy forwards to (`127.0.0.1:4911`), `/metrics` is not
   proxied (it returns the app's HTML shell) and `/api/metrics` returns 401, also

@@ -23,7 +23,7 @@ export class GitLabAdapter extends AdapterBase implements RepositoryProviderAdap
   }
   private async target(value: unknown): Promise<RepositoryTarget> {
     const n = object(value), id = numericId(String(n.id)), user = await this.user();
-    let canCreateRepository = false;
+    let canCreateRepository: boolean;
     if (n.kind === "user") canCreateRepository = n.path === user.username && user.can_create_project !== false && (user.projects_limit === undefined || user.projects_limit > 0);
     else {
       const group = object(await this.data(`/groups/${id}`));

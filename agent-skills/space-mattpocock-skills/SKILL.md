@@ -1,6 +1,6 @@
 ---
 name: space-mattpocock-skills
-description: Matt Pocock's handoff and git-guardrails skills. Use when the user asks for a handoff document so another agent or CLI can continue the work, or asks to block dangerous git commands (push, reset --hard, clean, branch -D) in Claude Code with a hook.
+description: "A handoff document so another agent can continue, or a hook that blocks dangerous git commands in Claude Code."
 metadata:
   category: WORKFLOW
 ---

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { NousLoad as NousLoadView, NousLoadAverage, NousLoadRange } from "@space/contracts";
-import { api, type InstanceLink } from "../../api.js";
+import type { NousLinkedLoad, NousLoad as NousLoadView, NousLoadAverage, NousLoadPart, NousLoadRange } from "@space/contracts";
+import { api } from "../../api.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 import { DockChips, DockState } from "../dock-kit/DockKit.js";
 import { AnimatedNumber } from "../ui-controls/AnimatedNumber.js";
@@ -56,6 +56,7 @@ export function NousLoad({ active }: { active: boolean }) {
 
   const pick = (next: NousLoadRange) => { setRange(next); setLoad(cached(next)); };
   const values = useMemo(() => load?.series.map((point) => point.value) ?? [], [load]);
+  const linked = useLinkedLoads(active, range);
   if (!load) return error ? <DockState kind="error" icon={ChartSpline} title="The load could not be read" detail={error} /> : <DockState kind="loading" icon={ChartSpline} title="Reading the load" />;
   const overall = load.overall ?? 0;
   const { averages } = load;
@@ -85,7 +86,7 @@ export function NousLoad({ active }: { active: boolean }) {
           </li>
         ))}
       </ul>
-      <LinkedLoads active={active} range={range} local={load.overall} />
+      <LinkedLoadList rows={linked} local={load.overall} />
       <dl className="nous-load-averages" aria-label="Averages">
         <Average label="Last hour" average={averages.hour} versus="the hour before" />
         <Average label="Today" average={averages.today} versus="yesterday" />
@@ -100,39 +101,48 @@ export function NousLoad({ active }: { active: boolean }) {
   );
 }
 
-type LinkedLoad = { link: InstanceLink; load: NousLoadView | null; error: string | null; last: NousLoadView | null };
 /** A linked SpaceApp answers through its link's round trip (instance-link/routes.ts), so it is read less often than this one. */
 const LINK_POLL_MS = 30_000;
 
-/**
- * Space Link Λ7 (ADR-014): each SpaceApp this Nous manages, with its own load, and the average over all of them. One that does not
- * answer keeps its last reading, marked stale. Nothing shows without links.
- * shortcut: an equal-weight average and no token-pool deduplication across SpaceApps on the same accounts; upgrade when pools are shared.
- */
-function LinkedLoads({ active, range, local }: { active: boolean; range: NousLoadRange; local: number | null }) {
-  const [rows, setRows] = useState<LinkedLoad[]>([]);
+/** Space Link (ADR-014 Λ7, operator nous_msg:766c70a6): each linked SpaceApp's row, read every 30 s while shown; none without links. */
+export function useLinkedLoads(active: boolean, range: NousLoadRange = "1h"): NousLinkedLoad[] {
+  const [rows, setRows] = useState<NousLinkedLoad[]>([]);
   useEffect(() => {
     if (!active) return;
     let stopped = false;
-    const read = () => void api.linkedLoads(range).then(({ instances }) => {
-      if (!stopped) setRows((before) => (instances ?? []).map((row) => ({ ...row, last: row.load ?? before.find((old) => old.link.id === row.link.id)?.last ?? null })));
-    }, () => undefined);
+    const read = () => void api.linkedLoads(range).then(({ instances }) => { if (!stopped) setRows((instances ?? []).map((instance) => instance.row)); }, () => undefined);
     read();
     const timer = window.setInterval(() => { if (document.visibilityState === "visible") read(); }, LINK_POLL_MS);
     return () => { stopped = true; window.clearInterval(timer); };
   }, [active, range]);
+  return rows;
+}
+
+const partText = (part: NousLoadPart) => part.key === "panes" ? `${part.label} ${part.detail}` : `${part.label} ${whole(part.percent)}${part.key === "load" ? `, ${part.detail}` : ""}`;
+
+/**
+ * The linked SpaceApps as the Load view and the Live card show them: how many answer, then each one with what its read returned; one that
+ * does not answer stays listed with since when. With `local`, the average over this SpaceApp and those that answer. Nothing without links.
+ * shortcut: an equal-weight average and no token-pool deduplication across SpaceApps on the same accounts; upgrade when pools are shared.
+ */
+export function LinkedLoadList({ rows, local }: { rows: NousLinkedLoad[]; local?: number | null }) {
   if (!rows.length) return null;
-  const readings = [local, ...rows.map((row) => row.load?.overall ?? null)].filter((value): value is number => value !== null);
+  const readings = [local ?? null, ...rows.map((row) => row.answering ? row.overall : null)].filter((value): value is number => value !== null);
   const total = readings.length ? readings.reduce((sum, value) => sum + value, 0) / readings.length : null;
   return (
     <section className="nous-load-linked" aria-label="Linked SpaceApps">
-      <p><strong>{whole(total)}</strong> average over this SpaceApp and {rows.length} linked</p>
+      <p><strong>{rows.length} linked · {rows.filter((row) => row.answering).length} connected</strong>
+        {local !== undefined ? ` · ${whole(total)} average over this SpaceApp and them` : ""}</p>
       <ul>
-        {rows.map(({ link, load, error, last }) => (
-          <li key={link.id} title={link.origins.join(", ")}>
-            <span>{link.label}</span>
-            {load ? <span>{whole(load.overall)}{load.level ? ` · ${load.level}` : ""}{load.at ? ` · ${formatUserTime(load.at)}` : ""}</span>
-              : <span className="nous-load-stale">{last ? `${whole(last.overall)}${last.at ? ` at ${formatUserTime(last.at)}` : ""}, stale: ` : ""}{error}</span>}
+        {rows.map((row) => (
+          <li key={row.id}>
+            <div className="nous-load-linked-head">
+              <span>{row.label}{row.host && row.host !== row.label ? <small> {row.host}</small> : null}</span>
+              {row.answering ? <span>{[row.overall === null ? null : whole(row.overall), row.level, row.answeredAt ? formatUserTime(row.answeredAt) : null].filter(Boolean).join(" · ")}</span>
+                : <span className="nous-load-stale">not answering{row.answeredAt ? ` since ${formatUserTime(row.answeredAt, { withDate: true })}` : ""}</span>}
+            </div>
+            {row.parts.length ? <p className="nous-load-linked-parts">{row.parts.map(partText).join(" · ")}</p> : null}
+            {!row.answering && row.error ? <p className="nous-load-stale">{row.error}</p> : null}
           </li>
         ))}
       </ul>

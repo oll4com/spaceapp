@@ -1,5 +1,5 @@
 import { mayCreateCliSessionDirectory } from "./project-paths.js";
-import { WORKTREES_ROOT } from "./worktrees/worktree-service.js";
+import { WORKTREES_ROOT, WorktreeService } from "./worktrees/worktree-service.js";
 import type { CliPaneReopener } from "./cli-pane-reopen.js";
 import type {} from "./request-context.js";
 import { execFile } from "./safe-child-process.js";
@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
 import { type CliAccountBalancer, isCliBalancedRuntimeId } from "./cli-account-balancer.js";
-import { geminiLaunchModel, type createNativeCliModelCatalog } from "./cli-native-model-picker.js";
+import { CLAUDE_COPILOT_DEFAULTS, claudePaneModelFamily, geminiLaunchModel, type createNativeCliModelCatalog } from "./cli-native-model-picker.js";
 import {
   createPaneCliSessionRequestSchema, type Pane, paneCliInterruptInputSchema, type PaneCliSession,
   paneCliUploadMaxBytes, paneCliUploadMaxCount, paneCliUploadResponseSchema, paneCliUploadSourceSchema,
@@ -24,7 +24,7 @@ import {
   makeSpaceId, nowIso, pathIsMissing, redactMemoryText, SpaceConflictError, type SpaceEventBus, SpaceFeatureDisabledError,
   SpaceNotFoundError, type SpaceStore
 } from "@space/runtime";
-import { operatorLanguageRule, buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown, buildFreelanceCopilotPersonaMarkdown, buildDesignPersonaMarkdown, buildAppStudioPersonaMarkdown, buildVideoPersonaMarkdown, buildSecurityCopilotPersonaMarkdown, SECURITY_COPILOT_CLAUDE_SETTINGS, buildMonitoringCopilotPersonaMarkdown, MONITORING_COPILOT_CLAUDE_SETTINGS } from "./agent-bootstrap.js";
+import { operatorLanguageRule, buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown, buildFreelanceCopilotPersonaMarkdown, buildDesignPersonaMarkdown, buildAppStudioPersonaMarkdown, buildVideoPersonaMarkdown, buildSecurityCopilotPersonaMarkdown, buildMonitoringCopilotPersonaMarkdown, paneClaudeSettings } from "./agent-bootstrap.js";
 import { pathInside, safeCliFilename, safeOriginalFilename, safeStorageSegment } from "./artifact-storage.js";
 import { isCliPane } from "./pane-guards.js";
 import { safeBrowserObservationUrl } from "./browser-observation.js";
@@ -261,16 +261,17 @@ async function writeCliWorkspaceBootstrap(
       buildSecurityCopilotPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
       { encoding: "utf8", mode: 0o640 }
     );
-    await mkdir(join(sessionCwd, ".claude"), { recursive: true });
-    await writeFile(join(sessionCwd, ".claude", "settings.json"), SECURITY_COPILOT_CLAUDE_SETTINGS, { encoding: "utf8", mode: 0o640 });
   } else if (input.paneMode === "MONITORING_COPILOT") {
     await writeFile(
       join(sessionCwd, "CLAUDE.md"),
       buildMonitoringCopilotPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
       { encoding: "utf8", mode: 0o640 }
     );
+  }
+  const claudeSettings = paneClaudeSettings(input.paneMode);
+  if (claudeSettings) {
     await mkdir(join(sessionCwd, ".claude"), { recursive: true });
-    await writeFile(join(sessionCwd, ".claude", "settings.json"), MONITORING_COPILOT_CLAUDE_SETTINGS, { encoding: "utf8", mode: 0o640 });
+    await writeFile(join(sessionCwd, ".claude", "settings.json"), claudeSettings, { encoding: "utf8", mode: 0o640 });
   }
   // shortcut: read once when the session starts, so a language changed later reaches a pane at its next start; push it live if that bites.
   const languageRule = operatorLanguageRule(input.language ?? "en");
@@ -365,6 +366,14 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
       return { ...response, accountMode: await cliAccountBalancer.isAuto(response.session.paneId) ? "AUTO" : "PROFILE" };
     };
   }
+  // 15/11 (operator nous_msg:5295e5b7, Warm approved by Nous): the operator focusing a sleeping pane resumes it; any other pane stays as it is.
+  app.post("/api/panes/:id/cli/wake", defaultRouteRateLimitOptions, serializePaneCliSessionStart(async (request) => {
+    const pane = await getPaneById(store, parseQuery(idParamSchema, request.params).id);
+    assertCliPaneCompatible(pane);
+    assertRootAdmin(request, pane.terminalRuntimeId);
+    await cliPaneReopener?.settled(pane.id);
+    return { woke: !await store.getActivePaneCliSession(pane.id) && await cliTerminalManager.wakeHibernatedPane(pane, request.requestIdForSpace) };
+  }));
   app.post("/api/panes/:id/cli/session", defaultRouteRateLimitOptions, serializePaneCliSessionStart(withAccountMode(async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createPaneCliSessionRequestSchema, request.body ?? {});
@@ -406,12 +415,6 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     input.accountProfileId = unnamedClaudeAttach ? active.accountProfileId : await options.resolveCliSessionAccountProfile({
       paneId: pane.id, runtimeId: input.runtimeId, accountProfileId: input.accountProfileId, previousSession: active
     });
-    const requestedProfileForAttach = isCliAccountProfileRuntimeId(input.runtimeId) && input.accountProfileId !== "main"
-      ? input.accountProfileId ?? null : null;
-    const attachingExisting = active?.purpose === "NORMAL" && active.isActive &&
-      !input.forceRestart && !input.resume && active.runtimeId === input.runtimeId &&
-      active.accountProfileId === requestedProfileForAttach &&
-      active.status !== "EXITED" && active.status !== "ERROR";
     let registry = await cliRuntimeRegistryCache.readStaleWhileRefreshing();
     let runtime = findRuntime(registry, input.runtimeId);
     if (!runtime) {
@@ -713,6 +716,8 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     // This core's filesystem says nothing about a user's own container (multi-user), so it neither creates nor checks there.
     if (!reusableSession && sessionCwd && !onUserHost) {
       try {
+        // A reclaimed worktree comes back as a checkout, not as the empty folder made below.
+        await new WorktreeService().restoreWorktree(sessionCwd);
         if (!existsSync(sessionCwd) && await mayCreateCliSessionDirectory({
           cwd: sessionCwd, role: request.user?.role, projectsRoot: config.projectsRoot, installRoot: config.installRoot,
           worktreesRoot: WORKTREES_ROOT, workspaceRoot: config.cliWorkspaceRoot
@@ -723,8 +728,9 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
         if (sessionCwd.startsWith("/opt/spaceapp/projects/") && existsSync(sessionCwd) && !existsSync(join(sessionCwd, ".git"))) {
           await execFileAsync("git", ["init", "-b", "main", sessionCwd]);
         }
-      } catch {}
+      } catch { /* best effort: a folder still missing falls back to another cwd just below */ }
       // A folder that could not be created here (a worktree or project of another host) would fail chdir at spawn.
+      let fellBack = false;
       if (await pathIsMissing(sessionCwd)) {
         const missingCwd = sessionCwd;
         const room = await Promise.resolve(store.getRoom(pane.roomId)).catch(() => null);
@@ -736,9 +742,11 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
           }
         }
         sessionCwd = fallbackCwd;
+        fellBack = true;
         request.log.warn({ paneId: pane.id, missingCwd, sessionCwd }, "CLI pane folder does not exist on this host; starting in a fallback folder");
       }
-      if (requestedManagedWorkspace) {
+      // DEV3D-027: a fallback folder (the room's project, the workspace root, home) is not the pane's own; its AGENTS.md, CLAUDE.md and .claude/settings.json stay.
+      if (requestedManagedWorkspace && !fellBack) {
         await writeCliWorkspaceBootstrap(sessionCwd, {
           roomId: pane.roomId,
           paneId: pane.id,
@@ -787,6 +795,12 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     await cliRuntimeVisibility.assertEnabled(runtime.id);
     assertCliPaneCompatible(await getPaneById(store, pane.id));
     const allocatedAtNs = reusableSession ? null : process.hrtime.bigint();
+    const sessionModelId = directCodexParity
+      ? resolvedCodexSettings?.modelId ?? null
+      : input.modelId === undefined
+        ? (active?.runtimeId === runtime.id && active?.modelId ? active.modelId : (pane.modelId ?? runtime.defaultModelId))
+        : requestedModelId ?? null;
+    const copilotDefault = runtime.id === "cli:claude" && !claudePaneModelFamily(sessionModelId) ? CLAUDE_COPILOT_DEFAULTS[pane.mode] : undefined;
     const session = reusableSession
       ? reusableSession
       : await store.createPaneCliSession(
@@ -797,12 +811,8 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
             runtimeId: runtime.id,
             providerId: runtime.providerId,
             agentId: runtime.agentId,
-            modelId: directCodexParity
-              ? resolvedCodexSettings?.modelId ?? null
-              : input.modelId === undefined
-                ? (active?.runtimeId === runtime.id && active?.modelId ? active.modelId : (pane.modelId ?? runtime.defaultModelId))
-                : requestedModelId ?? null,
-            reasoningEffort: directCodexParity
+            modelId: copilotDefault?.modelId ?? sessionModelId,
+            reasoningEffort: copilotDefault ? copilotDefault.reasoningEffort : directCodexParity
               ? resolvedCodexSettings?.reasoningEffort ?? pane.reasoningEffort
               : runtime.id === "cli:gemini"
                 ? (input.reasoningEffort && !rollingClientGenericReasoningEcho
@@ -875,7 +885,7 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
         await mkdir("/opt/spaceapp/var/gemini-pane-conversations", { recursive: true, mode: 0o777 });
         await writeFile(`/opt/spaceapp/var/gemini-pane-conversations/pane-${cleanPaneId}-model.json`, modelRecord, { mode: 0o666 });
         await chmod(`/opt/spaceapp/var/gemini-pane-conversations/pane-${cleanPaneId}-model.json`, 0o666).catch(() => {});
-      } catch {}
+      } catch { /* best effort: the session already carries the model; this file is only a launch hint */ }
     }
 
     if (!reusableSession) {
@@ -1184,18 +1194,16 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     assertNormalCliSession(active);
     assertRootAdmin(request, active.runtimeId);
     await assertCliHttpMutationControl(request, active);
-    let isTurnActive = false;
-    if (isOpenCodeDirectParityRuntime(active.runtimeId)) {
-      const control = await resolveOpenCodeServerControl(active);
-      try {
-        await abortOpenCodeSession(control, control.nativeSessionId);
-      } catch (error) {
-        throw new SpaceConflictError("OpenCode rejected the turn abort; the running turn was left unchanged.");
-      }
-      isTurnActive = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId).catch(() => false);
-    } else {
+    if (!isOpenCodeDirectParityRuntime(active.runtimeId)) {
       throw new SpaceConflictError("Turn abort is only available for OpenCode CLI sessions.");
     }
+    const control = await resolveOpenCodeServerControl(active);
+    try {
+      await abortOpenCodeSession(control, control.nativeSessionId);
+    } catch {
+      throw new SpaceConflictError("OpenCode rejected the turn abort; the running turn was left unchanged.");
+    }
+    const isTurnActive = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId).catch(() => false);
     await recordAudit(store, request, {
       action: "pane.cli.turn-abort",
       targetType: "pane",

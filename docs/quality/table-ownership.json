@@ -44,7 +44,7 @@
     },
     {
       "domain": "copilots",
-      "pattern": "^(job_apply|job_application|site_sign_ins$|mail_copilot_|mail_campaign|marketing_copilot_|freelance_copilot_|security_copilot_|monitoring_copilot_|app_studio_|design_|video_)"
+      "pattern": "^(job_apply|job_application|site_sign_ins$|mail_copilot_|mail_campaign|mail_open_|marketing_copilot_|freelance_copilot_|security_copilot_|monitoring_copilot_|app_studio_|design_|video_)"
     },
     {
       "domain": "gateway",
@@ -60,11 +60,11 @@
     },
     {
       "domain": "notifications",
-      "pattern": "^(space_notifications|space_push_|telegram_|channel_)"
+      "pattern": "^(space_notifications|space_inbox_|space_push_|telegram_|channel_)"
     },
     {
       "domain": "identity",
-      "pattern": "^(users$|user_|session_revocations$|app_device_|mobile_|instance_links$|google_accounts$|connector_accounts$|space_owner|audit_)"
+      "pattern": "^(users$|tenants$|user_|session_revocations$|app_device_|mobile_|instance_links$|google_accounts$|connector_accounts$|space_owner|audit_)"
     },
     {
       "domain": "workspace",

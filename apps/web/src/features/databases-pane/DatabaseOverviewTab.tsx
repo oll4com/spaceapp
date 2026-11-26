@@ -16,8 +16,6 @@ export function DatabaseOverviewTab({
   connection,
   catalog,
   isLoadingCatalog,
-  sidebarVisible,
-  onToggleSidebar,
   onSelectTable
 }: DatabaseOverviewTabProps) {
   const language = useUiLanguage();

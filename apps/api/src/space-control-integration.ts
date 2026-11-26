@@ -1,4 +1,6 @@
-import { cliToggleRuntimeIdSchema, type ControlAction, type ControlInspect } from "@space/contracts";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { cliToggleRuntimeIdSchema, type ControlAction, type ControlInspect, type Pane } from "@space/contracts";
 import type { ControlRepository } from "@space/db";
 import { SpaceConflictError, makeSpaceId, type SpaceEventBus, type SpaceStore } from "@space/runtime";
 import { z } from "zod";
@@ -31,6 +33,9 @@ type SpaceControlIntegrationDeps = {
   spaceControl: { inspect(actor: ControlActor, input: ControlInspect): Promise<unknown> };
 } & Pick<ReturnType<typeof createSpaceControlPanesOpen>, "openControlPanes">;
 
+/** An artifact id inside a path or URL (/api/artifacts/artifact:x/preview), as file-mentions.ts writes one. */
+const ARTIFACT_IN_PATH = /artifact:[A-Za-z0-9_-]{1,80}(?![A-Za-z0-9_-])/;
+
 /**
  * Space Control's integration actions: resource operations (CLI access, split, browser navigation and page text under the Vault
  * fence, skills, panes.open, media and file publishing, protected ops tools, Asteroids, settings snapshots and plugins, then the
@@ -46,7 +51,6 @@ export function createSpaceControlIntegration(deps: SpaceControlIntegrationDeps)
       if(action.operation==="panes.split"){
         const pane=await store.getPane(z.string().min(1).parse(action.id));
         if(pane.roomId!==roomId)throw new SpaceConflictError("Pane is outside this room.");
-        if(pane.mode==="TERMINAL"&&!supportsControlRuntime(pane))throw new SpaceConflictError("Control is not supported for this runtime.");
         const input=z.object({direction:z.enum(["horizontal","vertical"])}).strict().parse(action.input);
         return controlInvoke(actor.id,"POST","/api/panes",{roomId,title:pane.title,mode:pane.mode,
           terminalRuntimeId:pane.terminalRuntimeId,providerId:pane.providerId,modelId:pane.modelId,vncTarget:pane.vncTarget,
@@ -97,8 +101,12 @@ export function createSpaceControlIntegration(deps: SpaceControlIntegrationDeps)
         const toolIds={"ops.status":"space-readonly:space_status","ops.logs":"space-readonly:space_logs","ops.test":"space_ops:space_scoped_test","ops.verify":"space_ops:space_live_verify","ops.proof":"space-readonly:space_authenticated_ui_proof"} as const; // The API's MCP registry (SPACE_MCP_SERVERS_JSON) serves the read-only ops tools as space-readonly.
         const toolId=toolIds[action.operation as keyof typeof toolIds];
         if(!toolId)throw new SpaceConflictError("Unknown protected operation.");
-        return controlInvoke(actor.id,"POST","/api/mcp/tools/execute",{roomId,toolId,arguments:action.input,
-          ...(action.approvalReason?{approvalReason:action.approvalReason}:{})});
+        const execution=await controlInvoke(actor.id,"POST","/api/mcp/tools/execute",{roomId,toolId,arguments:action.input,
+          ...(action.approvalReason?{approvalReason:action.approvalReason}:{})}) as {artifact?:{metadata?:{localPath?:unknown}}|null}|null;
+        // The executor answers with the artifact's path only; the caller (Nous's ops.logs) needs the tool's answer itself.
+        const localPath=execution?.artifact?.metadata?.localPath;
+        if(typeof localPath!=="string"||!resolve(localPath).startsWith(`${resolve(config.browserEvidenceArtifactRoot,"mcp-executions")}/`))return execution;
+        return {...execution,output:(JSON.parse(await readFile(localPath,"utf8")) as {result?:unknown}).result??null};
       }
       if(action.operation==="asteroids.control"){
         const input=z.object({action:z.enum(["start","pause","reset","telemetry"]).default("telemetry"),modelId:z.string().trim().min(1).optional()}).strict().parse(action.input);
@@ -126,41 +134,54 @@ export function createSpaceControlIntegration(deps: SpaceControlIntegrationDeps)
       if(!route)throw new SpaceConflictError("Resource operation has no available adapter.");
       if (["tasks.delete", "links.delete", "files.delete", "media.delete"].includes(action.operation)) {
         const isConfirmed = Boolean(
-          (action.input as any)?.confirm === true ||
-          (action.input as any)?.confirmed === true ||
+          action.input?.confirm === true ||
+          action.input?.confirmed === true ||
           action.approvalReason
         );
         if (!isConfirmed) {
           throw new SpaceConflictError(`Destructive operation ${action.operation} requires explicit confirmation (confirm: true) or approvalReason.`);
         }
       }
+      // The id may come as id, {id}, {paneId}/{artifactId} or a path naming artifact:… (files.preview "expected string" x11, 18/11).
+      const input = { ...(action.input as Record<string, unknown>) };
+      const fromInput = (key: string) => {
+        const value = typeof input[key] === "string" ? (input[key] as string).trim() : "";
+        if (!value || (key === "paneId" && route.scope !== "pane") || (key === "artifactId" && route.scope !== "artifact")) return undefined;
+        return key === "path" ? (route.scope === "artifact" ? ARTIFACT_IN_PATH.exec(value)?.[0] : undefined) : value;
+      };
+      const idKey = action.id ? undefined : ["id", "paneId", "artifactId", "path"].find(fromInput);
+      let effectiveId = action.id ?? (idKey ? fromInput(idKey) : undefined);
+      if (idKey && route.path.includes(":id")) delete input[idKey];
+      if (route.scope === "artifact" && effectiveId && ARTIFACT_IN_PATH.test(effectiveId)) effectiveId = ARTIFACT_IN_PATH.exec(effectiveId)![0];
+      if(route.path.includes(":id")&&!effectiveId)throw new SpaceConflictError(`${action.operation} needs id: the ${route.scope === "artifact" ? "artifact id (artifact:...), not a file path (space_files_read reads a path)" : route.scope === "pane" ? "pane id, as id or input.paneId (inspect STATE or space_room_status lists each pane's id)" : "resource id"}.`);
       if(route.scope==="pane"){
-        const pane=await store.getPane(z.string().min(1).parse(action.id));
+        const pane=await store.getPane(effectiveId!);
         if(pane.roomId!==roomId)throw new SpaceConflictError("Pane is outside this room.");
-        if(pane.mode==="TERMINAL"&&!supportsControlRuntime(pane))throw new SpaceConflictError("This CLI adapter is not supported.");
-        if(typeof action.input.terminalRuntimeId==="string"&&!supportsControlRuntime({mode:"TERMINAL",terminalRuntimeId:action.input.terminalRuntimeId} as any))throw new SpaceConflictError("Unsupported CLI runtime.");
+        // Move, split and update are layout/metadata ops that never drive the CLI: a shell pane (no runtime) moves too (22/11).
+        // Daily Nous errors (22/11 ×3, "already closed and cannot be moved"): a closed pane has no place to leave; a no-op naming why, for every caller.
+        if(action.operation==="panes.move"&&pane.isClosed)return {ok:true,noop:`Pane ${pane.title} is closed: nothing moved. A closed pane needs no move; to have it in the other room, reopen it (space_execute {kind:"pane",operation:"reopen"}) and move it then.`};
+        if(typeof input.terminalRuntimeId==="string"&&!supportsControlRuntime({mode:"TERMINAL",terminalRuntimeId:input.terminalRuntimeId} as Pane))throw new SpaceConflictError("Unsupported CLI runtime.");
       }
       if(route.scope==="artifact"){
-        const item=await store.getArtifact(z.string().min(1).parse(action.id));
+        const item=await store.getArtifact(effectiveId!);
         if(item.roomId!==roomId)throw new SpaceConflictError("Artifact is outside this room.");
       }
-      const effectiveId = action.id ?? (typeof (action.input as any)?.id === "string" ? (action.input as any).id : undefined);
-      if(route.path.includes(":id")&&!effectiveId)throw new SpaceConflictError("Resource ID is required.");
       let targetUrl = route.path.replace(":id",encodeURIComponent(effectiveId??""));
-      if (route.method === "GET" && action.input && Object.keys(action.input).length > 0) {
+      if (route.method === "GET" && Object.keys(input).length > 0) {
         const queryParams = new URLSearchParams();
-        for (const [key, value] of Object.entries(action.input)) {
-          if (value !== undefined && value !== null) queryParams.set(key, String(value));
+        for (const [key, value] of Object.entries(input)) {
+          if (value !== undefined && value !== null && !(effectiveId && value === effectiveId)) queryParams.set(key, String(value));
         }
         const qs = queryParams.toString();
         if (qs) targetUrl += (targetUrl.includes("?") ? "&" : "?") + qs;
       }
-      const invokeBody = route.method === "GET" ? undefined : { ...(action.input as any) };
+      const invokeBody = route.method === "GET" ? undefined : { ...input };
       if (action.operation === "panes.update" && invokeBody && "accountProfileId" in invokeBody && (await store.getPane(effectiveId!)).mode === "TERMINAL") {
         throw new SpaceConflictError("panes.update does not change a CLI pane's account: use configure with accountProfileId on the pane.");
       }
-      if (invokeBody && route.path.includes(":id") && "id" in invokeBody) {
+      if (invokeBody && route.path.includes(":id")) {
         delete invokeBody.id;
+        for (const key of ["artifactId", "paneId"]) if (invokeBody[key] === effectiveId) delete invokeBody[key];
       }
       if (invokeBody && ("confirm" in invokeBody || "confirmed" in invokeBody)) {
         delete invokeBody.confirm;

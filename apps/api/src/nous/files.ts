@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, lstat, mkdir, open, readdir, realpath, stat } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
+import { access, lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isAgentFileArtifact, isRoomMediaArtifact, type Artifact, type NousDecisionAction, type Room } from "@space/contracts";
 import { redactMemoryText, SpaceNotFoundError } from "@space/runtime";
@@ -30,7 +31,7 @@ export const NOUS_OWN_FILE_MAX_BYTES = 2 * 1024 * 1024;
 /** "Show everything" on a decision reads each file it sends whole, up to this many characters. */
 export const NOUS_DECISION_FILE_MAX = 200_000;
 /** Any path segment like these is never listed or read. */
-const DENIED_SEGMENT = /^(?:secrets?|\.env(?:\..*)?|\.config|\.ssh|\.gnupg|\.aws|\.azure|\.docker|\.kube|\.netrc|\.npmrc|\.pypirc|\.git-credentials|cookies?(?:\..*)?|credentials?(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|key|p12|pfx|jks|kdbx|secret|keystore)|tokens?|.*(?:password|passwd|cookie|secret)s?(?:\..*)?)$/i;
+const DENIED_SEGMENT = /^(?:secrets?|\.env(?:\..*)?|\.config|\.ssh|\.gnupg|\.aws|\.azure|\.docker|\.kube|\.netrc|\.npmrc|\.pypirc|\.git-credentials|cookies?(?:\..*)?|credentials?(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|key|p12|pfx|jks|kdbx|secret|keystore)|tokens?|login data|web data|local state|.*(?:password|passwd|cookie|secret)s?(?:\..*)?)$/i;
 /** 8/11 REVIEW (reads of nous/free-tokens/*.md refused): "token" in a file name is a secret, in a folder name only when it is the whole name. */
 const SECRET_FILE = /^.*tokens?(?:\..*)?$/i;
 
@@ -284,6 +285,14 @@ export function createNousFiles(deps: NousFilesDeps) {
     return { label, start, end: start + part.length, total: text.length, text: redactMemoryText(part) };
   }
 
+  async function openFile(path: string): Promise<{ handle: FileHandle; size: number; shown: string }> {
+    const file = await workspacePath(path);
+    const handle = await open(file.absolute, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => { throw code(error) === "EACCES" ? privateFile(file.shown) : error; });
+    const info = await handle.stat();
+    if (!info.isFile()) { await handle.close(); throw Object.assign(new Error(`${file.shown} is not a file: give a file path.`), { statusCode: 400 }); }
+    return { handle, size: info.size, shown: file.shown };
+  }
+
   async function target(owner: string, input: { path?: string; artifactId?: string }): Promise<{ file: string; label: string; artifact?: Artifact }> {
     if (input.artifactId) {
       const artifact = await ownedArtifact(owner, input.artifactId);
@@ -292,6 +301,35 @@ export function createNousFiles(deps: NousFilesDeps) {
     if (!input.path?.trim()) throw new Error("Give a path under the agent workspace or an artifactId.");
     const file = await workspacePath(input.path);
     return { file: file.absolute, label: file.shown };
+  }
+
+  const written = (mode: "write" | "replace" | "append", shown: string, bytes: number, size: number) =>
+    `${mode === "append" ? "Added to" : mode === "replace" ? "Replaced" : "Wrote"} ${shown} (${bytes} bytes${mode === "append" ? `, now ${size}` : ""}). `
+      + `Panes and the operator read it at ${join(root, shown)}.`;
+
+  /** A file Space may not open for writing in a folder it may write: its text (kept for append) plus the new goes to a copy renamed over it. */
+  async function replaceThroughCopy(parent: FileHandle, name: string, text: string, append: boolean, shown: string): Promise<number> {
+    const at = (entry: string) => join(descriptorPath(parent), entry);
+    const old = await open(at(name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let kept: Buffer;
+    try {
+      const info = await old.stat();
+      if (!info.isFile()) throw Object.assign(new Error("not a regular file"), { code: "EISDIR" });
+      if ((append ? info.size : 0) + Buffer.byteLength(text) > NOUS_OWN_FILE_MAX_BYTES) throw new Error(`${shown} would grow past ${NOUS_OWN_FILE_MAX_BYTES} bytes: start another file.`);
+      kept = append ? await old.readFile() : Buffer.alloc(0);
+    } finally { await old.close(); }
+    const copy = `.${name}.${process.pid}.${Date.now()}.tmp`;
+    const handle = await open(at(copy), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o664);
+    try {
+      await handle.writeFile(Buffer.concat([kept, Buffer.from(text)]));
+      await handle.close();
+      await rename(at(copy), at(name));
+      return kept.length + Buffer.byteLength(text);
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      await unlink(at(copy)).catch(() => undefined);
+      throw error;
+    }
   }
 
   return {
@@ -361,19 +399,27 @@ export function createNousFiles(deps: NousFilesDeps) {
       const parent = await openWorkspacePath(deps.ownRoot!, dirname(absolute), true, true);
       const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK
         | (input.mode === "write" ? constants.O_EXCL : input.mode === "replace" ? constants.O_TRUNC : constants.O_APPEND);
-      const handle = await open(join(descriptorPath(parent), basename(absolute)), flags, 0o644).catch((error: unknown) => {
-        throw code(error) === "EEXIST" ? new Error(`${shown} exists: replace it (mode replace) or add to it (mode append).`)
-          : ["ELOOP", "ENXIO", "EISDIR"].includes(code(error) ?? "") ? new Error(`${shown} is not a regular file: choose another name.`) : error;
-      }).finally(() => parent.close());
+      const name = basename(absolute);
+      const refused = (error: unknown) => code(error) === "EEXIST" ? new Error(`${shown} exists: replace it (mode replace) or add to it (mode append).`)
+        : ["ELOOP", "ENXIO", "EISDIR"].includes(code(error) ?? "") ? new Error(`${shown} is not a regular file: choose another name.`)
+        : ["EACCES", "EPERM"].includes(code(error) ?? "") ? new Error(`${shown} is not writable by Space: have the pane that wrote it run chmod 664 on it, or write another file.`) : error;
+      let handle: FileHandle | null = null;
       try {
+        handle = await open(join(descriptorPath(parent), name), flags, 0o644).catch((error: unknown) => {
+          // 18/11 (×5 EACCES): a pane's 644 file in the own (group-writable) folder is replaced by a new copy renamed over it.
+          if (code(error) === "EACCES" && input.mode !== "write") return null;
+          throw refused(error);
+        });
+        if (!handle) {
+          const size = await replaceThroughCopy(parent, name, input.text, input.mode === "append", shown).catch((error: unknown) => { throw refused(error); });
+          return written(input.mode, shown, bytes, size);
+        }
         const before = await handle.stat();
         if (!before.isFile()) throw new Error(`${shown} is not a regular file: choose another name.`);
         if (before.size + bytes > NOUS_OWN_FILE_MAX_BYTES) throw new Error(`${shown} would grow past ${NOUS_OWN_FILE_MAX_BYTES} bytes: start another file.`);
         await handle.writeFile(input.text);
-        const size = (await handle.stat()).size;
-        return `${input.mode === "append" ? "Added to" : input.mode === "replace" ? "Replaced" : "Wrote"} ${shown} (${bytes} bytes${input.mode === "append" ? `, now ${size}` : ""}). `
-          + `Panes and the operator read it at ${join(root, shown)}.`;
-      } finally { await handle.close(); }
+        return written(input.mode, shown, bytes, (await handle.stat()).size);
+      } finally { await handle?.close(); await parent.close(); }
     },
 
     /**
@@ -426,6 +472,33 @@ export function createNousFiles(deps: NousFilesDeps) {
       if (buffer.subarray(0, 8_192).includes(0)) throw new Error(`${file.shown} is a binary file; only text is read.`);
       return { label: file.shown, text: buffer.toString("utf8") };
     },
+    /**
+     * Space Link files (plan step 5), through the read guards: a folder's visible entries, or a file's size, time and SHA-256 (streamed,
+     * so a file of any size is hashed). A linked SpaceApp's manage scope reads this as GET /api/nous/files/stat.
+     */
+    async stat(path: string): Promise<{ path: string; folder: true; entries: Array<{ name: string; folder: boolean; size: number | null }> }
+      | { path: string; folder: false; size: number; sha256: string; modifiedAt: string }> {
+      const file = await workspacePath(path);
+      const info = await stat(file.absolute);
+      if (info.isDirectory()) {
+        const names = await readdir(file.absolute, { withFileTypes: true }).catch((error: unknown) => { throw code(error) === "EACCES" ? privateFile(file.shown) : error; });
+        const visible = names.filter((entry) => !entry.name.startsWith(".") && !deniedPath(entry.isDirectory() ? `${entry.name}/` : entry.name)).sort((a, b) => a.name.localeCompare(b.name));
+        return { path: file.shown, folder: true, entries: await Promise.all(visible.map(async (entry) => ({ name: entry.name, folder: entry.isDirectory(),
+          size: entry.isDirectory() ? null : await stat(join(file.absolute, entry.name)).then((one) => one.size, () => null) }))) };
+      }
+      const opened = await openFile(path);
+      try {
+        const hash = createHash("sha256");
+        for await (const piece of opened.handle.createReadStream({ autoClose: false })) hash.update(piece as Buffer);
+        return { path: opened.shown, folder: false, size: opened.size, sha256: hash.digest("hex"), modifiedAt: info.mtime.toISOString() };
+      } finally { await opened.handle.close(); }
+    },
+    /** A workspace file opened for reading (the caller closes it), through the read guards; GET /api/nous/files/content sends its bytes by Range. */
+    open: openFile,
+    /** A file this side sends a linked SpaceApp: a workspace path or one of the owner's artifacts (the same as a read). */
+    source: (owner: string, input: { path?: string; artifactId?: string }) => target(owner, input),
+    /** Where a file pulled from a linked SpaceApp lands: a path in Nous's own folder (relative to it). */
+    ownFile: (path: string) => ownPath(path),
     /** R10-18: each file's SHA-256 and size, read whole (an unreadable one carries its error). */
     async fileHashes(owner: string, refs: string[]): Promise<Array<{ ref: string; sha256: string | null; size: number | null; error?: string }>> {
       return Promise.all(refs.map(async (ref) => {

@@ -78,21 +78,6 @@ interface LivePaneProps {
   onActionsReady?: (ready: boolean) => void;
 }
 
-const VOICE_OPTIONS = [
-  { value: "gleam", label: "Gleam" },
-  { value: "alloy", label: "Alloy" },
-  { value: "ash", label: "Ash" },
-  { value: "ballad", label: "Ballad" },
-  { value: "coral", label: "Coral" },
-  { value: "echo", label: "Echo" },
-  { value: "sage", label: "Sage" },
-  { value: "shimmer", label: "Shimmer" },
-  { value: "bossa", label: "Bossa" },
-  { value: "tempo", label: "Tempo" },
-  { value: "marin", label: "Marin" },
-  { value: "cedar", label: "Cedar" }
-];
-
 const TIME_ZONE_OPTIONS = [
   { value: "Asia/Bangkok", label: "Thailand — Bangkok (UTC+7)" },
   { value: "Europe/Athens", label: "Greece — Athens" },
@@ -103,11 +88,6 @@ const TIME_ZONE_OPTIONS = [
   { value: "America/Los_Angeles", label: "United States — Los Angeles" },
   { value: "Asia/Tokyo", label: "Japan — Tokyo" },
   { value: "Australia/Sydney", label: "Australia — Sydney" }
-];
-
-const VOICE_MODELS = [
-  { value: "gpt-live-1", label: "gpt-live-1" },
-  { value: "local-qwen3-greek", label: "Local Qwen3 Greek (PC)" }
 ];
 
 const INITIAL_DELEGATED_MODELS = [
@@ -161,12 +141,12 @@ function loadStoredPersonalMemories(): LivePersonalMemoryItem[] {
     const raw = typeof localStorage !== "undefined" ? localStorage.getItem("space_live_personal_memory") : null;
     const parsed = raw ? JSON.parse(raw) : null;
     if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-  } catch {}
+  } catch { /* best-effort: nothing to do if it fails */ }
   return [];
 }
 
 function saveStoredPersonalMemories(items: LivePersonalMemoryItem[]) {
-  try { localStorage.setItem("space_live_personal_memory", JSON.stringify(items)); } catch {}
+  try { localStorage.setItem("space_live_personal_memory", JSON.stringify(items)); } catch { /* best-effort: nothing to do if it fails */ }
 }
 
 // The microphone level arrives on every animation frame while a session is live. It is
@@ -248,7 +228,6 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
     cfg.voice ?? getDefaultVoiceForProvider(initialProvider)
   );
   const [language, setLanguage] = useState<"auto" | "el" | "en">(cfg.language === "el" ? "el" : "auto");
-  const userName = personalMemories.find((m) => m.key.toLowerCase() === "username")?.value || "";
   const [timeZone, setTimeZone] = useState(cfg.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC");
   const [opening, setOpening] = useState(cfg.opening?.trim() || "");
   const [voicePrompt, setVoicePrompt] = useState(cfg.voicePrompt ?? "");
@@ -343,7 +322,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
         if (typeof localStorage !== "undefined") {
           localStorage.removeItem(storageKey);
         }
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
       return;
     }
     setTranscripts([]);
@@ -351,7 +330,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       if (typeof localStorage !== "undefined") {
         localStorage.removeItem(storageKey);
       }
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
     if (pane.roomId && !streamingMode) {
       void api.clearVoiceRealtimeLogs(pane.roomId);
     }
@@ -443,7 +422,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       const trimmed = transcripts.length > 200 ? transcripts.slice(-200) : transcripts;
       localStorage.setItem(storageKey, JSON.stringify(trimmed));
       if (!streamingMode) sessionStorage.setItem(`space_live_pane_transcripts_${pane.id}`, JSON.stringify(trimmed));
-    } catch {}
+    } catch { /* best-effort: nothing to do if it fails */ }
   }, [storageKey, pane.id, transcripts, streamingMode, shared]);
 
   useEffect(() => {
@@ -523,7 +502,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const mainBodyRef = useRef<HTMLDivElement | null>(null);
-  const [isCompactHeight, setIsCompactHeight] = useState(false);
+  const [, setIsCompactHeight] = useState(false);
 
   useEffect(() => {
     const el = mainBodyRef.current;
@@ -686,7 +665,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
         const devices = await navigator.mediaDevices.enumerateDevices();
         const audioInputs = devices.filter((d) => d.kind === "audioinput");
         setAudioDevices(audioInputs);
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
     }
     void getDevices();
   }, []);
@@ -802,17 +781,17 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       coordinator.toggle(); return;
     }
     if (startPendingRef.current || status === "connecting") return;
-    const activeGlobal = !streamingMode && typeof window !== "undefined" ? (window as any).__SPACE_ACTIVE_LIVE_SESSION__ : null;
+    const activeGlobal = !streamingMode && typeof window !== "undefined" ? window.__SPACE_ACTIVE_LIVE_SESSION__ : null;
     if ((status !== "idle" && status !== "error") || activeGlobal) {
       cancelPendingSession();
       if (activeGlobal?.handle) {
-        try { activeGlobal.handle.close(); } catch {}
+        try { activeGlobal.handle.close(); } catch { /* best-effort: nothing to do if it fails */ }
       }
       if (sessionRef.current && sessionRef.current !== activeGlobal?.handle) {
-        try { sessionRef.current.close(); } catch {}
+        try { sessionRef.current.close(); } catch { /* best-effort: nothing to do if it fails */ }
       }
       if (!streamingMode && typeof window !== "undefined") {
-        (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
+        window.__SPACE_ACTIVE_LIVE_SESSION__ = null;
       }
       sessionRef.current = null;
       streamingOperatorIntentRef.current = null;
@@ -857,7 +836,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
           provider,
           model: voiceModel,
           language: streamingMode ? "en" : language,
-          voice: voice as any,
+          voice,
           opening: streamingMode ? undefined : opening.trim() || undefined,
           prompt: combinedPrompt || undefined,
           delegatedModel,
@@ -882,8 +861,8 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
               ended = true;
               micLevel.set(0);
               setMicSilent(false);
-              if (typeof window !== "undefined" && (window as any).__SPACE_ACTIVE_LIVE_SESSION__?.handle === sessionRef.current) {
-                (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
+              if (typeof window !== "undefined" && window.__SPACE_ACTIVE_LIVE_SESSION__?.handle === sessionRef.current) {
+                window.__SPACE_ACTIVE_LIVE_SESSION__ = null;
               }
               sessionRef.current = null;
             }
@@ -916,7 +895,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                 sessionRef.current = nextHandle;
                 recorderRef.current?.retap();
                 if (typeof window !== "undefined") {
-                  (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = {
+                  window.__SPACE_ACTIVE_LIVE_SESSION__ = {
                     handle: nextHandle,
                     source: "pane",
                     paneId: pane.id,
@@ -1042,7 +1021,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ error: errMsg, provider, model: voiceModel, event: "onError" })
               }).catch(() => {});
-            } catch {}
+            } catch { /* best-effort: nothing to do if it fails */ }
           }
         }
       );
@@ -1059,7 +1038,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
         return [];
       });
       if (!streamingMode && typeof window !== "undefined") {
-        (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = {
+        window.__SPACE_ACTIVE_LIVE_SESSION__ = {
           handle,
           source: "pane",
           paneId: pane.id,
@@ -1068,8 +1047,8 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       }
     } catch (err) {
       if (!isCurrent()) return;
-      if (typeof window !== "undefined" && (window as any).__SPACE_ACTIVE_LIVE_SESSION__?.paneId === pane.id) {
-        (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
+      if (typeof window !== "undefined" && window.__SPACE_ACTIVE_LIVE_SESSION__?.paneId === pane.id) {
+        window.__SPACE_ACTIVE_LIVE_SESSION__ = null;
       }
       const msg = err instanceof Error ? err.message : "Failed to start Live session.";
       console.error("[LivePane] Session start failed:", msg, err);
@@ -1086,7 +1065,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
             event: "catch"
           })
         }).catch(() => {});
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
       setError(msg);
       setStatus("error");
     } finally {
@@ -1127,7 +1106,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
         const dataUrl = await readFileAsDataUrl(file);
         if (file.type.startsWith("image/")) next.push({ type: "image", dataUrl, filename: file.name });
         else next.push({ type: "file", dataUrl, filename: file.name, mimeType: file.type || "application/octet-stream" });
-      } catch {}
+      } catch { /* best-effort: nothing to do if it fails */ }
     }
     setPendingInputs((prev) => [...prev, ...next].slice(-4));
   }
@@ -1223,11 +1202,11 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       if (shared) return;
       cancelPendingSession();
       if (sessionRef.current) {
-        try { sessionRef.current.close(); } catch {}
+        try { sessionRef.current.close(); } catch { /* best-effort: nothing to do if it fails */ }
         sessionRef.current = null;
       }
-      if (typeof window !== "undefined" && (window as any).__SPACE_ACTIVE_LIVE_SESSION__?.paneId === pane.id) {
-        (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
+      if (typeof window !== "undefined" && window.__SPACE_ACTIVE_LIVE_SESSION__?.paneId === pane.id) {
+        window.__SPACE_ACTIVE_LIVE_SESSION__ = null;
       }
       setStatus("idle");
       micLevel.set(0);
@@ -1240,13 +1219,13 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       if (detail.rail && detail.status) {
         if (detail.status === "idle" || detail.status === "error") {
           if (!sessionRef.current) {
-            setStatus(detail.status as any);
+            setStatus(detail.status as typeof status);
             micLevel.set(0);
             setMicSilent(false);
           }
         } else if (["active", "listening", "thinking", "speaking", "connecting"].includes(detail.status)) {
           if (!sessionRef.current) {
-            setStatus(detail.status as any);
+            setStatus(detail.status as typeof status);
           }
         }
       }
@@ -1284,11 +1263,11 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
     return () => {
       cancelPendingSession();
       if (sessionRef.current) {
-        try { sessionRef.current.close(); } catch {}
+        try { sessionRef.current.close(); } catch { /* best-effort: nothing to do if it fails */ }
         sessionRef.current = null;
       }
-      if (typeof window !== "undefined" && (window as any).__SPACE_ACTIVE_LIVE_SESSION__?.paneId === pane.id) {
-        (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
+      if (typeof window !== "undefined" && window.__SPACE_ACTIVE_LIVE_SESSION__?.paneId === pane.id) {
+        window.__SPACE_ACTIVE_LIVE_SESSION__ = null;
       }
     };
   }, [pane.id]);
@@ -1797,7 +1776,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                         id="live-reasoning-effort"
                         className="live-select"
                         value={reasoningEffort}
-                        onChange={(e) => setReasoningEffort(e.target.value as any)}
+                        onChange={(e) => setReasoningEffort(e.target.value as typeof reasoningEffort)}
                         disabled={isLive}
                       >
                         {REASONING_EFFORTS.map((r) => (
@@ -1884,7 +1863,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                     id="live-memory-category"
                     className="live-select"
                     value={newMemoryCategory}
-                    onChange={(e) => setNewMemoryCategory(e.target.value as any)}
+                    onChange={(e) => setNewMemoryCategory(e.target.value as typeof newMemoryCategory)}
                     disabled={isLive}
                   >
                     <option value="core">{t("Core (Tier 1 - Always loaded)")}</option>

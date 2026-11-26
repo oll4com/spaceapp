@@ -50,12 +50,12 @@ function numberOrNull(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function openCodeDbPath(stateRoot: string): string {
+function openCodeDbPath(): string {
   return join(opencodeDirectParityRoot, "data", "opencode", "opencode.db");
 }
 
 export async function resolveOpenCodeDbPath(stateRoot: string): Promise<string | null> {
-  const primary = openCodeDbPath(stateRoot);
+  const primary = openCodeDbPath();
   try {
     const metadata = await stat(primary);
     if (metadata.isFile() && metadata.size > 0) return primary;

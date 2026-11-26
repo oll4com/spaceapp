@@ -5,11 +5,13 @@ import { computeApiProviderMetrics } from "../desktop-widgets/quota-aggregates.j
 import { buildQuotaOverview } from "../desktop-widgets/quota-overview.js";
 import { fetchSharedQuotaMetrics, peekSharedQuotaMetrics, subscribeSharedQuota } from "../desktop-widgets/shared-quota-cache.js";
 import { DockIconButton, DockState } from "../dock-kit/DockKit.js";
+import { ToolbarMetrics } from "../toolbar-metrics/ToolbarMetrics.js";
 import { Gauge, RotateCw } from "../ui-theme/app-icons.js";
 import { NousTokenUsage } from "./NousTokenUsage.js";
 
-/** Resources → Accounts & quotas on one page, one card per provider and no account list, count or e-mail (operator 2026-10-29 and 6/11, plan clipboard:4pyungpPsrfD). */
-export function NousQuotas({ active }: { active: boolean }) {
+/** Resources → Accounts & quotas on one page (operator 2026-10-29, plan clipboard:4pyungpPsrfD). An ADMIN gets Resources' own panel, every
+ * account card, reset time and "Resets N" button (operator 14/11, nous_msg:b25f1b9e); anyone else one card per provider (operator 6/11). */
+export function NousQuotas({ active, isAdmin = false }: { active: boolean; isAdmin?: boolean }) {
   const [sample, setSample] = useState(() => peekSharedQuotaMetrics());
   const [clock, setClock] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
@@ -20,13 +22,19 @@ export function NousQuotas({ active }: { active: boolean }) {
   }, []);
   useEffect(() => subscribeSharedQuota(setSample), []);
   useEffect(() => {
-    if (!active) return;
+    if (!active || isAdmin) return;
     refresh(false);
     // The shared sample lives a minute (shared-quota-cache.ts); read it again as it expires while the dock is shown.
     const timer = setInterval(() => { if (document.visibilityState === "visible") refresh(false); }, 60_000);
     return () => clearInterval(timer);
-  }, [active, refresh]);
+  }, [active, isAdmin, refresh]);
 
+  if (isAdmin) return (
+    <section className="nous-overview" aria-label="Quotas">
+      {active ? <ToolbarMetrics presentation="embedded" initialPanel="accounts" environment={null} /> : null}
+      <NousTokenUsage active={active} />
+    </section>
+  );
   if (!sample) return <DockState kind="loading" icon={Gauge} title="Loading quotas" />;
   const overview = buildQuotaOverview(sample, clock);
   const api = computeApiProviderMetrics(sample.api);

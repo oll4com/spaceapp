@@ -7,7 +7,7 @@ import {
 } from "@space/contracts";
 import type { MailCopilotRepository } from "@space/db";
 import type { RailAnswerBy } from "@space/db";
-import { forbiddenByMemoryText, forbiddingMemory, MEMORY_HITS_NOTE, questionMemoryHits, reviewRequiringMemories } from "@space/db";
+import { forbiddenByMemoryText, forbiddingMemory, MEMORY_HITS_NOTE, questionMemoryHits, reviewEditMemoryText, reviewRequiringMemories, type ForbiddingDraft } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
 import { GmailMailboxError } from "../job-apply/gmail-mailbox.js";
 import { asksAboutAssessment, asksForAction, asksToSchedule } from "../job-apply/mail-triage.js";
@@ -40,6 +40,8 @@ export interface MailCopilotServiceOptions {
   /** The stored sign-in record of a site (domain): a support mail about the password of a site whose sign-in works is refused (nous_msg:fe72e061). */
   siteSignin?(owner: string, domain: string): Promise<SiteSignin | null>;
   gmailFetch?: typeof fetch;
+  /** Open tracking (mail-campaigns/open-tracking.ts): one recipient's tracked HTML part; null when tracking is off on this instance. */
+  track?(owner: string, input: { recipient: string; recipientName: string; subject: string; text: string; from?: string }): Promise<string> | null;
   /** The copilot's memory, activity feed / work queue and runs. */
   repository: MailCopilotRepository;
   /** Every activity event, for the room stream and notifications. */
@@ -178,7 +180,42 @@ const ACTION_RETENTION_MS = 365 * 24 * 3_600_000;
 /** The accounts a pane works with: the chosen ones, else every account allowed for Space. */
 /** A conversation as the agent gets it: text without the HTML, plus the HTML's links the text misses. */
 export function agentThread<T extends { messages: MailMessage[] }>(thread: T): T & { messages: Array<MailMessage & { links: Array<{ text: string; url: string }> }> } {
-  return { ...thread, messages: thread.messages.map((message) => ({ ...message, html: null, links: message.html ? linksMissingFromText(message.html, message.text) : [] })) };
+  const earlier: string[] = [];
+  return { ...thread, messages: thread.messages.map((message) => {
+    const text = withoutRepeatedQuote(message.text, earlier.join(" "));
+    earlier.push(quoteComparable(message.text.split("\n")));
+    return { ...message, text, html: null, links: message.html ? linksMissingFromText(message.html, message.text) : [] };
+  }) };
+}
+
+// Plan clipboard:nsWKwUFhUFWA slice 5: a reply's quoted history repeats the thread's earlier messages, which the agent reads above it.
+// Only a quoted tail whose text an earlier message of this thread already holds is left out; a quote with anything new stays whole.
+const QUOTE_START = /^(?:>|-{2,}\s*Original Message\s*-{2,}|_{10,}\s*$)/i;
+const QUOTE_HEADER = /(?:wrote|έγραψε|a écrit|schrieb|escribió|ha scritto):\s*$/i;
+// The quote's own header lines (Outlook's From/Sent block, "On … wrote:") are left out of the comparison: the thread lists them as metadata.
+const HEADER_LINE = /^(?:(?:From|Sent|To|Cc|Subject|Date|Από|Προς|Κοιν|Θέμα|Ημερομηνία|Στάλθηκε):|-{2,}\s*Original Message|_{10,}\s*$)|(?:wrote|έγραψε|a écrit|schrieb|escribió|ha scritto):\s*$/i;
+const WRAPPED_HEADER = /^(?:On|Στις|Le|Am|El|Il)\s[^\n]*\n[^\n]*(?:wrote|έγραψε|a écrit|schrieb|escribió|ha scritto):[ \t]*$/gim;
+function quoteComparable(lines: string[]): string {
+  const unquoted = lines.map((line) => line.replace(/^(?:\s*>)+\s?/, "")).join("\n").replace(WRAPPED_HEADER, "");
+  return unquoted.split("\n").filter((line) => !HEADER_LINE.test(line.trim())).join(" ").replace(/\s+/g, " ").trim();
+}
+export function withoutRepeatedQuote(text: string, earlier: string): string {
+  const lines = text.split("\n");
+  const first = lines.findIndex((line) => QUOTE_START.test(line));
+  if (first <= 0 || !earlier) return text;
+  let start = first;
+  // The "On <date>, <name> wrote:" line above the quote, wrapped over one or two lines.
+  const prev = (from: number) => { let at = from - 1; while (at >= 0 && !lines[at]!.trim()) at -= 1; return at; };
+  const header = prev(start);
+  if (header >= 0 && QUOTE_HEADER.test(lines[header]!)) {
+    start = header;
+    const above = prev(header);
+    if (above >= 0 && /^(?:On|Στις|Le|Am|El|Il)\s/.test(lines[above]!) && !/^(?:On|Στις|Le|Am|El|Il)\s/.test(lines[header]!)) start = above;
+  }
+  const quoted = quoteComparable(lines.slice(first));
+  if (!quoted || !earlier.includes(quoted)) return text;
+  const left = lines.slice(start).join("\n").length;
+  return `${lines.slice(0, start).join("\n").trimEnd()}\n\n[Quoted text of the earlier messages above left out: ${left} characters.]`;
 }
 
 export function paneAccountEmails(pane: Pane | null, accounts: ReadonlyArray<{ email: string }>): string[] {
@@ -194,12 +231,17 @@ function gmailError(account: string, error: unknown): Error {
   if (error instanceof GmailMailboxError) return new SpaceConflictError(`${account}: ${error.message}`);
   return error instanceof Error ? error : new Error(String(error));
 }
-/** As Gmail answers: a reply goes from the "Send mail as" address the mail was sent to, anything else from the default one; the account itself when Gmail lists none. */
-async function senderFor(client: GmailClient, account: string, headers: unknown): Promise<{ from: string; fromName?: string }> {
+/** As Gmail answers: a reply goes from the "Send mail as" address the mail was sent to, anything else from the default one; the account itself when Gmail lists none.
+ * `unsendable` names the corporate address the mail was written to when this account cannot send as it and would answer from a shared provider's address (operator rule 21/10, memory f5bcfe1b). */
+async function senderFor(client: GmailClient, account: string, headers: unknown, ourFrom: string | null = null): Promise<{ sender: { from: string; fromName?: string }; unsendable: string | null }> {
   const aliases = await client.sendAs().catch(() => []);
-  const recipients = new Set(parseParticipants([header(headers, "To"), header(headers, "Cc")].filter(Boolean).join(", ")).map((entry) => entry.address));
-  const alias = aliases.find((entry) => recipients.has(entry.email)) ?? aliases.find((entry) => entry.isDefault);
-  return alias ? { from: alias.email, fromName: alias.name } : { from: account };
+  const recipients = new Set(parseParticipants([header(headers, "To"), header(headers, "Cc")].filter(Boolean).join(", ")).map((entry) => entry.address.toLowerCase()));
+  const alias = aliases.find((entry) => entry.email === ourFrom) ?? aliases.find((entry) => recipients.has(entry.email)) ?? aliases.find((entry) => entry.isDefault);
+  const sender = alias ? { from: alias.email, fromName: alias.name } : { from: account };
+  // `ourFrom`: the corporate address we already wrote this thread from; the reply goes from it or not at all.
+  if (ourFrom) return { sender, unsendable: sender.from === ourFrom ? null : ourFrom };
+  const reached = recipients.has(sender.from) || recipients.has(account.toLowerCase()) || !SHARED_MAIL_DOMAIN.test(sender.from);
+  return { sender, unsendable: reached ? null : [...recipients].find((address) => !SHARED_MAIL_DOMAIN.test(address)) ?? null };
 }
 /** The inbox messages dated since `since` (ISO), read by date when Gmail's history no longer reaches back (DATA-001).
  * Gmail's `after:` takes whole seconds; a message seen twice is skipped by its MAIL_RECEIVED event. */
@@ -307,10 +349,12 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
   const deciding = new Map<string, Promise<{ decision: MailCopilotReviewDecision["decision"]; sent: { messageId: string; threadId: string } | null }>>();
 
   /** The rule memory that requires the operator to read this review (`reviewRequiringMemories`), or null. */
-  async function requiredMemory(owner: string, draft: MailComposeInput | undefined, message: string, account: string | null | undefined) {
+  async function requiredMemory(owner: string, draft: MailComposeInput | undefined, message: string, account: string | null | undefined, reasoning?: string | null) {
     const address = draft?.to[0] ? senderAddress(draft.to[0]).toLowerCase() : undefined;
+    // 22/11 (lessons-1121-investor-review-autosent, mailrev:nH4I_tSo5hnu): include draft body and reasoning so funding/investor rules match.
+    const item = [draft?.subject, message.replace(/^Review: /, ""), draft?.text, reasoning].filter(Boolean).join(" ");
     const [memory] = await reviewRequiringMemories((query) => repository.listMemory(owner, { query, kinds: ["FACT", "LESSON", "PREFERENCE"], contactEmail: address,
-      domain: address ? senderDomain(address) : undefined }), `${draft?.subject ?? ""} ${message.replace(/^Review: /, "")}`,
+      domain: address ? senderDomain(address) : undefined }), item,
     [address, account].filter((value): value is string => Boolean(value)));
     return memory ?? null;
   }
@@ -356,11 +400,12 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     return parsePayload(message.payload as Record<string, unknown> | undefined).attachments;
   }
   /** R12-5: a review or question the copilot's own memory forbids (scoped to the correspondent, or about the same words) is never raised. */
-  async function refuseForbidden(owner: string, item: string, counterpart?: string, account?: string, scheduling = false, order?: string, review = false): Promise<string | undefined> {
+  async function refuseForbidden(owner: string, item: string, counterpart?: string, account?: string, scheduling = false, order?: string, review = false,
+    draft?: ForbiddingDraft, threadId?: string): Promise<string | undefined> {
     const address = counterpart ? senderAddress(counterpart).toLowerCase() : undefined;
     const memory = await forbiddingMemory(async (query) => (await repository.listMemory(owner, { query, kinds: ["FACT", "LESSON", "PREFERENCE"], contactEmail: address,
       domain: address ? senderDomain(address) : undefined })).filter((found) => !scheduling || !REJECTION_RULE.test(`${found.key ?? ""} ${found.text}`)), item, (found) => Boolean(address && (found.contactEmail || found.domain)),
-      [address, account].filter((value): value is string => Boolean(value)), review);
+      [address, account, threadId].filter((value): value is string => Boolean(value)), review, draft);
     if (memory && !order) throw new SpaceConflictError(forbiddenByMemoryText("Mail Copilot", memory));
     return memory && order ? operatorOrderOverride(order, memory.id) : undefined;
   }
@@ -457,7 +502,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       subject: header((first.payload as { headers?: unknown } | undefined)?.headers, "Subject").slice(0, 1000),
       snippet: decodeEntities(String(newest.snippet ?? "")).slice(0, 500), receivedAt: iso(newest.internalDate),
       unread: labels.has("UNREAD"), starred: labels.has("STARRED"), hasAttachment, messageCount: messages.length,
-      labelIds: [...labels]
+      labelIds: [...labels], newestLabelIds: (newest.labelIds as string[] | undefined) ?? []
     };
   }
 
@@ -542,7 +587,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       if (job.added.length || job.removed.length) return logJobFiling(owner, email, client, change.threadId, job, recent);
       const fresh = classifyThreadChange(change, ignored).filter((entry) => !recent.some((row) => row.action === entry.action || (entry.action === "REPLY" && row.action === "FORWARD")));
       if (!fresh.length) return 0;
-      let facts: MailRuleSubject | null = null;
+      let facts: MailRuleSubject | null;
       let messages: GmailJson[] = [];
       let own: ReadonlySet<string> = new Set([email]);
       if (change.deleted) {
@@ -942,7 +987,29 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const headers = (original?.payload as { headers?: unknown } | undefined)?.headers;
       const inReplyTo = header(headers, "Message-ID") || null;
       const references = header(headers, "References") || null;
-      const sender = await senderFor(client, input.account, headers);
+      // A draft that names its thread but no message answers the thread's newest mail from someone else (mailrev:3s0bBNyEo799: AWS mail written to
+      // ntheo@spaceapp.dev went out from Gmail's default spaceappdv@gmail.com).
+      // Our own mail in the thread (Gmail's SENT label, or a From we send as) is never the one answered: its To is a third party, not us
+      // (mailrev:7HMFUwuxnRSJ, 21/11: ntheo@spaceapp.dev's mail to inceptionprogram@nvidia.com was read as written to NVIDIA).
+      let answered = headers;
+      let ourFrom: string | null = null;
+      const threadId = input.threadId ?? (typeof original?.threadId === "string" ? original.threadId : null);
+      if (threadId) {
+        const own = await mine(owner, input.account);
+        const fromOf = (message: GmailJson) => senderAddress(header(headersOf(message), "From"));
+        const ours = (message: GmailJson) => own.has(fromOf(message)) || ((message.labelIds as string[] | undefined) ?? []).includes("SENT");
+        if (!original || ours(original)) {
+          const thread = await client.thread(threadId, "metadata").catch((error) => { throw gmailError(input.account, error); });
+          const messages = [...((thread.messages as GmailJson[] | undefined) ?? [])].reverse();
+          ourFrom = messages.filter(ours).map(fromOf).find((address) => address && !SHARED_MAIL_DOMAIN.test(address)) ?? null;
+          const other = messages.find((message) => !ours(message));
+          answered = other ? headersOf(await client.message(String(other.id), "metadata").catch((error) => { throw gmailError(input.account, error); })) : undefined;
+        }
+      }
+      const { sender, unsendable } = await senderFor(client, input.account, answered, ourFrom);
+      if (unsendable && by !== "operator") {
+        throw new SpaceConflictError(`This thread was written ${ourFrom ? "from" : "to"} ${unsendable}, which ${input.account} cannot send as; sending from ${sender.from} would break the rule to send only from corporate addresses. Nothing was sent: add ${unsendable} under Gmail's "Send mail as" for ${input.account}, or send from ${unsendable}'s own route.`);
+      }
       let files: MimeAttachment[] = [];
       if (attach) {
         const parts = await attachmentsOf(client, input.account, attach.from);
@@ -954,15 +1021,25 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         files = await Promise.all(parts.map(async (part) => ({ filename: part.filename, mimeType: part.mimeType,
           data: await client.attachment(attach.from, part.attachmentId).catch((error) => { throw gmailError(input.account, error); }) })));
       }
-      const raw = buildMime({ ...sender, to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text: input.text, inReplyTo, references, attachments: files });
-      let sent: { id: string; threadId: string };
-      try {
-        sent = await client.send(raw, input.threadId);
-      } catch (error) {
-        throw gmailError(input.account, error);
+      // A tracked mail goes to each To address alone, with that recipient's own pixel and links (operator 22/11: who opened it).
+      if (input.track && (input.cc.length || input.bcc.length)) throw new SpaceConflictError("A tracked mail goes to each To address alone; move Cc and Bcc into To. Nothing was sent.");
+      let sent: { id: string; threadId: string } | null = null;
+      for (const to of input.track ? input.to.map((address) => [address]) : [input.to]) {
+        // Each recipient's token is stored right before its own send (a failed send leaves at most that one unsent record).
+        const html = input.track ? await options.track?.(owner, { recipient: to[0]!, recipientName: input.track.names[to[0]!.toLowerCase()] ?? "", subject: input.subject, text: input.text, from: sender.from }) : undefined;
+        if (input.track && !html) throw new SpaceConflictError(`Open tracking is off on this instance (Mail Campaigns is off, or no public relay: SPACE_MAIL_TRACKING_RELAY); ${sent ? "only the mails before " + to[0] + " were" : "nothing was"} sent.`);
+        const raw = buildMime({ ...sender, to, cc: input.cc, bcc: input.bcc, subject: input.subject, text: input.text, html: html ?? undefined, inReplyTo, references, attachments: files });
+        let one: { id: string; threadId: string };
+        try {
+          one = await client.send(raw, input.threadId);
+        } catch (error) {
+          throw gmailError(input.account, error);
+        }
+        sent ??= one;
+        await record(owner, { paneId: pane?.id ?? null, type: "SENT", accountEmail: input.account, threadId: one.threadId, messageId: one.id,
+          message: `${by === "agent" ? "The copilot sent" : "You sent"}: ${input.subject || "(no subject)"} → ${to.join(", ")}${html ? " (tracked)" : ""}`, payload: { by, from: sender.from, to, cc: input.cc, reply: Boolean(input.inReplyToMessageId), ...(html ? { tracked: true } : {}), ...(files.length ? { attachments: files.map((file) => file.filename) } : {}) } });
       }
-      await record(owner, { paneId: pane?.id ?? null, type: "SENT", accountEmail: input.account, threadId: sent.threadId, messageId: sent.id,
-        message: `${by === "agent" ? "The copilot sent" : "You sent"}: ${input.subject || "(no subject)"} → ${input.to.join(", ")}`, payload: { by, from: sender.from, to: input.to, cc: input.cc, reply: Boolean(input.inReplyToMessageId), ...(files.length ? { attachments: files.map((file) => file.filename) } : {}) } });
+      if (!sent) throw new SpaceConflictError("Nothing was sent."); // unreachable: To holds at least one address
       // Replies and forwards join the action log (a forward names no correspondent: the forwarded mail is in its body).
       const kind: MailOperatorAction | null = /^\s*fwd?\s*:/i.test(input.subject) ? "FORWARD" : original ? "REPLY" : null;
       if (kind) await logAction(owner, { accountEmail: input.account, threadId: sent.threadId, messageId: sent.id, action: kind, facts: original ? ruleSubject(original) : { from: "", subject: input.subject },
@@ -976,15 +1053,16 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       return { messageId: sent.id, threadId: sent.threadId };
     },
     /** Saves a Gmail draft (full access) so the operator can finish it in the pane or in Gmail. */
-    async draft(owner: string, pane: Pane | null, input: MailComposeInput): Promise<{ draftId: string; messageId: string }> {
+    async draft(owner: string, pane: Pane | null, input: MailComposeInput, attachments: MimeAttachment[] = []): Promise<{ draftId: string; messageId: string }> {
       await mailAccounts(owner, pane, input.account);
       const client = await clientFor(owner, input.account, "MAIL_ORGANIZE");
       // A reply draft carries the threading headers too, or Gmail starts a new thread despite the threadId.
       const original = input.inReplyToMessageId ? await client.message(input.inReplyToMessageId, "metadata").catch((error) => { throw gmailError(input.account, error); }) : null;
       const headers = (original?.payload as { headers?: unknown } | undefined)?.headers;
-      const raw = buildMime({ ...await senderFor(client, input.account, headers), to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text: input.text,
-        inReplyTo: header(headers, "Message-ID") || null, references: header(headers, "References") || null });
+      const raw = buildMime({ ...(await senderFor(client, input.account, headers)).sender, to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text: input.text,
+        inReplyTo: header(headers, "Message-ID") || null, references: header(headers, "References") || null, attachments });
       try {
+        // shortcut: the files ride in the JSON raw body of drafts.create, like messages.send above; above ~5 MB in all use Gmail's media upload.
         const draft = await client.createDraft(raw, input.threadId);
         return { draftId: draft.id, messageId: draft.messageId };
       } catch (error) {
@@ -1200,7 +1278,8 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       // The same question still open in this pane (an agent's retry) is the same card, never a second one.
       const open = (await this.pendingItems(owner, pane.id)).find((item) => item.kind === "QUESTION" && item.payload.question === input.question && item.threadId === (input.threadId ?? null));
       if (open) return { questionId: open.id, answered: false as const };
-      await refuseForbidden(owner, input.question, undefined, undefined, (await this.threadAsks(owner, pane, input.accountEmail, input.threadId)).asks);
+      await refuseForbidden(owner, input.question, undefined, undefined, (await this.threadAsks(owner, pane, input.accountEmail, input.threadId)).asks,
+        undefined, false, undefined, input.threadId);
       // R13-5 (Job's item 34 for Mail): the copilot's own memories that may answer it come back first, nothing asked.
       // Every memory a question word finds, up to the memory list's page of 200 (until 31/10 five a word).
       const memoryHits = input.afterMemory ? [] : await questionMemoryHits((query) => repository.listMemory(owner, { query, kinds: ["CONTACT", "FACT", "LESSON", "PREFERENCE"] }), input.question);
@@ -1253,7 +1332,9 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const { asks: scheduling, ownOnly } = await this.threadAsks(owner, pane, input.draft.account, input.draft.threadId);
       let overrides: string | undefined;
       try {
-        overrides = await refuseForbidden(owner, `${input.draft.subject} ${input.summary}`, input.draft.to[0], input.draft.account, scheduling || ownOnly, order, true);
+        // 16/11 Fluence (jobapp:u_oEYfHfSnZ_): a new mail (no thread) answers no rejection or receipt, so the rejection rule does not refuse it.
+        overrides = await refuseForbidden(owner, `${input.draft.subject} ${input.summary}`, input.draft.to[0], input.draft.account, scheduling || ownOnly || !input.draft.threadId, order, true,
+          { text: `${input.draft.subject}\n${input.draft.text}`, files: files.length }, input.draft.threadId);
         await refuseCommitment(owner, input.draft, scheduling);
         await refuseWorkingSigninSupport(owner, input.draft, order);
       } catch (error) { await tellBlocked(owner, input.draft, error); throw error; }
@@ -1265,7 +1346,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const message = `Review: ${input.summary}${overrides ? ` (${overrides})` : ""}${files.length ? ` [attachments: ${files.map((file) => file.filename).join(", ")}]` : ""}`;
       // Nous 13/11 (mailrev:lddyXCl-tHDS, Akamai credits, held for Nous under "May send" against mailmem:SLvZ9IZgCRc4): a review a rule memory
       // says the operator reads first goes to the operator's Needs you, never held for Nous (isNousApproval reads `operatorReads`).
-      const operatorReads = await requiredMemory(owner, input.draft, message, input.draft.account).catch(() => null);
+      const operatorReads = await requiredMemory(owner, input.draft, message, input.draft.account, input.reasoning).catch(() => null);
       await record(owner, { paneId: pane.id, type: "REVIEW_REQUESTED", accountEmail: input.draft.account, threadId: input.draft.threadId ?? null, messageId: input.draft.inReplyToMessageId ?? null,
         message, payload: { reviewId, draft: input.draft, ...(operatorReads ? { operatorReads: operatorReads.id } : {}),
           ...(files.length ? { attachmentsFrom: input.attachmentsFrom, attachments: files } : {}),
@@ -1277,7 +1358,9 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     async requestRsvp(owner: string, pane: Pane, input: MailCopilotRsvpRequest) {
       const { account, summary, threadId, ...rsvp } = input;
       await mailAccounts(owner, pane, account);
-      await calendarAccess(owner, account);
+      // 15/11 (decision f4996c2b: an invitation to crew@spaceapp.dev was in no connected calendar; the approved "Yes" failed 404): found before the ask.
+      const found = await (await calendarAccess(owner, account)).tool(owner, "calendar.respond", { ...rsvp, account, check: true });
+      if (found.status === "BLOCKED") throw new SpaceConflictError(`${found.statusReason} No review was raised: the invitation must be in ${account}'s calendar to be answered.`);
       const reviewId = `mailrev:${randomBytes(9).toString("base64url")}`;
       await record(owner, { paneId: pane.id, type: "REVIEW_REQUESTED", accountEmail: account, threadId: threadId ?? null,
         message: `Review: answer "${RSVP_LABEL[rsvp.response]}" to the invitation: ${summary}`, payload: { reviewId, rsvp, reasoning: null } });
@@ -1298,7 +1381,8 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     },
     async reviewRequiredBy(owner: string, reviewId: string) {
       const review = (await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).find((event) => event.payload.reviewId === reviewId);
-      return review ? requiredMemory(owner, review.payload.draft as MailComposeInput | undefined, review.message, review.accountEmail) : null;
+      return review ? requiredMemory(owner, review.payload.draft as MailComposeInput | undefined, review.message, review.accountEmail,
+        typeof review.payload.reasoning === "string" ? review.payload.reasoning : null) : null;
     },
     /**
      * One decision and one Gmail send per review (stable 2026-10-17: one approval went to Hetzner twice, 9 s apart): a decided
@@ -1342,7 +1426,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         sent = await this.send(owner, pane, { ...draft, text }, "review", undefined,
           typeof review.payload.attachmentsFrom === "string" && files ? { from: review.payload.attachmentsFrom, approved: files } : undefined);
         if (input.decision === "edit" && text !== draft.text) {
-          await repository.upsertMemory({ ownerUserId: owner, kind: "LESSON", key: null, text: `For "${draft.subject.slice(0, 120)}" to ${draft.to.join(", ")} the operator changed the reply. Copilot draft:\n${draft.text.slice(0, 1200)}\n\nOperator's version:\n${text.slice(0, 1200)}`,
+          await repository.upsertMemory({ ownerUserId: owner, kind: "LESSON", key: null, text: reviewEditMemoryText(`For "${draft.subject.slice(0, 120)}" to ${draft.to.join(", ")} the operator changed the reply`, draft.text.slice(0, 1200), text.slice(0, 1200)),
             contactEmail: draft.to[0] ?? null, domain: draft.to[0] ? senderDomain(draft.to[0]) : null, accountEmail: draft.account, tags: ["review-edit"], source: "LEARNED", confidence: 0.7, pinned: false });
         }
       }
@@ -1615,14 +1699,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
      * REPLY, 13/11 3fac478d), BOUNCED when a mailer-daemon mail came after it; null: none.
      */
     async threadSend(owner: string, account: string, threadId: string, since: string, recipients: string[] = []): Promise<"SENT" | "BOUNCED" | null> {
-      const scope = { accountEmail: account.toLowerCase(), threadId, since };
-      const [[reply], events] = await Promise.all([repository.listActions(owner, { ...scope, actions: ["REPLY", "FORWARD"], limit: 1 }),
-        repository.listEvents(owner, { ...scope, types: ["SENT", "REVIEW_DECIDED"] })]);
-      const sends = events.filter((event) => event.type === "SENT" || (event.payload.sent as { messageId?: unknown } | null)?.messageId);
-      const at = [reply?.occurredAt, ...sends.map((event) => event.createdAt)].filter((time): time is string => !!time).sort().at(-1);
-      if (!at) return null;
-      const after = await repository.listEvents(owner, { ...scope, types: ["MAIL_RECEIVED"], since: at });
-      return bouncedFor(after, addressesIn([recipients, reply?.fromAddress, sends.map((event) => [event.payload.to, event.payload.cc])])) ? "BOUNCED" : "SENT";
+      return (await this.sendsReader(owner, account, since)).threadSend(account, threadId, since, recipients);
     },
     /**
      * Score's mail rule (goal 84ba917a, audit 6/11): our send since a time, in ANY thread of any account (null) or of `account`, to one of
@@ -1631,29 +1708,63 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
      * account from one of the owner's addresses: an account, a send-as alias or their own domain). SENT names the first that no bounce for its
      * addresses followed, BOUNCED when every one bounced; null: none logged (a send outside Space with no copy in a connected account).
      */
-    async sentTo(owner: string, account: string | null, recipients: string[], since: string): Promise<{ state: "SENT" | "BOUNCED"; account: string; threadId: string; messageId: string | null } | null> {
+    async sentTo(owner: string, account: string | null, recipients: string[], since: string) {
+      return (await this.sendsReader(owner, account, since)).sentTo(recipients, since);
+    },
+    /**
+     * `sentTo`, `threadSend` and a decided review for many asks of one window (the Score asks once per approved decision): the store is read
+     * once since `from`, and each ask filters that by its own `since`, strictly after it in whole milliseconds as the store's `since` (stable
+     * 14/11: 156 asks read 240,000 rows in 600 statements; then the thread and review asks ~290 statements and 21,000 rows per compute).
+     */
+    async sendsReader(owner: string, account: string | null, from: string) {
       const scope = account ? { accountEmail: account.toLowerCase() } : {};
-      const wanted = recipients.map((address) => address.toLowerCase());
-      const domains = wanted.filter((address) => !SHARED_MAIL_DOMAIN.test(address)).map((address) => address.slice(address.indexOf("@")));
-      const ours = (address: string) => wanted.includes(address) || domains.some((domain) => address.endsWith(domain));
-      const [events, replies, received, own] = await Promise.all([repository.listEvents(owner, { ...scope, types: ["SENT"], since }),
-        repository.listActions(owner, { ...scope, actions: ["REPLY", "FORWARD"], since }), repository.listEvents(owner, { ...scope, types: ["MAIL_RECEIVED"], since }), ownAddresses(owner)]);
+      const [logged, replies, received, own] = await Promise.all([repository.listEvents(owner, { ...scope, types: ["SENT", "REVIEW_DECIDED"], since: from }),
+        repository.listActions(owner, { ...scope, actions: ["REPLY", "FORWARD"], since: from }), repository.listEvents(owner, { ...scope, types: ["MAIL_RECEIVED"], since: from }), ownAddresses(owner)]);
       const ownDomains = [...own].filter((address) => !SHARED_MAIL_DOMAIN.test(address)).map((address) => address.slice(address.indexOf("@")));
       const fromUs = (event: MailCopilotEvent) => {
         const address = String((event.payload.from as { address?: string } | undefined)?.address ?? "").toLowerCase();
-        // A copy Space synced late still dates its send by Gmail's receipt time.
-        return (own.has(address) || ownDomains.some((domain) => address.endsWith(domain))) && !(Date.parse(String(event.payload.receivedAt ?? "")) < Date.parse(since));
+        return own.has(address) || ownDomains.some((domain) => address.endsWith(domain));
       };
+      const events = logged.filter((event) => event.type === "SENT");
+      const isAfter = (time: string, since: string) => Date.parse(time) > Date.parse(since);
+      // `gmailAt`: a copy Space synced late still dates its send by Gmail's receipt time.
       const sends = [...events.concat(received.filter(fromUs)).filter((event) => event.accountEmail && event.threadId)
-        .map((event) => ({ account: event.accountEmail!, threadId: event.threadId!, messageId: event.messageId, at: event.createdAt, to: addressesIn([event.payload.to, event.payload.cc]) })),
-        ...replies.filter((row) => row.fromAddress).map((row) => ({ account: row.accountEmail, threadId: row.threadId, messageId: row.messageId, at: row.occurredAt, to: [row.fromAddress!.toLowerCase()] }))]
-        .filter((send) => send.to.some(ours));
-      for (const { at, to, ...send } of sends) {
-        const after = await repository.listEvents(owner, { accountEmail: send.account, threadId: send.threadId, types: ["MAIL_RECEIVED"], since: at });
-        if (!bouncedFor(after, [...to, ...wanted])) return { state: "SENT", ...send };
+        .map((event) => ({ send: { account: event.accountEmail!, threadId: event.threadId!, messageId: event.messageId }, at: Date.parse(event.createdAt), to: addressesIn([event.payload.to, event.payload.cc]),
+          gmailAt: event.type === "MAIL_RECEIVED" ? Date.parse(String(event.payload.receivedAt ?? "")) : Number.NaN })),
+        ...replies.filter((row) => row.fromAddress).map((row) => ({ send: { account: row.accountEmail, threadId: row.threadId, messageId: row.messageId }, at: Date.parse(row.occurredAt), to: [row.fromAddress!.toLowerCase()], gmailAt: Number.NaN }))];
+      const receivedIn = new Map<string, MailCopilotEvent[]>();
+      for (const event of received) {
+        const thread = `${event.accountEmail}\n${event.threadId}`;
+        const list = receivedIn.get(thread);
+        if (list) list.push(event); else receivedIn.set(thread, [event]);
       }
-      const [first] = sends;
-      return first ? { state: "BOUNCED", account: first.account, threadId: first.threadId, messageId: first.messageId } : null;
+      const sentTo = (recipients: string[], since: string): { state: "SENT" | "BOUNCED"; account: string; threadId: string; messageId: string | null } | null => {
+        const wanted = recipients.map((address) => address.toLowerCase());
+        const domains = wanted.filter((address) => !SHARED_MAIL_DOMAIN.test(address)).map((address) => address.slice(address.indexOf("@")));
+        const ours = (address: string) => wanted.includes(address) || domains.some((domain) => address.endsWith(domain));
+        // As the store's `since`: strictly after it, in whole milliseconds.
+        const after = Date.parse(since);
+        const asked = sends.filter((entry) => entry.at > after && !(entry.gmailAt < after) && entry.to.some(ours));
+        for (const { send, at, to } of asked) {
+          const later = (receivedIn.get(`${send.account}\n${send.threadId}`) ?? []).filter((event) => Date.parse(event.createdAt) > at);
+          if (!bouncedFor(later, [...to, ...wanted])) return { state: "SENT", ...send };
+        }
+        return asked[0] ? { state: "BOUNCED", ...asked[0].send } : null;
+      };
+      // As `threadSend` above, from this one read.
+      const threadSend = (account: string, threadId: string, since: string, recipients: string[] = []): "SENT" | "BOUNCED" | null => {
+        const inThread = (row: { accountEmail: string | null; threadId: string | null }) => row.accountEmail === account.toLowerCase() && row.threadId === threadId;
+        const reply = replies.find((row) => inThread(row) && isAfter(row.occurredAt, since));
+        const threadSends = logged.filter((event) => inThread(event) && isAfter(event.createdAt, since)
+          && (event.type === "SENT" || (event.payload.sent as { messageId?: unknown } | null)?.messageId));
+        const at = [reply?.occurredAt, ...threadSends.map((event) => event.createdAt)].filter((time): time is string => !!time).sort().at(-1);
+        if (!at) return null;
+        const later = (receivedIn.get(`${account.toLowerCase()}\n${threadId}`) ?? []).filter((event) => isAfter(event.createdAt, at));
+        return bouncedFor(later, addressesIn([recipients, reply?.fromAddress, threadSends.map((event) => [event.payload.to, event.payload.cc])])) ? "BOUNCED" : "SENT";
+      };
+      /** The newest REVIEW_DECIDED of a review since a time. */
+      const decided = (reviewId: string, since: string) => logged.find((event) => event.type === "REVIEW_DECIDED" && event.payload.reviewId === reviewId && isAfter(event.createdAt, since));
+      return { sentTo, threadSend, decided };
     },
     async actionLog(owner: string, pane: Pane | null, input: { account?: string; source?: MailActionRecord["source"]; limit: number }): Promise<MailActionLogEntry[]> {
       const accounts = await mailAccounts(owner, pane, input.account ?? "all");

@@ -370,7 +370,7 @@ export class StreamingService {
       await this.options.credentialStore.deleteCredential(attempt.verifierCredentialRef);
       throw new StreamingServiceError("OAUTH_REDIRECT_CHANGED", "The provider callback configuration changed during OAuth.", 400);
     }
-    let verifier = "";
+    let verifier: string;
     try {
       const stored = await this.options.credentialStore.readCredential(attempt.verifierCredentialRef);
       verifier = typeof stored.codeVerifier === "string" ? stored.codeVerifier : "";
@@ -484,7 +484,7 @@ export class StreamingService {
           updatedBy: "system:account-removed"
         });
       }
-    } catch {}
+    } catch { /* Overlay pruning is best-effort: the account is already removed. */ }
     return publicAccount(deleted);
   }
 
@@ -511,7 +511,7 @@ export class StreamingService {
             updatedBy: "system:auth-disconnected"
           });
         }
-      } catch {}
+      } catch { /* Overlay pruning is best-effort: the authorization is already removed. */ }
       return streamingDisconnectAuthorizationResponseSchema.parse({
         authorizationId,
         status: "REVOKED",

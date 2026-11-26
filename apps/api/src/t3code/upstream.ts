@@ -82,7 +82,8 @@ export class T3Upstream {
     workspaceRoot: string; createWorkspaceRootIfMissing: boolean; createdAt: string }) {
     // T3 0.1.0 replaced the orchestration dispatch route with project mutations (no createdAt).
     if (await this.protocol(scope) >= 2) {
-      const { createdAt: _createdAt, ...mutation } = command;
+      const mutation: Partial<typeof command> = { ...command };
+      delete mutation.createdAt;
       await this.json(scope, "/api/projects/mutate", mutation);
     } else await this.json(scope, "/api/orchestration/dispatch", command);
   }

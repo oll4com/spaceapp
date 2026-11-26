@@ -470,7 +470,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
     const models = await catalog();
     if (w.current.stage === "RESEARCH") await research(w, signal);
     if (w.current.stage === "ANSWERS") await answers(w, signal, models);
-    let extra = extraRound;
+    const extra = extraRound;
     for (;;) {
       throwIfAborted(signal);
       if (w.current.stage === "MERGE") await merge(w, signal);
@@ -486,7 +486,6 @@ export function createCouncilService(deps: CouncilServiceDeps) {
           await w.update((run) => ({ ...run, stage: "MERGE" }), "Agreement is still below the target; another round follows.");
           continue;
         }
-        extra = false;
         await finish(w, signal);
       }
       if (w.current.stage === "FINAL") await finish(w, signal);

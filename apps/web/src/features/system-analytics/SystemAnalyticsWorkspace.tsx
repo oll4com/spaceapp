@@ -110,6 +110,16 @@ function formatDuration(seconds: number): string {
   return `${hours}h ${minutes}m`;
 }
 
+// Shape the bench probe route returns (api.opencodeBenchProbe is typed unknown).
+interface XProbeCall { ok: boolean; latencyMs: number; status?: number | string | null; outLen?: number | null }
+interface XProbeResult {
+  simple: XProbeCall;
+  complex: XProbeCall;
+  verdict: string;
+  hist?: { completedTurns: number; abortedTurns: number; avgTtftMs?: number | null } | null;
+  sampledAt?: string | null;
+}
+
 function formatDate(value: string | null | undefined): string {
   if (!value) return "—";
   const date = new Date(value);
@@ -216,7 +226,7 @@ export function SystemAnalyticsWorkspace({
   const [benchSortKey, setBenchSortKey] = useState<"provider" | "vision" | "networking" | "ttft" | "toks" | "network" | "visionScore" | "codingScore" | "rank" | "refreshed">("codingScore");
   const [benchSortDir, setBenchSortDir] = useState<"asc" | "desc">("desc");
   const [benchRefreshing, setBenchRefreshing] = useState(false);
-  const [xProbe, setXProbe] = useState<any>(null);
+  const [xProbe, setXProbe] = useState<XProbeResult | null>(null);
   const [xProbing, setXProbing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -247,7 +257,7 @@ export function SystemAnalyticsWorkspace({
     setError(null);
     try {
       const res = await api.opencodeBenchProbe("opencode", "x-preview-f-free");
-      setXProbe(res);
+      setXProbe(res as XProbeResult);
     } catch (caught: unknown) {
       setError(errorMessage(caught));
     } finally {

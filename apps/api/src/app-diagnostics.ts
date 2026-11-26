@@ -720,8 +720,7 @@ export class AppDiagnosticsService {
   }
 
   async openSegment(
-    segmentId: string,
-    _userId: string
+    segmentId: string
   ): Promise<{ segment: AppDiagnosticsSegmentMetadata; path: string }> {
     const segment = await this.repository.getSegment(segmentId);
     if (!segment) {

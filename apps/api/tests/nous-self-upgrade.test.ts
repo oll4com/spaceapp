@@ -6,7 +6,7 @@ import type { ClipboardItem, Pane, Room, SpaceNotification } from "@space/contra
 import { InMemoryControlRepository, InMemoryNousRepository } from "@space/db";
 import { renderNousWorld } from "../src/nous/digest.js";
 import { createNousService, NOUS_PERSONA, operatorMessagesToAnswer, type NousRunner } from "../src/nous/service.js";
-import { createNousTools, missingArgsShape, nightSlotNote, sendWorkKeys, nousExecuteTarget, renamedArgs, unprovenNowHold, type NousToolDeps } from "../src/nous/tools.js";
+import { createNousTools, missingArgsShape, nightSlotNote, sendWorkKeys, nousExecuteTarget, renamedArgs, securityAsk, unprovenNowHold, type NousToolDeps } from "../src/nous/tools.js";
 import { z } from "zod";
 import { createHeldDispatch, type HeldDelivery } from "../src/nous/held-dispatch.js";
 import { FilesystemError } from "../src/filesystem-error.js";
@@ -15,6 +15,8 @@ import { createNotesArchive, notesToArchive } from "../src/nous/notes-archive.js
 import { createOperatorPaneChanges } from "../src/nous/pane-moves.js";
 import { rememberSpaceTyped } from "../src/cli-prompt-submit.js";
 import { deniedPath } from "../src/nous/files.js";
+import { deferralHold } from "../src/nous/daily-review.js";
+import { historicalToolHold } from "../src/nous/tool-holds.js";
 
 /** Nous's self-review upgrades of 2026-10-20 (plan clipboard:bTm-5PGrt9po U1-U5). */
 
@@ -25,7 +27,7 @@ const pane = (id: string, paneName: string): Pane =>
 const ctx = { owner, turnId: "nous_turn:t1", callId: "toolu_1", traceId: "trace:1" };
 
 function tools(overrides: Partial<NousToolDeps> = {}, state: Record<string, string> = {}) {
-  const roomTool = vi.fn(async (name: string, _args: Record<string, unknown>) => ({ ok: true, display: `ran ${name}`, result: `ran ${name}` }));
+  const roomTool = vi.fn<NousToolDeps["roomTool"]>(async (name) => ({ ok: true, display: `ran ${name}`, result: `ran ${name}` }));
   const deps: NousToolDeps = {
     world: async () => "world",
     rooms: async () => [room("room:main0001", "Main")],
@@ -245,12 +247,31 @@ describe("U4: the top tool failures of 19/10", () => {
     f.roomTool.mockResolvedValueOnce({ ok: false, display: "Refused", result: "Room Cleo is capped at 16 active panes." });
     const failed = await f.tools.execute("space_send_to_pane", { room: "Cleo", panes: ["pane:bob00001"], text: "Go on." }, ctx);
     expect(f.roomTool).toHaveBeenCalledWith("space_control", expect.objectContaining({ arguments: { actions: [expect.objectContaining({ operation: "reopen" })] } }), expect.anything());
-    expect(failed).toMatchObject({ ok: false, result: "Bob is closed and did not reopen (Room Cleo is capped at 16 active panes.), so nothing went to it." });
+    expect(failed).toMatchObject({ ok: false, refused: true, display: "Bob closed: did not reopen", result: "Bob is closed and did not reopen (Room Cleo is capped at 16 active panes.), so nothing went to it." });
+    // Slice 19 (14/11 14:57 UTC, Dana): a FAILED receipt gives its action's reason, never the receipt JSON.
+    const menu = "The requested menu selection could not be verified (no row names \"sΕντολή χειριστή\"); inspect the pane's current menu.";
+    f.roomTool.mockResolvedValueOnce({ ok: false, display: "Used Space Control (space_execute): FAILED", result: JSON.stringify({ dotId: "dot:1", id: "op:1", status: "FAILED",
+      results: [{ index: 0, paneId: "pane:bob00001", status: "FAILED", detail: menu, error: menu }] }) });
+    const menuMiss = await f.tools.execute("space_send_to_pane", { room: "Cleo", panes: ["pane:bob00001"], text: "Go on." }, ctx);
+    expect(menuMiss).toMatchObject({ ok: false, refused: true, result: `Bob is closed and did not reopen (FAILED reopen pane:bob00001: ${menu}), so nothing went to it.` });
+    expect(menuMiss.result).not.toContain("dotId");
     expect(hold).toHaveBeenCalledTimes(1);
     // A text the operator must approve is held before anything reopens.
     f.roomTool.mockClear();
     expect(await f.tools.execute("space_send_to_pane", { room: "Cleo", panes: ["Emma"], text: "Run space-queue promote --hotfix now." }, ctx)).toMatchObject({ ok: false, refused: true });
     expect(f.roomTool).not.toHaveBeenCalled();
+  });
+
+  it("a pane closed between Nous's read and Space Control's selection is reopened and the text held, not a failed send (15/11 01:40Z Bob in Cleo)", async () => {
+    let closed = false;
+    const bob = () => ({ ...pane("pane:bob00001", "Bob"), roomId: "room:cleo0001", isClosed: closed }) as Pane;
+    const hold = vi.fn(async () => ({ id: "nous_held:1", waiting: 1 }));
+    const f = tools({ held: { level: async () => "CALM", hold } as never, rooms: async () => [room("room:cleo0001", "Cleo")], listPanes: async () => [bob()] });
+    f.roomTool.mockImplementationOnce(async () => { closed = true; return { ok: false, display: "Refused", result: "No panes match this selection. Bob (pane:bob00001) is closed: reopen it first." }; });
+    const sent = await f.tools.execute("space_send_to_pane", { room: "Cleo", panes: ["Bob"], text: "Go on." }, ctx);
+    expect(sent).toMatchObject({ ok: true, display: "Reopened Bob; text held for the prompt" });
+    expect(f.roomTool.mock.calls.map(([name]) => name)).toEqual(["send_to_pane", "space_control"]);
+    expect(hold).toHaveBeenCalledWith(owner, expect.objectContaining({ paneId: "pane:bob00001" }), "Go on.", "light");
   });
 
   it("R34-2: a close of a pane the named room holds closed is done, and the call's other panes are closed (1/11: Bruno/Nik twice, Bruno/Dana beside Iris)", async () => {
@@ -290,6 +311,39 @@ describe("U4: the top tool failures of 19/10", () => {
     expect(stop).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Dana moved there under another name: it is pane:dana0001 now.") });
     // A name the room never lost is not looked up as a move.
     expect(movedFrom).not.toHaveBeenCalledWith("room:alex0001", expect.anything());
+  });
+
+  it("sends again in its new room a pane moved between the read and Space Control's send (Daily Nous errors 21/11 16:26Z)", async () => {
+    let movedNow = false;
+    const finn = pane("pane:finn0001", "Finn");
+    const cody = pane("pane:cody0001", "Cody");
+    const f = tools({ rooms: async () => [room("room:dino0001", "Dino"), room("room:cleo0001", "Cleo")],
+      listPanes: async (roomId: string) => roomId === "room:cleo0001" ? (movedNow ? [finn] : []) : movedNow ? [cody] : [cody, finn] });
+    f.roomTool.mockImplementationOnce(async () => {
+      movedNow = true;
+      return { ok: false, display: "Could not find pane:finn0001", result: 'No pane named "pane:finn0001" in this room. Open panes: Cody.' };
+    });
+    const sent = await f.tools.execute("space_send_to_pane", { room: "Dino", panes: ["Finn"], text: "Go on." }, ctx);
+    expect(sent.ok).toBe(true);
+    expect(sent.result).toMatch(/^\(Finn moved to Cleo while this was sent; it went there\.\)/);
+    expect(f.roomTool).toHaveBeenLastCalledWith("send_to_pane", expect.objectContaining({ panes: ["pane:finn0001"] }), expect.objectContaining({ roomId: "room:cleo0001" }));
+    expect(f.roomTool).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses, naming the state, a send whose pane left the room for no one room (Daily Nous errors 22/11)", async () => {
+    const finn = pane("pane:finn0001", "Finn");
+    const cody = pane("pane:cody0001", "Cody");
+    let gone = false;
+    const f = tools({ rooms: async () => [room("room:dino0001", "Dino"), room("room:cleo0001", "Cleo")],
+      listPanes: async (roomId: string) => roomId === "room:cleo0001" ? [] : gone ? [cody] : [cody, finn] });
+    f.roomTool.mockImplementationOnce(async () => {
+      gone = true;
+      return { ok: false, display: "Could not find pane:finn0001", result: 'No pane named "pane:finn0001" in this room. Open panes: Cody.' };
+    });
+    const sent = await f.tools.execute("space_send_to_pane", { room: "Dino", panes: ["Finn"], text: "Go on." }, ctx);
+    expect(sent).toMatchObject({ ok: false, refused: true });
+    expect(sent.result).toMatch(/^Not sent: Finn left Dino while this was sent and no one room holds it now/);
+    expect(f.roomTool).toHaveBeenCalledTimes(1);
   });
 
   it("tells Nous the operator's pane moves and closes of one minute in one inbox line, each pane by id (R10-2)", async () => {
@@ -344,9 +398,9 @@ describe("U4: the top tool failures of 19/10", () => {
     const card = (decision: string, copilot = "MAIL", item = "REVIEW") => f.tools.execute("space_ask_operator", { category: "EXTERNAL", title: "Decline the cancellation reply?",
       body: "Order #160197 was cancelled on 16/10.", recommendation: "Yes Πρόβλεψη: ναι (80%)", action: { type: "COPILOT", copilot, item, itemId: "mailrev:VbwprEA-1HTw", paneId: null, decision }, checked: ["The mail rail: the review waits"] }, ctx);
     // R11-2 (4): the refusal lists what that copilot has waiting, with ids and the decisions each takes.
-    expect(await card("postpone")).toMatchObject({ ok: false, result: '"postpone" is not a decision a mail copilot\'s review takes: use approve, edit, reject. Waiting in the mail copilot now: '
+    expect(await card("postpone")).toMatchObject({ ok: false, refused: true, result: '"postpone" is not a decision a mail copilot\'s review takes: use approve, edit, reject. Waiting in the mail copilot now: '
       + 'REVIEW mailrev:VbwprEA-1HTw "Reply to the cancellation" (approve, edit, reject); RULE mailrule:abc000001 "Archive receipts" (approve, reject, retire).' });
-    expect(await card("approve", "DESIGN", "REVIEW")).toMatchObject({ ok: false, result: expect.stringContaining("cannot decide a design copilot's review") });
+    expect(await card("approve", "DESIGN", "REVIEW")).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("cannot decide a design copilot's review") });
     expect(ask).not.toHaveBeenCalled();
     expect(await card("REJECT")).toMatchObject({ ok: true, result: expect.stringContaining("Asked (nous_decision:new0001)") });
     expect(ask).toHaveBeenCalledWith(expect.objectContaining({ action: expect.objectContaining({ decision: "reject" }) }), expect.anything());
@@ -411,11 +465,11 @@ describe("U4: the top tool failures of 19/10", () => {
     // Daily Nous errors 13/11 (4 of 13 failed reads in 48 h): a guessed column or table is answered with the real ones, a refusal; other errors still fail.
     expect(read).toMatchObject({ ok: false, refused: true, display: "Reading the database failed" });
     expect(read.result).toContain("the_last_one");
-    // 14/11 slice 2: a syntax error names where (42601), so a refusal too; a read past the time limit (57014) still fails.
+    // 14/11 slice 2: a syntax error names where (42601), so a refusal too; since slice 19 r2 a read past the time limit (57014) too, its answer says how to narrow it.
     const broken = tools({ db: { query: vi.fn(async () => { throw new Error('Postgres: syntax error at or near "FORM" (code 42601)'); }) } as never });
     expect((await broken.tools.execute("space_db_query", { sql: "SELECT 1 FORM x" }, ctx)).refused).toBe(true);
     const slow = tools({ db: { query: vi.fn(async () => { throw new Error("Postgres: canceling statement due to statement timeout (code 57014)"); }) } as never });
-    expect((await slow.tools.execute("space_db_query", { sql: "SELECT 1" }, ctx)).refused).toBeFalsy();
+    expect((await slow.tools.execute("space_db_query", { sql: "SELECT 1" }, ctx)).refused).toBe(true);
   });
 
   it("edits a task's title and objective in place (queue item 23)", async () => {
@@ -466,7 +520,7 @@ describe("U4: the top tool failures of 19/10", () => {
     const plans = [{ id: "clipboard:Sv8kQ2mPx1Za", title: "SenseVoice speech input for the Nous app", steps: [] }];
     const f = tools({ plans: { list: async () => plans, get: async () => null, update: update as never } as never });
     const failed = await f.tools.execute("space_plan_update", { plan: "clipboard:plan-sensevoice-f8c63230", progressPercentage: 40 }, ctx);
-    expect(failed).toMatchObject({ ok: false, result: expect.stringContaining("clipboard:plan-sensevoice-f8c63230 is not one of your clipboard ids") });
+    expect(failed).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("clipboard:plan-sensevoice-f8c63230 is not one of your clipboard ids") });
     expect(failed.result).toContain('Open plans with its words: clipboard:Sv8kQ2mPx1Za "SenseVoice speech input for the Nous app".');
   });
 
@@ -579,6 +633,18 @@ describe("U4: the top tool failures of 19/10", () => {
     expect(open.result.split("\n")[0]).toBe('FAILED panes.open: [ { "code": "too_big", "path": [ "counts", "opencode" ], "message": "Too big: expected number to be <=16" } ]');
     // A receipt with nothing failed is unchanged.
     expect((await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "pane", operation: "stop", target: { paneIds: ["pane:andy0001"], state: "OPEN" } }] }, ctx)).result).toBe("ran space_control");
+    // Slice 19 (14/11 12:58 UTC: "UNKNOWN: {\"dotId\":…"): an unconfirmed action is named first and says not to repeat it blind; still a failure.
+    // Nous errors 24/11: an unconfirmed CLI readiness is read again first, so only one still unread after that reaches this line.
+    const g = tools({}, { "pane:bob00001": "IDLE" });
+    g.roomTool.mockResolvedValueOnce({ ok: false, display: "Used Space Control (space_execute): UNKNOWN", result: JSON.stringify({ status: "UNKNOWN",
+      results: [{ index: 0, paneId: "pane:bob00001", status: "UNKNOWN", detail: "CLI readiness has not been confirmed." }] }) });
+    expect((await g.tools.execute("space_execute", { room: "Main", actions: [{ kind: "pane", operation: "resume", target: { paneIds: ["pane:bob00001"], state: "ALL" } }] }, ctx)).ok).toBe(true);
+    f.roomTool.mockResolvedValueOnce({ ok: false, display: "Used Space Control (space_execute): UNKNOWN", result: JSON.stringify({ dotId: "dot:1", id: "op:2", status: "UNKNOWN",
+      results: [{ index: 0, paneId: "pane:bob00001", status: "UNKNOWN", detail: "Pane control result was not observed." }] }) });
+    const unknown = await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "pane", operation: "resume", target: { paneIds: ["pane:bob00001"], state: "ALL" } }] }, ctx);
+    expect(unknown.ok).toBe(false);
+    expect(unknown.refused).toBeUndefined();
+    expect(unknown.result.split("\n")[0]).toBe("NOT CONFIRMED resume pane:bob00001: Pane control result was not observed. (it may have run: read the pane with space_read_pane before repeating it)");
   });
 
   it("31/10 REVIEW: a reopen refused at the room's pane cap names the idle or exited panes to close first", async () => {
@@ -589,6 +655,15 @@ describe("U4: the top tool failures of 19/10", () => {
     // Plan ro5ukMcJnIk4 step 2: the cap is a gate on the protected pane budget, held as REFUSED (no Score tool failure).
     expect(outcome).toMatchObject({ ok: false, refused: true });
     expect(outcome.result).toMatch(/is capped at 16 active panes\.\nMain has \d+ open panes\. Idle or exited, close one first \(a CLI pane gets "save to memory" before\): Andy \(pane:andy0001, idle\)\. No other room has a free slot\.$/);
+  });
+
+  it("BZ0hO3NkNbqV: Space Control panes.open's own cap wording is the same refusal", async () => {
+    // 15/11 01:26Z: "Room capacity exceeded: ... maximum capacity is 16 panes" was charged as a failed space_execute.
+    const f = tools({}, { "pane:andy0001": "IDLE" });
+    f.roomTool.mockResolvedValueOnce({ ok: false, display: "Space Control failed", result: "FAILED panes.open: Room capacity exceeded: room currently has 16 open panes, maximum capacity is 16 panes. No free slots for 1 requested panes." });
+    const outcome = await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "resource", operation: "panes.open", input: { counts: { claude: 1 } } }] }, ctx);
+    expect(outcome).toMatchObject({ ok: false, refused: true });
+    expect(outcome.result).toMatch(/Idle or exited, close one first .*Andy \(pane:andy0001, idle\)/);
   });
 
   it("R26: space_open_panes refused at the room's pane cap names the panes to close and the rooms with space", async () => {
@@ -669,7 +744,7 @@ describe("U4: the top tool failures of 19/10", () => {
     expect(only.result).toContain(`(No room "Bruno" now: it was deleted or renamed; Cleo is the only room, so this is Cleo.) ran room_status`);
     // Any other tool's unknown room lists each room with its id and open panes.
     const sent = await h.tools.execute("space_inspect", { room: "Bruno" }, ctx);
-    expect(sent.result).toContain(`No room named "Bruno": a room the operator deleted or renamed keeps its old name in older plans, notes and reports. Rooms now: Cleo (room:cleo0001; open panes: Andy).`);
+    expect(sent.result).toContain(`No room named "Bruno": a room the operator deleted or renamed keeps its old name in older plans, notes and reports, and a room the operator switched Nous off for is not yours to read or act in (never recreate it). Rooms now: Cleo (room:cleo0001; open panes: Andy).`);
     // Daily Nous errors 14/11 (19:19 pane_reports room "Bob"): the answer names every room and its panes, so the call is refused, not failed.
     expect(sent.refused).toBe(true);
   });
@@ -722,7 +797,8 @@ describe("U4: the top tool failures of 19/10", () => {
     expect(first.result).toContain('space_tool_result {"call": "toolu_w1", "offset": 40000} reads on');
     world = `new ${"b".repeat(50_000)}`;
     await f.tools.execute("space_world", {}, { ...ctx, callId: "toolu_w2" });
-    for (const call of ["mcp__space_nous__space_world", "space_world"]) {
+    // Queue 21/11: the name without its space_ prefix too.
+    for (const call of ["mcp__space_nous__space_world", "space_world", "world"]) {
       const next = await f.tools.execute("space_tool_result", { call, offset: 40_000 }, { ...ctx, callId: "toolu_r" });
       expect(next.ok).toBe(true);
       expect(next.result).toMatch(/^b+$/);
@@ -730,7 +806,14 @@ describe("U4: the top tool failures of 19/10", () => {
     // The call id still reads its own answer; an unknown name says what is kept.
     expect((await f.tools.execute("space_tool_result", { call: "toolu_w1", offset: 40_000 }, ctx)).result).toMatch(/^a+$/);
     const none = await f.tools.execute("space_tool_result", { call: "space_mail_read", offset: 0 }, ctx);
-    expect(none).toMatchObject({ ok: false, result: expect.stringContaining("kept now: toolu_w1 (space_world), toolu_w2 (space_world)") });
+    expect(none).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Call ids kept now: toolu_w1 (space_world), toolu_w2 (space_world); pass one as \"call\"") });
+    expect(none.result).toMatch(/^No answer of space_mail_read is kept: only answers over 2,000 characters are kept/);
+    expect(historicalToolHold("space_tool_result", none.result)).toBe(true);
+    // Daily Nous errors 21/11: OpenCode's tool name (space_nous_space_world) and the file OpenCode saved the answer to read it too.
+    expect((await f.tools.execute("space_tool_result", { call: "space_nous_space_world", offset: 40_000 }, ctx)).result).toMatch(/^b+$/);
+    const saved = await f.tools.execute("space_tool_result", { call: "/home/u/.cache/space-opencode-nous-tmp/nous-vNU9uc/.data/opencode/tool-output/tool_1ef3", offset: 40_000 }, ctx);
+    expect(saved).toMatchObject({ ok: true, result: expect.stringMatching(/^\(OpenCode's file, read as this turn's newest kept answer: space_world, call toolu_w2; if the file held another, pass its call id: toolu_w1 \(space_world\)\)\nb+$/) });
+    expect(await f.tools.execute("space_tool_result", { call: "/x/opencode/tool-output/tool_1ef3", offset: 0 }, { ...ctx, turnId: "turn-other" })).toMatchObject({ ok: false });
   });
 
   it("4/11 REVIEW: a turn's long answers stay readable while the turn runs, however long, and go an hour after its last call", async () => {
@@ -791,9 +874,10 @@ describe("U4: the top tool failures of 19/10", () => {
     const send = (text: string) => f.tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text }, ctx);
     const held = await send("Reply on r/hetzner as u/mesienikola.");
     expect(held).toMatchObject({ ok: false, result: 'The text names mesienikola, but operator rule "Hetzner replies on Reddit" (space_memory:r1) names consistent_piano4250. '
-      + "Nothing sent. Fix the account in the text, or call again unchanged if it is right (it goes then)." });
+      + "Nothing sent. Fix the account in the text, or call again if it is right: the same accounts go then, reworded or not." });
     expect(f.roomTool).not.toHaveBeenCalled();
-    expect((await send("Reply on r/hetzner as u/mesienikola.")).ok).toBe(true);
+    // Token audit 21/11: the retry goes even reworded; it names the same account.
+    expect((await send("Please reply on r/hetzner from u/mesienikola.")).ok).toBe(true);
     expect((await send("Reply on r/hetzner as u/Consistent_Piano4250.")).ok).toBe(true);
     const azure = await f.tools.execute("space_copilot_brief", { room: "Main", pane: "Andy", text: "Sign in to azure.com as operator7@outlook.com." }, ctx);
     expect(azure).toMatchObject({ ok: false, result: expect.stringMatching(/^The text names operator7@outlook\.com, but Space's sign-ins for azure\.com use ops@example.invalid\. Nothing sent/) });
@@ -802,23 +886,67 @@ describe("U4: the top tool failures of 19/10", () => {
     // 5/11 (25 holds, 11 for a.team): the article "a", "live" in lower case and an address's own domain name no site; the domain or the name does.
     expect((await send("Write a reply to info@example.invalid and say the fix is live.")).ok).toBe(true);
     expect((await send("Mail the summary to ntheo@example.invalid.")).ok).toBe(true);
+    // 25/11: systemd template unit names (@*.service, .timer, .socket, etc.) are not email addresses.
+    expect((await send("Check backup-blob@backup.service and sync@daily.timer on azure.com.")).ok).toBe(true);
     expect(await send("Sign in to A.Team as info@example.invalid.")).toMatchObject({ ok: false, result: expect.stringMatching(/^The text names info@example.invalid, but Space's sign-ins for a\.team use work@example.invalid\. Nothing sent/) });
     expect(await send("Open Live with info@example.invalid.")).toMatchObject({ ok: false, result: expect.stringContaining("Space's sign-ins for live.com use me@outlook.com") });
     // R62: a space_execute pane prompt is checked the same way, before it can wait for a calm server.
     const prompt = (text: string) => f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "pane", operation: "prompt", target: { paneIds: ["pane:bob00001"], state: "OPEN" }, text }] }, ctx);
     const calls = f.roomTool.mock.calls.length;
-    expect(await prompt("Post the r/hetzner reply from u/mesienikola now.")).toMatchObject({ ok: false,
-      result: expect.stringContaining('The text names mesienikola, but operator rule "Hetzner replies on Reddit" (space_memory:r1) names consistent_piano4250. Nothing sent.') });
+    expect(await prompt("Post the r/hetzner reply from u/otherposter now.")).toMatchObject({ ok: false,
+      result: expect.stringContaining('The text names otherposter, but operator rule "Hetzner replies on Reddit" (space_memory:r1) names consistent_piano4250. Nothing sent.') });
     expect(f.roomTool).toHaveBeenCalledTimes(calls);
     await prompt("Post the r/hetzner reply from u/Consistent_Piano4250 now.");
     expect(f.roomTool).toHaveBeenCalledTimes(calls + 1);
   });
 
+  it("2026-11-25 REVIEW: holds company sign-up/enrolment briefs missing an account email (nous_msg:fa4290a8) and refuses notify_operator on completed plans", async () => {
+    const donePlan = { id: "clipboard:DONE1234", title: "Finished plan", text: "Done", isCompleted: true, executionStatus: "COMPLETED", roomId: "room:main0001", paneId: null, steps: [] };
+    const parkedPlan = { ...donePlan, id: "clipboard:PARK1234", parked: { reason: "Waits", since: "2026-11-20T00:00:00.000Z", resumedAt: null,
+      conditions: [{ id: "c1", who: "OPERATOR", what: "Approve", check: { kind: "MANUAL" }, state: "OPEN", checkedAt: null, metAt: null, evidence: null }] } };
+    const planMap = new Map([[donePlan.id, donePlan], [parkedPlan.id, parkedPlan]]);
+    const f = tools({
+      operatorRules: async () => [{ id: "space_memory:91f06282", title: "oll4.com company accounts", body: "Applications and Google Partners for oll4.com use lab@example.invalid." }],
+      plans: { get: async (_owner: string, id: string) => planMap.get(id) ?? null, list: async () => [...planMap.values()] } as never,
+      paneNotices: { notify: vi.fn(async () => ({ ok: true, display: "Sent", result: "ok" })) } as never
+    });
+    const send = (text: string) => f.tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text }, ctx);
+    // Missing company email on a sign-up/enrolment brief for oll4.com -> held once naming lab@example.invalid.
+    const missing = await send("Enroll oll4.com in Google Partners using browser profile 3.");
+    expect(missing).toMatchObject({ ok: false, refused: true, display: "Check the account first",
+      result: expect.stringContaining('operator rule "oll4.com company accounts" (space_memory:91f06282) names lab@example.invalid') });
+    expect(f.roomTool).not.toHaveBeenCalled();
+    // Naming the company account passes immediately.
+    expect((await send("Enroll oll4.com in Google Partners with lab@example.invalid (profile 3 is only the browser).")).ok).toBe(true);
+    // Non-enrolment mention of oll4.com without an email is not held.
+    expect((await send("Check DNS records for oll4.com.")).ok).toBe(true);
+    // space_notify_operator on an already-completed (non-parked) plan is held; a closed parked plan still passes.
+    const notifyDone = await f.tools.execute("space_notify_operator", {
+      plan: "clipboard:DONE1234", title: "Start now", items: [{ text: "Approve https://example.com" }], checked: ["plan: checked"]
+    }, ctx);
+    expect(notifyDone).toMatchObject({ ok: false, refused: true, display: "That plan is already completed" });
+    const notifyParked = await f.tools.execute("space_notify_operator", {
+      plan: "clipboard:PARK1234", title: "Parked ask", items: [{ text: "Approve https://example.com" }], checked: ["plan: checked"]
+    }, ctx);
+    expect(notifyParked).toMatchObject({ ok: true });
+  });
+
   it("R54-b: a tool that pages itself names its own offset, and space_tool_result points back to it", async () => {
     // 7 days to 3/11: 13 of 16 failed space_tool_result calls named space_db_query right after its "the rest with offset 11500".
     const f = tools({});
-    const read = await f.tools.execute("space_tool_result", { call: "mcp__space_nous__space_db_query", offset: 11_500 }, ctx);
-    expect(read).toMatchObject({ ok: false, result: 'space_db_query answers are never kept here: call space_db_query again with the same sql and "offset": 11500.' });
+    for (const call of ["mcp__space_nous__space_db_query", "db_query"]) {
+      expect(await f.tools.execute("space_tool_result", { call, offset: 11_500 }, ctx)).toMatchObject({ ok: false,
+        result: 'space_db_query answers are never kept here: call space_db_query again with the same sql and "offset": 11500.' });
+    }
+    // Daily Nous errors 21/11: with a long database answer kept (over 2,000 characters), the name still points back, never into the kept page.
+    const db = tools({ db: { query: vi.fn(async () => `Space database: characters 0-11500 of 30000; the rest: space_db_query with the same sql and "offset": 11500 (not space_tool_result).\n\n${"r".repeat(11_500)}`) } as never });
+    const first = await db.tools.execute("space_db_query", { sql: "SELECT id FROM t" }, { ...ctx, callId: "toolu_db1" });
+    expect(first.result).toContain('"offset": 11500 (not space_tool_result)');
+    expect(await db.tools.execute("space_tool_result", { call: "space_db_query", offset: 11_500 }, ctx)).toMatchObject({ ok: false, refused: true,
+      result: expect.stringContaining('call space_db_query again with the same sql and "offset": 11500') });
+    // Its call id and offset 0 by name still read the kept answer.
+    expect((await db.tools.execute("space_tool_result", { call: "toolu_db1", offset: 0 }, ctx)).result).toBe(first.result);
+    expect((await db.tools.execute("space_tool_result", { call: "space_db_query", offset: 0 }, ctx)).result).toBe(first.result);
   });
 
   it("answers a browser operation on a pane with no live browser before the host call (R10-8)", async () => {
@@ -851,6 +979,9 @@ describe("U4: the top tool failures of 19/10", () => {
     expect(f.roomTool).toHaveBeenLastCalledWith("stop_pane", { pane: "pane:cody0001" }, expect.objectContaining({ roomId: "room:cleo0001" }));
     await f.tools.execute("space_execute", { room: "Cleo", actions: [{ kind: "pane", operation: "stop", target: { paneIds: ["cli_session:jZWVEEDhWt3y"], state: "OPEN" } }] }, ctx);
     expect((f.roomTool.mock.calls.at(-1)![1] as { arguments: { actions: unknown[] } }).arguments.actions).toMatchObject([{ target: { paneIds: ["pane:cody0001"] } }]);
+    // 15/11: a session id written as a pane id ("pane:<session id>") is that session's pane too.
+    expect(await f.tools.execute("space_stop_pane", { room: "Main", pane: "pane:andySess0001" }, ctx)).toMatchObject({ ok: true });
+    expect(f.roomTool).toHaveBeenLastCalledWith("stop_pane", { pane: "pane:andy0001" }, expect.objectContaining({ roomId: "room:main0001" }));
     // A session Space has no pane for stays a plain ref and is not found.
     expect((await f.tools.execute("space_read_pane", { room: "Main", pane: "cli_session:unknown00001" }, ctx)).ok).toBe(false);
   });
@@ -878,6 +1009,19 @@ describe("U4: the top tool failures of 19/10", () => {
     expect(f.roomTool.mock.calls.map(([, args]) => (args as { arguments: { actions: Array<{ operation: string; target: { paneIds: string[] } }> } }).arguments.actions
       .map((action) => [action.operation, action.target.paneIds]))).toEqual([[["stop", ["pane:bob00001"]]]]);
     expect(sent.result).toContain("nothing to stop: Andy is idle.");
+  });
+
+  it("2026-11-16 REVIEW (×2 \"CLI host session … is EXITED.\" 15/11): space_stop_pane on an idle or exited pane answers nothing to stop", async () => {
+    const f = tools({}, { "pane:andy0001": "IDLE", "pane:bob00001": "EXITED" });
+    const stop = (pane: string) => f.tools.execute("space_stop_pane", { room: "Main", pane }, ctx);
+    expect(await stop("Andy")).toMatchObject({ ok: true, display: "Nothing to stop", result: "nothing to stop: Andy is idle. Nothing done." });
+    expect(await stop("Bob")).toMatchObject({ ok: true, display: "Nothing to stop", result: "nothing to stop: Bob is not running. Nothing done." });
+    expect(f.roomTool).not.toHaveBeenCalled();
+    // A running pane whose host session had already ended (slice 23: interrupted false, state EXITED) is nothing to stop too.
+    const running = tools({}, { "pane:andy0001": "RUNNING" });
+    running.roomTool.mockResolvedValueOnce({ ok: true, display: "Stopped Andy", result: JSON.stringify({ sessionId: "cli_session:Gv9VIYcUqRt4", interrupted: false, state: "EXITED" }) });
+    expect(await running.tools.execute("space_stop_pane", { room: "Main", pane: "Andy" }, ctx)).toMatchObject({ ok: true, result: "nothing to stop: Andy is not running. Nothing done." });
+    expect(await running.tools.execute("space_stop_pane", { room: "Main", pane: "Andy" }, ctx)).toMatchObject({ ok: true, display: "ran stop_pane" });
   });
 
   it("R51-2: takes a pane given beside the target or as target.paneId (3/11: 3 calls refused for their shape)", async () => {
@@ -938,6 +1082,30 @@ describe("U4: the top tool failures of 19/10", () => {
       expect(outcome.result).toContain(`To run it: space_execute ${JSON.stringify({ room: "room:main0001", actions: [run] })}`);
     });
 
+    it("answers a panes.move of an already-closed pane as nothing moved, not a failed call", async () => {
+      // Daily Nous errors 22/11 (space_execute ×3): panes.move failed "Pane CLI Browser is already closed and cannot be moved."
+      const f = tools();
+      const refusal = "Pane CLI Browser is already closed and cannot be moved. Reopen it first (space_execute {kind:\"pane\",operation:\"reopen\"}), then move it.";
+      f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: refusal, error: refusal }]));
+      const outcome = await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "resource", operation: "panes.move", id: "pane:andy0001", input: { targetRoomId: "room:other001" } }] }, ctx);
+      expect(outcome).toMatchObject({ ok: true, display: "Pane already closed: nothing moved" });
+      expect(outcome.result).toContain(`Nothing moved: ${refusal} A closed pane needs no move.`);
+      // Any other failure in the batch still fails the call.
+      f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: refusal, error: refusal }, { index: 1, status: "FAILED", detail: "Room room:other001 is capped at 6 active panes.", error: "Room room:other001 is capped at 6 active panes." }]));
+      expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "resource", operation: "panes.move", id: "pane:andy0001", input: { targetRoomId: "room:other001" } },
+        { kind: "resource", operation: "panes.move", id: "pane:bob00001", input: { targetRoomId: "room:other001" } }] }, ctx)).not.toMatchObject({ ok: true });
+    });
+
+    it("holds a panes.move without its id as invalid arguments, not a failed call", async () => {
+      // 23/11 REVIEW: panes.move with no id failed "panes.move needs id: the pane id." and counted as a Nous error.
+      const f = tools();
+      const refusal = "panes.move needs id: the pane id.";
+      f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: refusal, error: refusal }]));
+      const outcome = await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "resource", operation: "panes.move", input: { targetRoomId: "room:other001" } }] }, ctx);
+      expect(outcome).toMatchObject({ ok: false, refused: true, display: "Invalid arguments: id missing" });
+      expect(outcome.result).toContain(`Not run: ${refusal} Call it again with "id"`);
+    });
+
     it("reopens panes named by id in any state, so an open one is not missed by a CLOSED filter", async () => {
       // 1/11 12:46 UTC: reopen of Alex/Leo (open) with state CLOSED failed "No panes match this selection." and the prompt after it never ran.
       const f = tools();
@@ -958,14 +1126,37 @@ describe("U4: the top tool failures of 19/10", () => {
       expect(outcome).toMatchObject({ ok: true, display: "Model change through space_set_pane_model" });
     });
 
+    it("queue 5/11: a Claude Code pane takes the full or bare Claude name of a family its catalogue lists as claude:<family>", async () => {
+      const efforts = ["low", "medium", "high", "xhigh", "max"];
+      const observed = { state: "IDLE", sessionId: "session:1", modelId: "claude:opus",
+        models: ["claude:sonnet", "claude:opus", "claude:fable", "claude:haiku"].map((id) => ({ id, supportedReasoningEfforts: efforts })) };
+      const f = tools({ held: { level: async () => "CALM", hold: vi.fn(async () => {}) } as never, inspectPane: async () => observed as never,
+        listPanes: async () => [{ ...pane("pane:andy0001", "Andy"), terminalRuntimeId: "cli:claude" }] });
+      for (const [asked, modelId, reasoningEffort] of [["claude-sonnet-5-5", "claude:sonnet", undefined], ["Sonnet", "claude:sonnet", undefined],
+        ["claude-haiku-5-5-high", "claude:haiku", "high"]] as const) {
+        expect((await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: asked }, ctx)).ok).toBe(true);
+        expect(f.roomTool).toHaveBeenLastCalledWith("set_pane_model",
+          expect.objectContaining({ pane: "pane:andy0001", modelId, ...(reasoningEffort ? { reasoningEffort } : {}) }), expect.anything());
+      }
+      // The family it already runs is no change, by its full name too.
+      f.roomTool.mockClear();
+      expect(await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "claude-opus-5-5" }, ctx))
+        .toMatchObject({ ok: true, result: expect.stringContaining("already runs claude:opus") });
+      expect(f.roomTool).not.toHaveBeenCalled();
+    });
+
     it("R65-1: checks the known CLI catalogue before control and holds an unreadable or absent session without trying its menu", async () => {
       const hold = vi.fn(async () => {});
       const observed = { state: "UNKNOWN", sessionId: null as string | null, models: [{ id: "gpt-6-astra", supportedReasoningEfforts: [] }] };
       const f = tools({ held: { level: async () => "CALM", hold } as never, inspectPane: async () => observed as never,
         listPanes: async () => [{ ...pane("pane:andy0001", "Andy"), terminalRuntimeId: "cli:codex" }] });
       const change = { room: "Main", pane: "Andy", modelId: "claude-opus-5-5" };
-      expect(await f.tools.execute("space_set_pane_model", change, ctx)).toMatchObject({ ok: false,
+      expect(await f.tools.execute("space_set_pane_model", change, ctx)).toMatchObject({ ok: false, refused: true,
         result: "This CLI cannot list claude-opus-5-5; open a Claude Code pane. Nothing changed or queued." });
+      // Daily Nous errors 14/11 (14/11 06:04 "space-gateway-claude:claude-opus-5-5"): the catalogue's ids sharing the asked id's words.
+      observed.models = [{ id: "space-gateway-claude/claude-opus-5-5", supportedReasoningEfforts: [] }, { id: "gpt-6-astra", supportedReasoningEfforts: [] }];
+      expect(await f.tools.execute("space_set_pane_model", change, ctx)).toMatchObject({ ok: false, refused: true,
+        result: expect.stringContaining("Its catalogue's ids sharing those words: space-gateway-claude/claude-opus-5-5.") });
       expect(hold).not.toHaveBeenCalled();
       expect(f.roomTool).not.toHaveBeenCalled();
       for (const state of [{ state: "IDLE", sessionId: null }, { state: "UNKNOWN", sessionId: "session:1" }]) {
@@ -1019,9 +1210,27 @@ describe("U4: the top tool failures of 19/10", () => {
       expect(lacks.result).toContain("or open a Claude Code pane for it");
       // R74 (2026-11-05 REVIEW): a non-Claude id asked of a Claude pane is final for that pane too.
       f.roomTool.mockResolvedValueOnce(failed('"gpt-6.1-sol" is no Claude model: Claude offers claude:sonnet (low/medium/high/xhigh/max).'));
-      expect((await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "gpt-6.1-sol" }, ctx)).result)
-        .toContain("This CLI's model menu does not list gpt-6.1-sol: do not retry it on this pane");
+      expect(await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "gpt-6.1-sol" }, ctx))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("This CLI's model menu does not list gpt-6.1-sol: do not retry it on this pane") });
       expect(hold).toHaveBeenCalledTimes(5);
+      // 22/11 (pane:sh994CSitcEw cli:gemini asked for claude-opus-5-5): unadvertised id is refused; transient catalog timeout is held.
+      f.roomTool.mockResolvedValueOnce(failed('"claude-opus-5-5" is not available in the CLI\'s current model menu: this CLI offers gemini-4-neon (low/high).'));
+      expect(await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "claude-opus-5-5" }, ctx))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("This CLI's model menu does not list claude-opus-5-5: do not retry it on this pane") });
+      f.roomTool.mockResolvedValueOnce(failed("The Gemini model catalog is unavailable; try again shortly."));
+      expect(await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "gemini-4-neon" }, ctx))
+        .toMatchObject({ ok: true, display: "Held Andy's model until its empty prompt" });
+      expect(hold).toHaveBeenCalledTimes(6);
+    });
+
+    it("answers ok for the model a pane already runs, also mid-turn, and holds or sends nothing (16/11 Alex/Jack)", async () => {
+      const hold = vi.fn(async () => {});
+      const f = tools({ held: { level: async () => "CALM", hold } as never,
+        inspectPane: async () => ({ text: "", state: "RUNNING", sessionId: "session:1", modelId: "claude-opus-5-5", tasks: [] }) as never });
+      expect(await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "claude-opus-5-5", when: "now" }, ctx))
+        .toMatchObject({ ok: true, result: "Andy already runs claude-opus-5-5: nothing changed or held." });
+      expect(hold).not.toHaveBeenCalled();
+      expect(f.roomTool).not.toHaveBeenCalled();
     });
 
     it("R34-1: holds a model change for a pane opened seconds ago whose CLI session does not exist yet", async () => {
@@ -1055,8 +1264,12 @@ describe("U4: the top tool failures of 19/10", () => {
       const exited = tools({ wait, inspectPane: async () => ({ text: "", state: "EXITED", sessionId: null, tasks: [] }) as never });
       exited.roomTool.mockResolvedValueOnce(receipt([none]));
       const dead = await exited.tools.execute("space_execute", { room: "Main", actions: [action] }, ctx);
-      expect(dead).toMatchObject({ ok: false, result: expect.stringContaining("start it with space_restart_pane") });
+      // Daily Nous errors 14/11 slice 6: the CLI's state failed, not the call.
+      expect(dead).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("start it with space_restart_pane") });
       expect(exited.roomTool).toHaveBeenCalledTimes(1);
+      // Beside another failure the batch stays charged.
+      exited.roomTool.mockResolvedValueOnce(receipt([none, { index: 1, status: "FAILED", detail: "boom", error: "boom" }]));
+      expect((await exited.tools.execute("space_execute", { room: "Main", actions: [action, action] }, ctx)).refused).toBeUndefined();
       expect(wait).toHaveBeenCalledTimes(2);
     });
 
@@ -1074,6 +1287,30 @@ describe("U4: the top tool failures of 19/10", () => {
       expect(f.roomTool).toHaveBeenCalledTimes(1);
       expect(hold).toHaveBeenCalledWith(owner, expect.objectContaining({ paneId: "pane:andy0001", paneName: "Andy" }), expect.stringMatching(/^Configure /), "light", undefined,
         action);
+    });
+
+    it("slice 27: a stop still finishing its step after Space Control's 3.5 s read is confirmed later or answered as pending, not failed", async () => {
+      // Daily Nous errors 15/11 10:28Z: "NOT CONFIRMED stop pane:TCq-x9fuWXKf: Native stop is not yet confirmed; process is still yielding" (10 in 7 days).
+      const yielding = { index: 0, paneId: "pane:andy0001", status: "UNKNOWN", detail: "Native stop is not yet confirmed; process is still yielding." };
+      const action = { kind: "pane", operation: "stop", target: { paneIds: ["pane:andy0001"] } };
+      // It stops after two 2-second waits.
+      const wait = vi.fn(async () => undefined);
+      const f = tools({ wait, inspectPane: vi.fn(async () => ({ text: "", state: wait.mock.calls.length >= 2 ? "IDLE" : "RUNNING", sessionId: "session:1", tasks: [] }) as never) });
+      f.roomTool.mockResolvedValueOnce(receipt([yielding], "UNKNOWN"));
+      expect(await f.tools.execute("space_execute", { room: "Main", actions: [action] }, ctx))
+        .toMatchObject({ ok: true, display: "Stopped Andy", result: expect.stringContaining("Andy stopped: confirmed on a later read") });
+      expect(wait).toHaveBeenCalledTimes(2);
+      // Still finishing after the bound: pending, not a failed call.
+      const busy = vi.fn(async () => undefined);
+      const g = tools({ wait: busy, inspectPane: async () => ({ text: "", state: "RUNNING", sessionId: "session:1", tasks: [] }) as never });
+      g.roomTool.mockResolvedValueOnce(receipt([yielding], "UNKNOWN"));
+      expect(await g.tools.execute("space_execute", { room: "Main", actions: [action] }, ctx))
+        .toMatchObject({ ok: true, display: "Stop pending: Andy", result: expect.stringContaining("STOP PENDING Andy: the interrupt went in") });
+      expect(busy).toHaveBeenCalledTimes(10);
+      // Beside another failure the batch stays charged and nothing is re-read.
+      g.roomTool.mockResolvedValueOnce(receipt([yielding, { index: 1, status: "FAILED", detail: "boom", error: "boom" }]));
+      expect(await g.tools.execute("space_execute", { room: "Main", actions: [action, action] }, ctx)).toMatchObject({ ok: false });
+      expect(busy).toHaveBeenCalledTimes(10);
     });
 
     it("R39-1: takes force on a close by name or state, names where force goes, and names the draft fix on a configure", async () => {
@@ -1105,6 +1342,18 @@ describe("U4: the top tool failures of 19/10", () => {
         .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("is cancelled by its control_schedule: id") });
     });
 
+    it("reads or cancels a schedule in its own room (slice 16, Daily Nous errors ×5 'Schedule belongs to another room.')", async () => {
+      const f = tools({ rooms: async () => [room("room:main0001", "Main"), room("room:cleo0001", "Cleo")] });
+      const elsewhere = "Schedule belongs to another room: room:cleo0001.";
+      f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: elsewhere, error: elsewhere }]))
+        .mockResolvedValueOnce({ ok: true, display: "Used Space Control (space_execute): COMPLETED", result: JSON.stringify({ status: "COMPLETED", results: [{ index: 0, status: "COMPLETED", detail: "SCHEDULED" }] }) });
+      const action = { kind: "watch", operation: "status", id: "control_schedule:abc" };
+      const outcome = await f.tools.execute("space_execute", { room: "Main", actions: [action] }, ctx);
+      expect(f.roomTool).toHaveBeenLastCalledWith("space_control", { tool: "space_execute", arguments: { actions: [action] } }, expect.objectContaining({ roomId: "room:cleo0001" }));
+      expect(outcome).toMatchObject({ result: expect.stringContaining("The schedule is in room Cleo (room:cleo0001), not Main: ran it there.") });
+      expect(outcome.ok).toBe(true);
+    });
+
     it("refuses a watch id that is none, and a model switch a CLI restart cut, with the fix (Daily Nous errors 13/11)", async () => {
       // 12/11 06:25 and 13/11 04:36 UTC "status: Watch not found."; 12/11 06:24 "The CLI session changed during the model switch."
       const f = tools();
@@ -1112,6 +1361,11 @@ describe("U4: the top tool failures of 19/10", () => {
       f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: notFound, error: notFound }]));
       expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "watch", operation: "status", id: "w1" }] }, ctx))
         .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("This room's watches: none") });
+      // Daily Nous errors 14/11 slice 6 (panes.open ×5): a count panes.open refuses names its shape.
+      const counts = 'panes.open counts must be {"<pane type>": n}, each n a whole number from 1 to 16 and 1 to 16 panes in total (opencode: Too big). Pane types: codex';
+      f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: counts, error: counts }]));
+      expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "resource", operation: "panes.open", input: { counts: { opencode: 40 } } }] }, ctx))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Pane types: codex") });
       const changed = "The CLI session changed during the model switch.";
       f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, paneId: "pane:andy0001", status: "FAILED", detail: changed, error: changed }]));
       expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "configure", target: { paneIds: ["pane:andy0001"] }, modelId: "claude-opus-5-5", accountProfileId: "acct:1" }] }, ctx))
@@ -1122,6 +1376,24 @@ describe("U4: the top tool failures of 19/10", () => {
         expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "configure", target: { paneIds: ["pane:andy0001"] }, modelId: "claude-opus-5-5" }] }, ctx))
           .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("A model change goes through space_set_pane_model") });
       }
+      // Daily Nous errors 23/11 19:57Z: a model the CLI's menu lacks is a refusal naming what it offers.
+      const menu = "\"gemini-4-neon\" is not available in the CLI's current model menu: this CLI offers gemini-3.8-flash (low/medium/high).";
+      f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, paneId: "pane:andy0001", status: "FAILED", detail: menu, error: menu }]));
+      expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "configure", target: { paneIds: ["pane:andy0001"] }, modelId: "gemini-4-neon" }] }, ctx))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringMatching(/gemini-3\.8-flash[\s\S]*Configure one it offers/) });
+      // 2026-11-16 REVIEW (ops.logs ×9 15/11): an ops call Space's MCP gate held is a gate naming the next call, not a failure.
+      const blocked = "SCHEMA_HASH_NOT_ALLOWLISTED: MCP tool execution was blocked by Space policy.";
+      f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: blocked, error: blocked }]));
+      expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "resource", operation: "ops.logs", input: {} }] }, ctx))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringMatching(/SCHEMA_HASH_NOT_ALLOWLISTED[\s\S]*Read the same thing through a CLI pane instead/) });
+      const ask = "TOOL_APPROVAL_REQUIRED: MCP tool execution requires an operator approval reason.";
+      f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: ask, error: ask }]));
+      expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "resource", operation: "ops.logs", input: {} }] }, ctx))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("send the same action with approvalReason") });
+      // A tool that ran and failed still counts.
+      const ran = "EXECUTION_FAILED: MCP tool execution failed without exposing process details.";
+      f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: ran, error: ran }]));
+      expect((await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "resource", operation: "ops.logs", input: {} }] }, ctx)).refused).toBeFalsy();
       // Any other failure still counts.
       f.roomTool.mockResolvedValueOnce(receipt([{ index: 0, status: "FAILED", detail: "Boom.", error: "Boom." }]));
       expect((await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "watch", operation: "status", id: "w1" }] }, ctx)).refused).toBeFalsy();
@@ -1160,6 +1432,11 @@ describe("U4: the top tool failures of 19/10", () => {
       target: { paneIds: ["pane:andy0001"] }, when: "NOW" }] } }, expect.objectContaining({ roomId: "room:main0001", confirmed: true }));
     expect(sent).toMatchObject({ ok: true, display: "Held for Andy until the CLI restarts",
       result: expect.stringContaining("Andy: its CLI had exited and is restarting. The text is held until the CLI restarts") });
+    // Daily Nous errors 21/11 17:20Z (Bob): the session ended between lookup and keystroke; same hold + resume, not a failed send.
+    for (const detail of ["CLI session cli_session:C7nsgmSa9hbP is not active.", "Pane pane:andy0001 has no active CLI session."]) {
+      f.roomTool.mockResolvedValueOnce({ ok: false, display: "Could not send to Andy", result: JSON.stringify({ status: "FAILED", results: [{ paneId: "pane:andy0001", status: "FAILED", detail }] }) });
+      expect(await f.tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text: "Next step." }, ctx)).toMatchObject({ ok: true, display: "Held for Andy until the CLI restarts" });
+    }
   });
 
   it("holds the text for a pane that is not at a prompt, and says so instead of a raw refusal", async () => {
@@ -1274,6 +1551,24 @@ describe("U4: the top tool failures of 19/10", () => {
       expect(f.roomTool).toHaveBeenCalledTimes(6);
       expect(sendWorkKeys("Fix the gateway boot. Do not edit apps/api/src/storage-readiness.ts (Hugo's ticket). Then change apps/api/src/app.ts."))
         .toEqual(["apps/api/src/app.ts"]);
+      // 16/11: four holds matched a path only named as someone else's, as a finding, or outside the repo; the same request ids still hold.
+      expect(sendWorkKeys("Keep out of deploy/*.service and scripts/tests/host-units.test.mjs: Dino/Finn owns those.")).toEqual([]);
+      expect(sendWorkKeys("Stay out of packages/browser-host/*, apps/api/src/browser-sessions.ts and cli-browser-cdp.ts: Dino/Emma owns those.")).toEqual([]);
+      expect(sendWorkKeys("One more task, since you own the guard file: you found that apps/api/src/browser-sessions.ts runs inside the Browser Host.")).toEqual([]);
+      // Not /opt/spaceapp/docs: the public export rewrites it to its install root, where docs/ is a repo path.
+      expect(sendWorkKeys("Save the batch19 body to Space Memory (/etc/space/docs/space_memory_2026-11.md).")).toEqual([]);
+      expect(sendWorkKeys("Edit /opt/spaceapp/var/worktrees/space/wt-ab12/apps/api/src/app.ts and ./docs/agents/nous-score.md for nous_msg:a1b2c3d4e5f6a7b8"))
+        .toEqual(["nous_msg:a1b2c3d4e5f6a7b8", "apps/api/src/app.ts", "docs/agents/nous-score.md"]);
+      // 22/11: docs/quality/review-findings.json keys by finding id so two findings never hold each other, while unkeyed ledger edits still collide.
+      expect(sendWorkKeys("Work on finding SEC-014 in docs/quality/review-findings.json.")).toEqual(["registry SEC-014"]);
+      expect(sendWorkKeys("Work on finding PERF-004 in docs/quality/review-findings.json.")).toEqual(["registry PERF-004"]);
+      expect(sendWorkKeys("Audit docs/quality/review-findings.json for stale rows.")).toEqual(["docs/quality/review-findings.json"]);
+      // DEV3D-059: a model or standard name in the brief ("GPT-6 Astra", "UTF-8") is no finding id, so two findings' briefs never share a key by it.
+      expect(sendWorkKeys("Fix DEV3D-055 in docs/quality/review-findings.json on Claude Opus or GPT-6 Astra, files UTF-8.")).toEqual(["registry DEV3D-055"]);
+      // 23/11: two handoffs of one plan (Bob 10:57, Dana 11:06) shared no key, so both panes ran step 1.
+      expect(sendWorkKeys("Implement the following plan. Plan ID: clipboard:xPOMUqCiqJgi (read it with the plan tools or space-progress). Goal nous_goal:401b115b criterion 2. Step 1: read the score code."))
+        .toEqual(["plan clipboard:xPOMUqCiqJgi"]);
+      expect(sendWorkKeys("Implement the following plan. Plan ID: clipboard:xPOMUqCiqJgi (\"Goal 401b115b criterion 2\"). Step 1: find the cause.")).toContain("plan clipboard:xPOMUqCiqJgi");
     } finally {
       vi.useRealTimers();
     }
@@ -1309,6 +1604,32 @@ describe("U4: the top tool failures of 19/10", () => {
       vi.setSystemTime(new Date("2026-11-01T21:00:30Z"));
       expect((await send("Andy")).ok).toBe(true);
       expect(f.roomTool).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears a promote hold once the pane's turn ended with no ticket, so Nous can resend (21/11 Bruno/Finn)", async () => {
+    // 21/11 13:30 UTC: Finn refused the granted promote; every resend within the 2-minute grace was held "its ticket is not on the stable queue yet".
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-21T13:30:00Z"));
+      const state: Record<string, string> = { "pane:andy0001": "IDLE", "pane:bob00001": "IDLE" };
+      const f = tools({ queues: async () => [{ name: "stable", report: { available: true, active: [], recent: [] } }] as never, allowances: async () => ({ promote: true, warm: false }) }, state);
+      const send = (pane: string) => f.tools.execute("space_send_to_pane", { room: "Main", panes: [pane], text: "space-queue promote" }, ctx);
+      expect((await send("Andy")).ok).toBe(true);
+      // Just sent: its turn may not have started, so an idle pane still holds.
+      vi.setSystemTime(new Date("2026-11-21T13:30:10Z"));
+      expect(await send("Bob")).toMatchObject({ ok: false, result: expect.stringContaining("This clears once Andy's turn ends with no ticket, or at 13:32 UTC") });
+      // Running the command: holds.
+      state["pane:andy0001"] = "RUNNING";
+      vi.setSystemTime(new Date("2026-11-21T13:30:45Z"));
+      expect((await send("Bob")).ok).toBe(false);
+      // Its turn ended with no promote ticket: the resend goes, inside the grace.
+      state["pane:andy0001"] = "IDLE";
+      vi.setSystemTime(new Date("2026-11-21T13:31:00Z"));
+      expect((await send("Bob")).ok).toBe(true);
+      expect(f.roomTool).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
@@ -1351,10 +1672,11 @@ describe("U4: the top tool failures of 19/10", () => {
   });
 
   it("interrupts an OpenCode pane again until its turn stops, up to 3 times, and says how many it took (queue item 28, 27/10 23:33)", async () => {
-    const states = ["RUNNING", "IDLE"];
+    // The first read is the stop's own check (an idle pane is nothing to stop); the next ones follow each interrupt.
+    const states = ["RUNNING", "RUNNING", "IDLE"];
     const kate = { ...pane("pane:kate0001", "Kate"), terminalRuntimeId: "cli:opencode" } as Pane;
     const f = tools({ listPanes: async () => [kate, pane("pane:andy0001", "Andy")], wait: async () => undefined,
-      inspectPane: vi.fn(async () => ({ state: states.shift() ?? "IDLE", sessionId: "session:1", tasks: [] }) as never) });
+      inspectPane: vi.fn(async (target: Pane) => ({ state: target.id === "pane:kate0001" ? states.shift() ?? "IDLE" : "RUNNING", sessionId: "session:1", tasks: [] }) as never) });
     expect(await f.tools.execute("space_stop_pane", { room: "Main", pane: "Kate" }, ctx)).toMatchObject({ ok: true, result: expect.stringContaining("It took 2 interrupts.") });
     expect(f.roomTool.mock.calls.filter(([name]) => name === "stop_pane")).toHaveLength(2);
     // A Claude pane stops with one interrupt, as before.
@@ -1405,18 +1727,21 @@ describe("U4: the top tool failures of 19/10", () => {
     expect((await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "gpt-6-astra" }, ctx)).result).toContain("restart the pane (space_restart_pane)");
   });
 
-  it("keeps a pane open while an unanswered needs-you request waits on it, unless closed with force (queue item 36, 28/10 10:48)", async () => {
+  it("keeps a pane open while an unanswered needs-you request waits on it, even with force (queue item 36, 28/10 10:48; 15/11 nous_msg:9f70dbbe)", async () => {
     const waiting = { id: "notification:twitch01", paneId: "pane:andy0001", title: "Finish the Twitch registration", status: "OPEN" } as unknown as SpaceNotification;
     const f = tools({ paneNeeds: async () => [waiting] });
     const held = await f.tools.execute("space_close_pane", { room: "Main", panes: ["Andy", "Bob"] }, ctx);
     expect(held).toMatchObject({ ok: false, refused: true, result: expect.stringContaining('"Finish the Twitch registration" [notification:twitch01]') });
     expect(f.roomTool).not.toHaveBeenCalled();
     expect((await f.tools.execute("space_close_pane", { room: "Main", panes: ["Bob"] }, ctx)).ok).toBe(true);
-    expect((await f.tools.execute("space_close_pane", { room: "Main", panes: ["Andy"], force: true }, ctx)).ok).toBe(true);
-    expect(f.roomTool).toHaveBeenLastCalledWith("close_pane", { panes: ["pane:andy0001"] }, expect.anything());
+    expect(await f.tools.execute("space_close_pane", { room: "Main", panes: ["Andy"], force: true }, ctx)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("force does not pass it") });
+    expect(f.roomTool).toHaveBeenCalledTimes(1);
+    // The API's own guard (every close path) refuses too: the refusal comes back as a hold, never as a failure to retry.
+    f.roomTool.mockResolvedValueOnce({ ok: false, display: "Close refused", result: "This pane stays open: it waits for the operator (\"Sign in\" [notification:x1]). Only the operator can close it now." });
+    expect(await f.tools.execute("space_close_pane", { room: "Main", panes: ["Bob"], force: true }, ctx)).toMatchObject({ refused: true, result: expect.stringContaining("Leave it open until the operator answers") });
   });
 
-  it("guards a close through space_execute the same way; force: true closes and never reaches Space Control (queue item 38)", async () => {
+  it("guards a close through space_execute the same way, force or not; force never reaches Space Control (queue item 38; 15/11 nous_msg:9f70dbbe)", async () => {
     const waiting = { id: "notification:recap01", paneId: "pane:andy0001", title: "Solve the reCAPTCHA", status: "READ" } as unknown as SpaceNotification;
     const f = tools({ paneNeeds: async () => [waiting] });
     const close = (paneIds: string[], extra: Record<string, unknown> = {}) => ({ room: "Main", actions: [{ kind: "pane", operation: "close", target: { paneIds, state: "ALL" }, ...extra }] });
@@ -1426,9 +1751,122 @@ describe("U4: the top tool failures of 19/10", () => {
     // A pane named by its name is guarded too.
     expect((await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "pane", operation: "close", target: { paneNames: ["Andy"], state: "ALL" } }] }, ctx)).ok).toBe(false);
     expect((await f.tools.execute("space_execute", close(["pane:bob00001"]), ctx)).ok).toBe(true);
-    await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "pane", operation: "close", target: { paneIds: ["pane:andy0001"] }, force: true }] }, ctx);
+    expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "pane", operation: "close", target: { paneIds: ["pane:andy0001"] }, force: true }] }, ctx)).toMatchObject({ refused: true });
+    await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "pane", operation: "close", target: { paneIds: ["pane:bob00001"] }, force: true }] }, ctx);
     const sent = (f.roomTool.mock.calls.at(-1)![1] as { arguments: { actions: Array<Record<string, unknown>> } }).arguments.actions;
-    expect(sent).toEqual([{ kind: "pane", operation: "close", target: { paneIds: ["pane:andy0001"] } }]);
+    expect(sent).toEqual([{ kind: "pane", operation: "close", target: { paneIds: ["pane:bob00001"] } }]);
+  });
+
+  describe("15/11 nous_msg:9f70dbbe: Nous never closes an unanswered operator ask", () => {
+    const ask = (extra: Partial<SpaceNotification> = {}) => ({ id: "notification:ask00001", ownerUserId: owner, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION",
+      status: "OPEN", title: "Approve the Hetzner invoice", body: "", paneId: "pane:andy0001", roomId: "room:main0001", dedupeKey: "agent-needs-you:pane:andy0001",
+      payload: {}, createdAt: "2026-11-15T12:00:00.000Z", ...extra }) as unknown as SpaceNotification;
+    const report = (id: string, at: string, status: string, summary: string) => ({ id, at, status, summary });
+    const setup = (item: SpaceNotification, handoffOpen?: boolean) => {
+      const resolve = vi.fn(async () => true);
+      const reports = [report("report:old", "2026-11-15T11:00:00.000Z", "DONE", "Done"), report("report:wait", "2026-11-15T12:10:00.000Z", "WAITING", "Waits for the operator's card"),
+        report("report:done", "2026-11-15T12:20:00.000Z", "DONE", "Paid, all done")];
+      const f = tools({ notifications: { list: async () => [], resolve, get: async () => item },
+        findReport: async (_owner, id, where) => where.paneId === "pane:andy0001" ? reports.find((entry) => entry.id === id) ?? null : null,
+        ...(handoffOpen === undefined ? {} : { handoffOpen: async () => handoffOpen }) });
+      return { ...f, resolve, close: (extra: Record<string, unknown> = {}) => f.tools.execute("space_resolve_notification", { notification: item.id, ...extra }, ctx) };
+    };
+
+    it("A: an open needs-you, hands, code or Nous pane card stays unless a newer done report of its pane is named", async () => {
+      for (const item of [ask(), ask({ kind: "QUESTION", payload: { ask: { question: "Code?", code: true } } }), ask({ source: "NOUS", kind: "QUESTION", dedupeKey: "nous:pane:pane:andy0001" }),
+        ask({ kind: "BROWSER_HANDOFF_REQUESTED", dedupeKey: "browser-handoff:pane:andy0001" })]) {
+        const f = setup(item);
+        expect(await f.close()).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("has not been answered") });
+        expect(await f.close({ report: "report:old" })).toMatchObject({ refused: true, result: expect.stringContaining("older than it") });
+        expect(await f.close({ report: "report:wait" })).toMatchObject({ refused: true, result: expect.stringContaining("does not say it is done") });
+        expect(await f.close({ report: "report:other" })).toMatchObject({ refused: true, result: expect.stringContaining("is no report of its pane") });
+        expect(f.resolve).not.toHaveBeenCalled();
+        expect(await f.close({ report: "report:done" })).toMatchObject({ ok: true });
+        expect(f.resolve).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it("operator 22/11 nous_msg:6573b247: Nous closes a needs-you or plan card with a reason, recorded; a security ask stays the operator's", async () => {
+      const reason = "Nous approved the Warm test within its allowance";
+      // The live case: Dana's (a shell pane) Warm question, already approved by Nous; it cannot post a done report.
+      for (const item of [ask({ id: "notification:249554e8f0ae49fb967293e5", title: "Dana needs you", body: "Do you approve the new Mail-only test of the Warm return?" }),
+        ask({ source: "NOUS", kind: "QUESTION", title: "Lend AI accounts to vm207", dedupeKey: "nous:plan:clipboard:TcX66vjNuZDv" })]) {
+        const f = setup(item);
+        expect(await f.close()).toMatchObject({ refused: true, result: expect.stringContaining("call again with `reason`") });
+        expect(await f.close({ reason })).toMatchObject({ ok: true, result: `Closed; reason recorded: ${reason}` });
+        expect(f.resolve).toHaveBeenCalledWith(owner, item.id, reason);
+      }
+      for (const [item, label] of [[ask(), "a payment or KYC"], [ask({ title: "Upload your passport for the KYC check" }), "a payment or KYC"],
+        [ask({ kind: "SIGN_IN", title: "Sign in to Upwork" }), "a sign-in"], [ask({ kind: "BROWSER_HANDOFF_REQUESTED", title: "Solve the page", dedupeKey: "browser-handoff:pane:andy0001" }), "a sign-in"],
+        [ask({ kind: "QUESTION", title: "Code?", payload: { ask: { question: "Code?", code: true } } }), "a one-time code"], [ask({ title: "Type the verification code Braintrust sent" }), "a one-time code"],
+        [ask({ title: "Approve the device pairing of the phone" }), "device pairing"], [ask({ title: "Turn on Sync the Vault for vm207" }), "a Vault change"],
+        [ask({ title: "Join the Acme interview at 15:00" }), "the operator's own interview or test"], [ask({ title: "Take the HackerRank coding test" }), "the operator's own interview or test"]] as const) {
+        const f = setup(item);
+        expect(securityAsk(item)).toBe(label);
+        expect(await f.close({ reason })).toMatchObject({ refused: true, result: expect.stringContaining(`needs the operator's own hands (${label})`) });
+        expect(f.resolve).not.toHaveBeenCalled();
+      }
+    });
+
+    it("with no report named, its pane's newest report decides; a refusal names it (21/11 goal 5acd171d: 14 retries of one card in 1h)", async () => {
+      const run = (last: { status: string; at: string; summary: string } | null) => {
+        const resolve = vi.fn(async () => true);
+        return tools({ notifications: { list: async () => [], resolve, get: async () => ask() }, paneLastReport: async () => last && { ...last, source: "AGENT" } })
+          .tools.execute("space_resolve_notification", { notification: "notification:ask00001" }, ctx).then((result) => ({ result, resolve }));
+      };
+      const done = await run({ status: "DONE", at: "2026-11-15T12:20:00.000Z", summary: "Paid, all done" });
+      expect(done.result).toMatchObject({ ok: true });
+      expect(done.resolve).toHaveBeenCalledTimes(1);
+      expect((await run({ status: "WAITING", at: "2026-11-15T12:10:00.000Z", summary: "Waits for the card" })).result)
+        .toMatchObject({ refused: true, result: expect.stringContaining("WAITING at 2026-11-15T12:10:00.000Z: Waits for the card) does not say it is done") });
+      expect((await run({ status: "DONE", at: "2026-11-15T11:00:00.000Z", summary: "Done" })).result).toMatchObject({ refused: true, result: expect.stringContaining("is older than the ask") });
+      expect((await run(null)).result).toMatchObject({ refused: true, result: expect.stringContaining("pass `report`") });
+    });
+
+    it("A: a browser handoff card closes once its handoff ended; an answered item or a plain notice closes as before", async () => {
+      const handoff = ask({ kind: "BROWSER_HANDOFF_REQUESTED", dedupeKey: "browser-handoff:pane:andy0001" });
+      expect(await setup(handoff, true).close()).toMatchObject({ refused: true });
+      expect(await setup(handoff, false).close()).toMatchObject({ ok: true });
+      expect(await setup(ask({ status: "ACKED" })).close()).toMatchObject({ ok: true });
+      expect(await setup(ask({ kind: "TASK_DONE", source: "ROOM" })).close()).toMatchObject({ ok: true });
+    });
+
+    it("a one-time code card closes once no tab of its site is open; an open page, an unknown one or a non-code ask keeps it (corrections 18-19/11, Braintrust)", async () => {
+      const code = ask({ title: "Braintrust verification code", body: "Type the code Braintrust sent" });
+      const run = (item: SpaceNotification, open: boolean | Error) => {
+        const resolve = vi.fn(async () => true);
+        const codePageOpen = vi.fn(async () => { if (open instanceof Error) throw open; return open; });
+        return tools({ notifications: { list: async () => [], resolve, get: async () => item }, codePageOpen })
+          .tools.execute("space_resolve_notification", { notification: item.id }, ctx).then((result) => ({ result, codePageOpen }));
+      };
+      const gone = await run(code, false);
+      expect(gone.result).toMatchObject({ ok: true });
+      expect(gone.codePageOpen).toHaveBeenCalledWith(owner, { id: "pane:andy0001", roomId: "room:main0001" }, undefined, expect.stringContaining("Braintrust"));
+      expect((await run(ask({ kind: "QUESTION", payload: { ask: { question: "Code?", code: true } } }), false)).result).toMatchObject({ ok: true });
+      expect((await run(code, true)).result).toMatchObject({ refused: true });
+      expect((await run(code, new Error("store down"))).result).toMatchObject({ refused: true });
+      expect((await run(ask(), false)).result).toMatchObject({ refused: true, result: expect.stringContaining("has not been answered") });
+    });
+
+    it("a copilot's NEEDS_USER still held for Nous closes without a report; released, a code ask or an agent's needs-you stays (21/11 goal 5acd171d)", async () => {
+      const held = { heldForNous: { until: "2099-01-01T00:00:00.000Z" } };
+      const mail = (extra: Partial<SpaceNotification> = {}) => ask({ source: "MAIL_COPILOT", kind: "NEEDS_USER", title: "Mail Copilot needs you (Mail Copilot)", payload: held, ...extra });
+      expect(await setup(mail()).close()).toMatchObject({ ok: true });
+      expect(await setup(mail({ source: "FREELANCE_COPILOT" })).close()).toMatchObject({ ok: true });
+      expect(await setup(mail({ payload: { heldForNous: { until: "2020-01-01T00:00:00.000Z" } } })).close()).toMatchObject({ refused: true });
+      expect(await setup(mail({ payload: { ...held, ask: { code: true } } })).close()).toMatchObject({ refused: true });
+      expect(await setup(ask({ payload: held })).close()).toMatchObject({ refused: true, result: expect.stringContaining("has not been answered") });
+    });
+
+    // 21/11 15c51d54f5: the waiting pane is skipped and recorded WAITING_OPERATOR; since 25/11 1ee88504e7 (tighten save guard) a save with no other pane is refused.
+    it("C: no \"save to memory\" to a pane an unanswered Needs you item or a waiting report holds", async () => {
+      const f = tools({ paneNeeds: async () => [ask()], paneLastReport: async (_owner, paneId) => paneId === "pane:bob00001" ? { status: "WAITING", source: "AGENT", at: "2026-11-15T12:00:00.000Z", summary: "Waits for the queue" } : null });
+      expect(await f.tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text: "save to memory" }, ctx))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining('1 unanswered Needs you item ("Approve the Hetzner invoice" [notification:ask00001])') });
+      expect(await f.tools.execute("space_send_to_pane", { room: "Main", panes: ["Bob"], text: "save to memory" }, ctx))
+        .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("its last report is waiting") });
+      expect(f.roomTool).not.toHaveBeenCalled();
+    });
   });
 
   it("lets a model switch \"now\" on a pane whose turn runs wait for the turn instead of failing (queue 27/10 23:33, OpenCode mid-turn)", async () => {
@@ -1444,9 +1882,13 @@ describe("U4: the top tool failures of 19/10", () => {
     const f = tools();
     const failed = (detail: string) => ({ ok: false, display: "Could not set the model", result: JSON.stringify({ status: "FAILED", results: [{ paneId: "pane:andy0001", status: "FAILED", detail }] }) });
     f.roomTool.mockResolvedValueOnce(failed("This Claude Code version cannot change the model for one pane only."));
-    expect((await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "claude-opus-5-5" }, ctx)).result).toContain("Do not retry this pane's model");
+    // Daily Nous errors 14/11 (06:04-06:06 ×3): a final answer naming the next step is a refusal; a switch that did not confirm stays a failure.
+    expect(await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "claude-opus-5-5" }, ctx))
+      .toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Do not retry this pane's model") });
     f.roomTool.mockResolvedValueOnce(failed("OpenCode model readback did not confirm the requested model."));
-    expect((await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "claude-opus-5-5" }, ctx)).result).toContain("set it again in a later turn");
+    const unconfirmed = await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "claude-opus-5-5" }, ctx);
+    expect(unconfirmed.result).toContain("set it again in a later turn");
+    expect(unconfirmed.refused).toBeFalsy();
     // Daily review 2026-10-20: a fresh Codex pane and an unreadable pane get the step that works instead of "set it again".
     f.roomTool.mockResolvedValueOnce(failed("The native Codex thread changed before model control."));
     expect((await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: "gpt-6-astra" }, ctx)).result).toContain("give it its task now and set the model after that turn");
@@ -1778,13 +2220,23 @@ describe("2026-11-06 REVIEW (daily upgrade 6/11)", () => {
     expect(outcome.result).not.toContain("Bob");
   });
 
+  it("names the holder's exact route so one retry works (17/11: 2 set_route refusals retried by trial)", async () => {
+    const setBrowserRoute = vi.fn(async () => { throw new Error("BROWSER_ROUTE: another pane uses this browser account on another network route; give both the same route, close the other pane, or use another browser account."); });
+    const row = (paneId: string, roomId: string, paneName: string, route: string) => ({ paneId, roomId, paneName, title: paneName, accountEmail: null, profile: "google-account:a", route, control: null, handoff: null, tabs: [] });
+    const f = tools({ setBrowserRoute, rooms: async () => [room("room:main0001", "Main"), room("room:dino0001", "Dino")],
+      browserTabs: async () => [row("pane:andy0001", "room:main0001", "Andy", "direct"), row("pane:dana0001", "room:dino0001", "Dana", "nord")] });
+    const outcome = await f.tools.execute("space_browser_set_route", { room: "Main", pane: "Andy", route: "greece" }, ctx);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.result).toContain("On this browser account now: Dana in Dino on route nord (pane:dana0001). Set this pane to route nord (space_browser_set_route route \"nord\"), give that pane this route, or close it (space_close_pane)");
+  });
+
   it("refuses a wait on a Claude or Codex reset while that pool has room now (6 «Claude reset 01:00 BKK» follow-ups), and keeps it when the pool is used up or a reason is given", async () => {
     let claudeLeft = 11;
     const run = vi.fn(async () => ({ ok: true, display: "Set", result: "Set" }));
-    const f = tools({ followups: { run } as never, providerRooms: async () => [{ key: "claude", name: "Claude Max", provider: "claude", accounts: 5, nowLeft: claudeLeft, atReset: null, pace: null, points: null }] });
+    const f = tools({ followups: { run } as never, providerRooms: async () => [{ key: "claude", name: "Claude Max", provider: "claude", accounts: 5, nowLeft: claudeLeft, bestAccount: "Max 3", atReset: null, pace: null, points: null }] });
     const note = "Claude reset 01:00 BKK: Cleo/Finn sends the Qualco §1 reply";
     const refused = await f.tools.execute("space_nous_followup", { op: "add", note, inMinutes: 180 }, ctx);
-    expect(refused.result).toContain("Run it now: Claude Max has room now (11% of a window left on its best account)");
+    expect(refused.result).toContain("Run it now: Claude Max has room now (account Max 3: 11% of a window left)");
     expect(run).not.toHaveBeenCalled();
     // No pool named (a site's daily cap) or a reason: as before.
     expect((await f.tools.execute("space_nous_followup", { op: "add", note: "Reddit daily cap resets 07:00 BKK: next reply slot", inMinutes: 180 }, ctx)).ok).toBe(true);
@@ -1797,6 +2249,72 @@ describe("2026-11-06 REVIEW (daily upgrade 6/11)", () => {
     expect((await f.tools.execute("space_nous_followup", { op: "add", note, inMinutes: 180 }, ctx)).ok).toBe(true);
     expect((await f.tools.execute("space_nous_followup", { op: "add", note: greek, inMinutes: 43 }, ctx)).ok).toBe(true);
     expect(run).toHaveBeenCalledTimes(4);
+  });
+
+  it("22/11 corrections ×6: a wait on a used-up pool is moved to another pool with room, by words or reason; kept when none has room or the operator holds it", async () => {
+    let codexLeft = 50;
+    const run = vi.fn(async () => ({ ok: true, display: "Set", result: "Set" }));
+    const pool = (key: string, name: string, nowLeft: number) => ({ key, name, provider: key, accounts: 2, nowLeft, bestAccount: null, atReset: null, pace: null, points: null });
+    const f = tools({ followups: { run } as never, providerRooms: async () => [pool("claude", "Claude Max", 0), pool("codex", "Codex", codexLeft)] });
+    const moved = "Move it now: Codex has room now (50% of a window left on its best account)";
+    // e1bcd1d9 (words), db5f61ca (reason), efe9585f (a plan's wait on Opus): each would have waited ~2 h on Claude.
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note: "Claude reset 13:00 BKK: send the dock brief to Bruno/Andy", inMinutes: 150 }, ctx)).result).toContain(moved);
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note: "send the reset brief to Bruno/Dana", inMinutes: 135, reason: "Claude Max has no room (noRoomGuard)" }, ctx)).result).toContain(moved);
+    expect((await f.tools.execute("space_plan_update", { plan: "clipboard:abcdefgh", waitsOn: { kind: "DATE", what: "Opus pane opens after the Opus quota reset 13:07 BKK", until: new Date(Date.now() + 150 * 60_000).toISOString() } }, ctx)).result)
+      .toContain(moved);
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note: "open the fix pane for Finn", inMinutes: 120, reason: "no provider room now" }, ctx)).result).toContain(moved);
+    expect(run).not.toHaveBeenCalled();
+    // The operator's hands, a site's own cap, or a reason that only this pool can do it: as before.
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note: "send the brief to Bruno/Dana", inMinutes: 135, reason: "the operator approves it after the Claude reset" }, ctx)).ok).toBe(true);
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note: "Reddit daily cap resets 07:00 BKK: next reply slot", inMinutes: 180 }, ctx)).ok).toBe(true);
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note: "Claude reset 13:00 BKK: send the brief", inMinutes: 150, reason: "the brief needs Finn's own Claude session" }, ctx)).ok).toBe(true);
+    // DEV3D-056: the reason the refusal asks for, naming the reset it waits on, and a host's room (no pool): as before.
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note: "Claude reset 13:00 BKK: the Opus review", inMinutes: 150, reason: "only Opus can do this review, so it waits for the Claude reset" }, ctx)).ok).toBe(true);
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note: "run the full suite when the hz host has room", inMinutes: 45 }, ctx)).ok).toBe(true);
+    // No other pool with room: the wait stands.
+    codexLeft = 5;
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note: "Claude reset 13:00 BKK: send the dock brief to Bruno/Andy", inMinutes: 150 }, ctx)).ok).toBe(true);
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note: "send the reset brief to Bruno/Dana", inMinutes: 135, reason: "Claude Max has no room (noRoomGuard)" }, ctx)).ok).toBe(true);
+    expect(run).toHaveBeenCalledTimes(7);
+  });
+
+  it("refuses a reminder on a notification that waits on no one (19/11 REVIEW: nous_followup:6fc3a737 on GoOpti's confirmed notification:c8c75085)", async () => {
+    const run = vi.fn(async () => ({ ok: true, display: "Set", result: "Set" }));
+    const card = (extra: Partial<SpaceNotification>) => ({ id: "notification:c8c75085", ownerUserId: owner, source: "AGENT", kind: "INFO", severity: "INFO", status: "OPEN",
+      title: "GoOpti booking confirmed", body: "", paneId: null, roomId: null, dedupeKey: null, payload: {}, createdAt: "2026-11-18T02:55:00.000Z", ...extra }) as unknown as SpaceNotification;
+    let item = card({});
+    const f = tools({ followups: { run } as never, notifications: { list: async () => [], resolve: async () => true, get: async () => item } });
+    const note = "Close GoOpti notification:c8c75085 once the transfer is confirmed";
+    expect(await f.tools.execute("space_nous_followup", { op: "add", note, inMinutes: 60 }, ctx))
+      .toMatchObject({ refused: true, display: "Run it now", result: expect.stringContaining("close it now (space_resolve_notification)") });
+    item = card({ status: "RESOLVED" });
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note, inMinutes: 60 }, ctx)).result).toContain("is already resolved");
+    expect(run).not.toHaveBeenCalled();
+    // An operator ask still unanswered, or a reason, keeps the wait.
+    item = card({ kind: "NEEDS_YOU", paneId: "pane:andy0001", roomId: "room:main0001", dedupeKey: "agent-needs-you:pane:andy0001" });
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note, inMinutes: 60 }, ctx)).ok).toBe(true);
+    item = card({});
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note, inMinutes: 60, reason: "GoOpti confirms by mail at 04:00Z" }, ctx)).ok).toBe(true);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("10/11 REVIEW: a clock follow-up on something with no known time is refused; a timer or scheduled run at a clock time counts as a fixed time", async () => {
+    const run = vi.fn(async () => ({ ok: true, display: "Set", result: "Set" }));
+    const f = tools({ followups: { run } as never });
+    const note = "verify X post once Marketing Copilot resumes";
+    for (const args of [{ op: "add", note, inMinutes: 240 }, { op: "add", note, inMinutes: 240, reason: "it is paused" }, { op: "add", note, inMinutes: 30 }]) {
+      const refused = await f.tools.execute("space_nous_followup", args, ctx);
+      expect(refused.result).toContain("waits on something with no known time");
+      expect(refused.refused).toBe(true);
+    }
+    // A time it names (an ETA, a reset, the reason's own time) or a fixed wait: as before.
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note: "check the restore once the backup finishes (~04:15 UTC)", inMinutes: 240 }, ctx)).ok).toBe(true);
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note, inMinutes: 240, reason: "its quota resets 18:00 BKK" }, ctx)).ok).toBe(true);
+    expect((await f.tools.execute("space_nous_followup", { op: "add", note: "Read the night batch result", inMinutes: 30 }, ctx)).ok).toBe(true);
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(deferralHold("Re-check the Gmail labels after the space-task timer runs at 03:40 BKK")).toBe("a scheduled time");
+    expect(deferralHold("the 04:00 cron sweeps it first")).toBe("a scheduled time");
+    expect(deferralHold("check the labels later")).toBeUndefined();
   });
 
   it("5/11 REVIEW item 5: a follow-up on a pane that reported done and sits idle with nothing sent since is refused, its result is read now", async () => {
@@ -1823,6 +2341,48 @@ describe("8/11 REVIEW: secret-path guard by file name, not folder substrings", (
   it("reads report folders named with token while every secret-looking file stays denied", () => {
     expect(deniedPath("nous/free-tokens/keep-delete.md")).toBe(false);
     expect(deniedPath("nous/free-tokens/")).toBe(false);
-    for (const path of ["nous/api-tokens.json", "nous/free-tokens", "tokens/x.md", "secrets/x", "my-secrets/x.md", ".env", "a/.config/b", "cookies.txt", "id_rsa", "x/server.key"]) expect(deniedPath(path), path).toBe(true);
+    for (const path of ["nous/api-tokens.json", "nous/free-tokens", "tokens/x.md", "secrets/x", "my-secrets/x.md", ".env", "a/.config/b", "cookies.txt", "id_rsa", "x/server.key", "profile/Default/Login Data", "chrome/Local State"]) expect(deniedPath(path), path).toBe(true);
+  });
+
+  it("18/11: expands short or omitted version-sync SHAs in space_remote, normalizes files.preview in space_execute, and strips model effort suffixes", async () => {
+    const request = vi.fn(async (_owner: string, _ref: string, _method: string, _path: string, body?: unknown) => ({
+      status: 202, rttMs: 12, scopes: ["read", "upgrade"], body: { status: "started", target: (body as { commit?: string })?.commit },
+      link: { id: "link:hz", label: "spaceapp-hz", origins: ["https://hz.example"], deviceId: "dev:1", scopes: ["read", "upgrade"], access: null, createdAt: "", lastSeenAt: "", connected: true }
+    }));
+    const catalog = [
+      { id: "claude-opus-5-5", supportedReasoningEfforts: ["low", "medium", "high", "max"] },
+      { id: "gemini-4-argon", supportedReasoningEfforts: ["low", "high"] }
+    ];
+    const f = tools({
+      instanceLinks: () => ({ list: async () => [], request, peers: async () => [], parity: async () => ({}) as never }),
+      inspectPane: async () => ({ text: "", state: "IDLE", sessionId: "session:1", models: catalog, tasks: [] }) as never,
+      listPanes: async () => [{ ...pane("pane:andy0001", "Andy"), terminalRuntimeId: "cli:gemini" }]
+    });
+    const noCommit = await f.tools.execute("space_remote", { instance: "spaceapp-hz", method: "POST", path: "/api/version-sync" }, ctx);
+    expect(noCommit.ok).toBe(true);
+    const fullHead = (request.mock.calls[0]![4] as { commit: string }).commit;
+    expect(fullHead).toMatch(/^[0-9a-f]{40}$/);
+    await f.tools.execute("space_remote", { instance: "spaceapp-hz", method: "POST", path: "/api/version-sync", body: { commit: fullHead.slice(0, 9) } }, ctx);
+    expect(request.mock.calls[1]![4]).toEqual({ commit: fullHead });
+
+    for (const action of [
+      { kind: "resource", operation: "files.preview", input: { id: "artifact:abc12345" } },
+      { kind: "resource", operation: "files.preview", input: { artifactId: "artifact:abc12345" } },
+      { kind: "resource", operation: "files.preview", path: "/api/artifacts/artifact:abc12345/preview" }
+    ]) {
+      const preview = await f.tools.execute("space_execute", { room: "Main", actions: [action] }, ctx);
+      expect(preview.ok).toBe(true);
+      expect((f.roomTool.mock.lastCall?.[1] as { arguments: { actions: Array<{ id?: string }> } }).arguments.actions[0]?.id).toBe("artifact:abc12345");
+    }
+
+    for (const [asked, modelId, reasoningEffort] of [
+      ["claude-opus-5-5-high", "claude-opus-5-5", "high"],
+      ["claude-opus-5-5-xhigh", "claude-opus-5-5", "max"],
+      ["gemini-4-argon-high", "gemini-4-argon", "high"]
+    ] as const) {
+      const res = await f.tools.execute("space_set_pane_model", { room: "Main", pane: "Andy", modelId: asked }, ctx);
+      expect(res.ok).toBe(true);
+      expect(f.roomTool).toHaveBeenLastCalledWith("set_pane_model", expect.objectContaining({ pane: "pane:andy0001", modelId, reasoningEffort }), expect.anything());
+    }
   });
 });

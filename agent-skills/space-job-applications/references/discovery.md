@@ -1,9 +1,13 @@
 # Finding postings and building a pool
 
 ## `space_job_discover_search` (the copilot's own scanner)
-- `space_job_discover_search {query, sites: ["greenhouse","lever","ashby"], tokens: ["acme","globex"],
-  location?, remote?, limit}` scans the public board APIs below through the Space API (no
-  network from the CLI), filters titles by every query word, marks postings already in the
+- `space_job_discover_search {query, sites: ["greenhouse","lever","ashby","himalayas","linkedin","workable"], tokens: ["acme","globex"],
+  location?, remote?, exclude?, limit}` scans the public board APIs below through the Space API (no
+  network from the CLI), filters titles by every query word, keeps only fully remote postings
+  (Lever/Ashby `workplaceType`, Ashby `isRemote`, else "remote" in the location; hybrid, on-site and
+  unknown are left out unless you pass `remote: false`), drops every posting whose title or location
+  has an `exclude` word as a whole word, drops postings older than 30 days and remote postings closed to
+  Greece/EU by their own words ("US only", "residents", "Remote (Brazil)"), marks postings already in the
   tracker (`tracked: true`) and returns `scanned` per board (404 = `no board`, normal).
 - Board tokens are company slugs: `boards.greenhouse.io/<token>`, `jobs.lever.co/<token>`,
   `jobs.ashbyhq.com/<token>`. Remember every token that works as a `SITE` memory tagged
@@ -13,6 +17,17 @@
 - Score each result against the CV 0–5 with a one-line reason (title fit, stack, seniority,
   location/remote, language) and queue only ≥ 3 through `space_job_application_start` (or hand the list
   to the operator, who queues from the Discover panel in the Queue tab).
+
+- `himalayas` is one search by `query` (tokens are ignored; no query = `needs a query`) on Himalayas'
+  remote job API with `country=Greece`, paged until the end or past `limit`. Only jobs whose
+  `locationRestrictions` are empty or name Greece/the EU are kept, never by the "Worldwide" label
+  (16/11: 54 of 55 such jobs were closed to Greece); expired jobs are dropped.
+- `linkedin` and `workable` are searches by `query` too (`location` defaults to Greece; remote unless
+  `remote: false`). LinkedIn's guest job search covers the last 30 days and answers about 30 postings a
+  search before `HTTP 429`: what it found is kept, so vary the query rather than repeat it. Its URLs are
+  `https://www.linkedin.com/jobs/view/<id>` (queue them with ats `linkedin`, Easy Apply only, the LinkedIn
+  daily cap; an external-ATS redirect is queued under that ATS's URL). Workable postings
+  (`jobs.workable.com/view/...`) are queued with ats `other`.
 
 ## Public ATS job-board APIs (JSON, no auth)
 - Greenhouse: `https://boards-api.greenhouse.io/v1/boards/{token}/jobs` →
@@ -35,13 +50,22 @@
 - Geography: an allow list and a ban list of location tokens. Roles whose title or location
   encode a mandatory language ("Japanese speaker", "(JP)") are out unless the profile lists
   that language.
+- Pass both lists as `exclude` on every `space_job_discover_search` (stacks the CV does not claim such
+  as `rust`, `go`, `terraform`, `nestjs`, `c#`, `.net`; geofences such as `us only`, `brazil`), so
+  those postings never reach scoring. Whole words: `go` drops "Backend (Go)" and "Go-to-market", not
+  "Django".
+- Before queueing a posting from HN, We Work Remotely, Workable or any aggregator link, open
+  it and check that it is still open and that its stack and its location/visa rules fit the preference
+  memories; skip it on a mismatch. `exclude` never sees these postings (jobrun:FxwhONTgsfU2: 44 of its
+  49 failures, mostly closed, a stack or a visa rule stated only in the description).
 - Exclude postings already in the tracker (same URL) before building a pool;
   `space_job_discover_search` already marks them.
 
 ## When the daily target is behind
 - A kickoff that asks for discovery means today's target cannot be reached from the queue. Search the sites
   whose daily limit still has room first (`settings.dailyCaps` against today's count), not boards that are
-  already full or postings whose company is in its 180-day cooldown.
+  already full. A company is never skipped for having received an application before: only the same posting
+  or the employer's own stated limit holds it (operator 23/11/2026).
 - Queue only postings the run will take: before `space_job_application_start`, check the CV's region and
   work-authorization rules, seniority and stack, so the run does not reject them later as not eligible.
 

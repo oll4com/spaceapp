@@ -708,7 +708,7 @@ export class PluginsService {
             } else if (stat && (current === null || current === sourceDir)) {
               await unlink(symlinkPath);
             }
-          } catch {}
+          } catch { /* a skill root this user cannot write keeps its links; the next alias and root still sync */ }
         }
         for (const retired of meta.retiredAliases ?? []) {
           const retiredPath = join(root, retired);
@@ -717,7 +717,7 @@ export class PluginsService {
             if (!stat?.isSymbolicLink()) continue;
             const current = await realpath(retiredPath).catch(() => null);
             if (current === null || current === sourceDir) await unlink(retiredPath);
-          } catch {}
+          } catch { /* a retired link that cannot be removed stays; it never blocks the other bundles */ }
         }
       }
     }

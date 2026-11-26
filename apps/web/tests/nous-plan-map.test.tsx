@@ -68,4 +68,28 @@ describe("the Plans view's plan map (operator request 2026-10-25)", () => {
     expect(screen.getByText("Parked: Waits on nous: the proof · 1/2 conditions met")).toBeTruthy();
     expect(screen.queryByText("the proof")).toBeNull();
   });
+
+  it("lists plans closed with work left in their own section, even with no open plan (operator nous_msg:8076f33e)", () => {
+    const onOpen = vi.fn();
+    render(<NousPlanMap onOpen={onOpen} overview={{ ...overview([]), closedPlans: [plan("olla", "Example shop stock sale", { progress: 69, status: "COMPLETED", paneClosed: true,
+      parked: { reason: "Waits on date: phase 2 on 26/11", met: 1, total: 2, conditions: [
+        { who: "DATE", what: "Phase 2 −50%", at: "2026-11-26T07:00:00.000Z", state: "OPEN", metAt: null },
+        { who: "OPERATOR", what: "Prices approved", at: null, state: "MET", metAt: "2026-11-14T10:00:00.000Z" }] } }),
+      plan("bare", "Closed bare", { progress: 40, status: "COMPLETED" })] }} />);
+    const section = screen.getByRole("region", { name: "Closed with work left" });
+    // Why it closed and each condition that reopens it, in place of the one-line parked count.
+    expect(within(section).queryByText(/conditions met/)).toBeNull();
+    expect(within(section).getByText("Why: Waits on date: phase 2 on 26/11")).toBeTruthy();
+    expect(within(section).getByText("Closed at 69%")).toBeTruthy();
+    const conditions = within(within(section).getByRole("list", { name: "Conditions to reopen" })).getAllByRole("listitem");
+    expect(conditions.map((item) => [item.className, item.firstElementChild?.textContent, item.lastElementChild?.textContent?.split(" · ").slice(0, 2).join(" · ")]))
+      .toEqual([["is-open", "OPEN", "DATE · Phase 2 −50%"], ["is-met", "MET", "OPERATOR · Prices approved"]]);
+    expect(conditions[0]!.textContent).toMatch(/26/);
+    expect(conditions[1]!.textContent).toMatch(/met /);
+    expect(within(section).getByText("Closed at 40%")).toBeTruthy();
+    expect(within(section).getByText("No reason or condition to reopen it was recorded.")).toBeTruthy();
+    expect(within(section).getByText("Pane closed")).toBeTruthy();
+    fireEvent.click(within(section).getByRole("button", { name: /^Open the plan Example shop stock sale, 69%/ }));
+    expect(onOpen).toHaveBeenCalledWith("clipboard:olla");
+  });
 });

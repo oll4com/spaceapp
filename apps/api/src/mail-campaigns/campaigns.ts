@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
-import { consentDailyCap, healthSendable, mailAddressDomain, mailCampaignFingerprintInput, MAIL_CAMPAIGN_APPROVED_STATES, MAIL_WARMUP_DAILY, makeNeedsYouAsk,
+import { consentDailyCap, mailAttachmentInfo, healthSendable, mailAddressDomain, mailCampaignFingerprintInput, MAIL_CAMPAIGN_APPROVED_STATES, MAIL_WARMUP_DAILY, makeNeedsYouAsk,
   renderMailTemplate, type MailCampaign, type MailCampaignPreview, type MailCampaignPreviewMail, type MailCampaignCreate, type MailCampaignEventType, type MailCampaignSend, type MailCampaignUpdate, type MailContact,
   type MailSender, type NotificationRaiseInput } from "@space/contracts";
 import type { MailCampaignsRepository } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
 import { SmtpError } from "./smtp.js";
-import { buildCampaignMime, htmlWithFooter, textWithFooter, unsubscribeToken } from "./mime.js";
+import { buildCampaignMime, campaignOpenToken, htmlWithFooter, openPixel, readUnsubscribeToken, sitePath, textWithFooter, trackLinks, unsubscribeToken } from "./mime.js";
 import type { MailTransports } from "./transports.js";
-import { dnsblCheck, dnsCheck, linkDomains, lintCheck, systemDns, type LabCheck, type LabDns } from "./lab.js";
+import { dnsblCheck, dnsCheck, linkDomains, lintCheck, mimeText, systemDns, type LabCheck, type LabDns } from "./lab.js";
 
 // Campaigns (plan clipboard:IJ2ovfLg1Lbw step 5): DRAFT → TESTING → IN_REVIEW → APPROVED → SENDING ⇄ PAUSED → DONE | STOPPED.
 // A person approves the exact fingerprint (template version, sender, lists and eligible count, schedule, pacing); approving freezes the
@@ -29,6 +29,12 @@ export interface CampaignEngineDeps {
   unsubscribeKey: Buffer;
   /** e.g. https://oll4.com/u/ ; null: mailto unsubscribe only. */
   unsubscribeBase: string | null;
+  /** A sender domain's own one-click endpoint (its mail never names another site); other domains use unsubscribeBase. */
+  unsubscribeBases?: Record<string, string>;
+  /** The open-tracking relay (open-tracking.ts `trackingRelay`); null or unset: no campaign may be tracked. */
+  trackingRelay?: string | null;
+  /** A sender domain's own relay (open-tracking.ts `trackingRelays`), so its mail never names another site; other domains use trackingRelay. */
+  trackingRelays?: Record<string, string>;
   /** Tests replace DNS. */
   dns?: LabDns;
   /** A seed mailbox's copy of one message (Gmail, read only): its labels and headers; null when the account is not one of the owner's or the mail is not there. */
@@ -62,6 +68,14 @@ export const FREQUENCY_CAP_MS = 72 * 3_600_000;
 /** An approval that has not started sending within this long goes back to review. */
 export const APPROVAL_FRESH_MS = 7 * 24 * 3_600_000;
 const STALE_SENDING_MS = 10 * 60_000;
+/** Receiving providers that throttle a new sender hardest (plan vxtgxdSGE586 step 8): each gets its own per-minute share of a sender's pace. */
+export const PROVIDER_PER_MINUTE = { gmail: 6, microsoft: 4, yahoo: 3 } as const;
+/** After a transient failure (4xx, a timeout) for a recipient at one of these providers, the sender waits this long before mailing that provider again. */
+export const PROVIDER_HOLD_MS = 15 * 60_000;
+const PROVIDER_DOMAINS: Record<string, keyof typeof PROVIDER_PER_MINUTE> = { "gmail.com": "gmail", "googlemail.com": "gmail", "outlook.com": "microsoft", "hotmail.com": "microsoft",
+  "live.com": "microsoft", "msn.com": "microsoft", "hotmail.gr": "microsoft", "outlook.com.gr": "microsoft", "yahoo.com": "yahoo", "yahoo.gr": "yahoo", "ymail.com": "yahoo", "rocketmail.com": "yahoo" };
+// shortcut: by the address's domain only, so a company domain hosted at Google or Microsoft counts as no provider; resolve its MX if those need throttling too.
+export const receivingProvider = (address: string) => PROVIDER_DOMAINS[address.split("@").pop()!.toLowerCase()] ?? null;
 /** pg's own errors when the database is out of reach (stable 3/11 08:15 UTC, the API out of heap): no sign about the campaign, so its pass is
  * skipped, not paused; the next pass goes on, and a send whose answer was lost stays SENDING until markStaleSending makes it UNKNOWN. */
 const DATABASE_UNREACHABLE = /^(timeout exceeded when trying to connect|Connection terminated)/;
@@ -89,7 +103,21 @@ export function contactValues(contact: Pick<MailContact, "name" | "attributes" |
 export function createCampaignEngine(deps: CampaignEngineDeps) {
   const { repository } = deps;
   const perMinute = new Map<string, number[]>();
+  // Keyed `${sender.id}|${provider}`: the times mailed in the last minute, and until when a transient failure holds the provider.
+  const providerMinute = new Map<string, number[]>();
+  const providerHold = new Map<string, number>();
   const dns = deps.dns ?? systemDns();
+  // "off" (no unsubscribeBase) stays mailto only for every sender
+  const unsubscribeLink = (sender: MailSender, campaignId: string, contactId: string) => deps.unsubscribeBase
+    ? `${deps.unsubscribeBases?.[sender.domain] ?? deps.unsubscribeBase}${unsubscribeToken(deps.unsubscribeKey, campaignId, contactId)}` : null;
+  const relayFor = (sender: MailSender) => deps.trackingRelays?.[sender.domain] ?? deps.trackingRelay ?? null;
+  // shortcut: only a domain's own relay (unboxexpert.com/m/v/<token>) shows web versions; give the shared relay a `v` branch before other senders get the line.
+  const webLink = (sender: MailSender, campaignId: string, contactId: string) => deps.trackingRelays?.[sender.domain]
+    ? sitePath(deps.trackingRelays[sender.domain]!, "v", unsubscribeToken(deps.unsubscribeKey, campaignId, contactId)) : null;
+  /** A recipient's template values, plus `{{webVersionUrl}}` (their web version; the variable's default when the sender has no own relay). */
+  const valuesOf = (sender: MailSender, campaignId: string, contact: MailContact) => ({ ...contactValues(contact), webVersionUrl: webLink(sender, campaignId, contact.id) });
+  const wrap = (html: string, sender: MailSender, relay: string, campaignId: string, contactId: string) =>
+    trackLinks(html, relay, campaignOpenToken(deps.unsubscribeKey, campaignId, contactId), Boolean(deps.trackingRelays?.[sender.domain]), webLink(sender, campaignId, contactId));
   /** Sample MIMEs handed out for SpamAssassin: a score counts only for the exact bytes of the campaign's current fingerprint. */
   const issued = new Map<string, { owner: string; campaignId: string; fingerprint: string; until: number }>();
 
@@ -113,7 +141,7 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
   }
   /** What would go out now, hashed: the template version, sender, lists and how many they reach, schedule and pacing. */
   /** Every recipient's mail as it would go out now (priority order); one that cannot render is left out with the reason. */
-  async function renderAudience(owner: string, row: MailCampaign, version: Awaited<ReturnType<typeof parts>>["version"]) {
+  async function renderAudience(owner: string, row: MailCampaign, version: Awaited<ReturnType<typeof parts>>["version"], sender: MailSender) {
     const audience = await repository.audience(owner, row.listIds);
     const contacts = new Map((await repository.getContacts(owner, audience.recipients.map((recipient) => recipient.contactId))).map((contact) => [contact.id, contact]));
     const skipped = { ...audience.skipped };
@@ -122,7 +150,7 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
       const contact = contacts.get(recipient.contactId);
       if (!contact) continue;
       try {
-        const rendered = renderMailTemplate(version, contactValues(contact));
+        const rendered = renderMailTemplate(version, valuesOf(sender, row.id, contact));
         mails.push({ ...recipient, name: contact.name, renderHash: renderHashOf(rendered), rendered });
       } catch { skipped["render failed (a required field is empty)"] = (skipped["render failed (a required field is empty)"] ?? 0) + 1; }
     }
@@ -131,11 +159,11 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
   /** What would go out now, hashed: template version, sender, lists in priority order, every recipient's rendered mail, schedule and pacing. */
   async function fingerprintOf(owner: string, row: MailCampaign) {
     const { version, sender } = await parts(owner, row);
-    const { mails, skipped } = await renderAudience(owner, row, version);
+    const { mails, skipped } = await renderAudience(owner, row, version, sender);
     const contentHash = sha256(mails.map((mail) => `${mail.contactId}:${mail.renderHash}`).join("\n"));
     const audience = { recipients: mails.map(({ contactId, address, priority, renderHash }) => ({ contactId, address, priority, renderHash })), skipped };
     return { fingerprint: sha256(mailCampaignFingerprintInput({ templateFingerprint: version.fingerprint, sender, listIds: row.listIds, eligible: mails.length,
-      schedule: row.schedule, pacing: row.pacing, contentHash })), audience, mails };
+      schedule: row.schedule, pacing: row.pacing, contentHash, track: row.track })), audience, mails };
   }
   async function seedsAllowed(owner: string, seeds: string[]) {
     const own = new Set((await deps.ownMailboxes?.(owner) ?? []).map((address) => address.toLowerCase()));
@@ -172,11 +200,13 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
     const flagged = lists.filter((list) => list.consentBasis === "B2B" || list.consentBasis === "IMPORTED");
     const skipped = Object.entries(audience.skipped).map(([reason, count]) => `${count} ${reason}`).join(", ");
     return ["Read every mail and approve in Mail Copilot → Campaigns (Go to pane).", `From: ${sender.displayName} <${sender.address}> (${sender.config.route}, warm-up stage ${sender.warmup.stage})`,
-      `Subject: ${version.subject}`, `Template: version ${version.version}, fingerprint ${version.fingerprint.slice(0, 8)}`,
+      `Subject: ${version.subject}`, ...(version.attachments.length ? [`Attachments: ${version.attachments.map(mailAttachmentInfo).map((file) => `${file.filename} (${Math.ceil(file.bytes / 1024)} KB)`).join(", ")}`] : []),
+      `Template: version ${version.version}, fingerprint ${version.fingerprint.slice(0, 8)}`,
       `Lists: ${lists.map((list) => `${list.name} (${list.consentBasis})`).join(", ")}`, `Recipients: ${audience.recipients.length}${skipped ? `; left out: ${skipped}` : ""}`,
       `Schedule: ${row.schedule.timeZone} days ${row.schedule.days.join(",")} ${row.schedule.fromHour}:00-${row.schedule.toHour}:00${row.schedule.startAt ? ` from ${row.schedule.startAt}` : ""}; pacing ${row.pacing.perMinute}/min, ${row.pacing.perDay}/day`,
       ...(flagged.length ? [`Flagged: ${flagged.map((list) => `${list.name} is ${list.consentBasis} (at most ${consentDailyCap(list.consentBasis)} a day)`).join("; ")}`] : []),
       ...(deps.unsubscribeBase ? [] : ["Unsubscribe: mailto only (no public one-click endpoint yet)"]),
+      ...(row.track ? ["Open tracking: on (a 1x1 pixel per recipient, added at send time; links are not wrapped)"] : []),
       `Checks: ${checks.length ? checks.map((check) => `${check.kind} ${check.status}${check.score === null ? "" : ` ${check.score}`}`).join(", ") : "none run"}`,
       `Fingerprint: ${row.fingerprint?.slice(0, 12)}`].join("\n");
   }
@@ -186,6 +216,7 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
     const { sender } = await parts(owner, row);
     if (sender.status !== "ACTIVE") throw new SpaceConflictError(`Sender ${sender.address} is ${sender.status}: run its check first.`);
     if (!sender.bulk) throw new SpaceConflictError(`Sender ${sender.address} is not for bulk mail: ${sender.bulkNote ?? "the operator turned bulk off"}.`);
+    if (row.track && !relayFor(sender)) throw new SpaceConflictError("Open tracking needs the public tracking relay, which this instance does not have: turn track off.");
     const { fingerprint, audience } = await fingerprintOf(owner, row);
     if (!audience.recipients.length) throw new SpaceConflictError("Nobody on these lists can be mailed (all suppressed, unhealthy or empty).");
     if (!deps.unsubscribeBase && audience.recipients.length > MAILTO_ONLY_MAX) throw new SpaceConflictError(`${audience.recipients.length} recipients need the public one-click unsubscribe endpoint; without it a campaign reaches at most ${MAILTO_ONLY_MAX}.`);
@@ -209,18 +240,37 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
     const last = await repository.lastMailedAt(owner, contact.id);
     if (last && Date.parse(at) - Date.parse(last) < FREQUENCY_CAP_MS) return skip("mailed by another campaign within 72 h");
     let rendered: ReturnType<typeof renderMailTemplate>;
-    try { rendered = renderMailTemplate(content, contactValues(contact)); } catch (error) { return skip(error instanceof Error ? error.message.slice(0, 200) : "render failed"); }
+    try { rendered = renderMailTemplate(content, valuesOf(sender, row.id, contact)); } catch (error) { return skip(error instanceof Error ? error.message.slice(0, 200) : "render failed"); }
     // The approval covers the mail the operator read for this recipient; a different one (its data or the template changed) is not sent on it.
     if (send.renderHash && renderHashOf(rendered) !== send.renderHash) {
       await repository.updateSend(owner, row.id, send.contactId, { status: "PENDING" }, ["SENDING"]);
       return "CHANGED";
     }
-    const unsubscribeUrl = deps.unsubscribeBase ? `${deps.unsubscribeBase}${unsubscribeToken(deps.unsubscribeKey, row.id, contact.id)}` : null;
-    const { raw, messageId } = buildCampaignMime({ from: sender.address, fromName: sender.displayName, to: contact.address, replyTo: sender.replyTo, ...rendered, language,
-      campaignId: row.id, contactId: contact.id, senderDomain: sender.domain, footerAddress: sender.footerAddress, unsubscribeUrl });
+    const unsubscribeUrl = unsubscribeLink(sender, row.id, contact.id);
+    // Tracking is added only now, after the render hash matched: the pixel and the wrapped links sit outside what the operator approved (submit refuses `track` without a relay).
+    let pixel: string | undefined;
+    let tracked: ReturnType<typeof trackLinks> | null = null;
+    const relay = row.track ? relayFor(sender) : null;
+    if (relay) {
+      const token = campaignOpenToken(deps.unsubscribeKey, row.id, contact.id);
+      tracked = wrap(rendered.html, sender, relay, row.id, contact.id);
+      await repository.trackMessage({ token, ownerUserId: owner, recipient: contact.address, recipientName: contact.name, subject: rendered.subject, links: tracked.links, campaignId: row.id, contactId: contact.id });
+      pixel = openPixel(relay, token);
+    }
+    // shortcut: List-Id/Feedback-ID name the campaign's first list even for a contact on another of its lists; look up the contact's list if Postmaster needs it per list.
+    const message = { from: sender.address, fromName: sender.displayName, to: contact.address, replyTo: sender.replyTo, ...rendered, html: tracked?.html ?? rendered.html, language,
+      campaignId: row.id, contactId: contact.id, senderDomain: sender.domain, listId: row.listIds[0]!, senderId: sender.id, footerAddress: sender.footerAddress, unsubscribeUrl, webVersionUrl: webLink(sender, row.id, contact.id),
+      attachments: content.attachments, openPixel: pixel };
+    const { raw, messageId } = buildCampaignMime(message);
     try {
       const sent = await deps.transports!.for(owner, sender).send(raw, { from: sender.address, to: contact.address });
       await repository.updateSend(owner, row.id, contact.id, { status: "SENT", messageId: sent.messageId ?? messageId, providerId: sent.providerId, sentAt: deps.now(), attempts: send.attempts + 1, error: null }, ["SENDING"]);
+      // The web version (plan vxtgxdSGE586 step 4) is the mail as it left, without the pixel; a failed save only falls back to the rebuild in webVersion.
+      try {
+        await repository.saveWebCopy({ ownerUserId: owner, campaignId: row.id, contactId: contact.id, html: htmlWithFooter({ ...message, openPixel: undefined }) });
+      } catch (error) {
+        await deps.event(owner, "NOTE", `Web copy of the mail to ${contact.address} not stored: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`, {}, row.id).catch(() => undefined);
+      }
       return "SENT";
     } catch (error) {
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
@@ -268,10 +318,10 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
     if (!inSendWindow(row.schedule, at)) return;
     const { version, sender, lists, template } = await parts(owner, row);
     if (sender.status !== "ACTIVE" || !sender.bulk) { await pause(owner, row, `sender ${sender.address} is ${sender.status}${sender.bulk ? "" : " and not for bulk"}`, true); return; }
-    // Bad signals: hard bounces over 3 % (after 30 sent) or complaints.
+    // Bad signals: hard bounces over 2 % (after 30 sent) or complaints (plan vxtgxdSGE586 step 8: bounce > 2 %, complaints > 0.1 %).
     const stats = await repository.campaignStats(owner, row.id);
     const sent = stats.byStatus.SENT ?? 0;
-    if ((sent >= 30 && stats.bounced.hard / sent > 0.03) || (row.pacing.maxHardBounces !== undefined && stats.bounced.hard > row.pacing.maxHardBounces)
+    if ((sent >= 30 && stats.bounced.hard / sent > 0.02) || (row.pacing.maxHardBounces !== undefined && stats.bounced.hard > row.pacing.maxHardBounces)
       || stats.complained >= 2 || (sent >= 1000 && stats.complained / sent > 0.001)) {
       await pause(owner, row, `${stats.bounced.hard} hard bounces and ${stats.complained} complaints in ${sent} sent: check the list's health before resuming`, true);
       await repository.updateSender(owner, sender.id, { warmup: { stage: Math.max(0, sender.warmup.stage - 1), since: at.toISOString() } });
@@ -291,11 +341,24 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
       const since = new Date(at.getTime() - row.pacing.intervalSeconds * 1000 + 1000).toISOString();
       budget = (await repository.sentByCampaignSince(owner, row.id, since)) ? 0 : Math.min(budget, 1);
     }
+    // Rows a full or held provider puts back cost no send, but a pass puts back at most its minute's pace; the rest wait for the next pass.
+    let putBack = Math.max(budget, 0);
     for (; budget > 0; budget--) {
       const next = await repository.takeNextSend(owner, row.id, at.toISOString());
       if (!next) break;
+      const provider = receivingProvider(next.address);
+      const key = `${sender.id}|${provider}`;
+      const recent = provider ? (providerMinute.get(key) ?? []).filter((time) => at.getTime() - time < 60_000) : [];
+      const held = providerHold.get(key) ?? 0;
+      if (provider && (held > at.getTime() || recent.length >= PROVIDER_PER_MINUTE[provider])) {
+        await repository.updateSend(owner, row.id, next.contactId, { status: "PENDING", nextAttemptAt: new Date(Math.max(held, at.getTime() + 60_000)).toISOString() }, ["SENDING"]);
+        if (putBack-- > 0) budget++;
+        continue;
+      }
       const outcome = await sendOne(owner, current, sender, next, version, template.language);
       if (outcome === "SENT" || outcome === "FAILED" || outcome === "RETRY") minute.push(at.getTime());
+      if (provider && outcome !== "SKIPPED" && outcome !== "CHANGED") providerMinute.set(key, [...recent, at.getTime()]);
+      if (provider && outcome === "RETRY") providerHold.set(key, at.getTime() + PROVIDER_HOLD_MS);
       if (outcome === "ROUTE") { await pause(owner, current, `the route of ${sender.address} failed; check the sender (space_mail_sender_check)`, true); break; }
       if (outcome === "CHANGED") { await backToReview(owner, current, `the mail for ${next.address} changed since the approval (its contact data or the template)`); return; }
     }
@@ -355,7 +418,12 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
   async function serverLab(owner: string, row: MailCampaign) {
     const { version, sender } = await parts(owner, row);
     const { fingerprint } = await fingerprintOf(owner, row);
-    const checks = [await dnsCheck(dns, sender), await dnsblCheck(dns, sender, linkDomains(`${version.html}\n${version.text}`)), lintCheck(version, sender.domain)];
+    // A domain with its own unsubscribe or tracking endpoint must not name the shared ones' hosts; the relay is added for tracked sends only.
+    const own = deps.unsubscribeBases?.[sender.domain] ?? deps.trackingRelays?.[sender.domain];
+    const foreignHosts = own ? [...new Set([deps.unsubscribeBase, deps.trackingRelay].flatMap((url) => url ? [new URL(url).hostname] : []))]
+      .filter((host) => host !== sender.domain && !host.endsWith(`.${sender.domain}`)) : [];
+    const sent = { text: `${mimeText((await sampleMime(owner, row)).raw)}\r\n${row.track ? relayFor(sender) ?? "" : ""}`, foreignHosts };
+    const checks = [await dnsCheck(dns, sender), await dnsblCheck(dns, sender, linkDomains(`${version.html}\n${version.text}`)), lintCheck(version, sender.domain, sent)];
     for (const check of checks) await record(owner, row, sender, fingerprint, check);
     const score = Math.min(...checks.map((check) => check.score));
     await deps.event(owner, "LAB", `Checks of "${row.name}": ${checks.map((check) => `${check.kind} ${check.status}`).join(", ")} (score ${score}).`, { fingerprint, score }, row.id);
@@ -366,20 +434,21 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
   }
   /** One sample message as a recipient would get it (the first eligible contact, else the template's defaults). */
   /** The first recipient the campaign would mail now and its template values; with none, each variable's default or `fallback(name)`. */
-  async function firstRecipient(owner: string, row: MailCampaign, version: Awaited<ReturnType<typeof parts>>["version"], fallback: (name: string) => string) {
+  async function firstRecipient(owner: string, row: MailCampaign, version: Awaited<ReturnType<typeof parts>>["version"], sender: MailSender, fallback: (name: string) => string) {
     const { fingerprint, audience } = await fingerprintOf(owner, row);
     const first = audience.recipients[0] ? await repository.getContact(owner, audience.recipients[0].contactId) : null;
-    const values = first ? contactValues(first) : Object.fromEntries(version.variables.map((variable) => [variable.name, variable.default ?? fallback(variable.name)]));
+    const values = first ? valuesOf(sender, row.id, first) : Object.fromEntries(version.variables.map((variable) => [variable.name, variable.default ?? fallback(variable.name)]));
     return { fingerprint, first, values };
   }
   async function sampleMime(owner: string, row: MailCampaign) {
     const { version, sender, template } = await parts(owner, row);
-    const { fingerprint, first, values } = await firstRecipient(owner, row, version, (name) => name);
+    const { fingerprint, first, values } = await firstRecipient(owner, row, version, sender, (name) => name);
     let rendered: ReturnType<typeof renderMailTemplate>;
     try { rendered = renderMailTemplate(version, values); } catch { rendered = renderMailTemplate(version, Object.fromEntries(version.variables.map((variable) => [variable.name, variable.default ?? variable.name]))); }
-    const unsubscribeUrl = deps.unsubscribeBase ? `${deps.unsubscribeBase}${unsubscribeToken(deps.unsubscribeKey, row.id, first?.id ?? "mcontact:sample000")}` : null;
+    const unsubscribeUrl = unsubscribeLink(sender, row.id, first?.id ?? "mcontact:sample000");
     const built = buildCampaignMime({ from: sender.address, fromName: sender.displayName, to: first?.address ?? `sample@${sender.domain}`, replyTo: sender.replyTo, ...rendered,
-      language: template.language, campaignId: row.id, contactId: first?.id ?? "mcontact:sample000", senderDomain: sender.domain, footerAddress: sender.footerAddress, unsubscribeUrl });
+      language: template.language, campaignId: row.id, contactId: first?.id ?? "mcontact:sample000", senderDomain: sender.domain, listId: row.listIds[0]!, senderId: sender.id, footerAddress: sender.footerAddress, unsubscribeUrl,
+      webVersionUrl: webLink(sender, row.id, first?.id ?? "mcontact:sample000"), attachments: version.attachments });
     return { ...built, fingerprint, sender };
   }
 
@@ -404,24 +473,64 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
       const { sender, template } = await parts(owner, row);
       const { fingerprint, mails } = await fingerprintOf(owner, row);
       return { fingerprint, status: row.status, total: mails.length, items: mails.slice(offset, offset + limit).map((mail, at) => {
-        const unsubscribeUrl = deps.unsubscribeBase ? `${deps.unsubscribeBase}${unsubscribeToken(deps.unsubscribeKey, row.id, mail.contactId)}` : null;
-        const base = { from: sender.address, fromName: sender.displayName, footerAddress: sender.footerAddress, language: template.language, unsubscribeUrl, ...mail.rendered };
+        const unsubscribeUrl = unsubscribeLink(sender, row.id, mail.contactId);
+        const base = { from: sender.address, fromName: sender.displayName, footerAddress: sender.footerAddress, language: template.language, unsubscribeUrl,
+          webVersionUrl: webLink(sender, row.id, mail.contactId), ...mail.rendered };
         return { index: offset + at, to: mail.address, from: `${sender.displayName} <${sender.address}>`, subject: mail.rendered.subject, text: textWithFooter(base) };
       }) };
     },
     /** One recipient's complete mail as it would leave (subject, from, the server's footer), with its neighbours for next and previous. */
     async previewMail(owner: string, id: string, contactId: string): Promise<MailCampaignPreviewMail> {
       const row = await campaign(owner, id);
-      const { sender, template } = await parts(owner, row);
+      const { sender, template, version } = await parts(owner, row);
       const { fingerprint, mails } = await fingerprintOf(owner, row);
       const index = mails.findIndex((mail) => mail.contactId === contactId);
       if (index < 0) throw new SpaceNotFoundError("That contact is not among this campaign's recipients (suppressed, unhealthy or not on its lists).");
       const mail = mails[index]!;
-      const unsubscribeUrl = deps.unsubscribeBase ? `${deps.unsubscribeBase}${unsubscribeToken(deps.unsubscribeKey, row.id, mail.contactId)}` : null;
-      const base = { from: sender.address, fromName: sender.displayName, footerAddress: sender.footerAddress, language: template.language, unsubscribeUrl, ...mail.rendered };
+      const unsubscribeUrl = unsubscribeLink(sender, row.id, mail.contactId);
+      const base = { from: sender.address, fromName: sender.displayName, footerAddress: sender.footerAddress, language: template.language, unsubscribeUrl,
+        webVersionUrl: webLink(sender, row.id, mail.contactId), ...mail.rendered };
       return { fingerprint, index, total: mails.length, previous: mails[index - 1]?.contactId ?? null, next: mails[index + 1]?.contactId ?? null,
         contactId: mail.contactId, to: mail.address, name: mail.name, priority: mail.priority, from: `${sender.displayName} <${sender.address}>`, replyTo: sender.replyTo,
-        subject: mail.rendered.subject, preheader: mail.rendered.preheader, html: htmlWithFooter(base), text: textWithFooter(base), renderHash: mail.renderHash };
+        subject: mail.rendered.subject, preheader: mail.rendered.preheader, html: htmlWithFooter(base), text: textWithFooter(base), renderHash: mail.renderHash,
+        attachments: version.attachments.map(mailAttachmentInfo) };
+    },
+    /**
+     * "View in browser" (plan clipboard:2wiBJQwRzN8X step 4): the mail a recipient was sent, for the relay's `/m/v/<token>` page; null unless the token is
+     * this instance's and that send is SENT. The copy stored at the send (plan vxtgxdSGE586 step 4); a send from before it is rebuilt from the template
+     * version and the contact's current fields. The open pixel is left out.
+     */
+    async webVersion(token: string): Promise<string | null> {
+      const parsed = readUnsubscribeToken(deps.unsubscribeKey, token);
+      const owner = parsed ? await repository.campaignOwner(parsed.campaignId) : null;
+      if (!parsed || !owner) return null;
+      const [row, send, contact] = await Promise.all([repository.getCampaign(owner, parsed.campaignId), repository.getSend(owner, parsed.campaignId, parsed.contactId),
+        repository.getContact(owner, parsed.contactId)]);
+      if (!row || send?.status !== "SENT" || !contact) return null;
+      const stored = await repository.webCopy(owner, row.id, contact.id);
+      if (stored !== null) return stored;
+      const [template, version, sender] = await Promise.all([repository.getTemplate(owner, row.templateId), repository.getTemplateVersion(owner, row.templateId, row.templateVersion),
+        repository.getSender(owner, row.senderId)]);
+      if (!template || !version || !sender) return null;
+      const rendered = renderMailTemplate(version, valuesOf(sender, row.id, contact));
+      const relay = row.track ? relayFor(sender) : null;
+      return htmlWithFooter({ from: sender.address, fromName: sender.displayName, footerAddress: sender.footerAddress, language: template.language, ...rendered,
+        html: relay ? wrap(rendered.html, sender, relay, row.id, contact.id).html : rendered.html,
+        unsubscribeUrl: unsubscribeLink(sender, row.id, contact.id), webVersionUrl: webLink(sender, row.id, contact.id) });
+    },
+    /**
+     * The site's newsletter archive and admin preview (plan clipboard:vxtgxdSGE586 step 4): the mail for nobody in particular, every variable at its
+     * default, without footer, unsubscribe or web line, pixel or tracked links, so it carries no one's data or token. Null when a variable has no default.
+     */
+    async archiveVersion(owner: string, row: Pick<MailCampaign, "templateId" | "templateVersion">) {
+      const [template, version] = await Promise.all([repository.getTemplate(owner, row.templateId), repository.getTemplateVersion(owner, row.templateId, row.templateVersion)]);
+      if (!template || !version) return null;
+      try {
+        const { subject, preheader, html } = renderMailTemplate(version, {});
+        return { subject, preheader, html, language: template.language };
+      } catch {
+        return null;
+      }
     },
     /** The server's own checks (DNS, blocklists, content) for what would go out now; each bound to the current fingerprint. */
     runLab: async (owner: string, id: string) => serverLab(owner, await campaign(owner, id)),
@@ -492,7 +601,7 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
       const row = { templateId: input.templateId, templateVersion: input.templateVersion ?? template.currentVersion, senderId: input.senderId, listIds: input.listIds };
       await parts(owner, row);
       await seedsAllowed(owner, input.testSeeds);
-      const created = await repository.createCampaign({ ownerUserId: owner, paneId, name: input.name, goal: input.goal, ...row, schedule: input.schedule, pacing: input.pacing, testSeeds: input.testSeeds, createdBy: by });
+      const created = await repository.createCampaign({ ownerUserId: owner, paneId, name: input.name, goal: input.goal, ...row, schedule: input.schedule, pacing: input.pacing, testSeeds: input.testSeeds, track: input.track, createdBy: by });
       await deps.event(owner, "CREATED", `Campaign "${created.name}" drafted.`, {}, created.id);
       return created;
     },
@@ -508,7 +617,7 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
       await parts(owner, next);
       if (patch.testSeeds) await seedsAllowed(owner, patch.testSeeds);
       const updated = (await repository.updateCampaign(owner, id, { name: next.name, goal: next.goal, templateId: next.templateId, templateVersion: next.templateVersion, senderId: next.senderId,
-        listIds: next.listIds, schedule: next.schedule, pacing: next.pacing, testSeeds: next.testSeeds }))!;
+        listIds: next.listIds, schedule: next.schedule, pacing: next.pacing, testSeeds: next.testSeeds, track: next.track }))!;
       await deps.event(owner, "UPDATED", `"${row.name}" changed (${Object.keys(patch).join(", ")}).`, {}, id);
       if (MAIL_CAMPAIGN_APPROVED_STATES.includes(row.status) || row.status === "IN_REVIEW") return backToReview(owner, updated, "it changed after it was asked or approved");
       return updated;
@@ -523,12 +632,12 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
       const { version, sender, template } = await parts(owner, row);
       if (sender.status !== "ACTIVE") throw new SpaceConflictError(`Sender ${sender.address} is ${sender.status}: run its check first.`);
       // The copy shows the mail the first recipient would get (their list fields filled), as the operator reads it in the review.
-      const { first, values } = await firstRecipient(owner, row, version, (name) => `[${name}]`);
+      const { first, values } = await firstRecipient(owner, row, version, sender, (name) => `[${name}]`);
       const rendered = renderMailTemplate(version, values);
       const results = [];
       for (const seed of targets) {
         const { raw, messageId } = buildCampaignMime({ from: sender.address, fromName: sender.displayName, to: seed, replyTo: sender.replyTo, ...rendered, language: template.language,
-          campaignId: row.id, contactId: "mcontact:test-seed", senderDomain: sender.domain, footerAddress: sender.footerAddress, unsubscribeUrl: null, test: true });
+          campaignId: row.id, contactId: "mcontact:test-seed", senderDomain: sender.domain, listId: row.listIds[0]!, senderId: sender.id, footerAddress: sender.footerAddress, unsubscribeUrl: null, test: true, attachments: version.attachments });
         const sent = await deps.transports.for(owner, sender).send(raw, { from: sender.address, to: seed });
         results.push({ seed, messageId: sent.messageId ?? messageId, providerId: sent.providerId, asRecipient: first?.address ?? null });
       }

@@ -23,7 +23,7 @@ import type { Pane } from "@space/contracts";
 import {
   ALargeSmall, Activity, Camera, CircleHelp, Clock3, Cpu, Crop, Crosshair, Database, Dumbbell, Eye, EyeOff,
   Gauge, Globe, Keyboard, LayoutDashboard, ListFilter, LogOut, Maximize2, Minimize2,
-  Monitor, MoreHorizontal, Music2, Network, Palette, PanelsTopLeft, Radio, RefreshCw, Rocket, ServerCog, Settings,
+  Monitor, MoreHorizontal, Music2, Palette, PanelsTopLeft, Radio, RefreshCw, Rocket, ServerCog, Settings,
   ShieldCheck, Shrink, SlidersHorizontal, Sparkles, Star, StickyNote, Terminal, Timer,
   Brain, Router, Bug, Server, CliFloats, Maximize, Minimize
 } from "../ui-theme/app-icons.js";

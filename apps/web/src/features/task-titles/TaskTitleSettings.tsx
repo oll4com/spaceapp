@@ -85,7 +85,6 @@ export function TaskTitleSettings() {
               [
                 ["perTaskHourAttempts", "Attempts per task per hour"],
                 ["perTaskDayAttempts", "Attempts per task per day"],
-                ["globalDayAttempts", "Total attempts per day"],
                 [
                   "subscriptionReservePercent",
                   "Subscription quota reserve (%)",

@@ -283,7 +283,7 @@ export function PromptVariablesManagerModal({
                 <textarea
                   id="pv-form-val"
                   rows={3}
-                  placeholder="Computer at 192.168.10.50 accessible via wireguard tunnel on router RT-BKK-01"
+                  placeholder="Computer at 192.168.88.50 accessible via wireguard tunnel on router RT-BKK-01"
                   value={formValue}
                   onChange={(e) => setFormValue(e.target.value)}
                   required

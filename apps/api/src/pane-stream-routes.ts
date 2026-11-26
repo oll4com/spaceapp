@@ -331,6 +331,8 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
         stop();
         closeBrowserSocketForHostEnd(socket, reason);
       });
+      // The host connection dropped while the host lives on (no new pid for the watch): the stream ended with it.
+      void stream.ended?.then(() => { stop(); closeBrowserSocketForHostEnd(socket, "unavailable"); });
       socket.once("close", stop);
       socket.once("error", stop);
     })().catch((error: unknown) => {
@@ -411,6 +413,8 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
         stop();
         closeBrowserSocketForHostEnd(socket, reason);
       });
+      // The host connection dropped while the host lives on (no new pid for the watch): the stream ended with it.
+      void stream.ended?.then(() => { stop(); closeBrowserSocketForHostEnd(socket, "unavailable"); });
       socket.once("close", stop);
       socket.once("error", stop);
     })().catch((error: unknown) => {

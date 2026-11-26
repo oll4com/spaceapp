@@ -64,6 +64,26 @@ function contract(name: string, make: () => Promise<AppDeviceSessionRepository>)
     await repository.dispose();
   });
 
+  // Space Link v2 (ADR-014 v2): manage, upgrade and nous go only to an allowed, live link, never to a phone or a held link.
+  it(`${name}: sets a confirmed link's scopes, never a phone's or a held one's`, async () => {
+    const repository = await make();
+    const now = Date.now(), at = new Date(now).toISOString(), expiresAt = new Date(now + 90 * day).toISOString();
+    const pair = (id: string, app: string, char: string) => repository.createPaired({ id, ownerUserId: owner, app: app as "nous", deviceName: id, sidSha256: char.repeat(64), expiresAt,
+      noisePublic: char.repeat(43), decidePublicSpki: null, decideSecurityLevel: null, requestedScopes: ["read", "act"] });
+    await pair("appdev:link0001", "spaceapp-link", "L");
+    await pair("appdev:phon0001", "nous", "P");
+    expect(await repository.setLinkScopes(owner, "appdev:link0001", ["read", "manage"], at)).toBeNull();
+    await repository.confirm(owner, "appdev:link0001", at);
+    await repository.confirm(owner, "appdev:phon0001", at);
+    expect(await repository.setLinkScopes("user:someone-else", "appdev:link0001", ["read", "manage"], at)).toBeNull();
+    expect(await repository.setLinkScopes(owner, "appdev:phon0001", ["read", "act", "manage"], at)).toBeNull();
+    expect(await repository.setLinkScopes(owner, "appdev:link0001", ["read", "act", "manage", "upgrade", "nous"], at)).toMatchObject({ scopes: ["read", "act", "manage", "upgrade", "nous"] });
+    expect(await repository.setLinkScopes(owner, "appdev:link0001", ["read", "act"], new Date(now + 91 * day).toISOString())).toBeNull();
+    await repository.revoke(owner, "appdev:link0001", at);
+    expect(await repository.setLinkScopes(owner, "appdev:link0001", ["read"], at)).toBeNull();
+    await repository.dispose();
+  });
+
   // C3 and C6 (internal MASVS review, plan clipboard:kTV3y2lwO-99 step 7): every owner's live paired phones at once (the instance keys are the
   // installation's), the decide chain's serials kept, and decide dropped from one phone (Google revoked its chain) while its other scopes stay.
   it(`${name}: lists every owner's paired phones, keeps the decide chain's serials and drops decide`, async () => {

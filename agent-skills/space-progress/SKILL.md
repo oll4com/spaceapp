@@ -1,6 +1,6 @@
 ---
 name: space-progress
-description: "Report this pane's progress to Nous, SpaceApp's mind, so it knows what every pane does without reading screens: at task start, after each finished plan step, when blocked or needing a decision (with the options and your recommendation), when only the operator can act or answer (needs-you brings them to this pane), when you submit a merge-queue ticket, and when done or failed. Use in every Space CLI pane that works on a task or plan; never in a Chat pane or Dot conversation."
+description: "Report this pane's progress to Nous: task start, each plan step, blocked or a decision, needs-you, merge-queue ticket, done or failed. Every Space CLI pane on a task; not Chat or Dot."
 metadata:
   category: CORE_POLICY
 ---
@@ -21,8 +21,10 @@ answer). Your reports add what only you know: where you are in the task and what
   `--options "A | B | C"` (at most 6) and your pick in `--recommended` (required with options). Ask last: first look it up yourself (Space
   Memory, your copilot's memory, the Vault, mail, files, the web) and name what you checked in `--checked "source: what it showed | ..."`
   (1-8 items, required; the card shows them under "Checked first"). Their answer comes back as your next prompt
-  ("Operator's answer to your needs-you (...): ..."). The card stays while you report other work; it ends with their answer, a
-  `done` or `failed` report that names the ask, `needs-you "..." --needs none` when it no longer needs them, or the pane's close.
+  ("Operator's answer to your needs-you (...): ..."), a one-time code too: so end your turn right after the report and never wait
+  or poll with timers (15/11: a turn polling for a Braintrust code never ended, and its 3 codes never arrived). The card stays while
+  you report other work; it ends with their answer, a `done` or `failed` report that names the ask, or `needs-you "..." --needs none`
+  when it no longer needs them; closing the pane does not end it.
   For a decision Nous can make, use `needs-decision`.
 - `waiting`: you wait for something that will happen on its own (a deploy, a ticket, a date).
 - `done` / `failed`: the task ended. One line in the summary; the full report (what changed, tests, ticket, next,

@@ -49,6 +49,8 @@ export interface TelegramOutboxPersistence {
     nextPartIndex: number;
     delivered: boolean;
     now: string;
+    /** The last part's chat message (spec v2 §7, step 4b: edited to "✓ Answered" when its Thread is answered in SpaceApp). */
+    messageId?: string;
   }): Promise<void>;
   retryDelivery(input: {
     deliveryId: string;
@@ -276,7 +278,7 @@ export class TelegramDeliveryWorker {
       let sentParts = 0;
       try {
         for (let partIndex = delivery.nextPartIndex; partIndex < parts.length; partIndex += 1) {
-          await client.sendMessage(integration.chatId, parts[partIndex]!);
+          const sent = await client.sendMessage(integration.chatId, parts[partIndex]!);
           sentParts += 1;
           const delivered = partIndex === parts.length - 1;
           await this.recordProgress({
@@ -284,7 +286,8 @@ export class TelegramDeliveryWorker {
             workerId: this.options.workerId,
             nextPartIndex: partIndex + 1,
             delivered,
-            now: this.now().toISOString()
+            now: this.now().toISOString(),
+            ...(delivered && sent?.messageId ? { messageId: sent.messageId } : {})
           });
         }
         this.log(delivery, "DELIVERED", null);

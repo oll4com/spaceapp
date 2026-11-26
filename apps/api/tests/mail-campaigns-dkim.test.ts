@@ -3,7 +3,7 @@
 // test's own reading of RFC 6376 (relaxed/relaxed), so a change to the signer that a receiver would reject fails here.
 import { createHash, createVerify, generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { mailSenderCreateSchema } from "@space/contracts";
+import { mailSenderCreateSchema, mailSenderUpdateSchema } from "@space/contracts";
 import { InMemoryMailCampaignsRepository } from "@space/db";
 import { DKIM_SIGNED_HEADERS, dkimSign } from "../src/mail-campaigns/dkim.js";
 import { buildCampaignMime } from "../src/mail-campaigns/mime.js";
@@ -38,7 +38,7 @@ function verify(raw: Buffer): { ok: boolean; tags: Record<string, string> } {
 }
 
 const mime = () => buildCampaignMime({ from: "ntheo@example.invalid", fromName: "oll4", to: "buyer@example.gr", replyTo: null, subject: "Νέα προϊόντα", preheader: "",
-  html: "<p>Γεια σας</p>", text: "Γεια σας", language: "el", campaignId: "mcamp:abcdefghijkl", contactId: "mcontact:abcdefghijkl", senderDomain: "oll4.com",
+  html: "<p>Γεια σας</p>", text: "Γεια σας", language: "el", campaignId: "mcamp:abcdefghijkl", contactId: "mcontact:abcdefghijkl", senderDomain: "oll4.com", listId: "mlist:abcdefghijkl", senderId: "msender:abcdefghijkl",
   footerAddress: "oll4, Athens", unsubscribeUrl: "https://oll4.com/u/?t=abc", test: false }).raw;
 
 describe("DKIM signature of SMTP campaign mail", () => {
@@ -79,5 +79,20 @@ describe("DKIM signature of SMTP campaign mail", () => {
     expect((await service.updateSender("user:o", smtp.id, { dkim: null }))!.config).not.toHaveProperty("dkim");
     const gmail = await service.createSender("user:o", mailSenderCreateSchema.parse({ ...base, address: "someone@gmail.com", config: { route: "GMAIL_CONNECTOR", account: "someone@gmail.com" } }), "test");
     await expect(service.updateSender("user:o", gmail.id, { dkim })).rejects.toThrow(/Gmail signs its own/);
+  });
+
+  it("rebinds an SMTP sender's password to another kept Vault key, keeping its DKIM, with no Vault edit for the operator (nous_msg:832a500e)", async () => {
+    const repository = new InMemoryMailCampaignsRepository();
+    const service = createMailCampaignsService({ repository, transports: { for: () => ({}) } as unknown as MailTransports });
+    const base = { displayName: "Unbox", footerAddress: "Unbox, Athens" };
+    const dkim = { selector: "space", vaultKeyId: "vault_key:dkimkey01" };
+    const smtp = await service.createSender("user:o", mailSenderCreateSchema.parse({ ...base, address: "info@brand.example",
+      config: { route: "SMTP", host: "smtp.brand.example", port: 465, username: "info@brand.example", vaultKeyId: "vault_key:joinedtwo1", dkim } }), "test");
+    expect((await service.updateSender("user:o", smtp.id, { vaultKeyId: "vault_key:mailboxonly" }))!.config).toEqual({ route: "SMTP", host: "smtp.brand.example", port: 465,
+      username: "info@brand.example", vaultKeyId: "vault_key:mailboxonly", dkim });
+    expect((await service.events("user:o", {})).map((row) => row.message)).toContain("Vault key of info@brand.example changed to vault_key:mailboxonly; run its check.");
+    expect(mailSenderUpdateSchema.safeParse({ vaultKeyId: "not-a-key" }).success).toBe(false);
+    const gmail = await service.createSender("user:o", mailSenderCreateSchema.parse({ ...base, address: "someone@gmail.com", config: { route: "GMAIL_CONNECTOR", account: "someone@gmail.com" } }), "test");
+    await expect(service.updateSender("user:o", gmail.id, { vaultKeyId: "vault_key:mailboxonly" })).rejects.toThrow(/keeps no Vault key/);
   });
 });

@@ -3,7 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { PostgresGatewayRepository } from "@space/db";
-import { SPACE_INSTALL_ROOT, type GatewaySettings } from "@space/contracts";
+import { SPACE_INSTALL_ROOT } from "@space/contracts";
 import { AccountPool } from "./accounts/account-pool.js";
 import { StickyStore } from "./accounts/sticky-store.js";
 import { registerAccountAdminRoutes } from "./admin/account-admin.js";
@@ -54,6 +54,7 @@ import { createPriorityPanes, registerPriorityPanesRoute } from "./admin/priorit
 import { trackKeySettlement } from "./policy.js";
 import { registerMakeRelayRoutes } from "./providers/make/make-relay.js";
 import pg from "pg";
+import { staleRead } from "./stale-read.js";
 import { createNousTenancy, type NousTenancy } from "./nous/http.js";
 import { createTenantKeyResolver, type TenantKeyResolver } from "./nous/tenant-keys.js";
 
@@ -90,16 +91,14 @@ async function main() {
     credentialKeyPresent = true;
   }
   await checkKey();
-  let settingsCache: { at: number; value: GatewaySettings } | null = null;
   // Prompt-cache affinity follows its setting; the stores read it on every binding.
   let promptCacheTtlMs = 1800_000;
-  const settings = async () => {
-    if (!settingsCache || Date.now() - settingsCache.at > 5_000) {
-      settingsCache = { at: Date.now(), value: await repository.getSettings() };
-      promptCacheTtlMs = settingsCache.value.promptCacheTtlSeconds * 1000;
-    }
-    return settingsCache.value;
-  };
+  const settingsRead = staleRead(async () => {
+    const value = await repository.getSettings();
+    promptCacheTtlMs = value.promptCacheTtlSeconds * 1000;
+    return value;
+  }, 5_000);
+  const settings = () => settingsRead.get();
   // LAN access: the settings override the env file when the operator chose ON or OFF there.
   const startupSettings = await settings().catch(() => null);
   if (startupSettings && startupSettings.lanMode !== "ENV" && !config.ngw) {
@@ -203,8 +202,9 @@ async function main() {
       const selfHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host.includes(":") ? `[${config.host}]` : config.host;
       registerSpacePoolRoutes(app, { settings, selfBaseUrl: `http://${selfHost}:${config.port}`, internalToken: config.internalToken,
         isDead: () => false });
+      const images = registerImageRoutes(app, helpers, { antigravityPool, codexPool, repository, logs, settings, settleKeyUsage, modelPlans });
       registerKeyPoolRoutes(app, helpers, { pools: { openai: openAiApiPool, openrouter: openRouterPool, deepseek: deepSeekPool, gemini: googleAiPool, ...freePools }, logs, settings,
-        settleKeyUsage, checks: modelChecks, internalToken: config.internalToken,
+        settleKeyUsage, checks: modelChecks, internalToken: config.internalToken, geminiProChat: images.geminiProChat,
         // The Claude credit pools' spend since their grant began, from the gateway's daily sums.
         creditSpent: async (provider, sinceDay) => (await repository.providerDailyUsage(sinceDay)).filter((row) => row.provider === provider).reduce((sum, row) => sum + row.costUsd, 0) });
       registerAntigravityProxyRoutes(app, { pool: antigravityPool, repository, logs, settings, sticky: sticky.antigravitySessions, compression,
@@ -214,7 +214,6 @@ async function main() {
         dailyCredits: Number(process.env.SPACE_GATEWAY_MAKE_DAILY_CREDITS) || undefined,
         usedTokens: async (day) => (await repository.providerDailyUsage(day)).filter((row) => row.provider === "MAKE" && row.day === day)
           .reduce((sum, row) => ({ inputTokens: sum.inputTokens + row.inputTokens, outputTokens: sum.outputTokens + row.outputTokens }), { inputTokens: 0, outputTokens: 0 }) });
-      registerImageRoutes(app, helpers, { antigravityPool, codexPool, repository, logs, settings, settleKeyUsage, modelPlans });
       registerAntigravitySignInRoutes(app, { repository, pool: antigravityPool, cipher: () => cipher, internalToken: config.internalToken });
       registerClaudeSignInRoutes(app, { repository, pool: claudePool, cipher: () => cipher, internalToken: config.internalToken });
       registerAccountAdminRoutes(app, { repository, cipher: () => cipher, internalToken: config.internalToken,

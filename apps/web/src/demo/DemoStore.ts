@@ -53,7 +53,7 @@ import { DEMO_LOCAL_REPLY, SpaceApiError } from "../runtime/SpaceRuntime.js";
 import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-presentation.js";
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
 import { MockServices } from "./mock-services.js";
-import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
+import { getCliMockTranscript, getCliMockDefinition } from "./mock-cli-transcripts.js";
 import { SPACE_INSTALL_ROOT } from "@space/contracts";
 
 export const DEMO_WARNING = "DEMO MODE — Everything is simulated locally. No production service is connected.";
@@ -282,7 +282,7 @@ export class DemoStore {
       this.fixture.links = links; this.fixture.clipboardItems = clipboardItems; this.fixture.taskItems = taskItems;
       this.fixture.auth.settings = settings;
       this.fixture.artifacts = artifacts;
-      if (Array.isArray(state.messages) && state.messages.every((row: any) => Array.isArray(row) && typeof row[0] === "string" && Array.isArray(row[1]))) this.agentMessages = new Map(state.messages);
+      if (Array.isArray(state.messages) && state.messages.every((row: unknown) => Array.isArray(row) && typeof row[0] === "string" && Array.isArray(row[1]))) this.agentMessages = new Map(state.messages);
       if (Array.isArray(state.dotSessions)) {
         const owned = new Set(this.demoDots().map(dot => dot.dotId));
         const records = state.dotSessions.filter((row: unknown) => Array.isArray(row) && typeof row[0] === "string" && row[1]
@@ -988,7 +988,8 @@ export class DemoStore {
             roomId: room.id,
             runningCliCount: runningPanes.length,
             paneCount: this.fixture.panes.filter((pane) => pane.roomId === room.id && !pane.isClosed).length,
-            runtimeIds: [...new Set(runningPanes.map((pane) => pane.terminalRuntimeId ?? "cli:codex"))]
+            runtimeIds: [...new Set(runningPanes.map((pane) => pane.terminalRuntimeId ?? "cli:codex"))],
+            paneModes: [...new Set(this.fixture.panes.filter((pane) => pane.roomId === room.id && !pane.isClosed).map((pane) => pane.mode))]
           };
         }),
         sampledAt: DEMO_FIXED_AT
@@ -2042,7 +2043,7 @@ export class DemoStore {
           normalized = `https://${normalized}`;
         }
         let hostname = "";
-        try { hostname = new URL(normalized).hostname; } catch {}
+        try { hostname = new URL(normalized).hostname; } catch { /* not a URL: keep "" */ }
         const isHttp = /^http:\/\//i.test(normalized);
         return Promise.resolve({
           url: normalized,
@@ -2059,7 +2060,7 @@ export class DemoStore {
           throw new SpaceApiError("HTTP links can only open in a new tab.", { status: 400, code: "INVALID_LINK" });
         }
         let defaultTitle = "Link";
-        try { defaultTitle = new URL(url).hostname; } catch {}
+        try { defaultTitle = new URL(url).hostname; } catch { /* not a URL: keep "Link" */ }
         const link: UserLink = {
           id: this.nextId("link"),
           title: (input.title?.trim() || defaultTitle),
@@ -2089,11 +2090,12 @@ export class DemoStore {
       }
       case "deleteLink": if (this.publicMock) this.fixture.links = this.fixture.links.filter(item => item.id !== roomId); return Promise.resolve({ id: roomId!, deleted: true as const });
       case "clipboardItems": {
-        const query = (args[0] ?? {}) as { q?: string; source?: ClipboardItem["source"]; includeCompleted?: boolean; page?: number; pageSize?: number };
+        const query = (args[0] ?? {}) as { q?: string; source?: ClipboardItem["source"]; includeCompleted?: boolean; unfinished?: boolean; page?: number; pageSize?: number };
         const needle = query.q?.trim().toLowerCase();
         const items = this.fixture.clipboardItems.filter((item) =>
           (query.source === undefined || item.source === query.source) &&
           (query.includeCompleted !== false || !item.isCompleted) &&
+          (!query.unfinished || !item.isCompleted || item.progressPercentage < 100) &&
           (!needle || item.text.toLowerCase().includes(needle))
         );
         return Promise.resolve(structuredClone(requestedPage(items, query)));
@@ -2137,10 +2139,10 @@ export class DemoStore {
         const item = this.fixture.clipboardItems.find((candidate) => candidate.id === roomId);
         if (!item) throw new SpaceApiError("Clipboard item not found.", { status: 404, code: "NOT_FOUND" });
         const input = (args[1] ?? {}) as { executionStatus?: string; progressPercentage?: number; activeAgent?: string; steps?: unknown[] };
-        if (input.executionStatus) item.executionStatus = input.executionStatus as any;
+        if (input.executionStatus) item.executionStatus = input.executionStatus as typeof item.executionStatus;
         if (input.progressPercentage !== undefined) item.progressPercentage = input.progressPercentage;
         if (input.activeAgent !== undefined) item.activeAgent = input.activeAgent;
-        if (input.steps) item.steps = input.steps as any;
+        if (input.steps) item.steps = input.steps as typeof item.steps;
         if (item.progressPercentage === 100) item.isCompleted = true;
         return Promise.resolve(structuredClone(item));
       }
@@ -2188,7 +2190,8 @@ export class DemoStore {
       case "updateTaskItem": {
         const task = this.fixture.taskItems.find((candidate) => candidate.id === roomId);
         if (!task) throw new SpaceApiError("Task not found.", { status: 404, code: "NOT_FOUND" });
-        const { schedule: _schedule, ...changes } = args[1] as Partial<TaskItem>;
+        const changes = { ...(args[1] as Partial<TaskItem>) };
+        delete changes.schedule;
         Object.assign(task, changes, {
           characterCount: "objective" in (args[1] as { objective?: string })
             ? Array.from((args[1] as { objective: string }).objective).length

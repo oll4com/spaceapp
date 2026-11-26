@@ -4,7 +4,7 @@ import { Clock3 } from "../ui-theme/app-icons.js";
 import { DesktopWidgetContainer } from "./DesktopWidgetContainer.js";
 import type { ClockWidgetConfig, DesktopWidgetState } from "./types.js";
 import { DEFAULT_CLOCK_CONFIG, loadWidgetConfig, saveWidgetConfig } from "./widget-storage.js";
-import { formatAppDate, DATE_TIME_SETTINGS_UPDATED_EVENT } from "../date-time-settings/date-time-settings.js";
+import { formatAppDate } from "../date-time-settings/date-time-settings.js";
 
 interface ClockWidgetProps {
   state: DesktopWidgetState;

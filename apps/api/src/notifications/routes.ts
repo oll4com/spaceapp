@@ -12,6 +12,7 @@ export interface NotificationRouteDependencies {
 }
 
 const idParams = z.object({ id: notificationIdSchema }).strict();
+const readAllBody = z.object({ id: notificationIdSchema.optional() }).strict();
 
 /** The owner's notifications: list, what waits, read / acknowledge, and a test notification for the settings card. */
 export function registerNotificationRoutes(app: FastifyInstance, service: NotificationService, deps: NotificationRouteDependencies): void {
@@ -31,7 +32,9 @@ export function registerNotificationRoutes(app: FastifyInstance, service: Notifi
 
   app.post("/api/notifications/read-all", routeOptions, async (request) => {
     const owner = await deps.authenticatedOwner(request);
-    return { read: await service.readAll(owner) };
+    // `id`: one card's Mark read; a needs-you card leaves the unread counts and still waits, never acknowledged (operator 17/11 14:04 BKK).
+    const { id } = parseBody(readAllBody, request.body ?? {});
+    return { read: await service.readAll(owner, id) };
   });
 
   app.post("/api/notifications/test", routeOptions, async (request) => {

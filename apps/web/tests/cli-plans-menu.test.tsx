@@ -490,7 +490,7 @@ describe("CliPlansMenu", () => {
     vi.mocked(api.rooms).mockResolvedValueOnce({
       data: [{ id: "room:ops", name: "Ops" }],
       pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 }
-    } as any);
+    } as never);
     render(<CliPlansMenu pane={pane} active={true} disabled={false} onSelectPlan={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: /Active plan: Mine/i }));
     fireEvent.click(await screen.findByRole("button", { name: /All plans/ }));
@@ -520,9 +520,9 @@ describe("CliPlansMenu", () => {
       ],
       pagination: { page: 1, pageSize: 100, totalItems: 2, totalPages: 1 }
     });
-    vi.mocked(api.rooms).mockResolvedValueOnce({ data: [{ id: "room:ops", name: "Ops" }], pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 } } as any);
+    vi.mocked(api.rooms).mockResolvedValueOnce({ data: [{ id: "room:ops", name: "Ops" }], pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 } } as never);
     vi.mocked(api.panes).mockResolvedValueOnce({ data: [{ id: "pane:other", paneName: "Andy", title: "Security Copilot 1" }],
-      pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 } } as any);
+      pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 } } as never);
     render(<CliPlansMenu pane={{ id: "pane:own", title: "Own" }} active={true} disabled={false} onSelectPlan={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: /Open plans/i }));
     expect(await screen.findByText("On Andy · Room: Ops")).toBeDefined();
@@ -538,6 +538,23 @@ describe("CliPlansMenu", () => {
     expect(within(list).getByText("On a closed pane")).toBeDefined();
     fireEvent.click(screen.getByRole("button", { name: "No pane (1)" }));
     expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("lists plans closed under 100% so any unfinished plan can be picked (operator 26/11)", async () => {
+    vi.mocked(api.clipboardItems).mockResolvedValue({
+      data: [
+        { ...mockPlans[1]!, id: "clipboard:left", title: "Closed with work left", isCompleted: true, executionStatus: "IN_PROGRESS", progressPercentage: 45 },
+        { ...mockPlans[1]!, id: "clipboard:done", title: "Closed at 100", isCompleted: true, executionStatus: "IN_PROGRESS", progressPercentage: 100 }
+      ],
+      pagination: { page: 1, pageSize: 100, totalItems: 2, totalPages: 1 }
+    });
+    render(<CliPlansMenu pane={{ id: "pane:own", title: "Own" }} active={true} disabled={false} onSelectPlan={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Open plans/i }));
+    const list = await screen.findByRole("list", { name: "Open plans list" });
+    expect(within(list).getByText("Closed with work left")).toBeDefined();
+    expect(within(list).getByText("Closed")).toBeDefined();
+    expect(within(list).queryByText("Closed at 100")).toBeNull();
+    expect(api.clipboardItems).toHaveBeenCalledWith(expect.objectContaining({ source: "PLAN", unfinished: true }));
   });
 
   it("keeps plans viewable without an attached CLI but holds back sending", async () => {
@@ -585,7 +602,7 @@ describe("CliPlansMenu", () => {
     const pane = { id: "pane:keys", title: "Keys" };
     vi.mocked(api.clipboardItems).mockResolvedValue({
       data: [{ ...mockPlans[1]!, id: "clipboard:keys", title: "Keyboard plan", paneId: "pane:keys", executionStatus: "IN_PROGRESS", progressPercentage: 40,
-        steps: [{ id: "k1", order: 1, title: "First stage", status: "IN_PROGRESS", progress: 40, agent: null, notes: "Stage notes here", proof: null, startedAt: null, completedAt: null }] as any }],
+        steps: [{ id: "k1", order: 1, title: "First stage", status: "IN_PROGRESS", progress: 40, agent: null, notes: "Stage notes here", proof: null, startedAt: null, completedAt: null }] as never }],
       pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 }
     });
     render(<CliPlansMenu pane={pane} active={true} disabled={false} onSelectPlan={vi.fn()} />);
@@ -603,7 +620,7 @@ describe("CliPlansMenu", () => {
   });
 
   it("never rebinds a plan that another pane holds, even when this pane's task names it", async () => {
-    const pane = { id: "pane:second", title: "Second", taskMetadata: { title: "Run plan", planId: "clipboard:held" } } as any;
+    const pane = { id: "pane:second", title: "Second", taskMetadata: { title: "Run plan", planId: "clipboard:held" } } as never;
     vi.mocked(api.clipboardItems).mockResolvedValue({
       data: [{ ...mockPlans[1]!, id: "clipboard:held", title: "Held plan", paneId: "pane:first", paneTitle: "First", executionStatus: "IN_PROGRESS", progressPercentage: 30 }],
       pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 }
@@ -1152,7 +1169,7 @@ describe("CliPlansMenu", () => {
         description: "Implement the SpaceApp First Setup plan",
         planId: "clipboard:PeKyBmhjRaNm"
       }
-    } as any;
+    } as never;
 
     const firstSetupPlan: ClipboardItem = {
       id: "clipboard:PeKyBmhjRaNm",
@@ -1167,7 +1184,7 @@ describe("CliPlansMenu", () => {
       steps: [
         { id: "s1", order: 1, title: "Initial audit", status: "COMPLETED", progress: 100 },
         { id: "s2", order: 2, title: "Implementation", status: "IN_PROGRESS", progress: 75 }
-      ] as any,
+      ] as never,
       lastProgressAt: "2026-10-09T08:00:00.000Z",
       roomId: null,
       paneId: null,
@@ -1286,7 +1303,7 @@ describe("CliPlansMenu", () => {
       pagination: { page: 1, pageSize: 100, totalItems: data.length, totalPages: 1 }
     });
     const mockByQuery = (completedForPane: ClipboardItem[]) => {
-      vi.mocked(api.clipboardItems).mockImplementation(async (query: any = {}) =>
+      vi.mocked(api.clipboardItems).mockImplementation(async (query: { paneId?: string } = {}) =>
         query.paneId ? page(completedForPane.filter((p) => p.paneId === query.paneId)) : page(mockPlans)
       );
     };
@@ -1318,6 +1335,19 @@ describe("CliPlansMenu", () => {
       });
     });
 
+    it("shows a pane plan parked at 0% as Parked 0%, never ✓ 100% (operator 26/11)", async () => {
+      mockByQuery([{ ...completedHandoff, isCompleted: true, executionStatus: "COMPLETED", progressPercentage: 0,
+        parked: { reason: "Needs the operator", since: "2026-11-26T06:51:22.396Z", resumedAt: null, conditions: [] } }]);
+      render(<CliPlansMenu pane={{ id: "pane:bob", title: "Bob" }} active={true} disabled={false} onSelectPlan={vi.fn()} />);
+
+      const button = await screen.findByRole("button", { name: /Parked plan: Handoff Plan.*\(0%\)/i });
+      expect(button.className).not.toContain("is-plan-completed");
+      expect(screen.queryByText("✓ 100%")).toBeNull();
+      fireEvent.click(button);
+      await waitFor(() => expect(screen.getByText("PARKED")).toBeDefined());
+      expect(screen.queryByText("COMPLETED")).toBeNull();
+    });
+
     it("reads the pane's completed plan again only when the open plans change, not on every reveal (PERF-001 C-3)", async () => {
       mockByQuery([completedHandoff]);
       const paneReads = () => vi.mocked(api.clipboardItems).mock.calls.filter(([query]) => (query as { paneId?: string } | undefined)?.paneId === "pane:bob").length;
@@ -1334,7 +1364,7 @@ describe("CliPlansMenu", () => {
       expect(paneReads()).toBe(1);
 
       // An open plan moves: the completed-plan read runs once more.
-      vi.mocked(api.clipboardItems).mockImplementation(async (query: any = {}) =>
+      vi.mocked(api.clipboardItems).mockImplementation(async (query: { paneId?: string } = {}) =>
         query.paneId ? page([completedHandoff]) : page([{ ...mockPlans[0]!, progressPercentage: 40 }, mockPlans[1]!])
       );
       notifyClipboardUpdated();
@@ -1356,7 +1386,7 @@ describe("CliPlansMenu", () => {
 
     it("prefers an open plan bound to the pane over its completed one", async () => {
       const openForBob = { ...mockPlans[1]!, paneId: "pane:bob" };
-      vi.mocked(api.clipboardItems).mockImplementation(async (query: any = {}) =>
+      vi.mocked(api.clipboardItems).mockImplementation(async (query: { paneId?: string } = {}) =>
         query.paneId ? page([completedHandoff]) : page([mockPlans[0]!, openForBob])
       );
       render(<CliPlansMenu pane={{ id: "pane:bob", title: "Bob" }} active={true} disabled={false} onSelectPlan={vi.fn()} />);

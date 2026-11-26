@@ -29,6 +29,16 @@ describe("Needs you files", () => {
     expect(needsYouFiles(given)).toEqual([deck]);
   });
 
+  // 23/11 04:31 (nous_msg:acb1aa48 «Δεν μου δίνεις λινκ»): decision 45471585 named its files only in refs.files, as workspace paths; the card had no chip.
+  it("a workspace path given in payload.files is filed and becomes the card's chip", async () => {
+    const repository = new InMemorySpaceNotificationsRepository();
+    const annotate = vi.fn(async (_owner: string, text: string) => text.replace("/home/u/agent-workspace/deck.md", "/home/u/agent-workspace/deck.md (artifact:deckdeck0001)"));
+    const service = createNotificationService({ repository, eventBus: new SpaceEventBus(), userSettings: async () => ({ notifications: null }) as never,
+      nous: { held: async () => false, raised: () => undefined, agentFiles: async () => [script, deck], annotate } });
+    const raised = await service.raise({ ...card("The full texts are in the attached files."), payload: { files: ["/home/u/agent-workspace/deck.md"] } });
+    expect(needsYouFiles(raised)).toEqual([deck]);
+  });
+
   it("an older card gets its files when Needs you is read, stored once (an empty list too)", async () => {
     const { repository, service, agentFiles } = fixture();
     const { notification: old } = await repository.raise(card("The YC founder video script is in Agent Files › Documents/Funding."));

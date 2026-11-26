@@ -23,7 +23,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, X509Certificate } from "node:crypto";
 import { accessSync, closeSync, constants, existsSync, openAsBlob, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,6 +91,14 @@ export function gradleHomeFor(paths, env = process.env) {
   return { home: join(paneFolder(env), ".gradle-home"), readOnlyCache: existsSync(join(paths.gradleHome, "caches")) ? join(paths.gradleHome, "caches") : null };
 }
 
+/**
+ * Host-wide Gradle init scripts (the shared toolchain home's and ~/.gradle's init.d) apply in whichever home the build uses: a pane's own
+ * home or SPACE_APP_STUDIO_GRADLE_HOME read neither, so public-host's no-Android-build guard (operator 15/11 nous_msg:00d22ef1) held only on stable.
+ */
+export async function carryInitScripts(home, sources) {
+  for (const source of sources) if (source !== home && existsSync(join(source, "init.d"))) await cp(join(source, "init.d"), join(home, "init.d"), { recursive: true, force: true });
+}
+
 /** The Gradle version a project's wrapper names (android/gradle/wrapper/gradle-wrapper.properties). */
 export function wrapperGradleVersion(text) {
   return /distributionUrl=.*gradle-([0-9][0-9A-Za-z.-]*?)-(?:bin|all)\.zip/.exec(text)?.[1] ?? null;
@@ -147,6 +155,7 @@ export async function runBuild(dir, { upload = true, signing = "debug", releaseB
   const paths = toolchainPaths(toolchainDir);
   const gradle = gradleHomeFor(paths, baseEnv);
   await mkdir(gradle.home, { recursive: true });
+  await carryInitScripts(gradle.home, [paths.gradleHome, join(baseEnv.HOME ?? homedir(), ".gradle")]);
   const env = { ...baseEnv, CI: "1", EXPO_NO_TELEMETRY: "1", JAVA_HOME: paths.javaHome, ANDROID_HOME: paths.sdk, ANDROID_SDK_ROOT: paths.sdk, GRADLE_USER_HOME: gradle.home,
     ...(gradle.readOnlyCache ? { GRADLE_RO_DEP_CACHE: gradle.readOnlyCache } : {}), PATH: `${join(paths.javaHome, "bin")}:${baseEnv.PATH ?? ""}` };
   const unlock = lockBuild(gradle.home);

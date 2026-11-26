@@ -28,6 +28,7 @@ import { registerMarketingCopilot, type MarketingCopilotWiring } from "./marketi
 import { registerMemoryMaintenanceFailureWatch } from "./memory-maintenance-watch.js";
 import { registerMonitoringCopilot, type MonitoringCopilotWiring } from "./monitoring-copilot/wiring.js";
 import { startBrowserHandoffNotifications } from "./notifications/browser-handoff.js";
+import { ownerQuietNow } from "./owner-clock.js";
 import { registerNotificationRoutes } from "./notifications/routes.js";
 import type { NotificationService } from "./notifications/service.js";
 import { startPaneCli } from "./nous/copilot-control.js";
@@ -46,6 +47,7 @@ import { pinnedMemoryFor } from "./nous/operator-facts.js";
 import { registerAppointments } from "./appointments.js";
 import { submitCliPrompt } from "./cli-prompt-submit.js";
 import { registerSignatures } from "./signatures.js";
+import { trackingRelay, trackingRelays, type MailTracker } from "./mail-campaigns/open-tracking.js";
 
 type CopilotPaneRoutesDeps = {
   store: SpaceStore; config: SpaceApiConfig; auth: Pick<AuthConfig, "sessionSecret" | "operatorEmail">; eventBus: SpaceEventBus;
@@ -61,7 +63,7 @@ type CopilotPaneRoutesDeps = {
     appStudioRepository?: AppStudioWiring["repository"]; appStudioKickoff?: AppStudioWiring["kickoff"]; securityCopilotRepository?: SecurityCopilotWiring["repository"];
     securityCopilotFeeds?: SecurityCopilotWiring["feeds"]; securityCopilotKickoff?: SecurityCopilotWiring["kickoff"]; securityCopilotWatch?: boolean;
     monitoringCopilotRepository?: MonitoringCopilotWiring["repository"]; monitoringCopilotCollector?: MonitoringCopilotWiring["collector"];
-    monitoringCopilotKickoff?: MonitoringCopilotWiring["kickoff"]; monitoringCopilotWatch?: boolean; mailCampaignsRepository?: import("@space/db").MailCampaignsRepository;
+    monitoringCopilotKickoff?: MonitoringCopilotWiring["kickoff"]; monitoringCopilotWatch?: boolean; mailCampaignsRepository?: import("@space/db").MailCampaignsRepository; mailOpenLookup?: typeof import("./mail-campaigns/open-tracking.js").lookupIp;
     mailCampaignsSmtp?: MailTransportDeps["smtp"]; mailCampaignsSender?: boolean; videoRepository?: VideoWiring["repository"]; videoEngine?: VideoWiring["engine"];
     videoKickoff?: VideoWiring["kickoff"];
   };
@@ -88,7 +90,14 @@ export function registerCopilotPaneRoutes(app: FastifyInstance, deps: CopilotPan
     nousRef, railCli, controlInvoke, toolbarUsageProvider, reopenClosedPane, taskBrief, vault } = deps;
   app.addHook("onClose", () => notificationsRepository.dispose());
   app.addHook("onClose", () => { clearInterval(notificationPrune); stopMorningBatches(); stopNotificationProducers(); });
-  app.addHook("onClose", startBrowserHandoffNotifications({ store, notifications: notificationService, eventBus, roomOwner, log: app.log }));
+  app.addHook("onClose", startBrowserHandoffNotifications({ store, notifications: notificationService, eventBus, roomOwner, log: app.log, wake: {
+    quiet: async (owner) => (await ownerQuietNow(await store.getUserSettings(owner), owner)).quiet,
+    tell: async (cliSessionId, text) => {
+      const paneId = (await store.getPaneCliSession(cliSessionId))?.paneId;
+      const session = paneId ? await store.getActivePaneCliSession(paneId) : null;
+      // Only into a free prompt; a working CLI is told at a later pass. No CLI left: nobody to tell.
+      if (session) await submitCliPrompt(cliTerminalManager, session.sessionId, text, `trace:night-handoff:${session.paneId}`, `night-handoff:${session.paneId}:${Date.now()}`, { onlyWhenReady: true, paneId: session.paneId });
+    } } }));
   // The operator's appointments and their reminders (operator 2/11 15:22 BKK); the store finds them for Nous, the CLI bridge and the Job Copilot.
   registerAppointments(app, { store, databaseUrl: config.databaseUrl, notifications: notificationService, routeOptions: defaultRouteRateLimitOptions,
     reminders: config.instanceJobs["appointment-reminders"], log: app.log,
@@ -120,10 +129,14 @@ export function registerCopilotPaneRoutes(app: FastifyInstance, deps: CopilotPan
   const mailCopilotRepository = options.mailCopilotRepository ?? (config.databaseUrl ? PostgresMailCopilotRepository.fromConnectionString(config.databaseUrl) : new InMemoryMailCopilotRepository());
   app.addHook("onClose", () => mailCopilotRepository.dispose());
   const mailCopilotPaneRooms = new Map<string, string>();
-  const mailCopilotKickoff = createMailCopilotKickoff({ store, terminal: cliTerminalManager, send: options.mailCopilotKickoff, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), start: async (pane) => startPaneCli({ invoke: controlInvoke, store, ...railCli }, (await roomOwner(pane.roomId)) ?? "", pane) });
+  const mailCopilotKickoff = createMailCopilotKickoff({ store, terminal: cliTerminalManager, send: options.mailCopilotKickoff, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), hostRunning: railCli.hostRunning,
+    start: async (pane) => startPaneCli({ invoke: controlInvoke, store, ...railCli }, (await roomOwner(pane.roomId)) ?? "", pane) });
   // nous_msg:8f84e7e6: a copilot review naming the operator's order to Nous is checked against these.
   const operatorMessages = async (owner: string) => (await nousRef.current?.service.operatorMessageRefs(owner)) ?? [];
+  // Open tracking: Mail Campaigns (registered below) owns the repository; a tracked Mail Copilot mail reaches it through this ref.
+  const mailTracker: { current?: MailTracker; relay: string | null; relays: Record<string, string> } = { relay: trackingRelay(config), relays: trackingRelays(config) };
   const mailCopilotService = createMailCopilotService({
+    track: (owner, input) => mailTracker.current?.(owner, input) ?? null,
     kickoff: mailCopilotKickoff, operatorMessages, siteSignin: (owner, domain) => siteSigninFor(store, owner, `https://${domain}/`), notice: (owner, key, line, urgent) => nousRef.current?.service.notice(owner, key, line, undefined, urgent ? { soonMs: 5_000 } : {}),
     google: () => options.mailCopilotGoogle ?? connectorServiceRef.current,
     gmailFetch: options.mailCopilotGmailFetch,
@@ -149,6 +162,14 @@ export function registerCopilotPaneRoutes(app: FastifyInstance, deps: CopilotPan
         if (pane && owner) await notifyMailCopilotEvent(event, { roomId, pane, owner, notifications: notificationService });
       })().catch((error: unknown) => app.log.warn({ err: error }, "Mail Copilot event listener failed"));
     }
+  });
+  // Needs you's Mail block as the web shows it (NeedsYouCard's useAbout): a review's reply, else the thread's newest message.
+  notificationService.setMail(async (owner, { reviewId, account, threadId }) => {
+    const draft = reviewId ? (await mailCopilotService.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).find((event) => event.payload.reviewId === reviewId)?.payload.draft as { subject?: unknown; text?: unknown } | undefined : undefined;
+    if (typeof draft?.subject === "string" && typeof draft.text === "string") return { subject: draft.subject, text: draft.text, at: null };
+    const thread = account && threadId ? await mailCopilotService.thread(owner, null, account, threadId) : null;
+    const last = thread?.messages.at(-1);
+    return last ? { subject: last.subject || thread!.subject, text: last.text, at: last.receivedAt ?? null } : null;
   });
   registerNotificationRoutes(app, notificationService, {
     routeOptions: defaultRouteRateLimitOptions,
@@ -203,7 +224,7 @@ export function registerCopilotPaneRoutes(app: FastifyInstance, deps: CopilotPan
     attachToMarketingPost: marketingCopilotService ? async (owner, postId, assets) => { await marketingCopilotService.attachAssets(owner, postId, assets); } : undefined,
     invoke: controlInvoke, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), start: (pane) => roomPaneController.start(pane, makeSpaceId("trace")), ...paneModuleAuth("design", "the Design pane") });
   const appStudioService = !config.optionalModules.has("app-studio") ? undefined : registerAppStudio(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.appStudioRepository, kickoff: options.appStudioKickoff, notifications: notificationService, artifactRoot: config.browserEvidenceArtifactRoot, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), notice: (owner, key, line) => nousRef.current?.service.notice(owner, key, line), ...paneModuleAuth("app_studio", "App Studio") });
-  const securityCopilotService = !config.optionalModules.has("security-copilot") ? undefined : registerSecurityCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.securityCopilotRepository, feeds: options.securityCopilotFeeds, kickoff: options.securityCopilotKickoff, notifications: notificationService, watch: config.instanceJobs["security-copilot-watch"] && options.securityCopilotWatch !== false, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), ...paneModuleAuth("security_copilot", "the Security Copilot") }); const monitoringCopilotService = !config.optionalModules.has("monitoring-copilot") ? undefined : registerMonitoringCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.monitoringCopilotRepository, collector: options.monitoringCopilotCollector, collectorConfig: config.monitoringCollector, kickoff: options.monitoringCopilotKickoff, notifications: notificationService, watch: config.instanceJobs["monitoring-copilot-watch"] && options.monitoringCopilotWatch !== false, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), reopen: reopenClosedPane, notice: (owner, key, line) => nousRef.current?.service.notice(owner, key, line), ...paneModuleAuth("monitoring_copilot", "the Monitoring Copilot") }); const mailCampaignsService = !config.optionalModules.has("mail-campaigns") ? undefined : registerMailCampaigns(app, { store, databaseUrl: config.databaseUrl, repository: options.mailCampaignsRepository, google: () => options.mailCopilotGoogle ?? connectorServiceRef.current, vaultStore: () => vault.repository, crypto: connectorCrypto, smtp: options.mailCampaignsSmtp, notifications: notificationService, coversApproval: async (owner) => Boolean(await nousRef.current?.coversApproval(owner)), unsubscribeSecret: readConnectorKey(config.connectorKeyFile) ?? auth.sessionSecret, senderJob: config.instanceJobs["mail-campaign-sender"] && options.mailCampaignsSender !== false, healthJob: config.instanceJobs["mail-campaign-health"] && options.mailCampaignsSender !== false, log: app.log, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, threadParticipants: async (owner, account, threadId) => (await mailCopilotService.thread(owner, null, account, threadId)).messages.flatMap((message) => [message.from, ...message.to, ...message.cc]), ...paneModuleAuth("mail_campaigns", "Mail Campaigns") });
+  const securityCopilotService = !config.optionalModules.has("security-copilot") ? undefined : registerSecurityCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.securityCopilotRepository, feeds: options.securityCopilotFeeds, kickoff: options.securityCopilotKickoff, notifications: notificationService, watch: config.instanceJobs["security-copilot-watch"] && options.securityCopilotWatch !== false, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), ...paneModuleAuth("security_copilot", "the Security Copilot") }); const monitoringCopilotService = !config.optionalModules.has("monitoring-copilot") ? undefined : registerMonitoringCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.monitoringCopilotRepository, collector: options.monitoringCopilotCollector, collectorConfig: config.monitoringCollector, kickoff: options.monitoringCopilotKickoff, notifications: notificationService, watch: config.instanceJobs["monitoring-copilot-watch"] && options.monitoringCopilotWatch !== false, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), reopen: reopenClosedPane, notice: (owner, key, line) => nousRef.current?.service.notice(owner, key, line), ...paneModuleAuth("monitoring_copilot", "the Monitoring Copilot") }); const mailCampaignsService = !config.optionalModules.has("mail-campaigns") ? undefined : registerMailCampaigns(app, { store, databaseUrl: config.databaseUrl, repository: options.mailCampaignsRepository, google: () => options.mailCopilotGoogle ?? connectorServiceRef.current, vaultStore: () => vault.repository, crypto: connectorCrypto, smtp: options.mailCampaignsSmtp, notifications: notificationService, coversApproval: async (owner) => Boolean(await nousRef.current?.coversApproval(owner)), unsubscribeSecret: readConnectorKey(config.connectorKeyFile) ?? auth.sessionSecret, mailTracker, lookup: options.mailOpenLookup, senderJob: config.instanceJobs["mail-campaign-sender"] && options.mailCampaignsSender !== false, healthJob: config.instanceJobs["mail-campaign-health"] && options.mailCampaignsSender !== false, log: app.log, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, threadParticipants: async (owner, account, threadId) => (await mailCopilotService.thread(owner, null, account, threadId)).messages.flatMap((message) => [message.from, ...message.to, ...message.cc]), ...paneModuleAuth("mail_campaigns", "Mail Campaigns") });
 
   const videoService = !config.optionalModules.has("video") ? undefined : registerVideo(app, { store, eventBus, hostSwap: createHostSwap({ collectorConfig: config.monitoringCollector, hostSelector: config.loadHostSelector }), terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.videoRepository,
     engine: options.videoEngine, kickoff: options.videoKickoff, notifications: notificationService, roomOwner, artifactRoot: config.browserEvidenceArtifactRoot, workRoot: config.videoWorkRoot, toolsDir: config.videoToolsDir,

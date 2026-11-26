@@ -3,7 +3,10 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
-import { execFile, spawn, spawnLabel, takeSpawnCounts } from "../src/safe-child-process.js";
+import { execFile, execInHelper, spawn, spawnLabel, startExecHelper, stopExecHelper, takeSpawnCounts } from "../src/safe-child-process.js";
+import { execGit } from "../src/worktrees/worktree-service.js";
+import { git as nousGit } from "../src/nous/git.js";
+import { executeBroker } from "../src/cli-vpn.js";
 
 // 1.1.5 internal review (2026-10-16): about 60 API spawns set no env and inherited Space's credentials.
 const printSecret = ["-e", "process.stdout.write(process.env.SPACE_SESSION_SECRET ?? 'absent')"];
@@ -53,3 +56,59 @@ it("counts spawns per program through the git umask and sudo wrappers", async ()
   expect(takeSpawnCounts()).toEqual({ [process.execPath.split("/").at(-1)!]: 2 });
   expect(takeSpawnCounts()).toEqual({});
 });
+
+// Speed audit 14/11: every command forked the ~1 GB API (77-170 ms of blocked event loop); buffered commands run in a small helper.
+it("runs buffered commands in the exec helper with execFile's results, errors and env", async () => {
+  const run = promisify(execFile);
+  const printParent = ["-e", "process.stdout.write(String(process.ppid))"];
+  expect((await run(process.execPath, printParent)).stdout).toBe(String(process.pid));
+  const helperPid = startExecHelper();
+  try {
+    expect(helperPid).toBeGreaterThan(0);
+    takeSpawnCounts();
+    expect((await run(process.execPath, printParent)).stdout).toBe(String(helperPid));
+    expect(takeSpawnCounts()).toEqual({ [`helper ${process.execPath.split("/").at(-1)!}`]: 1 });
+    process.env.SPACE_SESSION_SECRET = "fixture-session-secret";
+    expect((await run(process.execPath, printSecret)).stdout).toBe("absent");
+    expect((await run(process.execPath, printSecret, { env: { SPACE_SESSION_SECRET: "explicit" } })).stdout).toBe("explicit");
+    expect((await run(process.execPath, ["-e", "process.stdout.write('raw')"], { encoding: "buffer" })).stdout).toEqual(Buffer.from("raw"));
+    await expect(run(process.execPath, ["-e", "console.log('out'); console.error('err'); process.exit(3)"]))
+      .rejects.toMatchObject({ code: 3, stdout: "out\n", stderr: "err\n", message: expect.stringContaining("Command failed") });
+    await expect(run("/nonexistent/space-exec-helper-fixture", [])).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(run(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { timeout: 200 })).rejects.toMatchObject({ killed: true, signal: "SIGTERM" });
+    // An option that cannot cross to the helper: the command runs here as before.
+    expect(execInHelper(process.execPath, printParent, { env: {}, unserializable: () => undefined })).toBeNull();
+    expect(execInHelper(process.execPath, printParent, { env: {}, signal: new AbortController().signal })).toBeNull();
+    expect((await run(process.execPath, printParent, { signal: new AbortController().signal })).stdout).toBe(String(process.pid));
+
+    // Git through the helper: output, exit code, and a timeout that takes the process group.
+    const root = fileURLToPath(new URL("../../..", import.meta.url));
+    expect((await execGit(root, ["rev-parse", "--is-inside-work-tree"])).stdout.trim()).toBe("true");
+    expect(await execGit(root, ["rev-parse", "--verify", "--quiet", "refs/heads/space-exec-helper-missing"])).toMatchObject({ code: 1, stdout: "" });
+    // Nous's space_git (public-host lag 14/11: it forked the 1-2 GB API): its output and git's own error, both from the helper.
+    expect((await nousGit(root, ["rev-parse", "--is-inside-work-tree"])).trim()).toBe("true");
+    await expect(nousGit(root, ["rev-parse", "--verify", "refs/heads/space-exec-helper-missing"])).rejects.toThrow(/^git: fatal: /);
+    expect(takeSpawnCounts()).toMatchObject({ "helper git rev-parse": 4 });
+    await expect(execGit("/nonexistent/space-exec-helper-fixture", ["status"])).resolves.toMatchObject({ code: 128 });
+    // The timeout takes the command's children too: a survivor would hold the output open for its 30 seconds.
+    const started = Date.now();
+    expect(await execInHelper("/bin/sh", ["-c", "sleep 30 & wait"], { env: { PATH: process.env.PATH } }, 300)).toMatchObject({ timedOut: true });
+    expect(Date.now() - started).toBeLessThan(15_000);
+    await expect(execInHelper("/nonexistent/space-exec-helper-fixture", [], { env: {} }, 5_000)).resolves.toMatchObject({ error: { code: "ENOENT" }, timedOut: false });
+
+    // The VPN broker's read-only actions through the helper: stdin in, its output, its own error, a broker that does not start.
+    // An action that changes something runs here, so a profile's config never crosses to the helper.
+    const echo = ["-e", "process.stdin.pipe(process.stdout)"];
+    const node = process.execPath.split("/").at(-1)!;
+    takeSpawnCounts();
+    expect(await executeBroker(process.execPath, [...echo, "egress-status"], '{"runtimes":[]}')).toBe('{"runtimes":[]}');
+    await expect(executeBroker(process.execPath, ["-e", "console.error(JSON.stringify({ code: 'NOT_CONFIGURED', message: 'No profile.' })); process.exit(2)", "status"], ""))
+      .rejects.toMatchObject({ code: "NOT_CONFIGURED", message: "No profile.", statusCode: 409 });
+    await expect(executeBroker("/nonexistent/space-exec-helper-fixture", ["-n", "broker", "status"], "")).rejects.toMatchObject({ code: "BROKER_FAILED", statusCode: 503 });
+    expect(await executeBroker(process.execPath, [...echo, "replace"], "config")).toBe("config");
+    expect(takeSpawnCounts()).toEqual({ [`helper ${node} egress-status`]: 1, [`helper ${node} status`]: 1, "helper space-exec-helper-fixture broker status": 1, [`${node} replace`]: 1 });
+  } finally {
+    stopExecHelper();
+  }
+  expect((await run(process.execPath, printParent)).stdout).toBe(String(process.pid));
+}, 30_000);

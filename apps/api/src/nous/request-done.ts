@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { nousMessageIdSchema, requestDonePayloadSchema, type ClipboardItem, type NousRequestOutcome, type NousRequestStatus, type RequestDonePayload, type SpaceNotification } from "@space/contracts";
+import { nousClientContextSchema, nousMessageIdSchema, requestDonePayloadSchema, type ClipboardItem, type NousRequestOutcome, type NousRequestStatus, type RequestDonePayload, type SpaceNotification } from "@space/contracts";
 import type { NousRepository } from "@space/db";
 import type { NotificationService } from "../notifications/service.js";
+import { TICKET_IN_WORDS } from "./followups.js";
 import { titleWords } from "./pane-notices.js";
 import { waitsOnOperatorClaim } from "./pane-watch.js";
 import type { NousTurnItem } from "./turn-items.js";
 import { emitMakeEvent } from "../make-webhooks.js";
+import { compareSemver } from "../app-version.js";
 
 /** Internal provenance and delivery receipts survive conversation clearing, notification pruning and API restarts. */
 export const REQUEST_DONE_NOTE_PREFIX = "request-done:";
@@ -36,6 +38,8 @@ export const requestDoneReceiptKey = (identity: string) => `${REQUEST_DONE_NOTE_
  */
 export interface NousOpenRequest {
   key: string; messageId: string | null; requestId?: string; summary: string; plan?: string; pane?: string; tickets?: string[];
+  /** W47 step 2: the app release it waits on ("NOUS_ANDROID 0.5.0"); it looks finished once the operator writes from that version or newer. */
+  release?: string;
   turnId: string; openedAt: string; reportedAt: string;
   /** The evidence of the last "looks finished" line Nous handled: the same evidence comes once. */
   evidence?: string;
@@ -46,16 +50,20 @@ export interface NousOpenRequest {
   /** Closed requests keep their note (nous_notes is class A): when and why it closed. */
   closedAt?: string; closedReason?: string;
   /** space_open_requests reopen: this close no longer counts; the note stays as the audit line. */
+  /** Decision 38050 (13/11 1ff7a8b3): the latest work send naming the request; only its pane's done report after it counts. */
+  sentAt?: string;
   reopenedAt?: string; reopenNote?: string;
   /** The fresh request a reopen opened: its message's older closes, receipts and Done records no longer count (requests.ts). */
   reopens?: boolean;
+  /** Opened by a correction (20/11): a later complaint while it is open names it in repeats (space_nous_outcome's hold). */
+  correction?: boolean;
 }
 /** space_open_requests' close: one request a call (operator 9/11 nous_msg:a45dfd55: 35 closed in one call, 7 of the 20 "done" were not). */
 export interface NousOpenRequestClose { key?: string; messageId?: string; outcome: "SELF" | "HELPER" | "OPERATOR" | "DROPPED"; note: string; done?: boolean; where?: RequestDonePayload["where"]; verified?: string }
 /** Per close item: closed (one or more open requests, or a message with none), already done or closed the same way, no open request, or refused. */
 export interface NousCloseCounts { closed: number; alreadyDone: number; notOpen: number; errors: string[] }
 /** An outcome as space_nous_outcome reports it, with the operator message it answers. */
-export type NousReportedOutcome = NousRequestOutcome & { id?: string; plan?: string; pane?: string; tickets?: string[]; answerOnly?: boolean; messageIds?: string[] };
+export type NousReportedOutcome = NousRequestOutcome & { id?: string; plan?: string; pane?: string; tickets?: string[]; release?: string; answerOnly?: boolean; messageIds?: string[] };
 export const OPEN_REQUEST_PREFIX = `${REQUEST_DONE_NOTE_PREFIX}open:`;
 const OPEN_DAILY_KEY = `${REQUEST_DONE_NOTE_PREFIX}open-daily`;
 const OPEN_BACKFILL_KEY = `${REQUEST_DONE_NOTE_PREFIX}open-backfill`;
@@ -66,6 +74,20 @@ const BACKFILL_MS = 7 * 86_400_000;
 const clipWords = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
 /** A close's evidence: done's verified, DROPPED's reason, a reopen's note (operator 9/11 nous_msg:a45dfd55: closes judged from records only). */
 export const CLOSE_EVIDENCE_MIN = 20;
+/**
+ * Operator rule 31/10 (STRICT) and ~8 of the 59 corrections 11-14/11 (bulk DROPPED, "already done" unchecked): a done close names something
+ * checkable: a merge-queue ticket, a Space id (artifact:, nous_msg:, pane:, clipboard:, notification:...), a commit or message hash, a URL, route or path, or a screenshot.
+ */
+export function checkableEvidence(text: string): boolean {
+  return /\bq-\d{8}-\d{6}-[0-9a-f]{4}\b|https?:\/\/\S+|(?:^|\s)\/[A-Za-z][\w/.?=&%-]+|\b[a-z][a-z_]{1,24}:[A-Za-z0-9][A-Za-z0-9_-]{5,}|\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b|\.(png|jpe?g|webp)\b|\bscreenshot/i.test(text);
+}
+export const CHECKABLE_HINT = "Name what you checked so anyone can check it again: the ticket (q-…) live on stable, the artifact or message id, the commit, the URL or route, or the screenshot, and what it showed.";
+/** Daily Nous errors 14/11 (nous_msg:53161b99, a product page recorded Done before the operator saw it fixed): UI work is done when its page is seen. */
+const UI_WORK = /\b(?:pages?|views?|screens?|site|website|landing|layout|ui)\b|σελίδ|ιστοσελίδ|ιστότοπ/iu;
+const UI_PROOF = /screen ?shot|space_look|space_authenticated_ui_proof|\.(?:png|jpe?g|webp)\b|στιγμιότυπ/iu;
+export const uiProofMissing = (work: string, proof: string): boolean => UI_WORK.test(work) && !UI_PROOF.test(proof);
+export const UI_PROOF_HINT = "The request is UI work (a page, a view, a site): verified names the screenshot or space_look of the real page you took this turn "
+  + "and what it showed (e.g. \"space_look https://…: the product page shows …\"). Take one now, then record it.";
 
 /** The operator message an outcome answers: the one Nous named (a "-N" suffix is one of several requests in it), else the oldest the turn answers. */
 export function outcomeMessageIds(id: string | undefined, replyTo: readonly string[]): string[] {
@@ -135,6 +157,33 @@ function sameRequest(entry: NousOpenRequest, ref: { summary: string; id?: string
 }
 const recordLine = (record: SpaceNotification) => `notification ${record.id} (${record.createdAt.slice(0, 16).replace("T", " ")} UTC, "${String(payloadOf(record).request ?? record.body).slice(0, 120)}")`;
 
+/**
+ * W47 step 2 (Open requests −90: six waited on a Nous app release with no link): the operator message since `since` written from `release`'s
+ * app ("NOUS_ANDROID 0.5.0") at that version or newer. Each check reads only what came since the last one, less 10 minutes (created_at is
+ * the insert's transaction start, requests.ts); a found one is kept.
+ */
+export function createReleaseShipped(repository: Pick<NousRepository, "listOperatorMessages">) {
+  const checks = new Map<string, { from: string; shipped: string | null }>();
+  return async (owner: string, release: string, since: string): Promise<string | null> => {
+    const key = `${owner}|${release}|${since}`;
+    const known = checks.get(key) ?? { from: since, shipped: null };
+    if (known.shipped) return known.shipped;
+    const [app, version] = release.split(" ") as [string, string];
+    const rows = [];
+    for (let before: string | undefined; ;) {
+      const page = await repository.listOperatorMessages(owner, { since: known.from, ...(before ? { before } : {}), limit: 500 });
+      rows.push(...page);
+      if (page.length < 500) break;
+      before = page.at(-1)!.id;
+    }
+    const hit = rows.map((message) => ({ message, client: nousClientContextSchema.safeParse(message.meta?.client).data }))
+      .find(({ client }) => client?.app === app && client.version !== undefined && compareSemver(client.version, version) >= 0);
+    const shipped = hit ? `the operator wrote from ${app} ${hit.client!.version} at ${hit.message.createdAt.slice(0, 16).replace("T", " ")} UTC (${hit.message.id})` : null;
+    checks.set(key, { from: rows[0] ? new Date(Math.max(Date.parse(since), Date.parse(rows[0].createdAt) - 600_000)).toISOString() : known.from, shipped });
+    return shipped;
+  };
+}
+
 export function createNousRequestDone(deps: {
   notes: Pick<NousRepository, "listNotes" | "setNote" | "listTurnFacts" | "listAnswerLinks">;
   notifications: Pick<NotificationService, "list" | "raise">;
@@ -146,12 +195,18 @@ export function createNousRequestDone(deps: {
   paneFinished?(owner: string, paneId: string, since: string): Promise<string | null>;
   /** R21-5: false when the pane is closed or gone, null when it cannot be read now. */
   paneOpen?(paneId: string): Promise<boolean | null>;
+  /** The real pane of a CLI session whose id was bound as "pane:<session id>" (15/11 false "lost its pane"), else null. */
+  sessionPane?(paneId: string): Promise<string | null>;
   /** The ticket deployed and its commit is on stable's main. */
   ticketOnStable?(ticketId: string): Promise<boolean>;
+  /** The operator message since `since` written from `release`'s app at that version or newer ("NOUS_ANDROID 0.5.1 … nous_msg:…"), else null. */
+  releaseShipped?(owner: string, release: string, since: string): Promise<string | null>;
   /** A merge-queue ticket's summary ("Promote dev …"), null when it is not found. */
   ticketSummary?(ticketId: string): Promise<string | null>;
   /** The Requests tab's status of these operator messages, judged without their open requests (requests.ts). */
   requestStatus?(owner: string, messageIds: string[]): Promise<Map<string, NousRequestStatus>>;
+  /** The operator messages a superior Nous sent over Space Link (v2 step 9b): Nous never drops them. */
+  superiorCommands?(owner: string): Promise<Set<string>>;
   now?: () => number;
 }) {
   // Calls in concurrent Nous turns cannot both produce a receipt or overwrite a plan's reminder mark.
@@ -200,10 +255,11 @@ export function createNousRequestDone(deps: {
     if (!match && (!operatorTurn || messageId === null)) return {};
     const tickets = [...new Set([...(match?.tickets ?? []), ...(item.tickets ?? [])])];
     const entry: NousOpenRequest = match
-      ? { ...match, summary: item.summary, reportedAt: at, ...(item.plan ? { plan: item.plan } : {}), ...(item.pane ? { pane: item.pane } : {}), ...(tickets.length ? { tickets } : {}) }
+      ? { ...match, summary: item.summary, reportedAt: at, ...(item.plan ? { plan: item.plan } : {}), ...(item.pane ? { pane: item.pane } : {}), ...(tickets.length ? { tickets } : {}),
+        ...(item.release ? { release: item.release } : {}) }
       : { key: `${OPEN_REQUEST_PREFIX}${createHash("sha256").update(`${messageId ?? turnId}|${item.summary}|${at}`).digest("hex").slice(0, 24)}`, messageId,
         ...(item.id ? { requestId: item.id } : {}), summary: item.summary, ...(item.plan ? { plan: item.plan } : {}), ...(item.pane ? { pane: item.pane } : {}),
-        ...(tickets.length ? { tickets } : {}), turnId, openedAt: at, reportedAt: at };
+        ...(tickets.length ? { tickets } : {}), ...(item.release ? { release: item.release } : {}), ...(item.correction ? { correction: true } : {}), turnId, openedAt: at, reportedAt: at };
     if (match) open[open.indexOf(match)] = entry; else open.push(entry);
     return { write: entry };
   }
@@ -217,10 +273,12 @@ export function createNousRequestDone(deps: {
   async function evidenceOf(owner: string, entry: NousOpenRequest): Promise<string | null> {
     const plan = entry.plan ? await deps.plan(owner, entry.plan).catch(() => null) : null;
     if (plan && (plan.progressPercentage >= 100 || plan.executionStatus === "COMPLETED")) return `plan ${plan.id} is ${plan.progressPercentage}% (${plan.executionStatus.toLowerCase()})`;
-    const pane = entry.pane && deps.paneFinished ? await deps.paneFinished(owner, entry.pane, entry.openedAt).catch(() => null) : null;
-    if (pane) return pane;
-    for (const ticket of entry.tickets ?? []) if (await deps.ticketOnStable?.(ticket).catch(() => false)) return `ticket ${ticket} is live on stable`;
-    return null;
+    const pane = entry.pane && deps.paneFinished ? await deps.paneFinished(owner, entry.pane, entry.sentAt ?? entry.openedAt).catch(() => null) : null;
+    // 15/11 (plan OH_RK32of0w4): a pane's done is on dev; the request comes back when its ticket, or one the pane's report names (no plan), reaches stable.
+    const named = pane && !entry.plan ? pane.match(new RegExp(TICKET_IN_WORDS.source, "g")) ?? [] : [];
+    for (const ticket of new Set([...(entry.tickets ?? []), ...named])) if (await deps.ticketOnStable?.(ticket).catch(() => false)) return `ticket ${ticket} is live on stable`;
+    const shipped = entry.release ? await deps.releaseShipped?.(owner, entry.release, entry.openedAt).catch(() => null) : null;
+    return shipped ?? pane;
   }
   /** Once: every operator turn's PENDING outcome of the last 7 days with no Done record opens, bound to its turn's operator message; later outcomes close as today. */
   async function backfill(owner: string): Promise<void> {
@@ -293,7 +351,8 @@ export function createNousRequestDone(deps: {
     const dedupeKey = `nous:done:${identity}`;
     // Covers a restart between raising the record and writing its delivery receipt, including an already ACKED record.
     const existing = (await deps.notifications.list(owner, { status: "ALL", source: "NOUS", kind: "REQUEST_DONE", dedupeKey, limit: 1 }))[0];
-    const { plan, id: _id, ...rest } = args;
+    const { plan, ...rest } = args;
+    delete rest.id;
     // 30/10: three turns recorded one Needs-you fix at 16:17, 16:27:16 and 16:27:32 UTC. A record of the last 24 h with the same
     // plan, a shared ticket or a summary sharing 60 % of its words is the same request: it is already in Done.
     if (!existing) {
@@ -355,6 +414,7 @@ export function createNousRequestDone(deps: {
         // Nous 6/11 (801 Not done rows, nous_msg:1ac34ccd): a message with no open request is closed by its own closed note, its Done a receipt with no alert.
         const unopened = items.flatMap((item) => item.messageId && !open.some((entry) => entry.closedAt === undefined && entry.messageId === item.messageId) ? [item.messageId] : []);
         const statuses = unopened.length && deps.requestStatus ? await deps.requestStatus(owner, [...new Set(unopened)]) : new Map<string, NousRequestStatus>();
+        const superiors = deps.superiorCommands && items.some((item) => item.outcome === "DROPPED") ? await deps.superiorCommands(owner) : new Set<string>();
         for (const item of items) {
           const ref = item.key ?? item.messageId ?? "?";
           if (Boolean(item.key) === Boolean(item.messageId)) { refused(`${ref}: give its key or its messageId (one of them)`); continue; }
@@ -364,6 +424,9 @@ export function createNousRequestDone(deps: {
           if (item.outcome === "DROPPED" && item.note.trim().length < CLOSE_EVIDENCE_MIN) { refused(`${ref}: DROPPED needs a note naming why it is no longer wanted (${CLOSE_EVIDENCE_MIN}+ characters); nothing was closed`); continue; }
           const short = item.key?.replace(OPEN_REQUEST_PREFIX, "");
           const targets = open.filter((entry) => entry.closedAt === undefined && (short ? entry.key === `${OPEN_REQUEST_PREFIX}${short}` : entry.messageId === item.messageId));
+          if (item.outcome === "DROPPED" && [item.messageId, ...targets.map((entry) => entry.messageId)].some((id) => id && superiors.has(id))) {
+            refused(`${ref}: a superior Nous's order (Space Link): only this SpaceApp's person or that Nous drops it; nothing was closed`); continue;
+          }
           if (!targets.length && item.messageId && statuses.has(item.messageId)) {
             if (statuses.get(item.messageId) === "DONE" || (item.done && receipts.has(receiptKey(item.messageId)))) { lines.push(`${ref}: already done`); counts.alreadyDone += 1; continue; }
             if (!item.done && closedBefore.has(`${item.messageId}|${item.outcome}`)) { lines.push(`${ref}: already closed ${item.outcome}`); counts.alreadyDone += 1; continue; }
@@ -433,6 +496,12 @@ export function createNousRequestDone(deps: {
       return serial(owner, () => writeDone(owner, args, origin));
     },
 
+    /** Whether this request's Done receipt is saved (writeDone's own "already in Done" check); nothing is written. */
+    async recorded(owner: string, args: Pick<Args, "plan" | "id">, origin?: string): Promise<boolean> {
+      const identity = args.plan ?? args.id ?? origin;
+      return Boolean(identity && (await marks(owner)).get(receiptKey(identity)));
+    },
+
     /**
      * The completed requests of an operator turn that have no Done record of the last 24 h: none with their id or plan, and none
      * whose request and summary hold 60 % of their words (operator 31/10 00:07 BKK: everything completed goes to Done).
@@ -472,7 +541,7 @@ export function createNousRequestDone(deps: {
      * requests: one line per request that looks finished (its plan at 100 %, its pane's done or failed report, its ticket live on
      * stable), and once a day one line for those with nothing new for 6 hours.
      */
-    /** C: the evidence that an open request looks finished (its plan at 100 %, its pane's done report, its ticket on stable), or null. */
+    /** C: the evidence that an open request looks finished (its plan at 100 %, its pane's done report, its ticket on stable, its release in the operator's hands), or null. */
     evidence: (owner: string, entry: NousOpenRequest) => evidenceOf(owner, entry),
     /**
      * Queue 1002 (8/11: requests sat 6+ hours bound to panes of a closed room): an open request whose pane is closed or gone follows the pane a
@@ -482,9 +551,11 @@ export function createNousRequestDone(deps: {
       await serial(owner, async () => {
         for (const entry of openRequestsOf(await deps.notes.listNotes(owner))) {
           const refs = [entry.messageId?.slice(0, "nous_msg:".length + 8), entry.requestId, entry.plan].filter((ref): ref is string => Boolean(ref));
-          const to = entry.pane ? sends.find((send) => send.paneId !== entry.pane && refs.some((ref) => send.text.includes(ref))) : undefined;
-          if (!to || await deps.paneOpen?.(entry.pane!).catch(() => null) !== false) continue;
-          await save(owner, { ...entry, pane: to.paneId, paneGone: undefined });
+          const named = sends.filter((send) => refs.some((ref) => send.text.includes(ref)));
+          if (!named.length) continue;
+          const to = entry.pane ? named.find((send) => send.paneId !== entry.pane) : undefined;
+          const moved = to && await deps.paneOpen?.(entry.pane!).catch(() => null) === false;
+          await save(owner, { ...entry, sentAt: new Date(now()).toISOString(), ...(moved ? { pane: to.paneId, paneGone: undefined } : {}) });
         }
       });
     },
@@ -515,6 +586,12 @@ export function createNousRequestDone(deps: {
         }
         const open = openRequestsOf([...notes].map(([key, text]) => ({ key, text })));
         const quiet: NousOpenRequest[] = [];
+        // A binding to a session id (written before tools.ts resolved it) moves to that session's pane instead of reading "lost its pane".
+        const healed = async (owner: string, entry: NousOpenRequest) => {
+          const real = await deps.sessionPane?.(entry.pane!).catch(() => null);
+          if (real) await save(owner, { ...entry, pane: real });
+          return Boolean(real);
+        };
         // R22-4 (1/11: nous_msg:cc96… read "lost its pane" while its plan 93WlxXgZhOkv was COMPLETED and "looks finished" was said): a request
         // that looks finished, or shares its message or plan with one said to look finished in this tick, never also reads "lost its pane".
         const evidences = new Map<string, string | null>();
@@ -526,15 +603,15 @@ export function createNousRequestDone(deps: {
           const ref = entry.requestId ?? entry.messageId;
           if (evidence && evidence !== entry.evidence) {
             const line = `Request "${clipWords(entry.summary, 140)}"${ref ? ` (${ref})` : ""} looks finished: ${clipWords(evidence, 140)}; `
-              + "record it with space_request_done or keep it PENDING with a reason (space_nous_outcome).";
+              + "record it with space_request_done or keep it PENDING with a reason (space_nous_outcome). A Done record needs no pane: low mode or a follow-up never holds it.";
             // Hold A: the turn that carries this line acts on it before it may answer NOTHING_NEW (31/10 11:18 UTC: consumed with nothing done).
             await nudge(owner, `request-open:${entry.key.slice(OPEN_REQUEST_PREFIX.length)}`, line, async () => {
               const current = openRequestsOf(await deps.notes.listNotes(owner)).find((item) => item.key === entry.key);
               if (current) await save(owner, { ...current, evidence });
-            }, [{ key: `request:${entry.key}`, kind: "REQUEST", line, requestKey: entry.key, ...(entry.messageId ? { messageId: entry.messageId } : {}),
+            }, [{ key: `request:${entry.key}`, kind: "REQUEST", line, requestKey: entry.key, finished: true, ...(entry.messageId ? { messageId: entry.messageId } : {}),
               ...(entry.plan ? { plan: entry.plan } : {}), ...(entry.pane ? { pane: entry.pane } : {}) }]);
           } else if (!evidence && !refsOf(entry).some((item) => toldFinished.has(item)) && entry.pane && entry.paneGone !== entry.pane
-            && await deps.paneOpen?.(entry.pane).catch(() => null) === false) {
+            && await deps.paneOpen?.(entry.pane).catch(() => null) === false && !await healed(owner, entry)) {
             // R21-5 (REVIEW 1/11: a725f601 sat 6+ hours on a closed pane): a request whose pane closed or went is an item at once.
             const pane = entry.pane;
             const line = `Request "${clipWords(entry.summary, 140)}"${ref ? ` (${ref})` : ""} lost its pane: ${pane} is closed or gone. Reopen it `

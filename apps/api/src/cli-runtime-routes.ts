@@ -69,8 +69,7 @@ export function registerCliRuntimeRoutes(app: FastifyInstance, options: {
       store.listCliRuntimeSettings(),
       cliRuntimeRegistryCache.readStaleWhileRefreshing()
     ]);
-    const vpn = await readCliVpnApplications(settings);
-    const harness = await readDeepSeekHarnessMaintenanceStatus();
+    const [vpn, harness] = await Promise.all([readCliVpnApplications(settings), readDeepSeekHarnessMaintenanceStatus()]);
     return cliRuntimeSettingsResponseSchema.parse({
       settings,
       runtimes: registry.data.filter((runtime) => settings.some((setting) => setting.runtimeId === runtime.id)),

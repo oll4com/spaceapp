@@ -22,6 +22,8 @@ const messageSchema = z.object({ content: z.string().trim().min(1).max(20_000) }
 const briefSchema = z.object({ paneId: z.string().trim().min(1).max(200), text: z.string().trim().min(1).max(20_000) }).strict();
 // 200 is the notification store's page size; Make's trigger pages on with `before`.
 const doneQuery = z.object({ since: z.string().datetime().optional(), before: z.string().datetime().optional() });
+// Step 6 review (Iris, 15/11): the key may brief only the business copilots; Security and Monitoring are steered by the operator alone.
+const BRIEF_MODES = new Set(["MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "VIDEO"]);
 
 export type MakeAppRouteDeps = {
   store: Pick<SpaceStore, "listUsersWithRoomCounts" | "upsertTaskItem" | "getPane" | "upsertUser" | "recordAuditEvent">;
@@ -33,23 +35,38 @@ export type MakeAppRouteDeps = {
   routeOptions: Record<string, unknown>;
   /** Tests only; by default `${SPACE_INSTALL_ROOT}/secrets/space-make-app.key`, then `${SPACE_AGENT_HOME}/.config/space/make-app.key`. */
   keyFiles?: string[];
+  /** Tests only; by default `${SPACE_INSTALL_ROOT}/secrets/space-make-app.ips`, then `${SPACE_AGENT_HOME}/.config/space/make-app.ips`. */
+  ipFiles?: string[];
 };
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
+const firstFile = async (files: string[]) => {
+  for (const file of files) {
+    const text = (await readFile(file, "utf8").catch(() => "")).trim();
+    if (text) return text;
+  }
+  return "";
+};
+// Security: writes a minute per key, so a runaway Make scenario cannot flood tasks, Nous or the copilots; 429 says when to retry.
+const mutationOptions = { config: { rateLimit: { max: 60, timeWindow: "1 minute",
+  keyGenerator: (request: FastifyRequest) => `make-app:${digest(String(request.headers.authorization ?? "")).toString("hex")}` } } };
 
 export function registerMakeAppRoutes(app: FastifyInstance, deps: MakeAppRouteDeps) {
   const files = deps.keyFiles ?? [join(SPACE_INSTALL_ROOT, "secrets", "space-make-app.key"), join(SPACE_AGENT_HOME, ".config/space", "make-app.key")];
+  const ipFiles = deps.ipFiles ?? [join(SPACE_INSTALL_ROOT, "secrets", "space-make-app.ips"), join(SPACE_AGENT_HOME, ".config/space", "make-app.ips")];
   const key = async () => {
-    for (const file of files) {
-      const text = (await readFile(file, "utf8").catch(() => "")).trim();
-      if (text) return text.length >= KEY_MIN ? text : "";
-    }
-    return "";
+    const text = await firstFile(files);
+    return text.length >= KEY_MIN ? text : "";
   };
-  /** The operator's id, or null after the reply was sent (off, wrong key, no ADMIN). */
+  /** The operator's id, or null after the reply was sent (off, caller IP not allowed, wrong key, no ADMIN). */
   async function owner(request: FastifyRequest, reply: FastifyReply): Promise<string | null> {
     const expected = await key();
     if (!expected) { sendApiError(reply, 404, "NOT_FOUND", "The Make app is not enabled on this instance."); return null; }
+    // Optional egress allowlist (step 6 review): Make's published IPs for the zone; no file means any IP, as a self-hoster on another zone needs.
+    const allowed = (await firstFile(ipFiles)).replace(/#.*$/gm, "").split(/[\s,]+/).filter(Boolean);
+    if (allowed.length && !allowed.includes(String(request.ip).replace(/^::ffff:/, ""))) {
+      sendApiError(reply, 403, "MAKE_IP_FORBIDDEN", "This address may not use the SpaceApp key."); return null;
+    }
     const given = /^Bearer\s+(.+)$/i.exec(String(request.headers.authorization ?? ""))?.[1]?.trim() ?? "";
     if (!given || !timingSafeEqual(digest(given), digest(expected))) { sendApiError(reply, 401, "MAKE_KEY_INVALID", "A valid SpaceApp key is required."); return null; }
     const admins = ((await deps.store.listUsersWithRoomCounts?.()) ?? []).filter((user) => user.role === "ADMIN" && !user.disabled);
@@ -62,10 +79,11 @@ export function registerMakeAppRoutes(app: FastifyInstance, deps: MakeAppRouteDe
 
   app.get("/api/make/v1/me", deps.routeOptions, async (request, reply) => {
     const id = await owner(request, reply);
-    return id && { ok: true, app: "SpaceApp" };
+    if (!id) return reply;
+    return { ok: true, app: "SpaceApp" };
   });
 
-  app.post("/api/make/v1/tasks", deps.routeOptions, async (request, reply) => {
+  app.post("/api/make/v1/tasks", mutationOptions, async (request, reply) => {
     const id = await owner(request, reply);
     if (!id) return reply;
     const input = taskSchema.parse(request.body ?? {});
@@ -74,7 +92,7 @@ export function registerMakeAppRoutes(app: FastifyInstance, deps: MakeAppRouteDe
     return reply.code(201).send({ id: item.id, title: item.title, status: item.status, createdAt: item.createdAt });
   });
 
-  app.post("/api/make/v1/nous/messages", deps.routeOptions, async (request, reply) => {
+  app.post("/api/make/v1/nous/messages", mutationOptions, async (request, reply) => {
     const id = await owner(request, reply);
     if (!id) return reply;
     const { content } = messageSchema.parse(request.body ?? {});
@@ -86,12 +104,16 @@ export function registerMakeAppRoutes(app: FastifyInstance, deps: MakeAppRouteDe
     return reply.code(201).send({ id: message.id, createdAt: message.createdAt });
   });
 
-  app.post("/api/make/v1/briefs", deps.routeOptions, async (request, reply) => {
+  app.post("/api/make/v1/briefs", mutationOptions, async (request, reply) => {
     const id = await owner(request, reply);
     if (!id) return reply;
     const input = briefSchema.parse(request.body ?? {});
     const pane = await Promise.resolve(deps.store.getPane(input.paneId)).catch(() => null);
     if (!pane || (await deps.roomOwner(pane.roomId)) !== id) return sendApiError(reply, 404, "PANE_NOT_FOUND", "No such pane in the operator's rooms.");
+    if (!BRIEF_MODES.has(pane.mode)) {
+      await audit(request, id, "make.brief.refused", "pane", pane.id, { mode: pane.mode });
+      return sendApiError(reply, 403, "BRIEF_MODE_NOT_ALLOWED", `Make may not brief ${pane.mode} panes.`);
+    }
     const brief = deps.brief();
     if (!brief) return sendApiError(reply, 503, "COPILOTS_UNAVAILABLE", "The copilots are not available here.");
     try {

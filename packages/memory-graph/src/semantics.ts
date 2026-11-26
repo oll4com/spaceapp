@@ -189,30 +189,36 @@ function semanticRelations(
   frequencies: Map<string, number>
 ): MemorySemanticRelation[] {
   const byId = new Map(documents.map((document) => [document.id, document]));
-  const postings = new Map<string, string[]>();
+  // Pairs are kept as numbers (index of the left id * ids + index of the right id), not "left\nright" strings: 3,834
+  // November records gave 1.46M pairs, ~400 MB as strings, and the maintenance worker ran out of its 768 MB heap.
+  const ids = [...byId.keys()].sort();
+  const indexById = new Map(ids.map((id, index) => [id, index]));
+  const postings = new Map<string, number[]>();
   const maximumPostingSize = Math.min(80, Math.max(8, Math.ceil(documents.length * 0.08)));
   for (const document of documents) {
     for (const term of document.termFrequency.keys()) {
       if ((frequencies.get(term) ?? 0) > maximumPostingSize) continue;
-      const ids = postings.get(term) ?? [];
-      ids.push(document.id);
-      postings.set(term, ids);
+      const indexes = postings.get(term) ?? [];
+      indexes.push(indexById.get(document.id)!);
+      postings.set(term, indexes);
     }
   }
 
-  const candidateKeys = new Set<string>();
-  for (const ids of postings.values()) {
-    const ordered = [...ids].sort();
+  const candidateKeys = new Set<number>();
+  for (const indexes of postings.values()) {
+    const ordered = [...indexes].sort((left, right) => left - right);
     for (let leftIndex = 0; leftIndex < ordered.length; leftIndex += 1) {
       for (let rightIndex = leftIndex + 1; rightIndex < ordered.length; rightIndex += 1) {
-        candidateKeys.add(`${ordered[leftIndex]}\n${ordered[rightIndex]}`);
+        if (ordered[leftIndex] !== ordered[rightIndex]) candidateKeys.add(ordered[leftIndex]! * ids.length + ordered[rightIndex]!);
       }
     }
   }
 
+  // No sort needed here: the candidates are sorted below by confidence, source and target, which orders every pair.
   const candidates: MemorySemanticRelation[] = [];
-  for (const key of [...candidateKeys].sort()) {
-    const [source, target] = key.split("\n") as [string, string];
+  for (const key of candidateKeys) {
+    const source = ids[Math.floor(key / ids.length)]!;
+    const target = ids[key % ids.length]!;
     const sourceVector = vectors.get(source)!;
     const targetVector = vectors.get(target)!;
     const smaller = sourceVector.size <= targetVector.size ? sourceVector : targetVector;

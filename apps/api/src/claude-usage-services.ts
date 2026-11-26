@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   claudeUsageAccountListSchema,
+  gatewayWeekResetCredits,
   isoDateTimeSchema,
   type ClaudeGatewayPoolAccount,
   type ClaudeUsageAccount,
@@ -149,9 +150,16 @@ export function claudeGatewayPool(accounts: GatewayAccountRecord[], nowMs: numbe
         fiveHourRemainingPercent: remaining(usage.fiveHourUsedPercent),
         fiveHourResetAt: usage.fiveHourResetAt,
         weeklyRemainingPercent: remaining(usage.weeklyUsedPercent),
-        weeklyResetAt: usage.weeklyResetAt
+        weeklyResetAt: usage.weeklyResetAt,
+        resetCredits: gatewayWeekResetCredits(account)
       };
     });
+}
+
+/** The Claude account Space Gateway routes to under this e-mail, if it holds one. */
+export function claudeGatewayAccountFor(accounts: GatewayAccountRecord[], email: string | null | undefined): GatewayAccountRecord | null {
+  const wanted = email?.trim().toLowerCase();
+  return wanted ? routedClaudeAccounts(accounts).find((candidate) => (candidate.email ?? candidate.label).trim().toLowerCase() === wanted) ?? null : null;
 }
 
 /**
@@ -161,9 +169,7 @@ export function claudeGatewayPool(accounts: GatewayAccountRecord[], nowMs: numbe
  * not hold that account, needs to sign in to it again, or has no sample of it yet.
  */
 export function claudeGatewayAccountUsage(accounts: GatewayAccountRecord[], email: string | null, nowMs: number): ClaudeGatewayAccountUsage | null {
-  const wanted = email?.trim().toLowerCase();
-  if (!wanted) return null;
-  const account = routedClaudeAccounts(accounts).find((candidate) => (candidate.email ?? candidate.label).trim().toLowerCase() === wanted);
+  const account = claudeGatewayAccountFor(accounts, email);
   if (!account) return null;
   const { signInRequired, ...usage } = gatewayAccountUsage(account, nowMs);
   if (signInRequired || (usage.fiveHourUsedPercent === null && usage.weeklyUsedPercent === null)) return null;
@@ -220,6 +226,8 @@ export function createClaudeUsageAccountProvider(
       requests: keyTotals.requests, costUsd: keyTotals.costUsd, lastUsedAt: keyAccount.lastUsedAt,
       ...(keyTotals.lastRequest !== undefined ? { lastRequest: keyTotals.lastRequest } : {})
     } : undefined;
+    // The gateway account behind a subscription profile: its reset credits and the id the Resources button spends on (nous_msg:2cdc2f9a).
+    const linked = usage?.email && status !== "GATEWAY" && status !== "API_KEY" ? claudeGatewayAccountFor((await gateway()) ?? [], usage.email) : null;
     const apiKeyMonth = apiKey ? {
       spentUsd: options.anthropicMonthUsd ? await options.anthropicMonthUsd().catch(() => null) : null,
       budgetUsd: apiKey.settings?.anthropicMonthlyBudgetUsd ?? null
@@ -237,6 +245,7 @@ export function createClaudeUsageAccountProvider(
       weeklyScope: usage?.weeklyScope ?? null,
       sampledAt: sampledAt?.toISOString() ?? null,
       ...(pool ? { pool } : {}),
+      ...(linked ? { gatewayAccountId: linked.id, resetCredits: gatewayWeekResetCredits(linked) } : {}),
       ...(apiKey ? { apiKeyVerified: apiKey.apiKeyVerified } : {}),
       ...(gatewayFallback ? { gatewayFallback } : {}),
       ...(apiKeyUsage ? { apiKeyUsage } : {}),

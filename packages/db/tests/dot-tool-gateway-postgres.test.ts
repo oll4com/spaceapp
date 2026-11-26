@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { expect, it } from "vitest";
 import { createSpacePgPool } from "../src/space-store.js";
 import { loadMigrations } from "../src/migrations.js";
-import { disposablePostgresUnavailableReason } from "./support/disposable-postgres.js";
+import { disposablePostgresUnavailableReason, trackDisposableContainer } from "./support/disposable-postgres.js";
 
 const postgresUnavailable = disposablePostgresUnavailableReason();
 
@@ -17,11 +17,12 @@ it.skipIf(postgresUnavailable)("records one immutable, identity-checked Dot tool
   const socket = `${root}/socket`;
   await mkdir(socket); await chmod(socket, 0o777);
   const name = `space-dot-tools-${randomUUID()}`;
+  const untrack = trackDisposableContainer(name, root);
   const docker = (args: string[]) => execFileSync("docker", args, { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
   const pool = createSpacePgPool(`postgresql://postgres@localhost/postgres?host=${encodeURIComponent(socket)}`, { max: 4 });
   let created = false;
   try {
-    docker(["run", "--tmpfs", "/var/lib/postgresql/data", "--detach", "--rm", "--pull=never", "--name", name, "--network", "none", "--mount", `type=bind,source=${socket},target=/var/run/postgresql`,
+    docker(["run", "--tmpfs", "/var/lib/postgresql/data", "--detach", "--rm", "--pull=never", "--name", name, "--label", "space.disposable-test=1", "--network", "none", "--mount", `type=bind,source=${socket},target=/var/run/postgresql`,
       "--env", "POSTGRES_HOST_AUTH_METHOD=trust", "pgvector/pgvector:0.8.7-pg17-trixie", "-c", "listen_addresses="]);
     created = true;
     let ready = false;
@@ -104,7 +105,7 @@ it.skipIf(postgresUnavailable)("records one immutable, identity-checked Dot tool
     expect(await repository.listToolInvocations("tools:a", orbit!.dotId, 50, 0)).toEqual([]);
   } finally {
     await pool.end();
-    if (created) docker(["stop", "--time", "5", name]);
+    untrack(); if (created) { try { docker(["stop", "--time", "2", name]); } catch { try { docker(["rm", "--force", "--volumes", name]); } catch { /* ignore */ } } }
     await rm(root, { recursive: true, force: true });
   }
 }, 120_000);

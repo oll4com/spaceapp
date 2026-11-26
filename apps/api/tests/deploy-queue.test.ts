@@ -7,7 +7,7 @@ import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
-import { readDeployQueue } from "../src/deploy-queue.js";
+import { queueDaemonAlive, readDeployQueue } from "../src/deploy-queue.js";
 
 const sessionSecret = "deploy-queue-test-secret";
 const apps: FastifyInstance[] = [];
@@ -103,6 +103,20 @@ describe("deploy queue report", () => {
     const root = queueFixture(now);
     writeFileSync(join(root, "state.json"), JSON.stringify({ heartbeatAt: "2026-10-11T02:00:00.000Z", current: null }));
     expect((await readDeployQueue(root, now)).daemonRunning).toBe(false);
+  });
+
+  it("reads a stale heartbeat with a live daemon pid as running (a stalled host, not a dead daemon)", async () => {
+    const now = Date.parse("2026-10-11T03:10:00.000Z");
+    const root = queueFixture(now);
+    writeFileSync(join(root, "state.json"), JSON.stringify({ heartbeatAt: "2026-10-11T02:00:00.000Z", current: null, daemon: { pid: 4242 } }));
+    const asked: unknown[] = [];
+    expect((await readDeployQueue(root, now, undefined, async (pid) => { asked.push(pid); return true; })).daemonRunning).toBe(true);
+    expect((await readDeployQueue(root, now, undefined, async () => false)).daemonRunning).toBe(false);
+    expect(asked).toEqual([4242]);
+    // A reused pid (this test runner) or a bogus one is not the queue daemon.
+    expect(await queueDaemonAlive(process.pid)).toBe(false);
+    expect(await queueDaemonAlive("4242")).toBe(false);
+    expect(await queueDaemonAlive(-1)).toBe(false);
   });
 
   it("serves the report only to ADMIN users", async () => {

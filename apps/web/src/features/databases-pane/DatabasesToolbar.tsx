@@ -1,6 +1,5 @@
 import {
   Database,
-  Search,
   RefreshCw,
   Plus,
   Compass,
@@ -39,7 +38,6 @@ export function DatabasesToolbar({
   selectedSchema,
   selectedTable,
   mode,
-  isAdminCapable,
   onModeToggle,
   onSelectCrumb,
   onNewConnection,

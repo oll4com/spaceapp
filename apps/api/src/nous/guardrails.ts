@@ -44,7 +44,7 @@ export const withoutNegatedRelease = (text: string): string => text.replace(NEGA
 
 export interface NousCriticalVerdict { category: NousDecisionCategory; reasons: string[] }
 /** What the operator lets Nous do on its own in its settings (mayPromote, mayApproveWarm). */
-export interface NousAllowances { promote: boolean; warm: boolean }
+export interface NousAllowances { promote: boolean; warm: boolean; neverBuy?: boolean }
 const NONE: NousAllowances = { promote: false, warm: false };
 
 /** Text Nous wants to send to a pane as a prompt. */

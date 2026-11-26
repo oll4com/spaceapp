@@ -132,7 +132,7 @@ export function SnipEditor(props: SnipEditorProps) {
   const disabled = Boolean(busy);
 
   useEffect(() => {
-    try { localStorage.setItem(STYLE_STORAGE_KEY, JSON.stringify({ color, size })); } catch {}
+    try { localStorage.setItem(STYLE_STORAGE_KEY, JSON.stringify({ color, size })); } catch { /* storage may be full or blocked; the style just is not remembered */ }
   }, [color, size]);
 
   // Fit the stage to the available space without upscaling beyond the frame's own pixels.
@@ -241,7 +241,7 @@ export function SnipEditor(props: SnipEditorProps) {
       gesture.current = { kind: "draw", pointerId: event.pointerId, start: p, mark };
       scheduleDraft();
     }
-    try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* the pointer may already be gone; drawing works without capture */ }
   };
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const g = gesture.current;
@@ -264,7 +264,7 @@ export function SnipEditor(props: SnipEditorProps) {
     if (!g || g.pointerId !== event.pointerId) return;
     if (!cancel) onPointerMove(event);
     gesture.current = null;
-    try { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); } catch {}
+    try { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* capture may already be released */ }
     if (g.kind === "draw") {
       scheduleDraft();
       const mark = g.mark;

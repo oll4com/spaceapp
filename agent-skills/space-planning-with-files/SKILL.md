@@ -1,6 +1,6 @@
 ---
 name: space-planning-with-files
-description: "Persistent file-based planning (task_plan.md, findings.md, progress.md on disk) so a restarted CLI, a new pane or another agent can recover the task. Opt-in: use when the operator asks for file-based planning or a handoff-ready plan, or for long-running work that another CLI or agent must resume. Not for ordinary multi-step tasks."
+description: "File-based plans on disk (task_plan.md, findings.md, progress.md) another CLI or agent can resume. Opt-in: on request or for long handoff-ready work."
 metadata:
   category: WORKFLOW
   version: "3.24.0"

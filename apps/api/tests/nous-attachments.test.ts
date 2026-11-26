@@ -90,6 +90,7 @@ describe("Nous attachments", () => {
     expect(text).toMatchObject({ kind: "DOCUMENT", readable: expect.stringMatching(/^FULL/) });
     expect(video).toMatchObject({ kind: "VIDEO", mimeType: "video/mp4", width: 64, height: 48 });
     expect(video!.durationSeconds).toBeGreaterThan(0.5);
+    for (const file of [image, text, video]) for (const key of ["ownerUserId", "sha256", "storagePath", "meta"]) expect(file).not.toHaveProperty(key);
 
     const sent = await app.inject({ method: "POST", url: "/api/nous/messages", payload: { content: "Look at these", attachmentIds: [image!.id, text!.id, video!.id] } });
     expect(sent.statusCode).toBe(202);

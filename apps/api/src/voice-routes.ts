@@ -89,7 +89,7 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
     // value; never accept an arbitrary forwarded Origin.
     const requestOrigin = request.headers.origin?.trim() || origin;
     let configuredOrigin: string | null = null;
-    try { configuredOrigin = new URL(config.browserEvidenceTargetOrigin).origin; } catch {}
+    try { configuredOrigin = new URL(config.browserEvidenceTargetOrigin).origin; } catch { /* no valid public UI origin configured: only same-origin passes */ }
     if (requestOrigin !== origin && requestOrigin !== configuredOrigin) {
         return sendApiError(reply, 403, "VOICE_ORIGIN_INVALID", "Voice sessions require a same-origin request.");
     }

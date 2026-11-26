@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import { claudeModelMenu, claudeSwitchModelQuestion, findNativeCliModel, geminiLaunchModel, nativeCliCatalogModels, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning, prepareNativeCliSettings } from "../src/cli-native-model-picker.js";
+import { claudeCopilotLaunch, claudeModelMenu, claudeSwitchModelQuestion, findNativeCliModel, geminiLaunchModel, nativeCliCatalogModels, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning, prepareNativeCliSettings } from "../src/cli-native-model-picker.js";
 import { roomTerminalState } from "../src/room-terminal-screen.js";
 import { dashboardScreenState } from "../src/agents-dashboard.js";
 
 const model = { id: "provider/model-2", displayName: "Model Two", isDefault: false,
   defaultReasoningEffort: "none", supportedReasoningEfforts: ["none"] };
+
+describe("Claude copilot launch model", () => {
+  it("starts and resumes a copilot on its own Claude pick, else its class; other panes keep their path", () => {
+    expect(claudeCopilotLaunch("cli:claude", { mode: "JOB_APPLY", modelId: null, reasoningEffort: "high" })).toEqual({ modelId: "claude:sonnet", reasoningEffort: "medium" });
+    expect(claudeCopilotLaunch("cli:claude", { mode: "MAIL_COPILOT", modelId: "sonnet", reasoningEffort: "low" })).toEqual({ modelId: "claude:sonnet", reasoningEffort: "high" });
+    expect(claudeCopilotLaunch("cli:claude", { mode: "MAIL_COPILOT", modelId: "claude:opus", reasoningEffort: "xhigh" })).toEqual({ modelId: "claude:opus", reasoningEffort: "xhigh" });
+    expect(claudeCopilotLaunch("cli:claude", { mode: "TERMINAL", modelId: null, reasoningEffort: "high" })).toBeNull();
+    expect(claudeCopilotLaunch("cli:codex", { mode: "JOB_APPLY", modelId: null, reasoningEffort: "high" })).toBeNull();
+  });
+});
 
 describe("native CLI model acknowledgement", () => {
   it("groups Cursor context, speed and effort variants into the families selectable by its native menu", () => {
@@ -363,7 +373,7 @@ describe('native CLI reasoning', () => {
     expect(models.map(entry => entry.id)).toEqual(['claude:sonnet', 'claude:opus', 'claude:fable', 'claude:haiku']);
     for (const entry of models) {
       expect(entry.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
-      expect(entry.defaultReasoningEffort).toBe('xhigh');
+      expect(entry.defaultReasoningEffort).toBe('high');
     }
   });
 
@@ -422,7 +432,7 @@ describe('native CLI reasoning', () => {
 
 
 describe('narrow native model controls', () => {
-  const control = (read: () => Promise<{text:string;revision:number}>, write = vi.fn(async (_data: string) => {})) =>
+  const control = (read: () => Promise<{text:string;revision:number}>, write = vi.fn<(data: string) => Promise<void>>(async () => {})) =>
     ({runtimeId:'cli:kimi', read, write, assertCurrent:async()=>{}, wait:async()=>{}});
   it('closes an open Kimi menu and clears only its restored settings command', async () => {
     const read=vi.fn().mockResolvedValueOnce({text:'Select a model\nSearch: /model kimi-code/k3\nNo matches',revision:1})
@@ -443,7 +453,7 @@ describe('narrow native model controls', () => {
     expect(input.write).not.toHaveBeenCalled();
   });
   it('dismisses a failed settings menu so the next selection can start cleanly', async()=>{
-    const write=vi.fn(async(_s:string)=>{});
+    const write=vi.fn<(s: string) => Promise<void>>(async () => {});
     let screen={text:'>',revision:1};
     write.mockImplementation(async data=>{if(data==='\r')screen={text:'Select a model\nNo matches',revision:2};if(data==='\u001b')screen={text:'>',revision:3};});
     await expect(switchNativeCliModel({...control(async()=>screen,write),model})).rejects.toThrow('has not confirmed');
@@ -476,6 +486,14 @@ describe('narrow native model controls', () => {
     expect(await typed('claude-sonnet-4-6','high','Claude Sonnet 4.6 (Thinking)')).toMatch(/\/model claude-sonnet-4-6(?!-)/);
     expect(await typed('gemini-3.8-flash','low','Gemini 3.8 Flash (Low)')).toContain('/model gemini-3.8-flash-low');
   });
+  it('18/11: a model the running agy account lacks is refused as not in its menu (a refusal), with Esc, naming agy\'s label', async()=>{
+    const catalog=nativeCliCatalogModels('/bin/gemini-vscode-parity',['gemini-3.8-flash-high\tGemini 3.8 Flash (High)','claude-opus-5-5-high\tClaude Opus 5.5 (High)'].join('\n'));
+    let screen={text:'>',revision:1};
+    const write=vi.fn(async(data:string)=>{if(data==='\r')screen={text:'Error: model not found: claude-opus-5-5-high\n>',revision:2};});
+    await expect(switchNativeCliModel({...control(async()=>screen,write),runtimeId:'cli:gemini',model:catalog.find(entry=>entry.id==='claude-opus-5-5')!,effort:'high'}))
+      .rejects.toThrow(/not available in the CLI's current model menu: this pane's Antigravity account does not offer Claude Opus 5\.5 \(High\)/);
+    expect(write.mock.calls.map(([data])=>data)).toContain('\u001b');
+  });
   it('3/11: a pane on a retired model starts on the newest of its family with agy\'s label, never agy\'s default Gemini', () => {
     // The pro pool's agy catalog of 3/11 (Claude Opus 4.6 retired: "Please switch to Claude Opus 5.5").
     const catalog = nativeCliCatalogModels('/bin/gemini-vscode-parity', ['gemini-4-argon-high\tGemini 4 Argon (High)', 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)',
@@ -487,6 +505,12 @@ describe('narrow native model controls', () => {
     // A listed model keeps itself, with its own label; nothing of the family leaves the launch as configured.
     expect(geminiLaunchModel(catalog, 'claude-opus-5-5', 'low')).toEqual({ modelId: 'claude-opus-5-5', reasoningEffort: 'low', label: 'Claude Opus 5.5 (Low)' });
     expect(geminiLaunchModel(catalog, 'gemini-3.1-pro', 'high')).toBeNull();
+    // When Argon is requested but only Hydrogen is in the catalog, falls back cleanly to Hydrogen
+    const hydrogenCatalog = nativeCliCatalogModels('/bin/gemini-vscode-parity', ['gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)', 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)'].join('\n'));
+    expect(geminiLaunchModel(hydrogenCatalog, 'gemini-4-argon', 'high')).toEqual({ modelId: 'gemini-4-hydrogen', reasoningEffort: 'high', label: 'Gemini 4 Hydrogen (High)' });
+    // Operator 22/11 c74c7453: Neon before Hydrogen.
+    const neonCatalog = nativeCliCatalogModels('/bin/gemini-vscode-parity', ['gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)', 'gemini-4-neon-high\tGemini 4 Neon (High)'].join('\n'));
+    expect(geminiLaunchModel(neonCatalog, 'gemini-4-argon', 'high')).toMatchObject({ modelId: 'gemini-4-neon', label: 'Gemini 4 Neon (High)' });
   });
   it('uses a complete acknowledgement when DeepSeek truncates its footer',()=>{
     const deepseek={...model,id:'deepseek-flash/deepseek-v4-flash',displayName:'DeepSeek Flash'};
@@ -595,7 +619,7 @@ it('changes Cursor reasoning when the native parameter heading wraps inside a wo
   .mockResolvedValueOnce({text:parameters(true),revision:5})
   .mockResolvedValueOnce({text:menu,revision:6})
   .mockResolvedValue({text:prompt+'GPT-5.5 Low  Run Everything',revision:7});
- const write=vi.fn(async(_data:string)=>{});
+ const write=vi.fn<(data: string) => Promise<void>>(async () => {});
  await switchNativeCliReasoning({runtimeId:'cli:cursor',model:cursor,effort:'low',read,write,assertCurrent:async()=>{},wait:async()=>{}});
  expect(write.mock.calls).toEqual([['/model'],['\r'],['\t'],['\u001b[B'],['\r'],['\u001b'],['\r']]);
  const recover=vi.fn().mockResolvedValueOnce({text:parameters(false),revision:1}).mockResolvedValue({text:prompt+'GPT-5.5 Low  Run Everything',revision:2});
@@ -617,7 +641,7 @@ it('switches OMP model and reasoning together via /switch', async () => {
   const read = vi.fn()
     .mockResolvedValueOnce({ text: promptBefore, revision: 1 })
     .mockResolvedValue({ text: promptAfter, revision: 2 });
-  const write = vi.fn(async (_data: string) => {});
+  const write = vi.fn<(data: string) => Promise<void>>(async () => {});
   await switchNativeCliModel({
     runtimeId: 'cli:omp',
     model: ompModel,
@@ -646,7 +670,7 @@ it('switches OMP reasoning when model is already active', async () => {
   const read = vi.fn()
     .mockResolvedValueOnce({ text: promptBefore, revision: 1 })
     .mockResolvedValue({ text: promptAfter, revision: 2 });
-  const write = vi.fn(async (_data: string) => {});
+  const write = vi.fn<(data: string) => Promise<void>>(async () => {});
   await switchNativeCliModel({
     runtimeId: 'cli:omp',
     model: ompModel,
@@ -663,7 +687,7 @@ it('switches OMP reasoning when model is already active', async () => {
 });
 
 it('clears previous /switch draft in OMP with \\u0015', async () => {
-  const write = vi.fn(async (_data: string) => {});
+  const write = vi.fn<(data: string) => Promise<void>>(async () => {});
   const read = vi.fn()
     .mockResolvedValueOnce({ text: 'π > 📁 /etc\n╰─ /switch codex-lb/gpt-6-astra:low\n', revision: 1 })
     .mockResolvedValue({ text: 'π > 📁 /etc\n╰─ \n', revision: 2 });
@@ -678,7 +702,7 @@ it('clears previous /switch draft in OMP with \\u0015', async () => {
 });
 
 it('protects user prompt drafts in OMP from being overwritten', async () => {
-  const write = vi.fn(async (_data: string) => {});
+  const write = vi.fn<(data: string) => Promise<void>>(async () => {});
   const read = vi.fn().mockResolvedValue({ text: 'π > 📁 /etc\n╰─ please explain this codebase\n', revision: 1 });
   await expect(prepareNativeCliSettings({
     runtimeId: 'cli:omp',
@@ -727,7 +751,7 @@ it('submits OMP /switch with second enter when autocomplete dropdown intercepts 
     .mockResolvedValueOnce({ text: beforeText, revision: 1 })
     .mockResolvedValueOnce({ text: interceptedText, revision: 2 })
     .mockResolvedValue({ text: confirmedNarrowText, revision: 3 });
-  const write = vi.fn(async (_data: string) => {});
+  const write = vi.fn<(data: string) => Promise<void>>(async () => {});
   await switchNativeCliModel({
     runtimeId: 'cli:omp',
     model: ompModel,
@@ -757,7 +781,7 @@ it('switches Gemini base model appending selected effort variant to /model', asy
   const read = vi.fn()
     .mockResolvedValueOnce({ text: beforeText, revision: 1 })
     .mockResolvedValue({ text: confirmedText, revision: 2 });
-  const write = vi.fn(async (_data: string) => {});
+  const write = vi.fn<(data: string) => Promise<void>>(async () => {});
   await switchNativeCliModel({
     runtimeId: 'cli:gemini',
     model: geminiBase,
@@ -773,6 +797,56 @@ it('switches Gemini base model appending selected effort variant to /model', asy
   ]);
   expect(nativeCliConfirmedModel(confirmedText, [geminiBase], 'cli:gemini')).toBe('gemini-3.8-flash');
   expect(nativeCliConfirmedReasoning(confirmedText, 'cli:gemini', geminiBase)).toBe('medium');
+});
+
+it('groups Gemini XHigh variants into one model entry with xhigh reasoning and switches/confirms xhigh', async () => {
+  const catalog = nativeCliCatalogModels('/bin/gemini-vscode-parity', [
+    'gemini-4-neon-high\tGemini 4 Neon (High)',
+    'gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)',
+    'gemini-4-neon-medium\tGemini 4 Neon (Medium)',
+    'gemini-4-neon-low\tGemini 4 Neon (Low)',
+    'gemini-4-argon-medium\tGemini 4 Argon (Medium)',
+    'gemini-4-argon-high\tGemini 4 Argon (High)',
+    'gemini-4-argon-low\tGemini 4 Argon (Low)',
+    'gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)',
+    'gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)',
+    'gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)',
+    'gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)',
+    'gemini-pro-orchestrator-neon\tOrchestrator (Neon)',
+    'gemini-pro-orchestrator-g1-pro\tOrchestrator (Argon)',
+    'gemini-3.8-flash-high\tGemini 3.8 Flash (High)',
+    'claude-opus-5-5-high\tClaude Opus 5.5 (High)',
+    'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)'
+  ].join('\n'));
+  expect(catalog.map((entry) => [entry.id, entry.displayName])).toEqual([
+    ['gemini-4-neon', 'Gemini 4 Neon'],
+    ['gemini-4-argon', 'Gemini 4 Argon'],
+    ['gemini-4-hydrogen', 'Gemini 4 Hydrogen'],
+    ['gemini-pro-orchestrator-neon', 'Orchestrator (Neon)'],
+    ['gemini-pro-orchestrator-g1-pro', 'Orchestrator (Argon)'],
+    ['gemini-3.8-flash', 'Gemini 3.8 Flash'],
+    ['claude-opus-5-5', 'Claude Opus 5.5'],
+    ['gpt-oss-120b', 'GPT-OSS 120B']
+  ]);
+  const neon = catalog.find((entry) => entry.id === 'gemini-4-neon')!;
+  const hydrogen = catalog.find((entry) => entry.id === 'gemini-4-hydrogen')!;
+  expect(neon).toMatchObject({ defaultReasoningEffort: 'high', supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'] });
+  expect(hydrogen).toMatchObject({ defaultReasoningEffort: 'high', supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'] });
+
+  const write = vi.fn<(data: string) => Promise<void>>(async () => {});
+  const read = vi.fn()
+    .mockResolvedValueOnce({ text: 'Antigravity CLI 1.5.14\nGemini 4 Neon (High)\n/etc\n? for shortcuts   accept-edits · Gemini 4 Neon · high', revision: 1 })
+    .mockResolvedValue({ text: '  ⎿ Model set to Gemini 4 Neon (XHigh)\n>\n? for shortcuts   accept-edits · Gemini 4 Neon · xhigh', revision: 2 });
+  await switchNativeCliModel({
+    runtimeId: 'cli:gemini', model: neon, effort: 'xhigh', read, write, assertCurrent: async () => {}, wait: async () => {}
+  });
+  expect(write.mock.calls).toEqual([['/model gemini-4-neon-xhigh'], ['\r']]);
+  expect(nativeCliConfirmedModel('? for shortcuts   accept-edits · Gemini 4 Neon · xhigh', catalog, 'cli:gemini')).toBe('gemini-4-neon');
+  expect(nativeCliConfirmedReasoning('? for shortcuts   accept-edits · Gemini 4 Neon · xhigh', 'cli:gemini', neon)).toBe('xhigh');
+  expect(nativeCliConfirmedReasoning('Antigravity CLI 1.5.14\nGemini 4 Neon (XHigh)\n/etc', 'cli:gemini', neon)).toBe('xhigh');
+  expect(nativeCliConfirmedReasoning('  ⎿ Model set to Gemini 4 Neon (High)\n  ⎿ Model set to Gemini 4 Neon (XHigh)\n>', 'cli:gemini', neon)).toBe('xhigh');
+  expect(geminiLaunchModel(catalog, 'gemini-4-neon', 'xhigh')).toEqual({ modelId: 'gemini-4-neon', reasoningEffort: 'xhigh', label: 'Gemini 4 Neon (XHigh)' });
+  expect(geminiLaunchModel(catalog, 'gemini-4-neon-xhigh', 'none')).toEqual({ modelId: 'gemini-4-neon', reasoningEffort: 'xhigh', label: 'Gemini 4 Neon (XHigh)' });
 });
 
 
@@ -797,8 +871,8 @@ describe('Claude Code per-pane model selection', () => {
         { number: 1, label: 'Default (recommended)', highlighted: false }, { number: 2, label: 'Opus', highlighted: false },
         { number: 3, label: 'Fable', highlighted: true }, { number: 4, label: 'Sonnet', highlighted: false },
         { number: 5, label: 'Haiku', highlighted: false }],
-      effort: 'xhigh', effortSupported: true, sessionOnly: true, searching: false, moreAbove: false, moreBelow: false, hintsVisible: true });
-    expect(claudeModelMenu(menu(4, '◐ Medium effort (default)'))?.effort).toBe('medium');
+      effort: 'xhigh', effortDefault: false, effortSupported: true, sessionOnly: true, searching: false, moreAbove: false, moreBelow: false, hintsVisible: true });
+    expect(claudeModelMenu(menu(4, '◐ Medium effort (default)'))).toMatchObject({ effort: 'medium', effortDefault: true });
     expect(claudeModelMenu(menu(4, '◈ Max effort'))?.effort).toBe('max');
   });
 
@@ -900,7 +974,7 @@ describe('Claude Code per-pane model selection', () => {
   it('reads the window of rows a short pane shows, also after PgDn scrolled the title away', () => {
     expect(claudeModelMenu(window63x20)).toEqual({
       rows: [{ number: 1, label: 'Default (recommended)', highlighted: true }, { number: 2, label: 'Opus', highlighted: false }],
-      effort: 'xhigh', effortSupported: true, sessionOnly: true, searching: false, moreAbove: false, moreBelow: true, hintsVisible: true });
+      effort: 'xhigh', effortDefault: false, effortSupported: true, sessionOnly: true, searching: false, moreAbove: false, moreBelow: true, hintsVisible: true });
     expect(claudeModelMenu(paged52x20)).toMatchObject({ rows: [{ number: 1 }, { number: 2, label: 'Opus' }], effort: 'xhigh',
       sessionOnly: true, moreBelow: true, hintsVisible: true });
     const scrolled = window63x20.replace('❯ 1. Default (recommended) ✔', '↑ 2. Opus                 ').replace('↓ 2. Opus    ', '❯ 3. Fable   ').replace('+3 models', '+2 models');
@@ -1043,5 +1117,45 @@ describe('Claude Code per-pane model selection', () => {
     await expect(prepareNativeCliSettings(control(`${banner}────\n❯\n────`))).resolves.toEqual(suggestion);
     await expect(prepareNativeCliSettings(control(suggestion.text))).rejects.toThrow('Send or clear the current CLI draft');
     await expect(prepareNativeCliSettings({ ...control(''), readUndimmed: undefined })).rejects.toThrow('Send or clear the current CLI draft');
+  });
+});
+
+describe('Claude Code 2.1.330 model menu and failure cleanup (21/11 real PTY)', () => {
+  const [sonnet] = nativeCliCatalogModels('/opt/spaceapp/bin/claude-vscode-parity', 'sonnet\tSonnet\n');
+  const idle = ' ▐▛███▛█   Claude Code v2.1.330\n▝▜██████▀  Opus 5.5 · API Usage Billing\n────\n❯ \n────\n  ⏵⏵ auto mode on (shift+tab to cycle)';
+  it('reads "↓ N more" as rows below and a hint line wrapped at 52 columns as visible', () => {
+    const menu = claudeModelMenu('  Select model\n  Your pick is the default for new sessions. For\n  other models, use --model.\n    ↑ 2 more\n'
+      + '    3. Fable                    Fable 5.2\n  ❯ 4. Sonnet                   Sonnet 5.5\n    ↓ 1 more\n\n  Efficient for routine tasks · $2/$10 per Mtok\n\n'
+      + '  ◐ Medium effort (default) ←/→ to adjust\n\n  s to use this session only · Enter to save · Esc\n  to cancel');
+    expect(menu).toMatchObject({ moreAbove: true, moreBelow: true, hintsVisible: true, sessionOnly: true, effort: 'medium',
+      rows: [{ number: 3, label: 'Fable', highlighted: false }, { number: 4, label: 'Sonnet', highlighted: true }] });
+  });
+  it('accepts a pick at the model\'s default effort, which Claude Code confirms with no effort', async () => {
+    const menu = '  Select model\n    1. Default (recommended)  Opus 5.5\n  ❯ 2. Sonnet                   Sonnet 5.5\n\n'
+      + '  ◐ Medium effort (default) ←/→ to adjust\n\n  s to use this session only · Enter to save · Esc to cancel';
+    let screen = { text: idle, revision: 1 };
+    const write = vi.fn(async (data: string) => {
+      if (data === '\r') screen = { text: menu, revision: 2 };
+      if (data === 's') screen = { text: idle.replace('❯ \n', '❯ /model\n  ⎿  Set model to Sonnet 5.5 for this session only\n────\n❯ \n'), revision: 3 };
+    });
+    await switchNativeCliModel({ runtimeId: 'cli:claude', model: sonnet!, effort: 'medium', read: async () => screen, write, assertCurrent: async () => {}, wait: async () => {} });
+    expect(write.mock.calls).toEqual([['/model'], ['\r'], ['s']]);
+  });
+  it('clears "/model" left typed when Claude Code dropped its Enter, so the pane\'s next send is not refused', async () => {
+    let screen = { text: idle, revision: 1 };
+    const write = vi.fn(async (data: string) => {
+      if (data === '/model') screen = { text: idle.replace('❯ \n', '  ❯ /model                   Switch model (currently Opus\n────\n❯ /model\n'), revision: 2 };
+      if (data === '\u0015') screen = { text: idle, revision: 3 };
+    });
+    await expect(switchNativeCliModel({ runtimeId: 'cli:claude', model: sonnet!, read: async () => screen, write, assertCurrent: async () => {}, wait: async () => {} }))
+      .rejects.toThrow('has not confirmed');
+    expect(write.mock.calls).toEqual([['/model'], ['\r'], ['\u0015']]);
+    expect(screen.text).toBe(idle);
+  });
+  it('never clears a normal draft during failure cleanup', async () => {
+    const write = vi.fn(async () => {});
+    await expect(switchNativeCliModel({ runtimeId: 'cli:claude', model: sonnet!, read: async () => ({ text: idle.replace('❯ ', '❯ /models are great'), revision: 1 }), write, assertCurrent: async () => {}, wait: async () => {} }))
+      .rejects.toThrow('Send or clear');
+    expect(write).not.toHaveBeenCalled();
   });
 });

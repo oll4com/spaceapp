@@ -31,7 +31,7 @@ describe("site visits", () => {
     expect(site.actions).toEqual([{ key: "github", views: 2, medianSeconds: null }, { key: "install_copy", views: 1, medianSeconds: null }]);
     expect(site.next).toEqual([{ key: "/ → /docs/", views: 1, medianSeconds: null }]);
     expect(site.referrers.map((row) => row.key)).toEqual(["news.ycombinator.com"]);
-    expect(site.sources.map((row) => row.key)).toEqual(["hn"]);
+    expect(site.sources).toEqual([{ key: "hn", views: 1, medianSeconds: null, installIntent: 0 }]);
     expect(site.countries.map((row) => row.key)).toEqual(["GR", "US"]);
     expect(site.screens.map((row) => row.key)).toEqual(["desktop", "mobile"]);
   });

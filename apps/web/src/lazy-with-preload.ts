@@ -1,6 +1,10 @@
 import { createElement, lazy, useState, type ComponentType } from "react";
 
-export type PreloadableComponent<Component extends ComponentType<any>> = Component & {
+// React.lazy's own bound: any props, so a component with required props still fits.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type LazyBound = ComponentType<any>;
+
+export type PreloadableComponent<Component extends LazyBound> = Component & {
   preload: () => Promise<void>;
 };
 
@@ -12,7 +16,7 @@ const idlePreloads = new Set<() => Promise<void>>();
  * content back for its fallback throttle). Once preloaded, this renders the
  * resolved component directly; before that it behaves exactly like lazy().
  */
-export function lazyWithPreload<Component extends ComponentType<any>>(
+export function lazyWithPreload<Component extends LazyBound>(
   loader: () => Promise<{ default: Component }>,
   options: { idle?: boolean } = {}
 ): PreloadableComponent<Component> {
@@ -36,7 +40,7 @@ export function lazyWithPreload<Component extends ComponentType<any>>(
   function PreloadableSurface(props: object) {
     // Choose the component once per mount: switching from the lazy wrapper to
     // the resolved component later would remount the surface and drop state.
-    const [Surface] = useState<ComponentType<any>>(() => resolved ?? LazyComponent);
+    const [Surface] = useState<LazyBound>(() => resolved ?? LazyComponent);
     return createElement(Surface, props);
   }
 

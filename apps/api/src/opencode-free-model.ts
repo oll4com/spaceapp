@@ -12,6 +12,8 @@ export function readActiveFreeOpenCodeModel(stateFile = OPENCODE_FREE_MODEL_STAT
         return data.modelId;
       }
     }
-  } catch {}
+  } catch {
+    // A missing, half-written or malformed state file falls back to the default model below.
+  }
   return "opencode/big-pickle";
 }

@@ -178,7 +178,7 @@ function taskText(base: string, kind: "Test" | "Interview", dueAt: string | null
   const title = `${base}, ${when ? (kind === "Test" ? `due ${when}` : when) : "deadline not stated"}`;
   // Operator 4/11 (nous_msg:a6016259): an appointment holds everything the operator needs, which this parser cannot write; the agent records it.
   const record = ` Record it in Appointments if it is not there: space_appointment_add, sourceRef this task's id, kind ${kind === "Test" ? "DEADLINE" : "INTERVIEW"}, its format and timing (a test: TEST, FLEXIBLE until its deadline) and every section its notes require (read in the mail).`;
-  const todo = (kind === "Test" ? "Take the test before its deadline; the mail has the link." : "Go to the interview (or book its time); the mail has the details.") + record;
+  const todo = (kind === "Test" ? "Take the test before its deadline; the mail has the link." : "Go to the interview (or book its time, only within the operator's appointment hours, which space_appointments returns as hours); the mail has the details.") + record;
   const missing = "The mail states no deadline: find it and record it (space_job_mail_deadline), or ask the recruiter.";
   return { title, objective: [base, `Deadline: ${dueAt ? `${dueAt} (${when})` : "not stated"}`, dueAt ? todo : `${todo} ${missing}`, rest].join("\n") };
 }

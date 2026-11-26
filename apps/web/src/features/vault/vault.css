@@ -78,3 +78,14 @@
 .vault-more > summary { cursor: pointer; font-size: var(--dock-font-sm); color: var(--dock-muted); }
 .vault-more[open] { gap: 0.5rem; }
 .vault-more[open] > :not(summary) { margin-top: 0.4rem; }
+
+/* Authenticator (plan clipboard:3aH7Gpr9F-yJ): the live code, a ring for the seconds left; a click copies it. */
+.vault-totp { display: inline-flex; align-items: center; gap: 0.45rem; align-self: flex-start; padding: 0.15rem 0.5rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius-sm); background: var(--dock-soft); color: var(--dock-text); font: inherit; cursor: pointer; }
+.vault-totp:hover, .vault-totp:focus-visible { border-color: var(--dock-accent); }
+.vault-totp-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1rem; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; }
+.vault-totp-ring { width: 1rem; height: 1rem; transform: rotate(-90deg); }
+.vault-totp-ring circle { fill: none; stroke-width: 2.5; stroke: var(--dock-border); }
+.vault-totp-ring circle + circle { stroke: var(--dock-accent); transition: stroke-dashoffset 1s linear; }
+.vault-totp[data-ending] .vault-totp-ring circle + circle, .vault-totp[data-ending] .vault-totp-code { stroke: var(--dock-warning); color: var(--dock-warning); }
+.vault-totp-left { min-width: 3.2em; font-size: var(--dock-font-xs, 0.75rem); color: var(--dock-muted); }
+@media (prefers-reduced-motion: reduce) { .vault-totp-ring circle + circle { transition: none; } }

@@ -1,3 +1,4 @@
+/* eslint-disable no-control-regex -- matching terminal escape and control characters is the point of this file */
 import { terminalPaintIsStale } from "./terminal-paint-recovery.js";
 
 interface EdgeLeakCell {
@@ -109,7 +110,7 @@ export function scanTerminalEdgeLeak(
   let ambiguousRows = 0;
   let ambiguousCells = 0;
   for (let y = 0; y < rows; y += 1) {
-    let line: EdgeLeakLine | undefined | null = null;
+    let line: EdgeLeakLine | undefined | null;
     try {
       line = active.getLine(viewportY + y);
     } catch {
@@ -124,19 +125,17 @@ export function scanTerminalEdgeLeak(
     let rowHasWide = false;
     let rowHasAmbiguous = false;
     for (let x = 0; x < cellCount && visibleText.length <= 2048; x += 1) {
-      let cell: EdgeLeakCell | undefined = undefined;
+      let cell: EdgeLeakCell | undefined;
       try {
         cell = line.getCell(x);
       } catch {
         continue;
       }
       if (!cell) continue;
-      let invisible = false;
-      let width = 0;
-      let chars = "";
+      let width: number;
+      let chars: string;
       try {
-        invisible = cell.isInvisible();
-        if (invisible) continue;
+        if (cell.isInvisible()) continue;
         width = cell.getWidth();
         chars = cell.getChars() ?? "";
       } catch {
@@ -175,7 +174,7 @@ export function scanTerminalEdgeLeak(
   } catch {
     overflowPx = 0;
   }
-  let staleDom = false;
+  let staleDom: boolean;
   try {
     staleDom = terminalPaintIsStale(
       terminal as unknown as Parameters<typeof terminalPaintIsStale>[0],

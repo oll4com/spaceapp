@@ -74,6 +74,19 @@ export interface GreekLayoutDebugReport {
   tokens: GreekTokenDebugEntry[];
 }
 
+declare global {
+  interface Window {
+    __SPACE_GREEK_LAYOUT_DEBUG_LAST__?: GreekLayoutDebugReport | null;
+    __SPACE_GREEK_LAYOUT_DEBUG_HISTORY__?: GreekLayoutDebugReport[];
+    __SPACE_GREEK_LAYOUT_DEBUG__?: {
+      inspect: (text: string) => object;
+      getLastReport: () => GreekLayoutDebugReport | null | undefined;
+      getHistory: () => GreekLayoutDebugReport[];
+      clearHistory: () => void;
+    };
+  }
+}
+
 let debugSequence = 0;
 let debugInspectionDepth = 0;
 const debugHistory: GreekLayoutDebugReport[] = [];
@@ -93,8 +106,8 @@ export function recordGreekLayoutDebug(report: Omit<GreekLayoutDebugReport, "id"
   }
 
   if (typeof window !== "undefined") {
-    (window as any).__SPACE_GREEK_LAYOUT_DEBUG_LAST__ = fullReport;
-    (window as any).__SPACE_GREEK_LAYOUT_DEBUG_HISTORY__ = debugHistory;
+    window.__SPACE_GREEK_LAYOUT_DEBUG_LAST__ = fullReport;
+    window.__SPACE_GREEK_LAYOUT_DEBUG_HISTORY__ = debugHistory;
   }
 
   // Active console reporting with full token breakdown
@@ -125,13 +138,13 @@ export function recordGreekLayoutDebug(report: Omit<GreekLayoutDebugReport, "id"
     } else {
       console.log(label, fullReport);
     }
-  } catch {}
+  } catch { /* console unavailable: the report is still returned and kept */ }
 
   return fullReport;
 }
 
 if (typeof window !== "undefined") {
-  (window as any).__SPACE_GREEK_LAYOUT_DEBUG__ = {
+  window.__SPACE_GREEK_LAYOUT_DEBUG__ = {
     inspect: (text: string) => {
       debugInspectionDepth++;
       try {
@@ -141,17 +154,17 @@ if (typeof window !== "undefined") {
           text,
           detection,
           converted,
-          lastReport: (window as any).__SPACE_GREEK_LAYOUT_DEBUG_LAST__
+          lastReport: window.__SPACE_GREEK_LAYOUT_DEBUG_LAST__
         };
       } finally {
         debugInspectionDepth--;
       }
     },
-    getLastReport: () => (window as any).__SPACE_GREEK_LAYOUT_DEBUG_LAST__,
-    getHistory: () => (window as any).__SPACE_GREEK_LAYOUT_DEBUG_HISTORY__ ?? [],
+    getLastReport: () => window.__SPACE_GREEK_LAYOUT_DEBUG_LAST__,
+    getHistory: () => window.__SPACE_GREEK_LAYOUT_DEBUG_HISTORY__ ?? [],
     clearHistory: () => {
       debugHistory.length = 0;
-      (window as any).__SPACE_GREEK_LAYOUT_DEBUG_LAST__ = null;
+      window.__SPACE_GREEK_LAYOUT_DEBUG_LAST__ = null;
     }
   };
 }
@@ -1353,7 +1366,7 @@ export function insertTextAtCursor(textarea: HTMLTextAreaElement, text: string):
   let success = false;
   try {
     success = Boolean(typeof document !== "undefined" && typeof document.execCommand === "function" && document.execCommand("insertText", false, text));
-  } catch {}
+  } catch { /* execCommand unsupported: the fallback below inserts the text */ }
   if (!success) {
     const start = textarea.selectionStart ?? textarea.value.length;
     const end = textarea.selectionEnd ?? textarea.value.length;

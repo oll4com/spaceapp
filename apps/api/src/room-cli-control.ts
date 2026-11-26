@@ -128,7 +128,7 @@ export function createRoomCliControl(options: {
       }
       const usageList = await Promise.race([
         antigravityUsageProvider(),
-        new Promise<{ data: any[] }>((r) => setTimeout(() => r({ data: [] }), 1500))
+        new Promise<Pick<AntigravityUsageAccountList, "data">>((r) => setTimeout(() => r({ data: [] }), 1500))
       ]).catch(() => ({ data: [] }));
       const fallbackVerification = {
         configuredModelId: session?.modelId ?? pane.modelId ?? null,
@@ -149,7 +149,7 @@ export function createRoomCliControl(options: {
           catalog,
           usageAccounts: usageList.data
         }),
-        new Promise<any>((r) => setTimeout(() => r(fallbackVerification), 2000))
+        new Promise<typeof fallbackVerification>((r) => setTimeout(() => r(fallbackVerification), 2000))
       ]).catch(() => fallbackVerification);
 
       if (verified.nativeTaskRef) {

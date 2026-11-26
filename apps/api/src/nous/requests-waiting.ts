@@ -11,14 +11,16 @@ import type { NousTurnItem } from "./turn-items.js";
 export type WaitingRequest = Pick<NousOpenRequest, "key" | "messageId" | "summary" | "pane" | "openedAt">;
 export interface WaitingPane { label: string; status: string; since: string | null }
 /** The oldest text waiting for a pane, and every after-turn schedule holding a text for it (its id, prompt text and source request). */
-export interface QueuedText { at: string; schedules?: Array<{ id: string; text: string }> }
+export interface QueuedText { at: string; schedules?: QueuedSchedule[] }
+/** `text`: the prompt and its source request id (what requestScheduleOf matches); `prompt`: the prompt alone (what a move sends). */
+export interface QueuedSchedule { id: string; text: string; prompt: string }
 export interface RequestWaits { words(messageId: string): string | null; pane(paneId: string): WaitingPane | null; queued(paneId: string): QueuedText | null }
 
 /** The longest an operator request (or its next step) waits behind a busy pane before Nous opens a new pane for it. */
 export const NOUS_OPERATOR_WAIT_MS = 180_000;
 
 /** Every open request, oldest first (until 31/10 only those of the last 48 hours: an older one still open fell out of sight). */
-export function waitingRequestsOf(notes: Array<{ key: string; text: string }>, _now: number): WaitingRequest[] {
+export function waitingRequestsOf(notes: Array<{ key: string; text: string }>): WaitingRequest[] {
   return openRequestsOf(notes).sort((left, right) => left.openedAt.localeCompare(right.openedAt));
 }
 
@@ -42,7 +44,7 @@ export function queuedTexts(records: Array<{ kind: string; actorId: string; key:
       if (action.kind !== "pane" || action.operation !== "prompt") continue;
       for (const paneId of action.target?.paneIds ?? []) {
         const entry = keep(paneId, value.createdAt);
-        if (value.id) (entry.schedules ??= []).push({ id: value.id, text: [action.text, value.sourceRequestId].filter(Boolean).join("\n") });
+        if (value.id) (entry.schedules ??= []).push({ id: value.id, text: [action.text, value.sourceRequestId].filter(Boolean).join("\n"), prompt: action.text ?? "" });
       }
     }
   }
@@ -75,17 +77,20 @@ export const quote = (words: string) => { const line = words.replace(/\s+/g, " "
  * Any other text queued for that pane is someone else's (13/11: a HOLD note to Bruno/Jack was named as two requests' text and cancelled).
  */
 export function requestScheduleOf(request: Pick<WaitingRequest, "messageId">, queued: QueuedText | null): string | null {
+  return requestQueuedOf(request, queued)?.id ?? null;
+}
+export function requestQueuedOf(request: Pick<WaitingRequest, "messageId">, queued: QueuedText | null): QueuedSchedule | null {
   const short = request.messageId?.replace(/^nous_msg:/, "").slice(0, 8);
-  return (short && short.length === 8 && queued?.schedules?.find((schedule) => schedule.text.includes(short))?.id) || null;
+  return (short && short.length === 8 && queued?.schedules?.find((schedule) => schedule.text.includes(short))) || null;
 }
 
 /** The urgent inbox line for a request waiting behind a busy pane; it advises cancelling only the request's own queued text. */
-export function requestWaitLine(request: WaitingRequest, waits: RequestWaits): string {
+export function requestWaitLine(request: WaitingRequest, waits: RequestWaits, notMoved?: string): string {
   const pane = waits.pane(request.pane!)!;
   const queued = waits.queued(request.pane!)!;
   const scheduleId = requestScheduleOf(request, queued);
   return `Operator request ${request.messageId ? `[${request.messageId}] ` : ""}«${wordsOf(request, waits)}» has waited 3+ min behind ${pane.label} (${pane.status}`
-    + `${pane.since ? ` since ${pane.since.slice(11, 16)} UTC` : ""}; its text waits since ${queued.at.slice(11, 16)} UTC): open a new pane for it now (space_open_panes) and send it there with alsoTo: true`
+    + `${pane.since ? ` since ${pane.since.slice(11, 16)} UTC` : ""}; its text waits since ${queued.at.slice(11, 16)} UTC)${notMoved ? `; Space could not move it: ${notMoved}` : ""}: open a new pane for it now (space_open_panes) and send it there with alsoTo: true`
     + `${scheduleId ? `, then cancel the text queued for ${pane.label} (space_execute {"kind":"watch","operation":"cancel","id":"${scheduleId}"})` : ""}`
     + ". Never wait for a busy agent more than 3 minutes (operator 31/10).";
 }
@@ -106,13 +111,24 @@ export function renderRequestsWaiting(requests: WaitingRequest[], waits: Request
     ...requests.map(line), ...(notDone ? [`Not done in the Requests tab: ${notDone} (space_open_requests notDone)`] : [])].join("\n");
 }
 
+/** The inbox line after Space moved the request's queued text to a new pane itself (operator 16/11 05:42Z). */
+export function requestMovedLine(request: WaitingRequest, waits: RequestWaits, to: string): string {
+  const pane = waits.pane(request.pane!)!;
+  return `Operator request ${request.messageId ? `[${request.messageId}] ` : ""}«${wordsOf(request, waits)}» waited 3+ min behind ${pane.label} (${pane.status}): `
+    + `Space moved its queued text to a new pane, ${to}, and cancelled it on ${pane.label}. Check that ${to} took it; the request's pane is now ${to}.`;
+}
+
 /**
- * Each minute: ONE urgent inbox line (soonMs, not the inbox batch) per request whose queued text has waited 3 minutes behind a busy pane.
+ * Each minute, per request whose queued text has waited 3 minutes behind a busy pane: Space moves that text to a new pane itself (`move`:
+ * operator 16/11 05:42Z «δεν θα περιμενει ποτε!!! αμεσως νεο pane»; FutureGrid waited 80 min behind Dino/Cody while only Nous was told), then
+ * ONE urgent inbox line (soonMs, not the inbox batch) says where it went, or why it could not move and asks Nous to open the pane.
  * shortcut: remembered in memory, so an API restart may bring one more line for a request still waiting; persist it if that shows.
  */
 export function createRequestWaitAlerts(deps: {
   waits(owner: string): Promise<(RequestWaits & { requests: WaitingRequest[]; now: number }) | null>;
   notice(owner: string, key: string, line: string, items: NousTurnItem[]): Promise<void>;
+  /** Opens a new pane like the busy one, sends it the prompt and cancels the schedule; `to` names the new pane, `why` a refusal. */
+  move?(owner: string, request: WaitingRequest, schedule: QueuedSchedule): Promise<{ to: string } | { why: string }>;
 }) {
   const alerted = new Set<string>();
   return async (owner: string): Promise<void> => {
@@ -123,7 +139,10 @@ export function createRequestWaitAlerts(deps: {
       if (alerted.has(key) || !waitsBehindBusyPane(waits!.pane(request.pane!), queued, waits!.now)) continue;
       alerted.add(key);
       // Hold A (plan clipboard:ZWJJdBgHm64Z): the turn that carries this line moves the request before it may answer NOTHING_NEW.
-      const line = requestWaitLine(request, waits!);
+      const schedule = requestQueuedOf(request, queued);
+      const moved = !deps.move ? null : !schedule?.prompt ? { why: "no queued schedule names this request, so its text is not known" }
+        : await deps.move(owner, request, schedule).catch((error: unknown) => ({ why: error instanceof Error ? error.message : String(error) }));
+      const line = moved && "to" in moved ? requestMovedLine(request, waits!, moved.to) : requestWaitLine(request, waits!, moved?.why);
       await deps.notice(owner, `request-waits:${request.key}`, line, [{ key: `request:${request.key}`, kind: "REQUEST", line, requestKey: request.key, pane: request.pane!,
         paneName: waits!.pane(request.pane!)!.label, ...(request.messageId ? { messageId: request.messageId } : {}) }]);
     }

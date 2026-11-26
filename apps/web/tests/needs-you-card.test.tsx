@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { needsYouHasPlace, type SpaceNotification } from "@space/contracts";
-import { NeedsYouCard, type NeedsYouBoardPane } from "../src/features/needs-you/NeedsYouCard.js";
+import { mailTextParts, NeedsYouCard, type NeedsYouBoardPane } from "../src/features/needs-you/NeedsYouCard.js";
 import { NOUS_FOCUS_EVENT } from "../src/features/nous-focus/nous-focus-events.js";
 import { consumePlanView, NOUS_DONE_OPEN_EVENT } from "../src/features/nous/nous-done-events.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
@@ -104,6 +104,34 @@ describe("NeedsYouCard", () => {
     } finally {
       window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
     }
+  });
+
+  it("operator 20/11 18:24 BKK (nous_msg:e519138e): a card in a pane closes with one tap, Completed, sent as «Done, all good», beside its own answers and Go", async () => {
+    render(<NeedsYouCard variant="row" open item={card({ title: "Cody needs you", payload: { paneMode: "BROWSER", ask: { question: "Start now?", options: ["Go now", "Later today"], recommended: "Go now", answer: { kind: "PANE" } } } })} />);
+    expect(screen.getByRole("article").dataset.needsYouPlace).toBe("PANE");
+    expect(screen.getByRole("button", { name: "Go to pane" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Later today" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Completed" }));
+    // Not one of the ask's options, so it goes as his words, like a typed answer.
+    await waitFor(() => expect(answers).toEqual([{ text: "Done, all good" }]));
+    cleanup();
+    // Off Space keeps its own «Done, all good», never both.
+    render(<NeedsYouCard variant="row" open item={card({})} />);
+    expect(screen.queryByRole("button", { name: "Completed" })).toBeNull();
+  });
+
+  it("22/11 review of e8ff210efc: Completed on a Mail Copilot flag closes it as «I handled it», never as words that start the copilot on the mail; a typed note goes with it", async () => {
+    const mail = card({ source: "MAIL_COPILOT", kind: "NEEDS_USER", paneId: null, link: undefined, payload: { ask: { question: "What should Mail Copilot do with this mail?",
+      options: ["I handled it", "Ignore it"], answer: { kind: "MAIL_FIX", account: "op@example.com", threadId: "thread-1" } } } });
+    render(<NeedsYouCard variant="row" open item={mail} />);
+    fireEvent.click(screen.getByRole("button", { name: "Completed" }));
+    await waitFor(() => expect(answers).toEqual([{ option: "I handled it" }]));
+    cleanup();
+    answers = [];
+    render(<NeedsYouCard variant="row" open item={card({ title: "Cody needs you", payload: { paneMode: "BROWSER", ask: { question: "Start now?", options: ["Go now"], recommended: "Go now", answer: { kind: "PANE" } } } })} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "shipped at 3pm" } });
+    fireEvent.click(screen.getByRole("button", { name: "Completed" }));
+    await waitFor(() => expect(answers).toEqual([{ text: "Done, all good: shipped at 3pm" }]));
   });
 
   it("operator 13/11 15:37 BKK (card 9ef2254f): Go on a plan's card goes to its plan's pane, else opens the plan: never a dead click", () => {
@@ -289,7 +317,7 @@ describe("NeedsYouCard", () => {
     // Document order (jsdom answers a selector list grouped by selector): the order Tab walks.
     const order = [...screen.getByRole("article").querySelectorAll<HTMLElement>("*")].filter((node) => node.matches("button:not(:disabled), a[href], input, textarea, summary"))
       .map((control) => control.getAttribute("aria-label") ?? control.textContent);
-    expect(order).toEqual(["Less", "Preview Variant A", "Variant A", "Preview Variant B", "Variant B Recommended", "Neither", "Your answer", "It no longer needs me"]);
+    expect(order).toEqual(["Less", "Preview Variant A", "Variant A", "Preview Variant B", "Variant B Recommended", "Neither", "Completed", "Your answer", "It no longer needs me"]);
 
     previewA.focus();
     fireEvent.click(previewA);
@@ -314,7 +342,7 @@ describe("NeedsYouCard", () => {
     render(<NeedsYouCard variant="row" item={ask} />);
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
     const buttons = [...screen.getByRole("article").querySelectorAll(".ny-answers > button")].filter((button) => button.textContent !== "Always answer like this");
-    expect(buttons.map((button) => button.textContent)).toEqual(["Tonight Recommended", "Tomorrow", "Never"]);
+    expect(buttons.map((button) => button.textContent)).toEqual(["Tonight Recommended", "Tomorrow", "Never", "Completed"]);
     expect([buttons[0]!.classList.contains("is-recommended"), buttons[0]!.classList.contains("is-primary"), Boolean(buttons[0]!.querySelector(".ny-badge svg"))]).toEqual([true, true, true]);
     expect(screen.getByRole("button", { name: "Tonight Recommended" })).toBe(buttons[0]);
     expect(screen.getByRole("article").textContent).not.toContain("(Recommended)");
@@ -344,6 +372,18 @@ describe("NeedsYouCard", () => {
       payload: { items: [{ text: "The allowance switches.", since: "two switches are still off after the reload" }],
         ask: { question: "Turn them on now?", options: ["Yes", "No"], recommended: "Yes", answer: { kind: "NOUS" } } } })} />);
     expect(screen.getByText("Since then").nextElementSibling?.textContent).toBe("two switches are still off after the reload");
+  });
+
+  it("nous_msg:832a500e: a card about one plan shows the pane's later report under Since then only when it is about that plan", () => {
+    const pane = (planId: string | null) => ({ paneId: "pane:iris0000001", name: "Bruno", mode: "TERMINAL", roomName: "Work", lineLanguage: "en", summary: { source: "FALLBACK" },
+      report: { at: "2099-01-01T00:00:00.000Z", status: "PROGRESS", summary: "Moved on to the other plan", planId } }) as unknown as NeedsYouBoardPane;
+    const item = card({ payload: { ...card({}).payload, planId: "clipboard:planOne00001" } });
+    const { rerender } = render(<NeedsYouCard variant="row" open item={item} pane={pane("clipboard:planTwo00001")} />);
+    expect(screen.queryByText("Since then")).toBeNull();
+    for (const planId of ["clipboard:planOne00001", null]) {
+      rerender(<NeedsYouCard variant="row" open item={item} pane={pane(planId)} />);
+      expect(screen.getByText("Since then").nextElementSibling?.textContent).toContain("Moved on to the other plan");
+    }
   });
 
   it("operator 12/11 23:19 BKK: a card naming a Mail review shows that mail (the review's reply) and its Go opens the review, though Nous set no target", async () => {
@@ -381,4 +421,71 @@ describe("NeedsYouCard", () => {
       window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
     }
   });
+
+  it("nous_msg:5bcbe4b0: a mail's \"label ( tracking URL )\" links read as their labels, bare URLs as short hosts, and blank runs collapse", async () => {
+    const track = (n: number) => `https://link.email.upwork.com/ls/click?upn=u001.${"Qx7".repeat(160)}${n}`;
+    const text = `View your message and send a reply.\n\u200c \n \n\n\n\nFind Work ( ${track(1)} )\n\nUnread message from Israel G. about Rate AI code-review answers\n\n\n`
+      + `Uma\u2122 ( ${track(2)} ) | Ad Products ( ${track(3)} )\nOr open ${track(4)}.\n`;
+    const message = { id: "m1", threadId: "1a1f09f7711a8773", from: { name: "Upwork", address: "donotreply@upwork.com" }, to: [{ name: null, address: "spaceappdv@gmail.com" }], cc: [], replyTo: [],
+      subject: "You have unread messages", receivedAt: at, rfcMessageId: null, references: null, labelIds: [], unread: true, starred: false, text, html: null, blockedImages: false, attachments: [] };
+    vi.spyOn(liveRuntime.api, "mailThread").mockResolvedValue({ thread: { account: "spaceappdv@gmail.com", threadId: "1a1f09f7711a8773", subject: message.subject, messages: [message] } } as never);
+    render(<NeedsYouCard variant="row" open item={card({ source: "NOUS", title: "Bob needs you", body: "Accept the paid 1h Upwork trial?", link: { roomId: "room:work000001", paneId: "pane:iris0000001", target: "thread:spaceappdv@gmail.com:1a1f09f7711a8773" } })} />);
+    const body = (await screen.findByRole("region", { name: "Mail" })).querySelector(".ny-mail-body")!;
+    expect(body.textContent!.match(/\S{61,}/g)).toBeNull();
+    expect(body.textContent).toBe("View your message and send a reply.\n\nFind Work\n\nUnread message from Israel G. about Rate AI code-review answers\n\nUma\u2122 | Ad Products\nOr open link.email.upwork.com/ls/click.");
+    const links = within(body as HTMLElement).getAllByRole("link");
+    expect(links.map((link) => [link.textContent, link.getAttribute("href"), link.getAttribute("target"), link.getAttribute("rel")])).toEqual([
+      ["Find Work", track(1), "_blank", "noopener noreferrer"], ["Uma\u2122", track(2), "_blank", "noopener noreferrer"],
+      ["Ad Products", track(3), "_blank", "noopener noreferrer"], ["link.email.upwork.com/ls/click", track(4), "_blank", "noopener noreferrer"]]);
+    expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+    expect(mailTextParts("See https://oll4.com/pricing now")).toEqual(["See ", { label: "oll4.com/pricing", href: "https://oll4.com/pricing" }, " now"]);
+    expect(mailTextParts("javascript:alert(1) ( javascript:alert(1) )")).toEqual(["javascript:alert(1) ( javascript:alert(1) )"]);
+  });
+
+  it("nous_msg:5bcbe4b0: a Gmail text part with \\r\\n line ends, deep indents and &nbsp; (micro1 20/11) reads collapsed", () => {
+    const text = "Hi again, NIKOLAOS,\r\n\r\n            Thanks again for signing up to work with micro1 and sharing your resume.\r\n\r\n\r\n"
+      + "            Click the button below to start your 30-minute interview.\r\n\r\n\r\n\r\n\r\n\r\n\r\n                &nbsp;\r\n\r\n"
+      + "                Take the interview\r\n\r\n                &nbsp;\r\n\r\n\r\n\r\n                Note: Desktop only, mobile won&#39;t work &amp; more\r\n\r\n\r\n\r\n\r\n"
+      + "            Best,\rmicro1 team\r\n";
+    expect(mailTextParts(text)).toEqual(["Hi again, NIKOLAOS,\n\nThanks again for signing up to work with micro1 and sharing your resume.\n\n"
+      + "Click the button below to start your 30-minute interview.\n\nTake the interview\n\nNote: Desktop only, mobile won't work & more\n\nBest,\nmicro1 team"]);
+    expect(mailTextParts("a&lt;b&gt; &quot;c&quot; &#x41;&#0;&#99999999;")).toEqual(["a<b> \"c\" A&#0;&#99999999;"]);
+  });
+
+  it("a mail with a long blank run inside a line trims in linear time and keeps inner spaces (review of d36483ed04)", () => {
+    const started = performance.now();
+    expect(mailTextParts(`a${" ".repeat(200_000)}b \u00a0\nc`)).toEqual([`a${" ".repeat(200_000)}b\nc`]);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it("nous_msg:5bcbe4b0: a text part that is mostly URLs gives way to the sanitized HTML, read as text with its links", async () => {
+    const url = `https://link.email.upwork.com/ls/click?upn=${"Zz9".repeat(150)}`;
+    const message = { id: "m1", threadId: "t1", from: { name: "Upwork", address: "donotreply@upwork.com" }, to: [], cc: [], replyTo: [], subject: "Unread", receivedAt: at, rfcMessageId: null,
+      references: null, labelIds: [], unread: true, starred: false, text: `Hi ( ${url} ) ( ${url} )`, blockedImages: false, attachments: [],
+      html: `<style>p{color:red}</style><table><tr><td><p>Unread   message from\n  Israel G.</p><p><a href="${url}">Reply now</a></p><img src="x.png"></td></tr></table>` };
+    vi.spyOn(liveRuntime.api, "mailThread").mockResolvedValue({ thread: { account: "a@b.co", threadId: "t1", subject: "Unread", messages: [message] } } as never);
+    render(<NeedsYouCard variant="row" open item={card({ source: "NOUS", link: { roomId: "room:work000001", paneId: "pane:iris0000001", target: "thread:a@b.co:t1" } })} />);
+    const body = (await screen.findByRole("region", { name: "Mail" })).querySelector(".ny-mail-body")!;
+    expect(body.textContent).toBe("Unread message from Israel G.\nReply now");
+    expect(within(body as HTMLElement).getByRole("link", { name: "Reply now" }).getAttribute("href")).toBe(url);
+    expect(body.querySelector("img, style")).toBeNull();
+  });
+
+// Operator 21/11 nous_msg:e9b4df3e: a card's mail in a third language reads translated, "Show original" shows it as sent.
+describe("needs-you mail translated when raised", () => {
+  it("shows the stored translation of the mail's subject and body, and the original on Show original", async () => {
+    const original = { subject: "Vous êtes invité au portail candidat", text: "Bonjour, accédez à votre espace candidat.", at };
+    const message = { id: "m1", threadId: "t1", from: { name: "Startup Talents", address: "noreply@talents.test" }, to: [], cc: [], replyTo: [], subject: original.subject, receivedAt: at,
+      rfcMessageId: null, references: null, labelIds: [], unread: true, starred: false, text: original.text, html: null, blockedImages: false, attachments: [] };
+    vi.spyOn(liveRuntime.api, "mailThread").mockResolvedValue({ thread: { account: "a@b.co", threadId: "t1", subject: original.subject, messages: [message] } } as never);
+    render(<NeedsYouCard variant="row" open item={card({ source: "MAIL_COPILOT", link: { roomId: "room:work000001", paneId: "pane:iris0000001", target: "thread:a@b.co:t1" },
+      payload: { mailTranslated: { language: "en", original, subject: "You are invited to the candidate portal", text: "Hello, open your candidate space." } } })} />);
+    const mail = await screen.findByRole("region", { name: "Mail" });
+    await waitFor(() => expect(mail.textContent).toContain("You are invited to the candidate portal"));
+    expect(mail.querySelector(".ny-mail-body")?.textContent).toBe("Hello, open your candidate space.");
+    fireEvent.click(screen.getByRole("button", { name: "Show original" }));
+    expect(mail.textContent).toContain(original.subject);
+    expect(mail.querySelector(".ny-mail-body")?.textContent).toBe(original.text);
+  });
+});
 });

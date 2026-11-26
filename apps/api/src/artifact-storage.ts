@@ -10,8 +10,14 @@ export function safeStorageSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 140) || "item";
 }
 
+/** Display name only (metadata, signed names, encoded Content-Disposition): keeps Greek and any Unicode; disk paths use safeCliFilename. */
 export function safeOriginalFilename(value: string): string {
-  return value.replace(/[^\w .@-]/g, "_").slice(0, 180) || "image";
+  const leaf = value.replaceAll("\\", "/").split("/").pop()?.trim() ?? "";
+  const sanitized = leaf
+    .replace(/\p{Cc}/gu, "")
+    .replace(/[<>:"/\\|?*]/g, "_")
+    .slice(0, 220);
+  return sanitized || "item";
 }
 
 export function safeCliFilename(value: string): string {

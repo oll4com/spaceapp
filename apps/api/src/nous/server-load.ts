@@ -1,15 +1,15 @@
 import { execFile } from "../safe-child-process.js";
 import { readFile } from "node:fs/promises";
-import { cpus, loadavg, totalmem } from "node:os";
+import { cpus, hostname, loadavg, totalmem } from "node:os";
 import { promisify } from "node:util";
 import type { MonitoringCollectorConfig, MonitoringSeries, PaneCliSession, SystemHealthHistory } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
 import { createMonitoringCollector, type MonitoringCollector } from "../monitoring-copilot/collector.js";
 
 /**
- * The server's load as Nous reads it (plan clipboard:VZEewZRaodZR step R1): OVERLOADED only while the physical host's swap is past 90%,
- * otherwise CALM (operator 3/11, nous_msg:7c17475390c842e8bdbf485e). public-host's own numbers (the SYSTEM_HEALTH sampler averaged over five
- * minutes, the processes and their panes) are shown as diagnostics and hold nothing.
+ * The server's load as Nous reads it (plan clipboard:VZEewZRaodZR step R1): OVERLOADED only while swap is past 90%, otherwise CALM
+ * (operator 3/11, nous_msg:7c17475390c842e8bdbf485e): the worse of the physical host's swap and the swap of this VM, which runs the panes
+ * and Postgres (14/11: vm208 at 100% swap, D-state CLIs and Postgres timeouts read CALM from pve's 8.64%). CPU, RAM and load are shown only.
  */
 
 export type NousLoadLevel = "CALM" | "BUSY" | "OVERLOADED";
@@ -23,11 +23,11 @@ export interface NousLoadState {
   cores: number;
   memAvailableBytes: number | null;
   memTotalBytes: number;
-  /** This VM's swap (diagnostics: public-host's 16 GiB zram reads 100% while pve has room). */
+  /** This VM's swap as shown: the 5 min health average, else /proc/meminfo now (the level reads it through `host`). */
   swapPercent: number | null;
-  /** The physical host's swap: the one number that decides the level. */
+  /** The worse of the physical host's and this VM's swap: the one number that decides the level. */
   host: HostSwap;
-  /** This VM's health samples averaged; 0: none retained yet. */
+  /** This VM's CPU health samples averaged; 0: none, as when Postgres does not answer. */
   samples: number;
   topCpu: NousLoadProcess[];
   topMemory: NousLoadProcess[];
@@ -57,7 +57,7 @@ const HOST_SWAP_MAX_AGE_MS = 120_000, HOST_SWAP_MAX_AHEAD_MS = 60_000;
 /** Display only; the level compares the full value. */
 const percentText = (value: number) => value.toFixed(2);
 
-/** Only the physical host's swap past 90% is OVERLOADED (operator 3/11: «πανω απο 90%», so exactly 90 is not); nothing else holds work. */
+/** Only swap past 90% (the worse of host and this VM, worseSwap) is OVERLOADED (operator 3/11: «πανω απο 90%», so exactly 90 is not); nothing else holds work. */
 export function classifyLoad(input: { swapPercent: number | null; host?: string }): { level: NousLoadLevel; reasons: string[] } {
   const swap = input.swapPercent;
   return swap !== null && swap > 90 ? { level: "OVERLOADED", reasons: [`${input.host ?? "host"} swap ${percentText(swap)}%`] } : { level: "CALM", reasons: [] };
@@ -107,24 +107,32 @@ export function hostSwapOf(series: MonitoringSeries[], now: number): HostSwap {
 
 export interface HostSwapReader { read(): Promise<HostSwap> }
 
+/** The swap that decides the level: this VM's when it is above the host's, or past 90% while the host is unknown; else the host's. */
+export const worseSwap = (host: HostSwap, vm: HostSwap): HostSwap => vm.percent !== null && vm.percent > (host.percent ?? 90) ? vm : host;
+
 /**
- * Reads the host's swap at most every 30 s: with a SPACE_LOAD_HOST_SELECTOR, that host from the collector's Prometheus (public-host: pve,
- * read-only, no secret); without one (an install without a hypervisor), this machine's /proc/meminfo. A collector that does not
- * answer, or answers something hostSwapOf refuses, is no reading, never this VM's swap in its place.
+ * Reads the swap at most every 30 s: with a SPACE_LOAD_HOST_SELECTOR, the worse (worseSwap) of that host from the collector's
+ * Prometheus (pve, read-only, no secret) and this VM's /proc/meminfo, which no Postgres outage can blind; without one (an install
+ * without a hypervisor), this machine's /proc/meminfo alone.
  */
-export function createHostSwap(input: { collectorConfig?: MonitoringCollectorConfig | null; hostSelector?: string | null; collector?: Pick<MonitoringCollector, "promQuery">; meminfo?(): Promise<string>; now?(): number }): HostSwapReader {
+export function createHostSwap(input: { collectorConfig?: MonitoringCollectorConfig | null; hostSelector?: string | null; collector?: Pick<MonitoringCollector, "promQuery">; meminfo?(): Promise<string>; vmName?: string; now?(): number }): HostSwapReader {
   const now = input.now ?? Date.now;
   const prometheusUrl = input.collectorConfig?.defaults?.prometheusUrl || null;
   const collector = input.collector ?? createMonitoringCollector({ network: input.collectorConfig?.network ?? null });
   let cached: { at: number; value: Promise<HostSwap> } | null = null;
+  async function thisMachine(name: string): Promise<HostSwap> {
+    const { swapPercent } = parseMeminfo(await (input.meminfo ?? (() => readFile("/proc/meminfo", "utf8")))().catch(() => ""));
+    return { percent: swapPercent, host: name, at: swapPercent === null ? null : new Date(now()).toISOString(), error: swapPercent === null ? "/proc/meminfo could not be read" : null };
+  }
   async function sample(): Promise<HostSwap> {
-    if (!input.hostSelector) {
-      const { swapPercent } = parseMeminfo(await (input.meminfo ?? (() => readFile("/proc/meminfo", "utf8")))().catch(() => ""));
-      return { percent: swapPercent, host: "this machine", at: swapPercent === null ? null : new Date(now()).toISOString(), error: swapPercent === null ? "/proc/meminfo could not be read" : null };
-    }
+    if (!input.hostSelector) return thisMachine("this machine");
+    const [host, vm] = await Promise.all([hostSample(input.hostSelector), thisMachine(input.vmName ?? hostname())]);
+    return worseSwap(host, vm);
+  }
+  async function hostSample(hostSelector: string): Promise<HostSwap> {
     if (!prometheusUrl) return { percent: null, host: "host", at: null, error: "SPACE_LOAD_HOST_SELECTOR is set without a collector (SPACE_MONITORING_COLLECTOR_HOST)" };
     try {
-      return hostSwapOf((await collector.promQuery(prometheusUrl, { query: hostSwapQuery(input.hostSelector) })).series, now());
+      return hostSwapOf((await collector.promQuery(prometheusUrl, { query: hostSwapQuery(hostSelector) })).series, now());
     } catch (error) {
       return { percent: null, host: "host", at: null, error: `the collector did not answer (${error instanceof Error ? error.message.slice(0, 200) : "error"})` };
     }
@@ -150,15 +158,17 @@ function windowMean(history: SystemHealthHistory, id: string, since: number): { 
   return { value: points.length ? points.reduce((sum, point) => sum + point.avg, 0) / points.length : null, points: points.length };
 }
 
-export interface PsRow { pid: number; ppid: number; cpuPercent: number; rssBytes: number; command: string }
+export interface PsRow { pid: number; ppid: number; ageSeconds: number; cpuPercent: number; rssBytes: number; command: string }
 
-/** `ps -eo pid=,ppid=,pcpu=,rss=,comm=` output (rss in KiB). */
+/** `ps -eo pid=,ppid=,etimes=,pcpu=,rss=,comm=` output (rss in KiB). */
 export function parsePs(text: string): PsRow[] {
   return text.split("\n").flatMap((line) => {
-    const match = /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
-    return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), cpuPercent: Number(match[3]), rssBytes: Number(match[4]) * 1024, command: match[5]! }] : [];
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+    return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), ageSeconds: Number(match[3]), cpuPercent: Number(match[4]), rssBytes: Number(match[5]) * 1024, command: match[6]! }] : [];
   });
 }
+
+const FRESH_PROCESS_SECONDS = 10;
 
 /** The heaviest processes by CPU and by memory, each named with the pane whose CLI session it runs under (its parent chain). */
 export function topProcesses(rows: PsRow[], paneRoots: ReadonlyMap<number, string>, limit = 5): { topCpu: NousLoadProcess[]; topMemory: NousLoadProcess[] } {
@@ -172,7 +182,8 @@ export function topProcesses(rows: PsRow[], paneRoots: ReadonlyMap<number, strin
   };
   const view = (row: PsRow): NousLoadProcess => ({ pid: row.pid, command: row.command, cpuPercent: row.cpuPercent, rssBytes: row.rssBytes, pane: paneOf(row.pid) });
   return {
-    topCpu: [...rows].sort((left, right) => right.cpuPercent - left.cpuPercent).slice(0, limit).map(view),
+    // A process seconds old (ps itself, a docker CLI, a starting ffmpeg) reads 200-600%: a few clock ticks over a near-zero age, not load.
+    topCpu: rows.filter((row) => row.ageSeconds >= FRESH_PROCESS_SECONDS).sort((left, right) => right.cpuPercent - left.cpuPercent).slice(0, limit).map(view),
     topMemory: [...rows].sort((left, right) => right.rssBytes - left.rssBytes).slice(0, limit).map(view)
   };
 }
@@ -187,9 +198,9 @@ const LEVEL_HINT: Record<NousLoadLevel, string> = {
 export function renderServerLoad(state: NousLoadState): string {
   const gib = (bytes: number | null) => bytes === null ? "?" : (bytes / GiB).toFixed(0);
   const head = `Server: ${state.level}${state.reasons.length ? ` (${state.reasons.join(", ")})` : ""} · ${hostSwapText(state.host, Date.parse(state.sampledAt))}, OVERLOADED only past 90%`
-    + ` · this VM (diagnostics, holds nothing): CPU ${state.cpuPercent === null ? "?" : Math.round(state.cpuPercent)}%`
+    + ` · this VM (its swap counts too): CPU ${state.cpuPercent === null ? "?" : Math.round(state.cpuPercent)}%${state.samples ? " (5 min average)" : " (no health samples)"}`
     + ` · load ${state.load1.toFixed(1)}/${state.load5.toFixed(1)} on ${state.cores} cores · RAM available ${gib(state.memAvailableBytes)} of ${gib(state.memTotalBytes)} GiB`
-    + ` · swap ${state.swapPercent === null ? "?" : Math.round(state.swapPercent)}%${state.samples ? " (5 min average)" : " (no samples yet)"}.${LEVEL_HINT[state.level]}`;
+    + ` · swap ${state.swapPercent === null ? "?" : Math.round(state.swapPercent)}%.${LEVEL_HINT[state.level]}`;
   const name = (process: NousLoadProcess) => `${process.command}${process.pane ? ` (${process.pane})` : ""}`;
   const top = [
     state.topCpu.length ? `Top CPU: ${state.topCpu.map((process) => `${name(process)} ${Math.round(process.cpuPercent)}%`).join(", ")}.` : "",
@@ -200,11 +211,13 @@ export function renderServerLoad(state: NousLoadState): string {
 
 export interface ServerLoadDeps {
   health: { history(range: "10m"): Promise<SystemHealthHistory> };
-  /** The physical host's swap, which alone decides the level. */
+  /** The worse of the host's and this VM's swap, which alone decides the level. */
   hostSwap: HostSwapReader;
   /** "room/pane" of each running CLI session by its root process. */
   paneRoots(): Promise<ReadonlyMap<number, string>>;
   ps?(): Promise<string>;
+  /** This VM's /proc/meminfo: RAM and swap shown when the health history (Postgres) has no samples. */
+  meminfo?(): Promise<string>;
   loadavg?(): number[];
   cores?: number;
   memTotalBytes?: number;
@@ -225,7 +238,7 @@ export function paneRootsFrom(store: Pick<SpaceStore, "listRooms" | "listPanes" 
   };
 }
 
-const runPs = async () => (await promisify(execFile)("ps", ["-eo", "pid=,ppid=,pcpu=,rss=,comm="], { maxBuffer: 4 * 1024 * 1024, timeout: 5_000 })).stdout;
+const runPs = async () => (await promisify(execFile)("ps", ["-eo", "pid=,ppid=,etimes=,pcpu=,rss=,comm="], { maxBuffer: 4 * 1024 * 1024, timeout: 5_000 })).stdout;
 
 /** Reads the load at most every 30 s (Nous's world, its heartbeat and held dispatch all ask). */
 export function createServerLoad(deps: ServerLoadDeps) {
@@ -233,13 +246,13 @@ export function createServerLoad(deps: ServerLoadDeps) {
   let cached: { at: number; state: Promise<NousLoadState> } | null = null;
   async function sample(): Promise<NousLoadState> {
     const at = now();
-    const [history, host, rows, roots] = await Promise.all([
+    const [history, host, rows, roots, live] = await Promise.all([
       deps.health.history("10m").catch(() => null),
       deps.hostSwap.read().catch((error: unknown): HostSwap => ({ percent: null, host: "host", at: null, error: String(error) })),
       // shortcut: ps pcpu is the process's lifetime average, not the last seconds; read /proc twice if spikes matter.
-      // The sampling ps reports itself at hundreds of percent (lifetime pcpu of a fresh process): drop its row, as System Analytics does.
-      (deps.ps ?? runPs)().then(parsePs).then((rows) => rows.filter((row) => !(row.command === "ps" && row.ppid === process.pid))).catch(() => []),
-      deps.paneRoots().catch(() => new Map<number, string>())
+      (deps.ps ?? runPs)().then(parsePs).catch(() => []),
+      deps.paneRoots().catch(() => new Map<number, string>()),
+      (deps.meminfo ?? (() => readFile("/proc/meminfo", "utf8")))().then(parseMeminfo).catch(() => ({ memAvailableBytes: null, swapPercent: null }))
     ]);
     const since = at - WINDOW_MS;
     const mean = (id: string) => history ? windowMean(history, id, since) : { value: null, points: 0 };
@@ -247,9 +260,9 @@ export function createServerLoad(deps: ServerLoadDeps) {
     const [load1 = 0, load5 = 0] = (deps.loadavg ?? loadavg)();
     const numbers = {
       cpuPercent: cpu.value, load1, load5, cores: deps.cores ?? cpus().length,
-      memAvailableBytes: ram.value, memTotalBytes: deps.memTotalBytes ?? totalmem(), swapPercent: swap.value, host
+      memAvailableBytes: ram.value ?? live.memAvailableBytes, memTotalBytes: deps.memTotalBytes ?? totalmem(), swapPercent: swap.value ?? live.swapPercent, host
     };
-    return { ...numbers, ...classifyLoad({ swapPercent: host.percent, host: host.host }), samples: Math.min(cpu.points, swap.points, ram.points), ...topProcesses(rows, roots), sampledAt: new Date(at).toISOString() };
+    return { ...numbers, ...classifyLoad({ swapPercent: host.percent, host: host.host }), samples: cpu.points, ...topProcesses(rows, roots), sampledAt: new Date(at).toISOString() };
   }
   return {
     read(): Promise<NousLoadState> {

@@ -18,6 +18,8 @@ export interface QuotaWindows {
   fiveHourResetAt?: string | null;
   weeklyRemainingPercent?: number | null;
   weeklyResetAt?: string | null;
+  /** Reset credits that give a fresh week: the week is back as soon as the operator spends one (nous_msg:2cdc2f9a). */
+  resetCredits?: number | null;
 }
 
 export interface AvailabilityState {
@@ -48,6 +50,8 @@ export function classifyQuota(
   const weekly = quota.weeklyRemainingPercent;
   if (fiveHour == null && weekly == null) return { state: "unknown", backAt: null };
   if (weekly != null && weekly < threshold) {
+    // A reset credit at hand: "Limit reached" until the operator spends it, never "Week exhausted".
+    if ((quota.resetCredits ?? 0) > 0) return { state: "soon", backAt: null };
     const backAt = quota.weeklyResetAt ?? null;
     return { state: timeMs(backAt) - clock <= ACCOUNT_SOON_WINDOW_MS ? "soon" : "exhausted", backAt };
   }
@@ -73,12 +77,12 @@ export function compareAvailability(
     || left.title.localeCompare(right.title);
 }
 
-// Remaining share of the tightest window in the roomiest group; -1 when nothing is known.
+// Remaining share of the tightest window in the roomiest group, each reset credit one more week; -1 when nothing is known.
 export function quotaCapacity(quotas: QuotaWindows[]): number {
   return Math.max(-1, ...quotas.map((quota) =>
     quota.fiveHourRemainingPercent == null && quota.weeklyRemainingPercent == null
       ? -1
-      : Math.min(quota.fiveHourRemainingPercent ?? 100, quota.weeklyRemainingPercent ?? 100)
+      : Math.min(quota.fiveHourRemainingPercent ?? 100, (quota.weeklyRemainingPercent ?? 100) + 100 * Math.max(0, quota.resetCredits ?? 0))
   ));
 }
 
@@ -90,7 +94,7 @@ function resetMoment(ms: number, settings?: DateTimeSettings): string {
   const active = settings ?? readDateTimeSettings();
   const timeZone = active.timeZone && active.timeZone !== "system" ? active.timeZone : undefined;
   // "Fri 13 Nov": a weekly reset names its date, not only its weekday (operator 8/11).
-  let weekday = "";
+  let weekday: string;
   try {
     weekday = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", ...(timeZone ? { timeZone } : {}) }).format(new Date(ms));
   } catch {
@@ -100,20 +104,18 @@ function resetMoment(ms: number, settings?: DateTimeSettings): string {
   return weekday ? `${weekday} ${time}` : time;
 }
 
-// "in 52m" and "in 3h 20m" inside a day; "Fri 13 Nov 06:00" further out.
+// "in 52m · 10:52" and "in 3h 20m · 13:20" inside a day (the clock in the operator's zone, nous_msg:b25f1b9e); "Fri 13 Nov 06:00" further out.
 export function formatUntil(value: string | null | undefined, clock: number, settings?: DateTimeSettings): string | null {
   const ms = timeMs(value);
   if (!Number.isFinite(ms)) return null;
   const diffMs = ms - clock;
   if (diffMs <= 0) return "now";
   const minutes = Math.ceil(diffMs / 60_000);
-  if (minutes < 60) return `in ${minutes}m`;
-  if (minutes < 24 * 60) {
-    const hours = Math.floor(minutes / 60);
-    const rest = minutes % 60;
-    return rest ? `in ${hours}h ${rest}m` : `in ${hours}h`;
-  }
-  return resetMoment(ms, settings);
+  if (minutes >= 24 * 60) return resetMoment(ms, settings);
+  const time = formatAppTime(ms, { hour: "2-digit", minute: "2-digit" }, settings);
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return `in ${!hours ? `${minutes}m` : rest ? `${hours}h ${rest}m` : `${hours}h`} · ${time}`;
 }
 
 export function availabilityLabel(availability: AvailabilityState, clock: number, settings?: DateTimeSettings): string {

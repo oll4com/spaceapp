@@ -33,7 +33,7 @@ function fresh(owner: string, raw: AppointmentInput & { timeZone: string }, at: 
   const input = appointmentInputSchema.parse(raw);
   return { id: newId(), ownerUserId: owner, title: input.title, startsAt: iso(input.startsAt)!, endsAt: iso(input.endsAt), timeZone: input.timeZone ?? raw.timeZone,
     kind: input.kind, location: input.location ?? null, notes: input.notes ?? null, sourceRef: input.sourceRef ?? null,
-    format: input.format ?? null, timing: input.timing ?? null, deadlineAt: iso(input.deadlineAt), status: "UPCOMING",
+    format: input.format ?? null, timing: input.timing ?? null, deadlineAt: iso(input.deadlineAt), recurrence: input.recurrence ?? null, status: "UPCOMING",
     remindersSent: [], createdAt: at, updatedAt: at };
 }
 
@@ -44,7 +44,7 @@ export class InMemoryAppointmentsRepository implements AppointmentsRepository {
   private rows = new Map<string, Appointment>();
   async list(owner: string, since: string) { return structuredClone([...this.rows.values()].filter((row) => row.ownerUserId === owner && (row.status === "UPCOMING" || ends(row) >= Date.parse(since))).sort(soonest)); }
   async get(owner: string, id: string) { const row = this.rows.get(id); return row?.ownerUserId === owner ? structuredClone(row) : null; }
-  async upcoming(now: string) { return structuredClone([...this.rows.values()].filter((row) => row.status === "UPCOMING" && Date.parse(row.startsAt) > Date.parse(now)).sort(soonest)); }
+  async upcoming(now: string) { return structuredClone([...this.rows.values()].filter((row) => row.status === "UPCOMING" && (Date.parse(row.startsAt) > Date.parse(now) || row.recurrence)).sort(soonest)); }
   async create(owner: string, input: AppointmentInput & { timeZone: string }, at = new Date().toISOString()) {
     const row = fresh(owner, input, at); this.rows.set(row.id, row); return structuredClone(row);
   }
@@ -63,15 +63,15 @@ export class InMemoryAppointmentsRepository implements AppointmentsRepository {
 
 interface Row { id: string; owner_user_id: string; title: string; starts_at: Date | string; ends_at: Date | string | null; time_zone: string; kind: Appointment["kind"];
   location: string | null; notes: string | null; source_ref: string | null; status: Appointment["status"]; reminders_sent: number[]; created_at: Date | string; updated_at: Date | string;
-  format: Appointment["format"]; timing: Appointment["timing"]; deadline_at: Date | string | null }
-const COLUMNS = "id, owner_user_id, title, starts_at, ends_at, time_zone, kind, location, notes, source_ref, status, reminders_sent, created_at, updated_at, format, timing, deadline_at";
+  format: Appointment["format"]; timing: Appointment["timing"]; deadline_at: Date | string | null; recurrence: Appointment["recurrence"] }
+const COLUMNS = "id, owner_user_id, title, starts_at, ends_at, time_zone, kind, location, notes, source_ref, status, reminders_sent, created_at, updated_at, format, timing, deadline_at, recurrence";
 const at = (value: Date | string) => new Date(value).toISOString();
 const fromRow = (row: Row): Appointment => ({ id: row.id, ownerUserId: row.owner_user_id, title: row.title, startsAt: at(row.starts_at), endsAt: row.ends_at ? at(row.ends_at) : null,
   timeZone: row.time_zone, kind: row.kind, location: row.location, notes: row.notes, sourceRef: row.source_ref, status: row.status,
   remindersSent: row.reminders_sent ?? [], createdAt: at(row.created_at), updatedAt: at(row.updated_at),
-  format: row.format ?? null, timing: row.timing ?? null, deadlineAt: row.deadline_at ? at(row.deadline_at) : null });
+  format: row.format ?? null, timing: row.timing ?? null, deadlineAt: row.deadline_at ? at(row.deadline_at) : null, recurrence: row.recurrence ?? null });
 const values = (row: Appointment) => [row.id, row.ownerUserId, row.title, row.startsAt, row.endsAt, row.timeZone, row.kind, row.location, row.notes, row.sourceRef,
-  row.status, row.remindersSent, row.createdAt, row.updatedAt, row.format, row.timing, row.deadlineAt];
+  row.status, row.remindersSent, row.createdAt, row.updatedAt, row.format, row.timing, row.deadlineAt, row.recurrence ? JSON.stringify(row.recurrence) : null];
 
 export class PostgresAppointmentsRepository implements AppointmentsRepository {
   constructor(private readonly pool: PgPoolLike) {}
@@ -84,13 +84,14 @@ export class PostgresAppointmentsRepository implements AppointmentsRepository {
     return row ? fromRow(row) : null;
   }
   async upcoming(now: string) {
-    return (await this.pool.query<Row>(`SELECT ${COLUMNS} FROM appointments WHERE status = 'UPCOMING' AND starts_at > $1 ORDER BY starts_at`, [now])).rows.map(fromRow);
+    return (await this.pool.query<Row>(`SELECT ${COLUMNS} FROM appointments WHERE status = 'UPCOMING' AND (starts_at > $1 OR recurrence IS NOT NULL) ORDER BY starts_at`, [now])).rows.map(fromRow);
   }
   private async write(row: Appointment) {
-    await this.pool.query(`INSERT INTO appointments (${COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+    await this.pool.query(`INSERT INTO appointments (${COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
       ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at, time_zone = EXCLUDED.time_zone,
         kind = EXCLUDED.kind, location = EXCLUDED.location, notes = EXCLUDED.notes, source_ref = EXCLUDED.source_ref, status = EXCLUDED.status,
-        reminders_sent = EXCLUDED.reminders_sent, updated_at = EXCLUDED.updated_at, format = EXCLUDED.format, timing = EXCLUDED.timing, deadline_at = EXCLUDED.deadline_at`, values(row));
+        reminders_sent = EXCLUDED.reminders_sent, updated_at = EXCLUDED.updated_at, format = EXCLUDED.format, timing = EXCLUDED.timing, deadline_at = EXCLUDED.deadline_at,
+        recurrence = EXCLUDED.recurrence`, values(row));
     return row;
   }
   async create(owner: string, input: AppointmentInput & { timeZone: string }, now = new Date().toISOString()) { return this.write(fresh(owner, input, now)); }

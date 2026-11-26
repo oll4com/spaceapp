@@ -40,7 +40,7 @@ function fixtureHost() {
       }
     };
   });
-  const input = vi.fn(async (_identity: CliHostIdentity, _attachmentId: string, _data: string) => ({ accepted: true, acceptedAtMs: Date.now() }));
+  const input = vi.fn<CliHostGateway["input"]>(async () => ({ accepted: true, acceptedAtMs: Date.now() }));
   const inspect = vi.fn(async (identity: CliHostIdentity) => running.has(identity.cliSessionId)
     ? { ...identity, status: "RUNNING" as const } as Awaited<ReturnType<CliHostGateway["inspect"]>>
     : null);

@@ -35,7 +35,8 @@ describe("Operator requests waiting (operator 31/10 «Αργείς», «το π�
       { ...schedule("control_schedule:d", ["pane:emma0001"], minutesAgo(20)), actorId: "user:other" }
     ], owner);
     expect(Object.fromEntries(queued)).toEqual({
-      "pane:max00001": { at: minutesAgo(5), schedules: [{ id: "control_schedule:a", text: "text of control_schedule:a\nreq-1" }, { id: "control_schedule:e", text: "text of control_schedule:e" }] },
+      "pane:max00001": { at: minutesAgo(5), schedules: [{ id: "control_schedule:a", text: "text of control_schedule:a\nreq-1", prompt: "text of control_schedule:a" },
+        { id: "control_schedule:e", text: "text of control_schedule:e", prompt: "text of control_schedule:e" }] },
       "pane:emma0001": { at: minutesAgo(6) },
       "pane:iris0001": { at: minutesAgo(2) }
     });
@@ -65,7 +66,7 @@ describe("Operator requests waiting (operator 31/10 «Αργείς», «το π�
       note("request-done:plan:fff", { planId: "clipboard:x" }),
       { key: "request-done:open:bad", text: "not json", updatedAt: "x" }
     ];
-    const requests = waitingRequestsOf(notes, now);
+    const requests = waitingRequestsOf(notes);
     expect(requests.map((request) => request.summary)).toEqual(["Too old", "Check the mail", "Closed pane", "Fix the brief hold", "Rename the tab"]);
     requests.shift();
     const panes = new Map<string, WaitingPane>([
@@ -106,6 +107,39 @@ describe("Operator requests waiting (operator 31/10 «Αργείς», «το π�
     queuedAt = new Date(clock - NOUS_OPERATOR_WAIT_MS - 30_000).toISOString();
     await alerts(owner);
     expect(lines).toHaveLength(2);
+  });
+
+  it("moves a request's queued text to a new pane itself after 3 min behind a busy pane (operator 16/11 05:42Z «αμεσως νεο pane»)", async () => {
+    const lines: string[] = [];
+    const moves: Array<{ pane?: string; id: string; prompt: string }> = [];
+    let clock = now;
+    let refuse: string | null = null;
+    const request = { key: "request-done:open:fg", messageId: "nous_msg:236c7dd4aa", summary: "FutureGrid", pane: "pane:cody0001", openedAt: minutesAgo(30) };
+    const schedules = [{ id: "control_schedule:other", text: "HOLD note", prompt: "HOLD note" },
+      { id: "control_schedule:fg", text: "Apply to FutureGrid\nnous_msg:236c7dd4aa", prompt: "Apply to FutureGrid" }];
+    const alerts = createRequestWaitAlerts({ notice: async (_owner, _key, line) => { lines.push(line); },
+      move: async (_owner, entry, schedule) => { moves.push({ pane: entry.pane, id: schedule.id, prompt: schedule.prompt }); return refuse ? { why: refuse } : { to: "Dino/Eva (pane:eva00001)" }; },
+      waits: async () => ({ requests: [request], now: clock, words: () => null, pane: () => ({ label: "Dino/Cody", status: "working", since: minutesAgo(40) }),
+        queued: () => ({ at: minutesAgo(2), schedules }) }) });
+    await alerts(owner);
+    expect(moves).toEqual([]);
+    expect(lines).toEqual([]);
+    clock = now + 60_000;
+    await alerts(owner);
+    await alerts(owner);
+    // Only the request's own text moves: the busy pane keeps its other queued items.
+    expect(moves).toEqual([{ pane: "pane:cody0001", id: "control_schedule:fg", prompt: "Apply to FutureGrid" }]);
+    expect(lines).toEqual(["Operator request [nous_msg:236c7dd4aa] «FutureGrid» waited 3+ min behind Dino/Cody (working): Space moved its queued text to a new pane, "
+      + "Dino/Eva (pane:eva00001), and cancelled it on Dino/Cody. Check that Dino/Eva (pane:eva00001) took it; the request's pane is now Dino/Eva (pane:eva00001)."]);
+    // No pane could open: today's urgent line, with why.
+    refuse = "Room Dino is capped at 16 active panes. No other room has a free slot.";
+    const refused = createRequestWaitAlerts({ notice: async (_owner, _key, line) => { lines.push(line); },
+      move: async () => ({ why: refuse! }),
+      waits: async () => ({ requests: [request], now: clock, words: () => null, pane: () => ({ label: "Dino/Cody", status: "working", since: minutesAgo(40) }),
+        queued: () => ({ at: minutesAgo(2), schedules }) }) });
+    await refused(owner);
+    expect(lines[1]).toContain("; Space could not move it: Room Dino is capped at 16 active panes. No other room has a free slot.: open a new pane for it now (space_open_panes)");
+    expect(lines[1]).toContain("cancel the text queued for Dino/Cody (space_execute {\"kind\":\"watch\",\"operation\":\"cancel\",\"id\":\"control_schedule:fg\"})");
   });
 
   it("sits right after the goals in the world, in the part never cut", () => {

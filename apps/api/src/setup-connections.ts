@@ -43,6 +43,8 @@ export interface SetupConnectionsService {
 export interface CreateSetupConnectionsServiceOptions {
   store: SpaceStore;
   discoverRuntimes: () => Promise<AgentRuntimeRegistry>;
+  /** The overview's registry read (every ADMIN app load): it only asks which CLIs are installed, so the shared cached registry will do; a forced rediscovery re-ran every credential probe (~5 s). */
+  readRuntimes?: () => Promise<AgentRuntimeRegistry>;
   observeCredential?: (runtime: AgentRuntime) => Promise<string | null>;
   smokeCredential?: (runtime: AgentRuntime) => Promise<boolean>;
   checkCredential?: (runtime: AgentRuntime) => Promise<CliCredentialCheckResult>;
@@ -251,7 +253,7 @@ export function createSetupConnectionsService(
   return {
     async overview() {
       const [registry, saved] = await Promise.all([
-        options.discoverRuntimes(),
+        (options.readRuntimes ?? options.discoverRuntimes)(),
         options.store.listSetupConnectionVerifications()
       ]);
       const byId = new Map(saved.map((record) => [record.connectionId, record]));

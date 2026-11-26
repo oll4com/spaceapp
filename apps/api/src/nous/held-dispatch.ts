@@ -16,7 +16,8 @@ export type HeldPriority = "normal" | "light";
 export interface HeldModel { modelId: string; reasoningEffort?: string }
 /** R84 12/11: a space_execute configure (account, effort, mode) held for a CLI still starting, run again once its session exists. */
 export type HeldConfigure = Record<string, unknown>;
-export interface HeldText { id: string; text: string; priority: HeldPriority; heldAt: string; attempts: number; model?: HeldModel; configure?: HeldConfigure }
+/** behindModel: a text held while a model change or configure waited ahead of it; it goes back with that change if the change fails. */
+export interface HeldText { id: string; text: string; priority: HeldPriority; heldAt: string; attempts: number; model?: HeldModel; configure?: HeldConfigure; behindModel?: true }
 export interface HeldQueue { status: "HELD" | "EMPTY"; roomId: string; roomName: string; paneId: string; paneName: string; items: HeldText[] }
 export interface HeldDelivery { owner: string; roomId: string; paneId: string; paneName: string; text: string; model?: HeldModel; configure?: HeldConfigure }
 
@@ -66,12 +67,40 @@ export function createHeldDispatch(deps: HeldDispatchDeps) {
       .map((record) => ({ owner: record.actorId, queue: record.value as HeldQueue })).filter(({ queue }) => queue.status === "HELD" && queue.items.length > 0);
   }
 
+  const setting = (item: HeldText) => Boolean(item.model || item.configure);
+  /**
+   * 15/11 Andy (memory 420f552b): texts tick released, by pane. Their own controlSend found the next change still held and held them
+   * again behind it, so model A → prompt → model B ran the prompt on B. Each is used once by the send it released.
+   */
+  // shortcut: in memory, so an after-turn send still scheduled across an API restart waits behind the later change again; persist it if that shows up.
+  const released = new Map<string, string[]>();
+  const release = (paneId: string, text: string, on: boolean) => {
+    const texts = released.get(paneId) ?? [];
+    const at = texts.indexOf(text.trim());
+    if (on) texts.push(text.trim()); else if (at >= 0) texts.splice(at, 1);
+    if (texts.length) released.set(paneId, texts); else released.delete(paneId);
+    return at >= 0;
+  };
+
+  async function hold(owner: string, target: Omit<HeldQueue, "status" | "items">, text: string, priority: HeldPriority = "normal", model?: HeldModel, configure?: HeldConfigure): Promise<{ id: string; waiting: number }> {
+    const id = makeSpaceId("nous_held");
+    const queue = await change(owner, target, (items) => [...items, { id, text, priority, heldAt: now(), attempts: 0, ...(model ? { model } : {}), ...(configure ? { configure } : {}),
+      ...(!model && !configure && items.some(setting) ? { behindModel: true as const } : {}) }]);
+    return { id, waiting: queue.items.length };
+  }
+
   return {
     /** Holds a text for the pane; returns how many wait for it now. */
-    async hold(owner: string, target: Omit<HeldQueue, "status" | "items">, text: string, priority: HeldPriority = "normal", model?: HeldModel, configure?: HeldConfigure): Promise<{ id: string; waiting: number }> {
-      const id = makeSpaceId("nous_held");
-      const queue = await change(owner, target, (items) => [...items, { id, text, priority, heldAt: now(), attempts: 0, ...(model ? { model } : {}), ...(configure ? { configure } : {}) }]);
-      return { id, waiting: queue.items.length };
+    hold,
+
+    /**
+     * 15/11 Cleo/Finn: a prompt sent straight to a pane whose model change (or configure) is still held ran on the old model, first. Such a
+     * prompt waits behind the change in the same queue; null when nothing is held for the pane, so the prompt goes now.
+     */
+    async holdPromptBehindModel(owner: string, target: Omit<HeldQueue, "status" | "items">, text: string): Promise<{ id: string; waiting: number } | null> {
+      if (release(target.paneId, text, false)) return null;
+      const queue = (await deps.repository.get(kind, owner, target.paneId))?.value as HeldQueue | undefined;
+      return queue?.items?.some(setting) ? hold(owner, target, text, "light") : null;
     },
 
     /** One line for Nous's world, or null when nothing is held. */
@@ -95,12 +124,14 @@ export function createHeldDispatch(deps: HeldDispatchDeps) {
         if (!mayDeliver(level, item.priority)) continue;
         const target = { roomId: queue.roomId, roomName: queue.roomName, paneId: queue.paneId, paneName: queue.paneName };
         let error: string | null = null;
+        if (!setting(item)) release(queue.paneId, item.text, true);
         try {
           const outcome = await deps.deliver({ owner, roomId: queue.roomId, paneId: queue.paneId, paneName: queue.paneName, text: item.text, ...(item.model ? { model: item.model } : {}), ...(item.configure ? { configure: item.configure } : {}) });
           if (!outcome.ok) error = outcome.result;
         } catch (cause) {
           error = cause instanceof Error ? cause.message : String(cause);
         }
+        if (error !== null && !setting(item)) release(queue.paneId, item.text, false);
         if (error === null) {
           await change(owner, target, (items) => items.filter((entry) => entry.id !== item.id));
           delivered.set(owner, [...(delivered.get(owner) ?? []), `${queue.roomName}/${queue.paneName}`]);
@@ -112,7 +143,9 @@ export function createHeldDispatch(deps: HeldDispatchDeps) {
         // 31/10 Alex/Max: a text left as an unsent draft is in the composer and Nous already has its line; typing it again would double it.
         const drafted = /unsent draft/.test(error);
         const attempts = drafted ? HELD_MAX_ATTEMPTS : item.attempts + 1;
-        await change(owner, target, (items) => attempts >= HELD_MAX_ATTEMPTS ? items.filter((entry) => entry.id !== item.id)
+        // A failed model change takes the texts held behind it back too: they must not run on the model they waited to leave.
+        const behind = attempts >= HELD_MAX_ATTEMPTS && setting(item) ? queue.items.filter((entry) => entry.behindModel) : [];
+        await change(owner, target, (items) => attempts >= HELD_MAX_ATTEMPTS ? items.filter((entry) => entry.id !== item.id && !behind.some((text) => text.id === entry.id))
           : items.map((entry) => entry.id === item.id ? { ...entry, attempts } : entry));
         // 2026-10-30 REVIEW (Alex/Dana: held texts failed 3 tries twice while its Codex read UNKNOWN): a pane not ready on 2 tries is named once, before the last try.
         const what = item.model ? "model change" : item.configure ? "configure" : "text";
@@ -123,7 +156,8 @@ export function createHeldDispatch(deps: HeldDispatchDeps) {
         if (attempts >= HELD_MAX_ATTEMPTS) failed++;
         if (attempts >= HELD_MAX_ATTEMPTS && !drafted) {
           await deps.notice(owner, `held-failed:${item.id}`, `A ${what} held for ${queue.roomName}/${queue.paneName} since ${item.heldAt.slice(11, 16)} UTC could not be delivered `
-            + `(${HELD_MAX_ATTEMPTS} tries: ${error}). ${item.model || item.configure ? `It was: ${item.text}. Set it again or drop it.` : `Its text: "${item.text}". Send it again or drop it.`}`);
+            + `(${HELD_MAX_ATTEMPTS} tries: ${error}). ${item.model || item.configure ? `It was: ${item.text}. Set it again or drop it.` : `Its text: "${item.text}". Send it again or drop it.`}`
+            + `${behind.length ? ` The ${behind.length === 1 ? "text" : `${behind.length} texts`} held behind it went back unsent: ${behind.map((text) => `"${text.text}"`).join(", ")}; send ${behind.length === 1 ? "it" : "them"} again once the model is set.` : ""}`);
         }
       }
       for (const [owner, panes] of delivered) {

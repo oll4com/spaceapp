@@ -7,8 +7,9 @@ import {
 } from "@space/contracts";
 import type { MarketingCopilotRepository, MarketingPostFilter } from "@space/db";
 import type { RailAnswerBy } from "@space/db";
-import { forbiddenByMemoryText, forbiddingMemory, MEMORY_HITS_NOTE, questionMemoryHits } from "@space/db";
+import { forbiddenByMemoryText, forbiddingMemory, MEMORY_HITS_NOTE, questionMemoryHits, reviewEditMemoryText } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
+import { marketingStaleReviewDetail } from "../nous/copilot-actions.js";
 import { operatorOrder, operatorOrderOverride, type OperatorMessageRefs } from "../copilot-operator-order.js";
 import { PaneCloseRefusedError } from "../pane-guards.js";
 import type { BrowserHostActorContext } from "@space/browser-host";
@@ -42,6 +43,14 @@ const DAY_MS = 86_400_000;
 export const marketingPostStale = (post: Pick<MarketingPost, "scheduledAt" | "publishedAt" | "updatedAt">, approvedAt: string | null, at: string) =>
   !post.publishedAt && Date.parse(post.scheduledAt ?? approvedAt ?? post.updatedAt) + DAY_MS < Date.parse(at);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// The same post served again to a pane waits out the poll step: an agent looping on next while it holds an item back
+// (14/11: pane cS8DBIi, 5.6 calls/s for 2 h behind a MEASURE it would not read yet) polls at the long-poll's own pace.
+const lastServed = new Map<string, { postId: string; at: number }>();
+async function paceRepeat(paneId: string, postId: string) {
+  const last = lastServed.get(paneId);
+  if (last?.postId === postId) await sleep(Math.max(0, last.at + NEXT_POLL_MS - Date.now()));
+  lastServed.set(paneId, { postId, at: Date.now() });
+}
 
 interface EventInput { paneId?: string | null; runId?: string | null; postId?: string | null; campaignId?: string | null; type: MarketingEventType; status?: "PENDING" | "TAKEN" | "DONE" | null; message: string; payload?: Record<string, unknown> }
 
@@ -221,7 +230,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     async setCampaignMetric(owner: string, id: string, metric: "stars" | "installs" | "visits" | null) {
       const campaign = await repository.getCampaign(owner, id);
       if (!campaign) throw new SpaceNotFoundError("The campaign was not found.");
-      const { metric: _old, ...payload } = campaign.payload;
+      const payload = Object.fromEntries(Object.entries(campaign.payload).filter(([key]) => key !== "metric"));
       return (await repository.updateCampaign(owner, id, { payload: metric ? { ...payload, metric } : payload }))!;
     },
     // ---- briefs (the operator's requests, the agent's work items) -----------------------------
@@ -237,7 +246,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       const changed: string[] = [];
       for (const id of new Set(ids)) {
         const post = await postOf(owner, id);
-        const { topic: _old, ...evidence } = post.evidence;
+        const evidence = Object.fromEntries(Object.entries(post.evidence).filter(([key]) => key !== "topic"));
         if ((post.evidence.topic ?? null) === topic) continue;
         await repository.updatePost(owner, id, { evidence: topic ? { ...evidence, topic } : evidence });
         changed.push(id);
@@ -324,7 +333,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       const label = MARKETING_CHANNEL_LABELS[post.channel];
       if (input.decision === "edit" && (post.body !== current.body || post.title !== current.title)) {
         await repository.upsertMemory({ ownerUserId: owner, kind: "LESSON", key: null, channel: post.channel, tags: ["review-edit"], source: "LEARNED", pinned: false,
-          text: `On ${label} the operator changed a ${post.kind.toLowerCase()}. Copilot draft:\n${current.body.slice(0, 1500)}\n\nOperator's version:\n${post.body.slice(0, 1500)}`.slice(0, 4000) });
+          text: reviewEditMemoryText(`On ${label} the operator changed a ${post.kind.toLowerCase()}`, current.body.slice(0, 1500), post.body.slice(0, 1500)).slice(0, 4000) });
       }
       if (input.decision === "reject" && input.note) {
         await repository.upsertMemory({ ownerUserId: owner, kind: "LESSON", key: null, channel: post.channel, tags: ["review-reject"], source: "LEARNED", pinned: false,
@@ -488,7 +497,8 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       ]);
       const answered = new Set(questions.filter((event) => event.type === "ANSWERED").map((event) => String(event.payload.questionId)));
       return [
-        ...reviews.map((post) => ({ kind: "REVIEW" as const, id: post.id, message: `Review the ${MARKETING_CHANNEL_LABELS[post.channel]} post${post.title ? ` "${post.title}"` : ""}`, payload: { post, wordingIssues: marketingWordingIssues(`${post.title ?? ""}\n${post.body}`) }, createdAt: post.updatedAt })),
+        ...reviews.map((post) => ({ kind: "REVIEW" as const, id: post.id, message: `Review the ${MARKETING_CHANNEL_LABELS[post.channel]} post${post.title ? ` "${post.title}"` : ""}`,
+          payload: { post, wordingIssues: marketingWordingIssues(`${post.title ?? ""}\n${post.body}`), ...(post.scheduledAt && marketingPostStale(post, null, now()) ? { summary: marketingStaleReviewDetail(post.scheduledAt) } : {}) }, createdAt: post.updatedAt })),
         ...questions.filter((event) => event.type === "QUESTION" && !answered.has(String(event.payload.questionId))).map((event) => ({ kind: "QUESTION" as const, id: String(event.payload.questionId), message: event.message, payload: event.payload, createdAt: event.createdAt })),
         ...campaigns.map((campaign) => ({ kind: "CAMPAIGN" as const, id: campaign.id, message: `Campaign proposed: ${campaign.name}`, payload: { campaign }, createdAt: campaign.createdAt })),
         ...rules.map((rule) => ({ kind: "RULE" as const, id: rule.id, message: `Rule proposed: ${rule.name}`, payload: { rule }, createdAt: rule.createdAt }))
@@ -590,9 +600,15 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
             return { done: false as const, kind: "BRIEF" as const, item: brief, post, campaign, memories, autonomy: settings.autonomy };
           }
           const [due] = await service.duePosts(owner, pane);
-          if (due) return { done: false as const, kind: "PUBLISH" as const, post: due, memories: await service.recallMemory(owner, { kinds: ["CHANNEL_RULE"], channel: due.channel }) };
+          if (due) {
+            await paceRepeat(pane.id, due.id);
+            return { done: false as const, kind: "PUBLISH" as const, post: due, memories: await service.recallMemory(owner, { kinds: ["CHANNEL_RULE"], channel: due.channel }) };
+          }
           const [measure] = await service.postsToMeasure(owner);
-          if (measure) return { done: false as const, kind: "MEASURE" as const, post: measure };
+          if (measure) {
+            await paceRepeat(pane.id, measure.id);
+            return { done: false as const, kind: "MEASURE" as const, post: measure };
+          }
           await service.stopRun(owner, pane.id, "Run finished");
           return { done: true as const, reason: "QUEUE_EMPTY" as const };
         }
@@ -611,7 +627,9 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       const at = Date.parse(now());
       return (await repository.listPosts(owner, { status: ["PUBLISHED"] })).filter((post) => {
         const age = at - Date.parse(post.publishedAt ?? post.updatedAt);
-        return age < 30 * DAY_MS && ((age >= DAY_MS && !post.evidence.measured1d) || (age >= 7 * DAY_MS && !post.evidence.measured7d));
+        // 22/11: 27 replies read once as not_measurable stayed "never measured" in the score; such a reading is retried a day later until the week's reading.
+        const retry = post.metrics.not_measurable! > 0 && !post.evidence.measured7d && at - Date.parse(String(post.evidence.metricsAt ?? post.publishedAt)) >= DAY_MS;
+        return age < 30 * DAY_MS && ((age >= DAY_MS && !post.evidence.measured1d) || (age >= 7 * DAY_MS && !post.evidence.measured7d) || (age >= DAY_MS && retry));
       });
     },
     /** The agent's reading of a published post's engagement (from the post's page in the pane browser). */
@@ -619,7 +637,10 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       const post = await postOf(owner, input.postId);
       if (post.status !== "PUBLISHED") throw new SpaceConflictError("Only a published post has engagement to record.");
       const age = Date.parse(now()) - Date.parse(post.publishedAt ?? post.updatedAt);
-      const updated = (await repository.updatePost(owner, post.id, { metrics: { ...post.metrics, ...input.metrics },
+      // A reading that does not say not_measurable read real counters: an earlier not_measurable no longer holds.
+      const metrics = { ...post.metrics, ...input.metrics };
+      if (!("not_measurable" in input.metrics)) delete metrics.not_measurable;
+      const updated = (await repository.updatePost(owner, post.id, { metrics,
         evidence: { ...post.evidence, metricsAt: now(), ...(age >= DAY_MS ? { measured1d: true } : {}), ...(age >= 7 * DAY_MS ? { measured7d: true } : {}) } }, ["PUBLISHED"]))!;
       await record(owner, { paneId: pane.id, postId: post.id, campaignId: post.campaignId, type: "METRICS",
         message: `${MARKETING_CHANNEL_LABELS[post.channel]} post: ${Object.entries(input.metrics).map(([key, value]) => `${value} ${key.replace(/_/g, " ")}`).join(", ")}`, payload: { metrics: input.metrics } });

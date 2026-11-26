@@ -32,7 +32,8 @@ const store = PostgresSpaceStore.fromConnectionString(config.databaseUrl, {
   codexLbConfigured: config.codexLbConfigured,
   codexLbBaseUrl: config.codexLbBaseUrl,
   mcpServerConfigs: config.mcpServerConfigs ?? [],
-  mcpConfigError: config.mcpConfigError ?? null
+  mcpConfigError: config.mcpConfigError ?? null,
+  tolerantPaneRows: true
 });
 const manager = createBrowserSessionManager({ store, config });
 const startedAt = new Date().toISOString();
@@ -57,7 +58,8 @@ const handler: BrowserHostRequestHandler = {
       buildCommit: readBrowserHostBuildCommit(),
       status: manager.status(),
       capacity: manager.capacity?.() ?? null,
-      captureMetrics
+      captureMetrics,
+      tolerantPaneRows: true
     };
   },
   async request(method, params) {

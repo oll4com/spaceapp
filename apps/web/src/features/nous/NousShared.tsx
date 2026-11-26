@@ -47,7 +47,7 @@ export function NousShared({ files, error, onRetry, onRemoved }: { files: NousSh
   }, `${file.name} could not be opened.`);
   const remove = (file: NousSharedFile) => work(file, async () => { await api.removeNousSharedFile(file.shareId); onRemoved(file.shareId); }, "The share could not be removed.");
   return (
-    <div className="nous-decisions nous-shared" data-sensitive-masked="manual">
+    <div className="nous-decisions nous-shared">
       {error ? <div><p role="alert">{error}</p><DockButton onClick={onRetry}>Retry</DockButton></div> : null}
       {problem ? <p role="alert">{problem}</p> : null}
       {files === null && !error ? <DockState kind="loading" title="Loading the shared files" /> : null}

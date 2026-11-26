@@ -106,6 +106,7 @@ export function submittedTaskEntries(
     }
     const char = input[i]!;
     if (char === "\x1b") {
+      // eslint-disable-next-line no-control-regex -- matching the ESC that starts an ANSI escape is the point
       const match = /^\x1b\[[0-?]*[ -/]*[@-~]/.exec(input.slice(i));
       if (match) {
         i += match[0].length - 1;
@@ -456,11 +457,11 @@ export class TaskTitleService {
     if (!pane || pane.isClosed || pane.terminalRuntimeId === "cli:root") return null;
     let sessionId: string,
       runtimeId: string,
-      nativeId: string | null = null,
+      nativeId: string | null,
       revisionId: string | null = null,
       key: string,
       accountKey = "default",
-      requests: string[] = [],
+      requests: string[],
       nativeTitle: string | null = null,
       nativeManual = false,
       images: string[] = [],
@@ -533,7 +534,9 @@ export class TaskTitleService {
             // "continue"; Claude's transcript keeps every prompt of the task.
             if (claude.requests?.some(isSubstantiveTaskRequest)) requests = claude.requests;
           }
-        } catch {}
+        } catch {
+          // no readable Claude transcript: keep the pane transcript's requests and title
+        }
       }
       if (this.options.nativeTitles) {
         try {
@@ -568,7 +571,9 @@ export class TaskTitleService {
               );
             }
           }
-        } catch {}
+        } catch {
+          // native bridge unreachable: keep the pane transcript's requests and title
+        }
       }
     } else return null;
     if (runtimeId === "cli:opencode" || runtimeId === "opencode") {
@@ -583,26 +588,29 @@ export class TaskTitleService {
             (await fetchOpenCodeSessionTitle(control, nativeId))?.title ?? null;
           const history = await fetchOpenCodeSessionMessages(control, nativeId, 30).catch(() => null);
           if (history) {
-            const messages = (history as any[])
+            type OpenCodePart = { type?: string; synthetic?: boolean; ignored?: boolean; text?: string; url?: string };
+            const messages = (history as { info?: { role?: string }; parts?: OpenCodePart[] }[])
               .filter((m) => m.info?.role === "user");
             const native = messages.map((m) =>
                 (m.parts ?? [])
                   .filter(
-                    (p: any) => p.type === "text" && !p.synthetic && !p.ignored,
+                    (p) => p.type === "text" && !p.synthetic && !p.ignored,
                   )
-                  .map((p: any) => p.text)
+                  .map((p) => p.text)
                   .join(" "),
               );
             if (native.length) requests = native;
             // OpenCode attaches pasted images as file parts of the message.
             const files = (messages.at(-1)?.parts ?? [])
-              .filter((p: any) => p.type === "file" && typeof p.url === "string")
-              .map((p: any) => { try { return decodeURI(p.url); } catch { return ""; } })
+              .filter((p): p is OpenCodePart & { url: string } => p.type === "file" && typeof p.url === "string")
+              .map((p) => { try { return decodeURI(p.url); } catch { return ""; } })
               .join(" ");
             if (native.length && hasTaskImageReference(files))
               imageEntries = [{ text: native.at(-1)!, raw: files }];
           }
-        } catch {}
+        } catch {
+          // OpenCode server unreachable: keep the pane transcript's requests and title
+        }
       }
     } else if (
       (runtimeId === "cli:codex" || runtimeId === "codex") &&
@@ -628,7 +636,9 @@ export class TaskTitleService {
       // Read the active thread's name over its exact private CLI socket.
       try {
         nativeTitle = (await this.options.readCodexName?.(sessionId, nativeId)) ?? nativeTitle;
-      } catch {}
+      } catch {
+        // Codex socket gone: keep the SQLite title
+      }
       // Native Chat receives a tool envelope before the real user prompt. Its
       // automatic first-line title must not become the pane title. Durable Chat
       // user messages are authoritative, including intentional operator quotes.
@@ -673,7 +683,9 @@ export class TaskTitleService {
     let ownerUserId: string | null = null;
     try {
       ownerUserId = (await this.options.store.getRoom(context.pane.roomId))?.ownerUserId ?? null;
-    } catch {}
+    } catch {
+      // room unreadable: fall back to the first plan below
+    }
     if (!ownerUserId) return planIds[0]!;
     for (const planId of new Set(planIds)) {
       try {
@@ -681,7 +693,7 @@ export class TaskTitleService {
           paneId: context.pane.id,
           roomId: context.pane.roomId,
           paneTitle: context.pane.paneName ?? context.pane.title
-        } as any);
+        });
         return planId;
       } catch (error) {
         if (error instanceof SpaceNotFoundError) continue;
@@ -1042,7 +1054,7 @@ export class TaskTitleService {
       syncOnly: true,
       resetNativeManual,
       ...(resetNativeManual && context.nativeManual && state.request
-        ? { title: state.metadata.topics?.at(-1)?.title ?? shortTaskTitle(state.request), syncOnly: false }
+        ? { title: state.metadata.topics?.[0]?.title ?? shortTaskTitle(state.request), syncOnly: false }
         : {}),
       metadata: {
         ...state.metadata,
@@ -1226,16 +1238,18 @@ export class TaskTitleService {
       topics[topics.length - 1] = { ...last, summary: parsed.summary };
     } else if (parsed ? !parsed.sameTopic : fallback !== last.title) {
       topics.push(parsed ? line(parsed.title, "ai") : line(fallback, "local"));
+      // The first line names the pane, so the oldest later line goes instead.
       while (topics.length > taskTopicsMax) {
-        const dropped = topics.shift()!;
+        const dropped = topics.splice(1, 1)[0]!;
         earlierWork = safe([earlierWork, dropped.title].filter(Boolean).join("; "), 400);
       }
     }
     const current = topics.at(-1)!;
+    // Operator 21/11: the pane keeps its first title; new requests only add lines.
     state.title =
       context.nativeManual && context.nativeTitle && !state.resetNativeManual
         ? context.nativeTitle
-        : current.title;
+        : topics[0]!.title;
     state.metadata = {
       ...state.metadata,
       topics,
@@ -1301,8 +1315,10 @@ export class TaskTitleService {
       const timeout = setTimeout(() => controller.abort(), 65_000);
       const signal = AbortSignal.any([controller.signal, this.abort.signal]);
       try {
-        for (const candidate of candidates.slice(0, 2)) {
-          if (signal.aborted) break;
+        // Two model calls per run; a candidate resting since the list was read does not use one.
+        let tried = 0;
+        for (const candidate of candidates) {
+          if (signal.aborted || tried >= 2) break;
           const cooldowns = await this.options.repository.cooldowns(
             this.now().toISOString(),
           );
@@ -1311,6 +1327,7 @@ export class TaskTitleService {
             cooldowns[`provider:${candidate.providerId}`]
           )
             continue;
+          tried++;
           if (
             !(await this.options.repository.reserveAttempt(
               state.budgetKey ?? state.key,

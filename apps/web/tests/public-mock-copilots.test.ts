@@ -18,7 +18,7 @@ describe("public mock Copilots room", () => {
     expect(run.pending.map(item => item.kind)).toEqual(["REVIEW"]);
     expect((await api.mailHabits(MAIL_PANE_ID)).habits).toHaveLength(1);
     expect(mailThreadSchema.safeParse((await api.mailThread(MAIL_PANE_ID, "avery@example.com", "demo-thread-1")).thread).success).toBe(true);
-    const applications = (await api.jobApplications()).applications;
+    const applications = (await api.jobApplications()).applications!; // no `unless`: always the list
     for (const application of applications) jobApplicationSchema.parse(application);
     expect(applications.filter(application => application.status === "QUEUED").length).toBeGreaterThan(0);
     const posts = (await api.marketingPosts()).posts;

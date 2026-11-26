@@ -23,9 +23,25 @@ export const NOTIFICATION_SOURCE_LABELS: Record<NotificationSource, string> = {
  * showing a toast, and takes them back when it resolves. Never INFO; failures, "posts due" and finished work stay toasts.
  */
 export const NEEDS_YOU_KINDS = /^(NEEDS_HANDS|NEEDS_YOU|NEEDS_USER|QUESTION|REVIEW_REQUESTED|RULE_PROPOSED|CAMPAIGN_PROPOSED|CAMPAIGN_REVIEW|CLIENT_READY|HANDOFF_REQUESTED|BROWSER_HANDOFF_REQUESTED|WAITING|SIGN_IN|STUCK|USAGE_LIMIT|OVERLAP|(?:DESIGN|VIDEO)_(?:APPROVAL|QUESTION)|APP_STUDIO_QUESTION|SECURITY_(?:QUESTION|REVIEW)|MONITORING_(?:QUESTION|REVIEW))$/;
-// A plan's own card (`nous:plan:<id>`, the API's plan-needs-you.ts) needs no pane: it outlives the panes that worked on the plan.
+// A plan's own card (`nous:plan:<id>`, the API's plan-needs-you.ts) needs no pane: it outlives the panes that worked on the plan. So does a closed
+// pane's room item (`nous:closed-pane:<id>`, its asks no plan carries, operator 15/11 nous_msg:9f70dbbe).
 export const needsYou = (notification: { source: NotificationSource; kind: string; severity: NotificationSeverity; paneId: string | null; roomId: string | null; dedupeKey?: string | null }) =>
-  Boolean((notification.paneId && notification.roomId) || notification.dedupeKey?.startsWith("nous:plan:")) && notification.severity !== "INFO" && NEEDS_YOU_KINDS.test(notification.kind);
+  Boolean((notification.paneId && notification.roomId) || notification.dedupeKey?.startsWith("nous:plan:") || notification.dedupeKey?.startsWith("nous:closed-pane:")) && notification.severity !== "INFO" && NEEDS_YOU_KINDS.test(notification.kind);
+/**
+ * Operator 16/11 21:55 BKK («δεν ειπα ποτε done!! ανοιξε ξανα τα Needs you»): what still waits on the operator: an unread record, or a needs-you
+ * card they opened (READ) but never answered. Opening a card never takes it out of pending counts, badges, room attention or Nous's world.
+ */
+export const waitsOnOperator = (notification: Parameters<typeof needsYou>[0] & { status: string }) =>
+  notification.status === "OPEN" || (notification.status === "READ" && needsYou(notification));
+/**
+ * Operator 17/11 14:04 BKK («παταω mark all as read και δεν μηδενιζει!!»): what the unread counts (bell, rail, Notifications dock) hold. Mark all
+ * read stamps `payload.markedReadAt` on the needs-you cards it reads; they leave the counts unanswered and still wait in Needs you and Nous's world
+ * (`waitsOnOperator`). A raise that reopens the card or changes its text drops the stamp, so it counts again.
+ */
+export const unreadForOperator = (notification: Parameters<typeof waitsOnOperator>[0] & { payload?: Record<string, unknown> }) =>
+  waitsOnOperator(notification) && !(notification.status === "READ" && notification.payload?.markedReadAt);
+/** Operator 16/11 21:55 BKK: an option saying the work is done; only the operator gives it: never recommended, defaulted or answered "Always". */
+export const NEEDS_YOU_COMPLETION_OPTION = /^\s*(?:all )?(?:done|finished|completed|installed|resolved|fixed|handled|signed in|logged in|i(?:'ve| have)? (?:handled|done|did|finished|signed|logged|paid|installed|fixed)|έγινε|το έκανα|ολοκληρώθηκε|τελείωσε)(?![\p{L}])/iu;
 
 /** The copilots whose questions go to Nous first and are swept once answered (Ask Last step 7, 2026-10-27). */
 export const COPILOT_QUESTION_SOURCES: readonly NotificationSource[] = ["JOB_COPILOT", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO",
@@ -84,7 +100,8 @@ export function copilotQuestionItemId(notification: { dedupeKey: string | null; 
 }
 /**
  * Operator 2/11 15:08 BKK («να μην φτανει σε εμενα το aprove και να το κανεις παντα ΕΣΥ ΑΠΟ ΤΗΝ ΣΤΙΓΜΉ ΠΟΥ ΕΙΝΣΑΙ ενεργοποιημενο!! αλλιως φυσικα να
- * ζηταει απο εμενα aprove»): the approvals "May send to third parties" covers: a Mail, Marketing, Freelance or Job review and a Mail campaign.
+ * ζηταει απο εμενα aprove»): the approvals "May send to third parties" covers: a Mail, Marketing, Freelance or Job review, a Mail campaign and a
+ * Marketing campaign proposal.
  * While Nous is on with that allowance, such a card is Nous's alone (`heldForNous.allowance`, no time limit): it reaches the operator only when
  * the allowance or Nous is turned off. Every surface reads this one predicate (the notification hold, the panes' "Nous reviewing").
  */
@@ -93,7 +110,9 @@ export const isNousApproval = (notification: { source: NotificationSource; kind:
   !notification.payload?.operatorReads && ((notification.kind === "REVIEW_REQUESTED" && NOUS_APPROVAL_SOURCES.has(notification.source))
   || (notification.source === "MAIL_COPILOT" && (notification.kind === "CAMPAIGN_REVIEW"
     // Operator 3/11 18:28 BKK («κανε το εσυ μην μου ερχονται τετοια Needs you!!!»): resuming a paused campaign is "May send"'s too.
-    || notification.kind === "CAMPAIGN_PAUSED")));
+    || notification.kind === "CAMPAIGN_PAUSED"))
+  // Audit §4 item 1 (plan USQ6ktIIN_1D): a Marketing campaign proposal only opens a brief; each of its posts is still a review.
+  || (notification.source === "MARKETING_COPILOT" && notification.kind === "CAMPAIGN_PROPOSED"));
 const NOUS_APPROVAL_SOURCES = new Set<NotificationSource>(["MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "JOB_COPILOT"]);
 /** The allowance a card is held for Nous under (`payload.heldForNous.allowance`, isNousApproval), or null for an hour's hold. */
 export const heldUnderAllowance = (notification: { payload: Record<string, unknown> }): string | null => {
@@ -272,6 +291,17 @@ export function needsYouHasPlace(notification: Pick<SpaceNotification, "source" 
  * μου ερχεται με needs you και να δινω feedback οτι το εκανα και ολα καλα»): sent as his words, they reach Nous (or the asking pane) and close it.
  */
 export const NEEDS_YOU_DONE_ANSWERS = ["Done, all good", "There is a problem"] as const;
+/**
+ * Operator 20/11 18:24 BKK (nous_msg:e519138e): a card closes with one tap «Completed», sent as "Done, all good" (its option when it lists it, else
+ * as his words), unless it asks for a code, a review or a typed value; null then. The Needs you card and the Notifications dock row both use it.
+ */
+export function needsYouCompletedAnswer(notification: Pick<SpaceNotification, "title" | "body" | "payload">): { option: string } | { text: string } | null {
+  const ask = needsYouAsk(notification);
+  if (ask.answer.kind === "COPILOT_DECISION" || ask.code || ask.answerKind === "text") return null;
+  // A Mail Copilot flag takes words as a job for the copilot (pane-board-routes MAIL_FIX), so Completed is its own «I handled it».
+  if (ask.answer.kind === "MAIL_FIX") return (ask.options ?? []).includes("I handled it") ? { option: "I handled it" } : null;
+  return (ask.options ?? []).includes(NEEDS_YOU_DONE_ANSWERS[0]) ? { option: NEEDS_YOU_DONE_ANSWERS[0] } : { text: NEEDS_YOU_DONE_ANSWERS[0] };
+}
 
 /** The header the web folds "What Nous checked" on (Nous's cards, pane-notices.ts); a translation keeps it as it is. */
 export const NEEDS_YOU_CHECKED_HEADER = "\n\nChecked first:\n";
@@ -295,16 +325,28 @@ export function needsYouTranslation(record: Pick<SpaceNotification, "title" | "b
   return translated?.language === language && translated.from === needsYouCardTexts(record).from && typeof translated.title === "string"
     && typeof translated.body === "string" && typeof translated.question === "string" && Array.isArray(translated.options) ? translated as NeedsYouTranslation : null;
 }
+/**
+ * `payload.mailTranslated` (operator 21/11 nous_msg:e9b4df3e): the mail a card names (needsYouMail), translated once when the card is raised if it
+ * reads in neither Greek nor English; `original` is the mail it was made from. Without `subject`/`text` the mail needed no translation.
+ */
+export interface NeedsYouMailTranslation { language: UiLanguage; original: { subject: string; text: string; at: string | null }; subject?: string; text?: string }
+/** The mail's translation into `language`, only while the card shows the mail it was made from (same subject and time). */
+export function needsYouMailTranslation(record: Pick<SpaceNotification, "payload">, language: UiLanguage, mail: { subject: string; at: string | null }): { subject: string; text: string } | null {
+  const stored = record.payload.mailTranslated as Partial<NeedsYouMailTranslation> | undefined;
+  return stored?.language === language && stored.original?.subject === mail.subject && (stored.original.at ?? null) === mail.at
+    && typeof stored.subject === "string" && typeof stored.text === "string" ? { subject: stored.subject, text: stored.text } : null;
+}
 
 /**
- * Goal 7365014c-d: what "Always answer like this" stores for a needs-you card, or null when it may not: no recommended option, or a
+ * Goal 7365014c-d: what "Always answer like this" stores for a needs-you card, or null when it may not: no recommended option (or only
+ * the first option raise defaulted to), or a
  * handoff, sign-in, CAPTCHA or other hands item. The kind holds the source, the record kind, the question's shape (numbers as #), the
  * options and the recommended option itself, so a later card with the same question but another recommendation is never answered for them.
  */
 export function needsYouAnswerKind(record: Pick<SpaceNotification, "source" | "kind" | "title" | "body" | "payload">): { key: string; label: string } | null {
   const ask = needsYouAsk(record);
   // R37-2: "Go now" is the operator going to the pane; no standing answer can go for them.
-  if (!ask.recommended || ask.recommended === NEEDS_YOU_GO_NOW || record.source === "BROWSER_HANDOFF" || /SIGN_IN|LOGIN|CAPTCHA|HANDOFF|NEEDS_USER|NEEDS_HANDS/i.test(record.kind)) return null;
+  if (!ask.recommended || record.payload.recommendedDefault || ask.recommended === NEEDS_YOU_GO_NOW || NEEDS_YOU_COMPLETION_OPTION.test(ask.recommended) || record.source === "BROWSER_HANDOFF" || /SIGN_IN|LOGIN|CAPTCHA|HANDOFF|NEEDS_USER|NEEDS_HANDS/i.test(record.kind)) return null;
   // R15-2: a copilot review recommends only when vouched (R12-4), so its kind is the rail and the decision, never the review's own words.
   if (ask.answer.kind === "COPILOT_DECISION" && ask.answer.item === "REVIEW") {
     return { key: `needs-you:${record.source}:REVIEW:${ask.recommended}`, label: `answer "${ask.recommended}" on every vouched ${NOTIFICATION_SOURCE_LABELS[record.source]} review` };
@@ -422,7 +464,10 @@ export const operatorUpdateLinkSchema = z.object({
 export const operatorUpdatePayloadSchema = z.object({
   report: z.string().trim().min(1).max(20_000),
   links: z.array(operatorUpdateLinkSchema).max(50).default([]),
-  programId: z.string().min(1).max(200).optional()
+  programId: z.string().min(1).max(200).optional(),
+  /** The request (nous_msg:…) and plan (clipboard:…) the update is about: it joins that request's Thread in the Inbox. */
+  requestId: z.string().min(1).max(200).optional(),
+  planId: z.string().min(1).max(200).optional()
 });
 export type OperatorUpdatePayload = z.infer<typeof operatorUpdatePayloadSchema>;
 
@@ -431,11 +476,19 @@ export const notificationListQuerySchema = z.object({
   /** WAITING: open or read (not resolved or acknowledged), any kind: what still waits, read whole instead of "the newest 200 of every status". */
   status: z.enum(["OPEN", "ALL", "NEEDS_YOU", "WAITING"]).default("ALL"),
   source: notificationSourceSchema.optional(),
+  excludeSource: notificationSourceSchema.optional(),
   kind: z.string().min(1).max(60).optional(),
   dedupeKey: z.string().min(1).max(200).optional(),
   paneId: z.string().min(1).max(200).optional(),
+  /** Only the ones raised on a pane / above INFO: the pane board reads its 20 of 7,440 waiting records with both (stable 14/11). */
+  onPane: z.boolean().optional(),
+  aboveInfo: z.boolean().optional(),
+  /** Only the ones whose payload holds a value under this key (heldForNous, mergedKeys, heldUntil): readers that keep only those read every
+   *  waiting record for them, 7,445 records in 38 pages to find none held for Nous (stable 14/11). */
+  payloadHas: z.string().min(1).max(60).optional(),
   limit: z.number().int().min(1).max(200).default(50),
-  before: isoDateTime.optional()
+  before: isoDateTime.optional(),
+  since: isoDateTime.optional()
 }).strict();
 export type NotificationListQuery = z.infer<typeof notificationListQuerySchema>;
 
@@ -450,8 +503,8 @@ const clockTimeSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "Use HH:
 export const quietHoursSchema = z.object({ enabled: z.boolean().default(true), start: clockTimeSchema.default("23:00"), end: clockTimeSchema.default("09:00") }).strict();
 export type QuietHours = z.infer<typeof quietHoursSchema>;
 export const defaultQuietHours: QuietHours = { enabled: true, start: "23:00", end: "09:00" };
-/** Appointment reminders (operator 2/11 15:22 BKK): minutes before every appointment; one in quiet hours goes just before they start. */
-export const DEFAULT_APPOINTMENT_REMINDER_MINUTES = [1440, 180, 60];
+/** Appointment reminders (operator 2/11 15:22 BKK, 30 min added 17/11 nous_msg:e58363a2): minutes before every appointment; one in quiet hours goes just before they start. */
+export const DEFAULT_APPOINTMENT_REMINDER_MINUTES = [1440, 180, 60, 30];
 export const appointmentRemindersSchema = z.object({
   enabled: z.boolean().default(true),
   leadMinutes: z.array(z.number().int().min(1).max(60 * 24 * 30)).default(DEFAULT_APPOINTMENT_REMINDER_MINUTES)

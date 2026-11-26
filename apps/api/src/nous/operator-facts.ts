@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { questionWordMatch } from "@space/db";
 import { fitWhole, indexWords, inSlices, rankByWords, rankIndexed, warmFolds, type WordIndex } from "./retrieval.js";
@@ -96,14 +96,22 @@ export function renderOperatorFacts(facts: OperatorFact[], query = ""): string {
     `- ${facts.length} in all; ${matched.length ? "those above match this turn's words" : "none matches this turn's words"}. space_memory_recall finds any other by its words: look before you act on something the operator may have ruled on.`].join("\n");
 }
 
-/** Every monthly Space Memory file (the gemini_* names are compatibility symlinks and skipped); the light scan of all nine took 33 ms on 31/10. */
+/**
+ * Every monthly Space Memory file (the gemini_* names are compatibility symlinks and skipped), read again only when a file's size or
+ * time changed: each call read all ten (16 MB on stable 14/11, 39 ms of main thread and ~68 MB of strings for the garbage collector,
+ * whose pauses held the API 0.5-2.6 s) every minute, though the memory changes about every five.
+ * shortcut: a rewrite that keeps a file's size and modification time is not seen, re-read on a content hash if saves ever do that.
+ */
 export async function readMemoryMonthlies(monthlyPath: string): Promise<string> {
   const directory = dirname(monthlyPath);
   const names = (await readdir(directory)).filter((name) => /^space_memory_\d{4}-\d{2}\.md$/.test(name));
-  const all = [...new Set([...names, basename(monthlyPath)])].sort();
-  const texts = await Promise.all(all.map((name) => readFile(join(directory, name), "utf8").catch(() => "")));
-  return texts.join("\n");
+  const paths = [...new Set([...names, basename(monthlyPath)])].sort().map((name) => join(directory, name));
+  // The stamp before the text: a save between the two is read again by the next call.
+  const stamp = (await Promise.all(paths.map((path) => stat(path).then((file) => `${path} ${file.size} ${file.mtimeMs}`, () => path)))).join("\n");
+  if (monthliesKept?.stamp !== stamp) monthliesKept = { stamp, text: (await Promise.all(paths.map((path) => readFile(path, "utf8").catch(() => "")))).join("\n") };
+  return monthliesKept.text;
 }
+let monthliesKept: { stamp: string; text: string } | null = null;
 
 /** The operator's pinned entry a copilot question shares words with; `rule` when the operator ruled it (tag operator-rule). */
 export interface PinnedMemoryHit { id: string; title: string; body: string; rule: boolean }

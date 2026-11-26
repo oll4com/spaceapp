@@ -14,6 +14,10 @@ export const APPOINTMENT_FORMATS = ["AI_INTERVIEW", "RECORDED_VIDEO", "LIVE_HUMA
 export const APPOINTMENT_TIMINGS = ["FIXED", "FLEXIBLE"] as const;
 export const appointmentFormatSchema = z.enum(APPOINTMENT_FORMATS);
 export const appointmentTimingSchema = z.enum(APPOINTMENT_TIMINGS);
+// Operator 26/11 11:08 BKK (nous_msg:cfce1783): a call every day (or weekday) of a period; `until` is the last day, in the appointment's own zone.
+export const APPOINTMENT_REPEATS = ["DAY", "WEEKDAY"] as const;
+export const appointmentRecurrenceSchema = z.object({ every: z.enum(APPOINTMENT_REPEATS), until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD.") }).strict();
+export type AppointmentRecurrence = z.infer<typeof appointmentRecurrenceSchema>;
 
 // Without defaults, so a partial update never resets a field it does not name.
 const appointmentFields = z.object({
@@ -31,7 +35,9 @@ const appointmentFields = z.object({
   // Required on an UPCOMING one by the write check (apps/api appointment-content.ts); null on rows older than the rule.
   format: appointmentFormatSchema.nullable().optional(),
   timing: appointmentTimingSchema.nullable().optional(),
-  deadlineAt: isoDateTime.nullable().optional()
+  deadlineAt: isoDateTime.nullable().optional(),
+  /** Repeats at the same wall time every day or weekday until a day; startsAt/endsAt are the first (or current) occurrence. */
+  recurrence: appointmentRecurrenceSchema.nullable().optional()
 }).strict();
 export const appointmentInputSchema = appointmentFields.extend({ kind: appointmentKindSchema.default("OTHER") }).strict();
 export type AppointmentInput = z.input<typeof appointmentInputSchema>;
@@ -53,11 +59,14 @@ export const appointmentSchema = z.object({
   format: appointmentFormatSchema.nullable(),
   timing: appointmentTimingSchema.nullable(),
   deadlineAt: isoDateTime.nullable(),
+  recurrence: appointmentRecurrenceSchema.nullable().optional(),
   status: appointmentStatusSchema,
   /** The reminder lead times (minutes) already sent for this start time; a new start time clears it. */
   remindersSent: z.array(z.number().int()),
   createdAt: isoDateTime,
-  updatedAt: isoDateTime
+  updatedAt: isoDateTime,
+  /** Set by the service on an UPCOMING meeting outside the owner's appointment hours (a FIXED time the other side set): ask them to move it. */
+  outOfHours: z.string().optional()
 }).strict();
 export type Appointment = z.infer<typeof appointmentSchema>;
 
@@ -71,10 +80,54 @@ export type AppointmentListQuery = z.infer<typeof appointmentListQuerySchema>;
 export const appointmentUpcoming = (item: Pick<Appointment, "status">) =>
   item.status === "UPCOMING";
 
-/** An UPCOMING appointment whose time is over: a FIXED one after its end (its start without one), a FLEXIBLE one after its deadline. */
-export const appointmentOverdue = (item: Pick<Appointment, "status" | "startsAt" | "endsAt" | "timing" | "deadlineAt">, nowMs = Date.now()) =>
-  item.status === "UPCOMING" && Date.parse(item.timing === "FLEXIBLE" && item.deadlineAt ? item.deadlineAt : item.endsAt ?? item.startsAt) < nowMs;
+const DAY_MS = 86_400_000;
+const zoneFormats = new Map<string, Intl.DateTimeFormat>();
+/** The wall clock of `ms` in `zone`: its day key and that wall time read as UTC (so `utc - ms` is the zone's offset). */
+function zoneWall(ms: number, zone: string) {
+  let format = zoneFormats.get(zone);
+  if (!format) zoneFormats.set(zone, format = new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }));
+  const p = Object.fromEntries(format.formatToParts(ms).map((part) => [part.type, part.value]));
+  return { day: `${p.year}-${p.month}-${p.day}`, utc: Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute)) };
+}
+
+type Occurring = Pick<Appointment, "startsAt" | "endsAt" | "deadlineAt" | "timeZone"> & { recurrence?: AppointmentRecurrence | null };
+/**
+ * A recurring appointment at the occurrence it is on (operator 26/11, nous_msg:cfce1783): the first one whose end is still ahead, else the last
+ * of its period; startsAt, endsAt and deadlineAt move there at the same wall time in its zone. A one-off one is returned as it is.
+ */
+export function appointmentOccurrence<T extends Occurring>(item: T, nowMs = Date.now()): T {
+  const rule = item.recurrence;
+  if (!rule) return item;
+  const start = Date.parse(item.startsAt);
+  const length = Date.parse(item.endsAt ?? item.startsAt) - start;
+  const offset = (ms: number) => zoneWall(ms, item.timeZone).utc - ms;
+  // From three days before now (or the period's end) on: a weekend and a zone's offset never hide the last one.
+  const lastDay = Date.parse(`${rule.until}T23:59:59Z`);
+  let found: number | null = null;
+  for (let k = Math.max(0, Math.floor((Math.min(nowMs, lastDay) - start) / DAY_MS) - 3); ; k += 1) {
+    const guess = start + k * DAY_MS;
+    const at = guess + offset(start) - offset(guess);
+    const day = zoneWall(at, item.timeZone).day;
+    if (day > rule.until) break;
+    const weekday = new Date(`${day}T00:00:00Z`).getUTCDay();
+    if (rule.every === "WEEKDAY" && (weekday === 0 || weekday === 6)) continue;
+    found = at;
+    if (at + length >= nowMs) break;
+  }
+  if (found === null || found === start) return item;
+  const shift = (iso: string | null) => (iso ? new Date(Date.parse(iso) + found! - start).toISOString() : null);
+  return { ...item, startsAt: new Date(found).toISOString(), endsAt: shift(item.endsAt), deadlineAt: shift(item.deadlineAt) };
+}
+
+/**
+ * An UPCOMING appointment whose time is over: a FIXED one after its end (its start without one), a FLEXIBLE one after its deadline; a recurring
+ * one only after the last occurrence of its period.
+ */
+export const appointmentOverdue = (item: Pick<Appointment, "status" | "timing"> & Occurring, nowMs = Date.now()) => {
+  const at = appointmentOccurrence(item, nowMs);
+  return item.status === "UPCOMING" && Date.parse(item.timing === "FLEXIBLE" && at.deadlineAt ? at.deadlineAt : at.endsAt ?? at.startsAt) < nowMs;
+};
 
 /** Where the operator reads them: the newest open Appointments pane of theirs, if any. */
 export interface AppointmentsPaneRef { roomId: string; paneId: string }
-export interface AppointmentList { appointments: Appointment[]; timeZone: string; pane: AppointmentsPaneRef | null }
+export interface AppointmentList { appointments: Appointment[]; timeZone: string; hours: { start: string; end: string; timeZone: string }; pane: AppointmentsPaneRef | null }

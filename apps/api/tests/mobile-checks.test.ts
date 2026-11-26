@@ -1,5 +1,5 @@
-import { generateKeyPairSync, sign } from "node:crypto";
-import { mobileAdminOpSigningInput, mobileAnswerSigningInput, mobileAskContentHash, mobileDecisionContentHash, mobileGoalContentHash, mobileIntegrityRequestHash, type Artifact, type MobileRouteRule, type SpaceNotification } from "@space/contracts";
+import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { mobileAdminOpSigningInput, mobileAnswerSigningInput, mobileAskContentHash, mobileDecisionContentHash, mobileGoalContentHash, mobileIntegrityRequestHash, LINK_APP, signNousLinkAnswer, vaultBase64url, type NousLinkAnswerStatement, type Artifact, type InboxEvent, type MobileRouteRule, type SpaceNotification } from "@space/contracts";
 import { InMemoryAppDeviceSessionRepository } from "@space/db";
 import type { FastifyRequest } from "fastify";
 import { describe, expect, it } from "vitest";
@@ -16,14 +16,16 @@ const notification = (ask: Record<string, unknown> = {}, source = "MAIL_COPILOT"
 const goal = { id: "nous_goal:abc1", text: "Ship Nous Pro." };
 const decision = (category: string) => ({ id: "nd:1", category, title: "Publish 1.2.0", body: "Ready.", recommendation: "Yes", action: { kind: "RELEASE_APPROVE" }, refs: null });
 
-async function checks(records: { notification?: SpaceNotification; category?: string; integrity?: PlayIntegrity } = {}) {
+async function checks(records: { notification?: SpaceNotification; category?: string; linked?: string; integrity?: PlayIntegrity; asks?: string[] } = {}) {
   const devices = new InMemoryAppDeviceSessionRepository();
   await devices.createPaired({ id: "appdev:phone1", ownerUserId: owner, app: "nous", deviceName: "Pixel", sidSha256: "a".repeat(64), expiresAt: "2099-01-01T00:00:00.000Z",
     noisePublic: "n".repeat(43), decidePublicSpki: spki, decideSecurityLevel: "TRUSTED_ENVIRONMENT", requestedScopes: ["read", "act", "decide"] });
   return createMobileChecks({ devices,
     artifact: async (id) => { if (id === "gone") throw new Error("not found"); return { id, storageUri: id === "agent" ? "space-artifact://agent-files/x" : "space-artifact://media/x" } as Artifact; },
     notification: async () => records.notification ?? null, decision: async () => (records.category ? decision(records.category) : null),
-    goal: async (_owner, id) => (id === goal.id ? goal : null), integrity: records.integrity });
+    goal: async (_owner, id) => (id === goal.id ? goal : null), integrity: records.integrity,
+    inboxAsks: async (_owner, id) => (id === "thread:1" ? (records.asks ?? []).map((ref) => ({ ref, type: "ASK" }) as InboxEvent) : null),
+    linkedDecision: async (_owner, linkId, id) => (records.linked && linkId === "link:1" && id === "nd:1" ? decision(records.linked) : null) });
 }
 const request = (id: string, scopes: string[], body: unknown = {}, sig?: string, integrity?: string) =>
   ({ user: { id: owner }, params: { id }, body, headers: { ...(sig ? { [MOBILE_SIG_HEADER]: sig } : {}), ...(integrity ? { [MOBILE_INTEGRITY_HEADER]: integrity } : {}) },
@@ -68,7 +70,76 @@ describe("a phone's per-request checks", () => {
       .toMatchObject({ code: "DECIDE_SIGNATURE" });
   });
 
+  // Space Link v2 step 9c (ADR-014 v2): the superior's person answers a decision here under the superior's identity key, over the decision as it stands.
+  it("takes a superior's signed answer only from the superior, made out to this SpaceApp, over the unchanged decision and recent", async () => {
+    const devices = new InMemoryAppDeviceSessionRepository();
+    const at = "2026-11-15T06:00:00.000Z", now = Date.parse(at), own = vaultBase64url.encode(randomBytes(32));
+    await devices.createPaired({ id: "appdev:link1", ownerUserId: owner, app: LINK_APP, deviceName: "SpaceApp boss", sidSha256: "b".repeat(64), expiresAt: "2099-01-01T00:00:00.000Z",
+      noisePublic: "m".repeat(43), decidePublicSpki: null, decideSecurityLevel: null, requestedScopes: ["read", "act"] });
+    await devices.confirm(owner, "appdev:link1", at);
+    await devices.setLinkScopes(owner, "appdev:link1", ["read", "act", "manage", "nous"], at);
+    const boss = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" }) as { d: string; x: string };
+    let open: ReturnType<typeof decision> | null = decision("DESTRUCTIVE");
+    const check = createMobileChecks({ devices, artifact: async () => { throw new Error("none"); }, notification: async () => null, decision: async () => open,
+      goal: async () => null, ownIdentity: async () => own, now: () => now });
+    const answerRule = rule({ scope: "nous", superior: true, superiorSignature: true });
+    const statement = (patch: Partial<NousLinkAnswerStatement> = {}): NousLinkAnswerStatement =>
+      ({ v: 1, to: own, decisionId: "nd:1", contentHash: mobileDecisionContentHash(decision("DESTRUCTIVE")), answer: "APPROVE", at, ...patch });
+    const send = (body: NousLinkAnswerStatement, key = vaultBase64url.decode(boss.d)) =>
+      check({ user: { id: owner }, params: { id: "nd:1" }, body: { statement: body, signature: signNousLinkAnswer(body, key) }, headers: {},
+        mobileDevice: { id: "appdev:link1", scopes: ["read", "act", "manage", "nous"], person: false } } as unknown as FastifyRequest, answerRule);
+    // Before its Nous is superior here, nothing it signs counts.
+    expect(await send(statement())).toMatchObject({ code: "NOUS_NOT_SUPERIOR" });
+    await devices.setNousSuperior("appdev:link1", { identityPublic: boss.x, label: "SpaceApp boss", host: "boss", chain: [], since: at, at });
+    expect(await send(statement())).toBeNull();
+    // Another key, another SpaceApp, another decision's content, or an old statement: refused.
+    for (const [body, key] of [[statement(), randomBytes(32)], [statement({ to: vaultBase64url.encode(randomBytes(32)) })], [statement({ contentHash: "0".repeat(64) })],
+      [statement({ at: "2026-11-15T05:00:00.000Z" })], [statement({ decisionId: "nd:2" })]] as Array<[NousLinkAnswerStatement, Uint8Array?]>) {
+      expect(await send(body, key), JSON.stringify(body)).toMatchObject({ code: "NOUS_LINK_ANSWER_SIGNATURE" });
+    }
+    // Answered here first: the first answer wins.
+    open = null;
+    expect(await send(statement())).toMatchObject({ code: "DECISION_NOT_OPEN" });
+  });
+
+  // Nik 15/11 (contract v2/mobile-act-contract.md): the inbox's verbs sign each ask they touch as that ask's own route does; no weaker path.
+  it("an inbox act signs the ask it answers or the signed decision it dismisses; Done signs nothing; an unknown Thread is refused", async () => {
+    const actRule = rule({ scope: "decide", person: true, inboxActSignature: true }), scopes = ["read", "act", "decide"];
+    const answer = { verb: "APPROVE", askId: "nous_decision:1" }, dismiss = { verb: "DISMISS" };
+    const hash = mobileDecisionContentHash(decision("RELEASE"));
+    let check = await checks({ category: "RELEASE", asks: ["nous_decision:1"] });
+    expect(await check(request("thread:1", scopes, answer), actRule)).toMatchObject({ code: "DECIDE_SIGNATURE" });
+    expect(await check(request("thread:1", scopes, answer, signed("decide", "nous_decision:1", hash, answer)), actRule)).toBeNull();
+    expect(await check(request("thread:1", scopes, dismiss), actRule)).toMatchObject({ code: "DECIDE_SIGNATURE" });
+    expect(await check(request("thread:1", scopes, dismiss, signed("decide", "nous_decision:1", hash, dismiss)), actRule)).toBeNull();
+    // The answer's signature does not dismiss, and Done touches no ask.
+    expect(await check(request("thread:1", scopes, dismiss, signed("decide", "nous_decision:1", hash, answer)), actRule)).toMatchObject({ code: "DECIDE_SIGNATURE" });
+    expect(await check(request("thread:1", scopes, { verb: "DONE" }), actRule)).toBeNull();
+    expect(await check(request("thread:2", scopes, { verb: "DONE" }), actRule)).toMatchObject({ status: 404 });
+    expect(await (await checks({ category: "DIRECTION", asks: ["nous_decision:1"] }))(request("thread:1", scopes, answer), actRule)).toBeNull();
+    check = await checks({ category: "DESTRUCTIVE", asks: ["nous_decision:1", "nous_decision:2"] });
+    expect(await check(request("thread:1", scopes, dismiss), actRule)).toMatchObject({ status: 409, code: "INBOX_SIGN_ONE" });
+    // A risky card's answer signs as POST /api/notifications/:id/answer does; its dismiss is an ack, unsigned there too.
+    check = await checks({ notification: { ...notification(), id: "notification:1" }, asks: ["notification:1"] });
+    const card = { verb: "ANSWER", askId: "notification:1", option: "Approve" };
+    const cardHash = mobileAskContentHash({ id: "notification:1", question: "Send it?", options: ["Approve", "Decline"], recommended: "Approve", body: "To the bank." });
+    expect(await check(request("thread:1", scopes, card), actRule)).toMatchObject({ code: "DECIDE_SIGNATURE" });
+    expect(await check(request("thread:1", scopes, card, signed("ask", "notification:1", cardHash, card)), actRule)).toBeNull();
+    expect(await check(request("thread:1", scopes, dismiss), actRule)).toBeNull();
+  });
+
   // C9 (internal MASVS review 1/11): a goal's delete is class A, so it takes the decide signature over the goal's own text.
+  it("a linked Nous's decision from the phone: the same signature rule, over the decision as this SpaceApp read it; a closed one is refused", async () => {
+    const answer = { answer: "APPROVE" }, linkedRule = rule({ scope: "decide", linkedDecisionSignature: true });
+    const linked = (sig?: string, decisionId = "nd:1") => ({ ...request("link:1", ["read", "act", "decide"], answer, sig), params: { id: "link:1", decisionId } }) as unknown as FastifyRequest;
+    expect(await (await checks({ linked: "DIRECTION" }))(linked(), linkedRule)).toBeNull();
+    const check = await checks({ linked: "RELEASE" });
+    expect(await check(linked(), linkedRule)).toMatchObject({ code: "DECIDE_SIGNATURE" });
+    expect(await check(linked(signed("decide", "nd:1", mobileDecisionContentHash(decision("RELEASE")), answer)), linkedRule)).toBeNull();
+    expect(await check(linked(signed("decide", "nd:1", mobileDecisionContentHash(decision("RELEASE")), { answer: "DECLINE" })), linkedRule)).toMatchObject({ code: "DECIDE_SIGNATURE" });
+    expect(await check(linked(undefined, "nd:2"), linkedRule)).toMatchObject({ status: 404 });
+  });
+
   it("deletes a goal only with the decide signature over its text", async () => {
     const check = await checks(), goalRule = rule({ scope: "decide", goalSignature: true });
     expect(await check(request(goal.id, ["read", "decide"], undefined), goalRule)).toMatchObject({ code: "DECIDE_SIGNATURE" });

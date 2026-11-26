@@ -151,7 +151,8 @@ describe("Claude proxy", () => {
   it("streams from the least-used account and logs cache-aware usage", async () => {
     const { post, calls, logs, repository } = await setup(() => streamResponse(messageStream("msg_1"), 200, {
       "anthropic-ratelimit-unified-5h-utilization": "0.2", "request-id": "req_up_1" }));
-    const response = await post({ model: "claude-sonnet-4-5-20250929", stream: true, max_tokens: 100, messages: [{ role: "user", content: "hi" }] });
+    const response = await post({ model: "claude-sonnet-4-5-20250929", stream: true, max_tokens: 100, output_config: { effort: "medium" },
+      messages: [{ role: "user", content: "hi" }] });
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("text/event-stream");
     expect(response.headers["request-id"]).toBe("req_up_1");
@@ -163,7 +164,7 @@ describe("Claude proxy", () => {
     await logs.flush();
     const [log] = await repository.listRequestLogs({ limit: 5 });
     expect(log).toMatchObject({ provider: "CLAUDE", status: "success", accountId: accountA, model: "claude-sonnet-4-5-20250929",
-      inputTokens: 1210, cachedInputTokens: 1000, outputTokens: 42 });
+      reasoningEffort: "medium", inputTokens: 1210, cachedInputTokens: 1000, outputTokens: 42 });
     expect(log!.costUsd).toBeCloseTo((10 * 3 + 1000 * 0.3 + 200 * 3.75 + 42 * 15) / 1e6, 10);
     const accounts = await repository.listAccounts();
     expect(accounts.find((account) => account.id === accountA)!.primaryWindow.usedPercent).toBe(20);
@@ -275,6 +276,33 @@ describe("Claude proxy", () => {
     expect(harness.calls.at(-1)!.token).toBe("token-claude-a");
   });
 
+  // Token slice 6: under fill-first a running session keeps its account (and prompt cache) while it is open and no pick resets earlier.
+  it("keeps a fill-first session on its account through order ties and moves it at the 5-hour cap", async () => {
+    const harness = await setup(() => streamResponse(messageStream("msg")));
+    await harness.repository.updateSettings({ subscriptionRouting: "FILL_FIRST" });
+    const windows = (used: number) => [
+      { window: "PRIMARY" as const, usedPercent: used, resetAt: new Date(nowMs + 3_600_000).toISOString(), windowMinutes: 300 },
+      { window: "SECONDARY" as const, usedPercent: 50, resetAt: new Date(nowMs + 4 * 86_400_000).toISOString(), windowMinutes: 10080 }
+    ];
+    const set = async (usedA: number, usedB: number) => {
+      await harness.repository.saveUsageWindows(accountA, windows(usedA));
+      await harness.repository.saveUsageWindows(accountB, windows(usedB));
+      harness.pool.invalidate();
+    };
+    const ask = async (session: string) => {
+      expect((await harness.post({ model: "claude-sonnet-4-5", stream: true, max_tokens: 10, messages: [{ role: "user", content: "hi" }] },
+        { "x-space-project": "nous-operator", "x-claude-code-session-id": session })).statusCode).toBe(200);
+      return harness.calls.at(-1)!.token;
+    };
+    await set(60, 40);
+    expect(await ask("running")).toBe("token-claude-a");
+    await set(60, 70);
+    expect(await ask("running")).toBe("token-claude-a");
+    expect(await ask("new")).toBe("token-claude-b");
+    await set(95, 70);
+    expect(await ask("running")).toBe("token-claude-b");
+  });
+
   it("formats the pool limit message for one account, hours and an unknown reset", async () => {
     const { claudePoolLimitMessage } = await import("../src/providers/claude/claude-proxy.js");
     const now = Date.parse("2026-10-12T15:10:00Z") / 1000;
@@ -282,6 +310,10 @@ describe("Claude proxy", () => {
       .toBe("All 4 Claude accounts in Space Gateway reached their usage limit. The first one is back in 2h 20m (at 17:30).");
     expect(claudePoolLimitMessage(1, now + 3 * 3600, now, "Europe/Athens"))
       .toBe("The Claude account in Space Gateway reached its usage limit. It is back in 3h (at 21:10).");
+    expect(claudePoolLimitMessage(1, now + 88 * 3600 + 12 * 60, now, "UTC"))
+      .toBe("The Claude account in Space Gateway reached its usage limit. It is back in 88h 12m (at Fri 16 Oct, 07:22).");
+    expect(claudePoolLimitMessage(1, now + 9 * 3600, now, "UTC"))
+      .toBe("The Claude account in Space Gateway reached its usage limit. It is back in 9h (at Tue 13 Oct, 00:10).");
     expect(claudePoolLimitMessage(3, null, now)).toBe("All 3 Claude accounts in Space Gateway reached their usage limit.");
   });
 

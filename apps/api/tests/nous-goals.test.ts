@@ -407,6 +407,11 @@ describe("Nous goals: tools, world and persona", () => {
     const goal = await goals.create(owner, "Ship public Nous", "the operator");
     expect(await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "read the lab results", until: in6h } }, ctx)).toMatchObject({ refused: true });
     expect((await repository.get(owner, goal.id))!.waitsOn).toBeNull();
+    // 22/11 REVIEW (3 of 27 deferrals could have run): a DATE wait with no time is refused too unless its words name a hold or a reason is given.
+    expect(await tools.execute("space_plan_update", { plan: "clipboard:abcdefgh", waitsOn: { kind: "DATE", what: "verify the pilot send", until: null } }, ctx))
+      .toMatchObject({ ok: false, refused: true, display: "Run it now" });
+    expect(await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "read the lab results", until: null } }, ctx)).toMatchObject({ refused: true });
+    expect(await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "read the lab results after the API allowance reset", until: null } }, ctx)).toMatchObject({ ok: true });
     expect(await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "read the lab results", until: in6h }, reason: "the lab VM boots at night" }, ctx)).toMatchObject({ ok: true });
     expect((await repository.get(owner, goal.id))!.waitsOn).toMatchObject({ what: "read the lab results (reason: the lab VM boots at night)" });
     // 14/11 REVIEW item 6: a wait whose time already passed is refused, even with a hold in its words or a reason.
@@ -469,6 +474,19 @@ describe("Nous goals: tools, world and persona", () => {
     expect((await repository.get(owner, goal.id))!.limit).toEqual({ kind: "DATE", until: "2026-11-30T02:00:00.000Z" });
     expect(await tools.execute("space_goal_update", { goal: goal.id, limit: null }, ctx)).toMatchObject({ ok: true, display: expect.stringContaining("limit no limit") });
     expect((await repository.get(owner, goal.id))!.limit).toBeNull();
+    // A limit written as text (clean install 22/11, free model) is read: a date, JSON, or a target's words.
+    await tools.execute("space_goal_update", { goal: goal.id, limit: "2026-11-29" }, ctx);
+    expect((await repository.get(owner, goal.id))!.limit).toEqual({ kind: "DATE", until: "2026-11-29T02:00:00.000Z" });
+    await tools.execute("space_goal_update", { goal: goal.id, limit: "{\"kind\":\"TARGET\",\"what\":\"two steps tried\"}" }, ctx);
+    expect((await repository.get(owner, goal.id))!.limit).toEqual({ kind: "TARGET", what: "two steps tried" });
+    await tools.execute("space_goal_update", { goal: goal.id, limit: "both steps done this week" }, ctx);
+    expect((await repository.get(owner, goal.id))!.limit).toEqual({ kind: "TARGET", what: "both steps done this week" });
+    // DEV3D-008: words for no limit clear it; a date followed by words is a target, not a DATE the schema refuses.
+    await tools.execute("space_goal_update", { goal: goal.id, limit: "none" }, ctx);
+    expect((await repository.get(owner, goal.id))!.limit).toBeNull();
+    expect(await tools.execute("space_goal_update", { goal: goal.id, limit: "2026-12-31 100 licences" }, ctx)).toMatchObject({ ok: true });
+    expect((await repository.get(owner, goal.id))!.limit).toEqual({ kind: "TARGET", what: "2026-12-31 100 licences" });
+    await tools.execute("space_goal_update", { goal: goal.id, limit: null }, ctx);
     // An offset stays as written; something that is no date still fails, naming the field.
     await tools.execute("space_goal_update", { goal: goal.id, waitsOn: { kind: "DATE", what: "the lab", until: "2099-10-31T09:00:00+02:00" }, reason: "the lab boots then" }, ctx);
     expect((await repository.get(owner, goal.id))!.waitsOn).toMatchObject({ until: "2099-10-31T09:00:00+02:00" });
@@ -504,7 +522,8 @@ describe("Nous goals: tools, world and persona", () => {
     expect(done).toMatchObject({ ok: true, display: expect.stringContaining("Achieved goal") });
     expect(await repository.get(owner, goal.id)).toMatchObject({ status: "ACHIEVED", progress: 100, waitsOn: null, achievedAt: new Date(T0).toISOString() });
     expect((await tools.execute("space_goal_update", { goal: goal.id, note: "more" }, ctx))).toMatchObject({ ok: false, result: expect.stringContaining("ACHIEVED") });
-    expect((await tools.execute("space_goals", {}, ctx)).result).toContain("No goals yet");
+    expect((await tools.execute("space_goals", {}, ctx)).result).toContain("No active or paused goals; space_goals {\"includeClosed\": true}");
+    expect((await tools.execute("space_goals", { includeClosed: true }, ctx)).result).toContain(`[${goal.id}] ACHIEVED`);
     expect((await tools.execute("space_goals", { includeClosed: true }, ctx)).result).toContain("ACHIEVED 100%");
     // The operator reopens it; Nous's note works again and the progress stays below 100.
     expect(await goals.edit(owner, goal.id, { status: "ACTIVE" }, "the operator")).toMatchObject({ status: "ACTIVE", progress: 99, evidence: null, achievedAt: null });

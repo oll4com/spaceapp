@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createNousFollowups, ticketMergedOnMain } from "../src/nous/followups.js";
+import { createNousFollowups, datedHolds, noteCore, ticketMergedOnMain } from "../src/nous/followups.js";
 
 // Nous's follow-ups (plan clipboard:8s0ZNiO3q5ZT S3).
 const owner = "user:operator";
@@ -18,6 +18,51 @@ function fixture() {
 }
 
 describe("Nous's follow-ups", () => {
+  // 21/11 REVIEW: the same wait set again with no `replaces` (an id-less one) is the open follow-up, not a second one.
+  it("refuses an id-less wait that only moves dates of an open one, and accepts a reworded wait", async () => {
+    const f = fixture();
+    const first = await f.followups.run(owner, { op: "add", note: "Utilization item waits for the operator's reply, until 2026-11-22 09:00.", at: "2026-10-18T02:00:00.000Z" }, null);
+    const id = /\[(nous_followup:[^\]]+)\]/.exec(first.result)![1]!;
+    const dup = await f.followups.run(owner, { op: "add", note: "Re-checked 14:00 UTC: still waiting. Utilization item waits for the operator's reply, until 23/11 10:00.", at: "2026-10-19T02:00:00.000Z" }, null);
+    expect(dup).toMatchObject({ ok: false, refused: true, result: expect.stringMatching(new RegExp(`^no change, keep ${id}: `)) });
+    expect((await f.repository.list(owner, 0)).filter((item) => item.status === "OPEN")).toHaveLength(1);
+    const other = await f.followups.run(owner, { op: "add", note: "Utilization item: the operator replied, apply the answer.", at: "2026-10-19T02:00:00.000Z" }, null);
+    expect(other.ok).toBe(true);
+  });
+  // 17/11 REVIEW (16/11: nous_msg:b3744e80's follow-up rewritten ×22, the Utilization one ~15 times, all waiting on the operator's low mode until 09:07 BKK).
+  it("keeps the open follow-up when a replacement only moves its dates or adds Re-checked words, and names what dated waits hold", async () => {
+    const f = fixture();
+    const note = "Resume nous_msg:b3744e80aa once the operator's low mode ends 2026-11-17 09:07 BKK.";
+    const first = await f.followups.run(owner, { op: "add", note, at: "2026-10-18T02:07:00.000Z" }, null);
+    const id = /\[(nous_followup:[^\]]+)\]/.exec(first.result)![1]!;
+    const again = await f.followups.run(owner, { op: "add", note: `Re-checked 14:26 UTC: still low. Resume nous_msg:b3744e80aa once the operator's low mode ends 18/10 09:07 BKK.`,
+      at: "2026-10-18T03:00:00.000Z", replaces: id } as never, null);
+    expect(again).toMatchObject({ ok: false, refused: true, result: expect.stringMatching(new RegExp(`^no change, keep ${id}: `)) });
+    expect((await f.repository.get(owner, id))!.status).toBe("OPEN");
+    // A note that says something new replaces it.
+    const changed = await f.followups.run(owner, { op: "add", note: "Resume nous_msg:b3744e80aa: the operator lifted low mode, send its next step to Cody.", inMinutes: 5, replaces: id } as never, null);
+    expect(changed.ok).toBe(true);
+    expect((await f.repository.get(owner, id))!.status).toBe("CANCELLED");
+    expect(noteCore("Check clipboard:abcdefgh on Monday 17 Nov at 09:00")).toBe(noteCore("Check clipboard:abcdefgh on Tuesday 18 Nov at 10:30"));
+
+    const at = Date.parse("2026-10-17T13:00:00.000Z");
+    const row = (note: string, dueAt: string, status = "OPEN") => ({ id: `nous_followup:${note.length}x${dueAt.slice(11, 13)}`, ownerUserId: owner, note, status, trigger: { kind: "TIME", dueAt },
+      createdAt: "2026-10-17T12:00:00.000Z", closedAt: null, outcome: null }) as never;
+    expect([...datedHolds([
+      row("Utilization low; plan clipboard:pZwo1234567 waits too (wait reason: the operator's low mode until 09:07)", "2026-10-18T02:07:00.000Z"),
+      row("Request nous_msg:f46457b8xyz (wait reason: its deadline is 2026-10-20)", "2026-10-20T00:00:00.000Z"),
+      // Past due, closed, or held by no operator order or date: the push lines still carry them.
+      // 22/11: a date, "operator" or "approve" in the note's text, or a bare date as the reason, is no wait (the overnight 21-22/11 silences).
+      row("Request nous_msg:plaindt1 waits on 2026-10-20", "2026-10-20T00:00:00.000Z"),
+      row("Utilization 13%: re-check 2026-10-18 03:00, nous_msg:opword01 waits on the operator pairing card", "2026-10-18T03:00:00.000Z"),
+      row("Check Gmail for approve/reject mail on nous_msg:tparty01 (wait reason: Night: no runnable work; moderation is a third party wait.)", "2026-10-18T01:40:00.000Z"),
+      row("Request nous_msg:bareday1 (wait reason: 2026-10-18 09:00)", "2026-10-18T09:00:00.000Z"),
+      row("Request nous_msg:pastdue1 waits on the operator", "2026-10-17T12:00:00.000Z"),
+      row("Request nous_msg:closed01 waits on the operator", "2026-10-18T00:00:00.000Z", "FIRED"),
+      row("Request nous_msg:vague001 after Cody resumes", "2026-10-18T00:00:00.000Z")], at)].sort())
+      .toEqual(["clipboard:pZwo1234", "nous_msg:f46457b8", "utilization"]);
+  });
+
   it("takes exactly one trigger, a future time (any distance since 31/10), and a note", async () => {
     const f = fixture();
     const add = (args: object, pane: { paneId: string; paneLabel: string } | null = null) => f.followups.run(owner, { op: "add", ...args } as never, pane);
@@ -154,6 +199,21 @@ describe("Nous's follow-ups", () => {
     expect((await f.followups.run(owner, { op: "add", note: "Read mktcamp:launch00001", inMinutes: 30 }, null)).refused).toBe(true);
   });
 
+  it("token audit 21/11: one nous_msg sent to several panes waits on each; the same pane again is already set, not refused", async () => {
+    const f = fixture();
+    const leo = { paneId: "pane:leo00001", paneLabel: "Leo" };
+    expect((await f.followups.run(owner, { op: "add", note: "Read Leo's report for nous_msg:919141ec", pane: "Leo" }, leo)).ok).toBe(true);
+    expect((await f.followups.run(owner, { op: "add", note: "Read Emma's report for nous_msg:919141ec", pane: "Emma" }, { paneId: "pane:emma0001", paneLabel: "Emma" })).ok).toBe(true);
+    expect((await f.followups.run(owner, { op: "add", note: "Verify dev for nous_msg:919141ec", ticket: "q-20261121-150000-abcd" }, null)).ok).toBe(true);
+    expect((await f.followups.run(owner, { op: "add", note: "Check nous_msg:919141ec in 30 min", inMinutes: 30 }, null)).ok).toBe(true);
+    const again = await f.followups.run(owner, { op: "add", note: "Leo's report for nous_msg:919141ec", pane: "Leo" }, leo);
+    expect(again).toMatchObject({ ok: true, display: expect.stringMatching(/already waits on Leo$/) });
+    expect(again.refused).toBeUndefined();
+    // A second time wait on the same request is still that follow-up (R44-2).
+    expect((await f.followups.run(owner, { op: "add", note: "nous_msg:919141ec again", inMinutes: 60 }, null)).refused).toBe(true);
+    expect((await f.repository.list(owner, 0)).filter((item) => item.status === "OPEN")).toHaveLength(4);
+  });
+
   it("9/11 REVIEW: a fired line says which room its panes are in now, so a deleted room's name in the note is not called again", async () => {
     const repository = new InMemoryNousFollowupsRepository();
     const notice = vi.fn<(owner: string, key: string, line: string) => Promise<void>>(async () => {});
@@ -165,7 +225,7 @@ describe("Nous's follow-ups", () => {
 
   it("ends a pane's follow-up as cancelled when the pane closes before it finished, and keeps it while the pane cannot be read (queue item 14)", async () => {
     const repository = new InMemoryNousFollowupsRepository();
-    const notice = vi.fn(async (_owner: string, _key: string, _line: string, _onDone?: () => Promise<void>) => {});
+    const notice = vi.fn<(owner: string, key: string, line: string, onDone?: () => Promise<void>) => Promise<void>>(async () => {});
     const open = new Map<string, boolean | null>([["pane:finn0001", true], ["pane:kate0001", null]]);
     const followups = createNousFollowups({ repository, notice, paneOpen: async (paneId) => open.has(paneId) ? open.get(paneId)! : false });
     await followups.run(owner, { op: "add", note: "Read Finn's report", pane: "Finn" }, { paneId: "pane:finn0001", paneLabel: "Finn" });
@@ -202,7 +262,7 @@ describe("Nous's follow-ups", () => {
 
   it("folds every follow-up whose pane closed into ONE inbox line, closed by the turn that saw it (queue item 40, 28/10 10:48: 17 lines)", async () => {
     const repository = new InMemoryNousFollowupsRepository();
-    const notice = vi.fn(async (_owner: string, _key: string, _line: string, _onDone?: () => Promise<void>) => {});
+    const notice = vi.fn<(owner: string, key: string, line: string, onDone?: () => Promise<void>) => Promise<void>>(async () => {});
     const followups = createNousFollowups({ repository, notice, paneOpen: async (paneId) => paneId === "pane:open0001" });
     for (const [paneId, paneLabel, note] of [["pane:andy0001", "Andy", "Check the merge"], ["pane:andy0001", "Andy", "Read the report"], ["pane:kate0001", "Kate", "Ask for the PDF"], ["pane:open0001", "Bob", "Still open"]]) {
       await followups.run(owner, { op: "add", note: note!, pane: paneLabel }, { paneId: paneId!, paneLabel: paneLabel! });
@@ -233,6 +293,25 @@ describe("Nous's follow-ups", () => {
     // The oldest one, behind 249 open rows: cancel finds it by id, also once it has ended (the old 200-row window missed it).
     expect((await f.followups.run(owner, { op: "cancel", followup: first.id }, null)).ok).toBe(true);
     expect(await f.followups.run(owner, { op: "cancel", followup: first.id }, null)).toMatchObject({ ok: true, result: expect.stringContaining("Already cancelled") });
+  });
+
+  it("15/11 REVIEW (51563d56 → e77e225f): a note held only by a reason naming no hold waits once; re-armed after it fired, it runs now", async () => {
+    const f = fixture();
+    const note = "Check the stale Marketing post item; else re-arm 12 h.";
+    const add = (reason: string) => f.followups.run(owner, { op: "add", note: `${note} (wait reason: ${reason})`, inMinutes: 720 }, null);
+    const first = await add("the proof needs a real post; none is known yet");
+    expect(first).toMatchObject({ ok: true });
+    expect(await add("the proof needs a real post; none is known yet")).toMatchObject({ ok: true });
+    await f.repository.close(owner, first.result.match(/^\[(\S+)\]/)![1]!, "FIRED", "time came");
+    expect(await add("still none")).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Do the check in this turn") });
+    // A reason naming a real hold, or another note, still waits.
+    expect(await add("the operator's approval of the post")).toMatchObject({ ok: true });
+    // 2026-11-15 REVIEW 6 (A): once that fired too, the same note with the same reason is refused, whatever the reason names.
+    const second = (await f.repository.list(owner, 0)).find((item) => item.status === "OPEN" && item.note.includes("operator's approval"))!;
+    await f.repository.close(owner, second.id, "FIRED", "time came");
+    expect(await add("the operator's approval of the post")).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("is unchanged") });
+    expect(await add("the operator's approval, asked again on 15/11")).toMatchObject({ ok: true });
+    expect(await f.followups.run(owner, { op: "add", note: "Another check (wait reason: still none)", inMinutes: 720 }, null)).toMatchObject({ ok: true });
   });
 });
 

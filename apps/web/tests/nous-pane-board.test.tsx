@@ -116,7 +116,7 @@ describe("Nous pane board", () => {
   });
 
   // Operator 3/11 12:51 BKK (nous_msg:40a252b1): both filters stay after the board closes and opens again; a room that left reads as every room.
-  it("keeps the Room and Waits on filters after a remount and falls back when the room left", async () => {
+  it("keeps the Room and Waits on filters after a remount and falls back when the room or the wait left", async () => {
     const current = { board: board() };
     serve(current);
     const show = () => render(<NousPaneBoard active decisions={[]} overview={null} renderDecision={() => null} />);
@@ -135,7 +135,10 @@ describe("Nous pane board", () => {
     show();
     await screen.findByRole("combobox", { name: "Room" });
     expect(value("Room")).toBe("ALL");
-    expect(value("Waits on")).toBe("PROMOTE");
+    // No pane waits on a promote any more: the stored wait reads as any wait instead of "No panes here" (nous_msg:eb36261e).
+    expect(value("Waits on")).toBe("ALL");
+    expect(screen.getByRole("listitem", { name: "Gus in Gamma" })).toBeTruthy();
+    expect(screen.queryByText("No panes here")).toBeNull();
   });
 
   it("answers a prompt option, a copilot question and Nous from each pane's row", async () => {

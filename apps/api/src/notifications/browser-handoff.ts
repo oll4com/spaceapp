@@ -1,6 +1,7 @@
-import { makeNeedsYouAsk, NEEDS_YOU_GO_NOW, needsYouTargetSchema, type PaneBrowserSession } from "@space/contracts";
+import { makeNeedsYouAsk, NEEDS_YOU_GO_NOW, needsYouBrowserPage, needsYouTargetSchema, type NotificationListQuery, type Pane, type PaneBrowserSession, type SpaceNotification } from "@space/contracts";
 import { SpaceNotFoundError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
-import { NOUS_PANE_NOTICE_PREFIX } from "../nous/pane-notices.js";
+import { allNotifications, NOUS_PANE_NOTICE_PREFIX } from "../nous/pane-notices.js";
+import { PaneCloseRefusedError } from "../pane-guards.js";
 import { createPlanNeedsYou } from "../nous/plan-needs-you.js";
 import { agentNeedsYouKey } from "../pane-reports.js";
 import type { NotificationService } from "./service.js";
@@ -52,6 +53,32 @@ export function browserHandoffFocus(session: Pick<PaneBrowserSession, "currentUr
     body: /\s1\)\s[\s\S]*\s2\)\s/.test(text) ? text.replace(/\s+(?=\d{1,2}\)\s)/g, "\n") : text,
     ask: makeNeedsYouAsk(browserHandoffQuestion(text, site ?? hostOf(session?.currentUrl ?? "")), { kind: "PANE" }, [NEEDS_YOU_GO_NOW], NEEDS_YOU_GO_NOW) };
 }
+/**
+ * A handoff asked in the operator's quiet hours waits for their morning with its browser open (Nous goal 91e45be1, 16/11: closing it lost
+ * Cody's filled Recruitee form); its reason ends with this line, so the card keeps the page should the browser close anyway (Take control
+ * reopens it there), and the agent that asked is told once the handoff is done or its card runs out after the morning.
+ */
+export const NIGHT_HANDOFF_MARK = "Held for the morning; the browser keeps it open on";
+// shortcut: handoffs asked before 16/11 closed their browser at once and carry this mark; drop it once none waits (one night after the deploy).
+const CLOSED_NIGHT_MARK = "Closed for the night; Take control reopens it on";
+export const nightHandoffLine = (url: string | null | undefined) => `\n${NIGHT_HANDOFF_MARK} ${url || "its last page"}.`;
+/** A night handoff's page (from its reason), or null for a day handoff. */
+export function nightHandoffPage(reason: string): string | null {
+  for (const mark of [NIGHT_HANDOFF_MARK, CLOSED_NIGHT_MARK]) {
+    const at = reason.indexOf(mark);
+    if (at >= 0) return reason.slice(at + mark.length).trim().replace(/\.$/, "");
+  }
+  return null;
+}
+/** The pane's night handoff still waiting on a browser that closed (none once a browser runs there again). */
+export async function closedNightHandoff(store: Pick<SpaceStore, "listBrowserHandoffRequests" | "getActiveBrowserHandoffRequest">, pane: { id: string; roomId: string }, liveSessionId?: string) {
+  for (const entry of await store.listBrowserHandoffRequests(pane.roomId)) {
+    if (entry.paneId !== pane.id || entry.sessionId === liveSessionId || entry.status !== "REQUESTED" || nightHandoffPage(entry.reason) === null) continue;
+    const active = await store.getActiveBrowserHandoffRequest(entry.sessionId);
+    if (active?.handoffRequestId === entry.handoffRequestId) return active;
+  }
+  return null;
+}
 const paneOfKey = (dedupeKey: string | null) => dedupeKey?.startsWith("browser-handoff:") ? dedupeKey.slice("browser-handoff:".length) : null;
 
 /**
@@ -72,7 +99,7 @@ export async function settleBrowserHandoffNotifications(deps: SettleDeps, paneId
   return resolved;
 }
 
-async function handoffActive(store: HandoffStore, paneId: string): Promise<boolean> {
+export async function handoffActive(store: HandoffStore, paneId: string): Promise<boolean> {
   const pane = await Promise.resolve().then(() => store.getPane(paneId)).catch((error: unknown) => { if (error instanceof SpaceNotFoundError) return null; throw error; });
   if (!pane || pane.isClosed) return false;
   const sessions = new Set((await store.listBrowserHandoffRequests(pane.roomId))
@@ -80,6 +107,24 @@ async function handoffActive(store: HandoffStore, paneId: string): Promise<boole
   for (const sessionId of sessions) if ((await store.getActiveBrowserHandoffRequest(sessionId))?.paneId === paneId) return true;
   return false;
 }
+
+/**
+ * Operator 15/11 nous_msg:9f70dbbe («έκλεισες panes που περίμεναν εμένα»: 9 Needs you items became 5): no pane closes while an unanswered
+ * Needs you item or a held browser handoff waits on it, whoever closes it (Nous, a pane agent, the Room Agent, a sweep). Only the operator's
+ * own close forces it (`operatorForce`), and then its items move to the plan or room (plan-needs-you.ts `carry`), never resolve.
+ */
+export const operatorWaitCloseGuard = (deps: { store: HandoffStore; roomOwner(roomId: string): Promise<string | null>;
+  list(owner: string, query: NotificationListQuery): Promise<SpaceNotification[]> }) => async (pane: Pane): Promise<void> => {
+  const owner = await deps.roomOwner(pane.roomId);
+  // Goal 7365014c 22/11: protect a browser pane holding the page for another pane's open Needs you card (payload.browserPage.paneId).
+  const items = owner ? (await allNotifications(deps.list, owner, { status: "NEEDS_YOU" }))
+    .filter((card) => card.paneId === pane.id || needsYouBrowserPage(card)?.paneId === pane.id) : [];
+  const handoff = await handoffActive(deps.store, pane.id);
+  if (!items.length && !handoff) return;
+  const what = [...items.map((item) => `"${item.title}" [${item.id}]`), ...(handoff ? ["a browser handoff the operator holds or was asked for"] : [])];
+  throw new PaneCloseRefusedError(`This pane stays open: it waits for the operator (${what.join("; ")}). Only the operator can close it now.`,
+    { needsYou: items.map((item) => ({ id: item.id, title: item.title })), handoff }, "PANE_WAITS_FOR_OPERATOR");
+};
 
 /**
  * Browser handoff notifications, one per pane: raised when an agent asks for the operator (BROWSER_HANDOFF_REQUESTED) and
@@ -90,6 +135,8 @@ async function handoffActive(store: HandoffStore, paneId: string): Promise<boole
 export function startBrowserHandoffNotifications(deps: SettleDeps & {
   notifications: Pick<NotificationService, "unresolvedBySource" | "resolve" | "raise"> & Partial<Pick<NotificationService, "list">>; eventBus: Pick<SpaceEventBus, "subscribe">;
   roomOwner(roomId: string): Promise<string | null>; log: { warn(meta: Record<string, unknown>, message: string): void };
+  /** The morning wake of night handoffs: `tell` resolves once the asking CLI was told or has no pane left, throws to try again. */
+  wake?: { quiet(owner: string): Promise<boolean>; tell(cliSessionId: string, text: string): Promise<void> };
 }): () => void {
   const settle = (paneId?: string) => void settleBrowserHandoffNotifications(deps, paneId)
     .catch((error: unknown) => deps.log.warn({ err: error, paneId }, "Browser handoff notifications could not be settled."));
@@ -105,20 +152,73 @@ export function startBrowserHandoffNotifications(deps: SettleDeps & {
         if (!result.items.length || out.length >= result.total) return out;
       }
     } }) : null;
-  // A closed pane needs nobody: its needs-you cards (a CLI's and Nous's) resolve at once (Needs you, operator request 2026-10-24).
+  // A closed pane's needs-you cards (a CLI's, Nous's, its browser handoff's) move to its plan's or room's item (`carry`), then the pane's own resolve.
+  // 15/11 nous_msg:9f70dbbe: an operator-forced close keeps every ask in Needs you; a failed move keeps the pane's cards (closed pane: hidden, not lost).
   const closedPaneNeedsYou = async (roomId: string | null, paneId: string) => {
     const owner = roomId ? await deps.roomOwner(roomId) : null;
-    if (!owner) return;
-    await plans?.carry(owner, paneId).catch((error: unknown) => deps.log.warn({ err: error, paneId }, "A closed pane's needs-you cards could not move to their plan."));
+    if (!owner || !plans) return;
+    const moved = await plans.carry(owner, paneId).then(() => true, (error: unknown) => { deps.log.warn({ err: error, paneId }, "A closed pane's needs-you cards could not move to their plan or room."); return false; });
+    if (!moved) return;
     for (const key of [agentNeedsYouKey(paneId), `${NOUS_PANE_NOTICE_PREFIX}${paneId}`]) {
       await deps.notifications.resolve(owner, key, "its pane was closed").catch((error: unknown) => deps.log.warn({ err: error, paneId }, "A closed pane's needs-you card could not be resolved."));
     }
   };
-  settle();
-  const timer = setInterval(() => settle(), 15_000);
+  // Correction 19/11 74a2b433 & Goal 7365014c 22/11 (stale "Go now" cards ef567c5d, 99bc2421): any open Needs you card of another pane
+  // whose page was in the closed browser has no page left to act on; resolve it (its CLI asks again with a new page).
+  const closedBrowserBoundCards = async (roomId: string | null, paneId: string) => {
+    const owner = roomId ? await deps.roomOwner(roomId) : null;
+    if (!owner || !list) return;
+    for (const card of await allNotifications(list, owner, { status: "NEEDS_YOU" })) {
+      if (card.paneId === paneId || !card.dedupeKey || needsYouBrowserPage(card)?.paneId !== paneId) continue;
+      await deps.notifications.resolve(owner, card.dedupeKey, "the browser holding its page was closed");
+    }
+  };
+  // A night handoff's agent stopped; once the operator's quiet hours end it learns whether they did it (a kept browser: once done or run out).
+  // shortcut: in memory, so an API restart forgets a pane whose card already resolved (done overnight); its agent then asks again in the morning.
+  const nightPanes = new Map<string, string>();
+  const woken = new Set<string>();
+  const wakeNight = async (wake: NonNullable<typeof deps.wake>) => {
+    for (const card of await deps.notifications.unresolvedBySource("BROWSER_HANDOFF")) {
+      const paneId = card.paneId ?? paneOfKey(card.dedupeKey);
+      if (paneId && card.roomId) nightPanes.set(paneId, card.roomId);
+    }
+    for (const [paneId, roomId] of nightPanes) {
+      const latest = (await deps.store.listBrowserHandoffRequests(roomId)).find((entry) => entry.paneId === paneId);
+      const page = latest ? nightHandoffPage(latest.reason) : null;
+      if (!latest || page === null || !latest.requestedById.startsWith("cli:") || latest.status === "CANCELLED" || woken.has(latest.handoffRequestId)) {
+        nightPanes.delete(paneId);
+        continue;
+      }
+      const ended = (latest.status !== "REQUESTED" && latest.status !== "ACCEPTED") || Date.parse(latest.expiresAt) <= Date.now();
+      const kept = latest.reason.includes(NIGHT_HANDOFF_MARK);
+      if (!ended && (latest.status === "ACCEPTED" || kept)) continue;
+      const owner = await deps.roomOwner(roomId);
+      if (!owner || await wake.quiet(owner)) continue;
+      const what = `the browser handoff you asked for last night ("${browserHandoffTitle(latest.reason)}")`;
+      await wake.tell(latest.requestedById.slice(4), latest.status === "COMPLETED" ? `The operator is available again and did ${what}. Continue that task in the pane's browser.`
+        : kept ? `The operator is available again; ${what} is not done and its card ran out. Open ${page} again in the pane's browser if it no longer shows it (your filled form may be there still) and request the handoff again.`
+        : `The operator is available again; ${what} is not done: its browser closed for the night. Open ${page} again in the pane's browser and request the handoff again (it replaces last night's card).`)
+        .then(() => { woken.add(latest.handoffRequestId); nightPanes.delete(paneId); }, () => undefined);
+    }
+  };
+  let waking = false;
+  const tick = () => {
+    settle();
+    if (!deps.wake || waking) return;
+    waking = true;
+    void wakeNight(deps.wake).catch((error: unknown) => deps.log.warn({ err: error }, "Night browser handoffs could not wake their agents.")).finally(() => { waking = false; });
+  };
+  tick();
+  const timer = setInterval(tick, 15_000);
   timer.unref();
   const unsubscribe = deps.eventBus.subscribe((event) => {
-    if (event.type === "PANE_CLOSED" && event.paneId) { settle(event.paneId); void closedPaneNeedsYou(event.roomId, event.paneId); }
+    // The cards move before settle resolves the handoff card of the closed pane.
+    // shortcut: the 15 s tick can settle in the few ms before the move; carry by request id if a handoff card is ever lost that way.
+    if (event.type === "PANE_CLOSED" && event.paneId) {
+      const paneId = event.paneId;
+      void closedPaneNeedsYou(event.roomId, paneId).finally(() => settle(paneId));
+      void closedBrowserBoundCards(event.roomId, paneId).catch((error: unknown) => deps.log.warn({ err: error, paneId }, "A closed browser's bound cards could not be resolved."));
+    }
     if (event.type !== "BROWSER_HANDOFF_REQUESTED" || !event.roomId) return;
     const roomId = event.roomId;
     void (async () => {

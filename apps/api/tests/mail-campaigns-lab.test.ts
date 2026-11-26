@@ -5,7 +5,8 @@ import { hostname } from "node:os";
 import { describe, expect, it } from "vitest";
 import { mailCampaignCreateSchema, mailSenderCreateSchema, mailTemplateCreateSchema } from "@space/contracts";
 import { InMemoryMailCampaignsRepository } from "@space/db";
-import { dnsblCheck, dnsCheck, lintCheck, type LabDns } from "../src/mail-campaigns/lab.js";
+import { dnsblCheck, dnsCheck, lintCheck, mimeText, type LabDns } from "../src/mail-campaigns/lab.js";
+import { buildCampaignMime } from "../src/mail-campaigns/mime.js";
 import { createMailCampaignsService } from "../src/mail-campaigns/service.js";
 import type { MailTransports } from "../src/mail-campaigns/transports.js";
 import { mailSite } from "../src/mail-campaigns/site.js";
@@ -49,6 +50,18 @@ describe("lab checks", () => {
     expect(bad.status).toBe("FAIL");
     expect(bad.details.findings).toEqual(expect.arrayContaining(["link shorteners: bit.ly", "hidden text in the template", "the subject is in capitals", "images without alt text", 'spam-trigger wording ("ΔΩΡΕΑΝ")', "1 image(s) with only 8 characters of text"]));
   });
+  it("checks the built message (plan vxtgxdSGE586 step 7b): one-click unsubscribe, and no shared host in a domain's own mail", () => {
+    const content = { subject: "Νέα κιτ", preheader: "Τιμή χονδρικής", html: `<p>${"Περιγραφή του προϊόντος. ".repeat(20)}</p>`, text: "Περιγραφή του προϊόντος. ".repeat(20) };
+    const mime = (footerAddress: string, unsubscribeUrl: string | null) => mimeText(buildCampaignMime({ from: "partners@unboxexpert.com", fromName: "UnboxExpert", to: "a@shop.example",
+      replyTo: null, ...content, language: "el", campaignId: "mcamp:abcdefgh", contactId: "mcontact:ijklmnop", senderDomain: "unboxexpert.com", footerAddress,
+      listId: "mlist:news1234", senderId: "msender:partners", unsubscribeUrl: unsubscribeUrl }).raw);
+    const clean = mime("UnboxExpert, Αθήνα", "https://unboxexpert.com/u/?t=tok");
+    expect(clean).toContain("Τιμή χονδρικής");   // the base64 HTML part is decoded
+    expect(lintCheck(content, "unboxexpert.com", { text: clean, foreignHosts: ["oll4.com"] })).toMatchObject({ status: "PASS" });
+    const leak = lintCheck(content, "unboxexpert.com", { text: mime("oll4.com, Αθήνα", null), foreignHosts: ["oll4.com"] });
+    expect(leak.status).toBe("FAIL");
+    expect(leak.details.findings).toEqual(expect.arrayContaining(["the message names oll4.com", "no one-click unsubscribe (mailto only)"]));
+  });
 });
 
 describe("the lab on a campaign", () => {
@@ -70,7 +83,7 @@ describe("the lab on a campaign", () => {
     const { service, owner, campaign } = await setup(dns({}));
     await expect(service.submit(owner, campaign.id)).rejects.toThrow(/Fix the failed checks first: DNS/);
     const results = await service.labResults(owner, campaign.id);
-    expect(results.current.map((check) => `${check.kind}:${check.status}`).sort()).toEqual(["DNS:FAIL", "DNSBL:PASS", "LINT:PASS"]);
+    expect(results.current.map((check) => `${check.kind}:${check.status}`).sort()).toEqual(["DNS:FAIL", "DNSBL:PASS", "LINT:WARN"]);
   });
   it("accepts a SpamAssassin score only for the MIME it handed out, and reads seed placement", async () => {
     const { service, owner, campaign } = await setup(passingDns, ["INBOX", "CATEGORY_PROMOTIONS"]);

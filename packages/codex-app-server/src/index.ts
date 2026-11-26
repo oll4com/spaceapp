@@ -403,6 +403,7 @@ const codexReasoningIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 
 function boundedProviderText(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== "string") return undefined;
+  // eslint-disable-next-line no-control-regex -- replacing control characters in provider text is the point
   const normalized = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
   return normalized ? normalized.slice(0, maxLength) : undefined;
 }
@@ -2366,6 +2367,7 @@ export function createCodexAppServerSocketControlService(
     renameThread: (input) => runCodexAppServerSocketProtocol(options, async (client) => {
       const threadId=requiredSocketIdentifier(input.threadId,"thread id");
       const name=input.name.trim();
+      // eslint-disable-next-line no-control-regex -- rejects control characters on purpose
       if(!name||name.length>120||/[\u0000-\u001f]/.test(name))throw new Error("Invalid thread name");
       await client.request("thread/name/set",{threadId,name});
       const result=asRecord(await client.request("thread/read",{threadId,includeTurns:false}));

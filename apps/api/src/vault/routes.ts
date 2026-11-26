@@ -26,10 +26,17 @@ export type VaultStore = Pick<PostgresVaultRepository,
   "getVault" | "enroll" | "rotateUnlock" | "setRecovery" | "bumpEpoch" | "saveItem" | "saveItems" | "deleteItems" | "getItem" | "listItems" | "listItemRecords" | "itemsByLoginKey" | "itemStats"
   | "enableAgentAccess" | "revokeAgentAccess" | "issueNonce" | "consumeNonce" | "appendAudit" | "listAudit" | "verifyAudit" | "createDelegation" | "getActiveDelegation" | "extendDelegation"
   | "setInbox" | "getInbox" | "addPending" | "listPending" | "deletePending" | "setLoginPage" | "addSignupGrant" | "listSignupGrants" | "revokeSignupGrant"
-  | "addHandoffKey" | "listHandoffKeys" | "takeHandoffKey" | "useHandoffKey" | "deleteHandoffKey" | "handoffKeySeal" | "updateHandoffKey">;
+  | "addHandoffKey" | "listHandoffKeys" | "takeHandoffKey" | "useHandoffKey" | "deleteHandoffKey" | "handoffKeySeal" | "updateHandoffKey"
+  | "linkMark" | "linkSnapshot" | "applyLinkSync">;
 
 const notEnrolled = (): never => { throw new GitControlError("VAULT_NOT_ENROLLED", "Set up the Vault first.", 404); };
 const itemNotFound = (): never => { throw new GitControlError("VAULT_ITEM_NOT_FOUND", "This Vault item was not found.", 404); };
+// A copy without one secret field (sealed share, certificate) or the spent epoch; delete keeps eslint's unused-binding rule quiet.
+const without = <T extends object, K extends keyof T>(value: T, key: K): Omit<T, K> => {
+  const copy: Partial<T> = { ...value };
+  delete copy[key];
+  return copy as Omit<T, K>;
+};
 const itemParams = z.object({ id: vaultItemIdSchema }).strict();
 const conflict = (error: unknown): never => {
   if (error instanceof VaultConflictError) throw new GitControlError(error.code, "The Vault changed meanwhile or the request does not match it.", 409);
@@ -114,7 +121,7 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
     const body = parseBody(vaultEnrollRequestSchema, request.body);
     if (await repository().getVault(owner)) throw new GitControlError("VAULT_EXISTS", "This account already has a Vault.", 409);
     const serverShareEnvelope = await broker.sealServerShare({ ownerUserId: owner, vaultId: body.vaultId, keyVersion: 1, sealedServerShare: body.sealedServerShare, unlockPublicKey: body.unlockPublicKey });
-    const { sealedServerShare: _sealed, ...rest } = body;
+    const rest = without(body, "sealedServerShare");
     const vault = await repository().enroll(owner, { ...rest, serverShareEnvelope }).catch(conflict);
     return reply.code(201).send({ vaultId: vault.vaultId, epoch: vault.epoch });
   });
@@ -204,7 +211,8 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
     const body = parseBody(vaultPasswordRotateRequestSchema, request.body);
     const vault = await vaultOf(owner);
     const action = body.recovery ? "RECOVERY_USE" : "PASSWORD_ROTATE";
-    const { expectedEpoch, recovery: _recovery, ...next } = await signedByOperator(owner, vault, "password", body, action);
+    const { expectedEpoch, ...next } = await signedByOperator(owner, vault, "password", body, action);
+    delete next.recovery;
     const rotated = await repository().rotateUnlock(owner, expectedEpoch, { ...next, serverShareEnvelope: vault.serverShareEnvelope }, action).catch(conflict);
     return { epoch: (rotated ?? notEnrolled()).epoch };
   });
@@ -218,7 +226,7 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
 
   app.put(route("/recovery"), strictRouteOptions, async (request) => {
     const owner = await deps.owner(request);
-    const { epoch: _epoch, ...recovery } = await signedByOperator(owner, await vaultOf(owner), "recovery", parseBody(vaultRecoverySetRequestSchema, request.body), "RECOVERY_SET");
+    const recovery = without(await signedByOperator(owner, await vaultOf(owner), "recovery", parseBody(vaultRecoverySetRequestSchema, request.body), "RECOVERY_SET"), "epoch");
     if (!await repository().setRecovery(owner, recovery)) notEnrolled();
     return { recovery: true };
   });
@@ -295,7 +303,7 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
   // Sign-up grants (NEW_ACCOUNT option B, operator decision 2026-10-18): the dock's unlock key signs exact https sites, a
   // daily cap and an expiry; the broker certifies them and enforces each use. Listing never returns the certificate.
   app.get(route("/signup-grants"), routeOptions, async (request) => ({
-    grants: (await repository().listSignupGrants(await deps.owner(request))).map(({ certificate: _certificate, ...grant }) => grant)
+    grants: (await repository().listSignupGrants(await deps.owner(request))).map((grant) => without(grant, "certificate"))
   }));
   app.post(route("/signup-grants"), strictRouteOptions, async (request, reply) => {
     const owner = await deps.owner(request);
@@ -339,7 +347,7 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
   // Every password agents generate or save is sealed to this key, so only the unlocked dock may set it (audited as INBOX_SET).
   app.put(route("/inbox"), strictRouteOptions, async (request) => {
     const owner = await deps.owner(request);
-    const { epoch: _epoch, ...inbox } = await signedByOperator(owner, await vaultOf(owner), "inbox", parseBody(vaultInboxKeySetRequestSchema, request.body), "INBOX_SET");
+    const inbox = without(await signedByOperator(owner, await vaultOf(owner), "inbox", parseBody(vaultInboxKeySetRequestSchema, request.body), "INBOX_SET"), "epoch");
     if (!await repository().setInbox(owner, inbox)) notEnrolled();
     await repository().appendAudit(owner, { actor: "OPERATOR", action: "INBOX_SET", result: "OK" });
     return { inbox: true };
@@ -348,7 +356,7 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
   app.get(route("/pending"), routeOptions, async (request) => {
     const pending = await repository().listPending(await deps.owner(request));
     if (parseQuery(z.object({ sealed: z.enum(["0", "1"]).optional() }).strict(), request.query).sealed !== "0") return { pending };
-    return { pending: pending.map((entry) => ({ ...entry, sealedUsername: null, sealedPassword: null })) };
+    return { pending: pending.map((entry) => ({ ...entry, sealedUsername: null, sealedPassword: null, sealedOtp: null })) };
   });
   app.delete(route("/pending/:id"), routeOptions, async (request) => {
     const owner = await deps.owner(request);

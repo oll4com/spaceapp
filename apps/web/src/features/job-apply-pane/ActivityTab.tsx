@@ -98,7 +98,8 @@ const TARGET_MISS_LABELS: Record<JobApplyTargetMiss, string> = {
   CLI_BUSY: "CLI busy with other work",
   WAITS_ON_OPERATOR: "Waited on you",
   NO_CLI: "No CLI running",
-  MODEL_UNAVAILABLE: "Model unavailable"
+  MODEL_UNAVAILABLE: "Model unavailable",
+  NO_PANE: "No Job Copilot pane open"
 };
 
 /** The whole picture: totals since the first day (or the last reset), per day, and the earlier history apart. */

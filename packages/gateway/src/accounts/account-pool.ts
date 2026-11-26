@@ -1,9 +1,10 @@
-import { GATEWAY_FREE_PLAN_PAUSE_REASON, isGatewayFreePlan, type GatewayProvider } from "@space/contracts";
+import { GATEWAY_FREE_PLAN_PAUSE_REASON, gatewayFreePlanPaused, gatewayWeekResetCredits, type GatewayProvider } from "@space/contracts";
 import { createPaceDayStarts, type GatewayAccountRecord, type GatewayCredentialUpdate, type GatewayRepository } from "@space/db";
 import {
   handlePermanentFailure, handleQuotaExceeded, handleRateLimit, permanentFailureCodes, type AccountState, type UpstreamError
 } from "../router/balancer.js";
 import type { CredentialCipher } from "../credential-cipher.js";
+import { staleRead } from "../stale-read.js";
 
 /** Upstream answers that reject the access token itself, not only the refresh token. */
 const accessTokenRejections = new Set(["token_expired", "token_invalidated", "app_session_terminated", "account_session_expired", "account_auth_invalidated"]);
@@ -57,7 +58,7 @@ const toIso = (seconds: number | null | undefined) => (seconds ? new Date(second
  */
 export class AccountPool {
   private runtime = new Map<string, RuntimeState>();
-  private cache: { at: number; accounts: GatewayAccountRecord[] } | null = null;
+  private readonly cache = staleRead(() => this.loadAccounts(), ACCOUNT_CACHE_MS, { now: () => this.nowMs() });
 
   constructor(private readonly options: {
     provider: GatewayProvider;
@@ -72,6 +73,9 @@ export class AccountPool {
 
   private nowMs() { return (this.options.now ?? Date.now)(); }
 
+  /** The free-plan rule for this pool's provider: Antigravity serves free plans (operator rule 2026-11-17), the others pause them. */
+  private freePlanPaused(planType: string | null | undefined) { return gatewayFreePlanPaused(this.options.provider, planType); }
+
   private state(accountId: string): RuntimeState {
     let state = this.runtime.get(accountId);
     if (!state) {
@@ -81,7 +85,7 @@ export class AccountPool {
     return state;
   }
 
-  invalidate() { this.cache = null; }
+  invalidate() { this.cache.expire(); }
 
   /** A new sign-in replaced the account's credentials: what this process learned about the old ones no longer holds. */
   signedIn(accountId: string) {
@@ -117,20 +121,30 @@ export class AccountPool {
     return true;
   }
 
-  async accounts(): Promise<GatewayAccountRecord[]> {
+  accounts(): Promise<GatewayAccountRecord[]> { return this.cache.get(); }
+
+  private async loadAccounts() {
     const now = this.nowMs();
-    if (!this.cache || now - this.cache.at > ACCOUNT_CACHE_MS) {
-      const all = await this.options.repository.listAccounts();
-      const own = all.filter((account) => account.provider === this.options.provider);
-      this.cache = { at: now, accounts: await Promise.all(own.map((account) => this.pauseIfFree(account))) };
-      this.dayStarts = await (this.paceDayStarts ??= createPaceDayStarts(this.options.repository))(this.cache.accounts, now);
-    }
-    return this.cache.accounts;
+    const all = await this.options.repository.listAccounts();
+    const own = all.filter((account) => account.provider === this.options.provider);
+    const accounts = await Promise.all(own.map((account) => this.applyFreePlanRule(account)));
+    this.dayStarts = await (this.paceDayStarts ??= createPaceDayStarts(this.options.repository))(accounts, now);
+    return accounts;
+  }
+
+  /** A provider that serves free plans resumes an account the free-plan rule paused earlier; the others pause free accounts. */
+  private async applyFreePlanRule(account: GatewayAccountRecord): Promise<GatewayAccountRecord> {
+    const servesFreePlans = !this.freePlanPaused("free");
+    if (!servesFreePlans || account.status !== "PAUSED" || account.statusReason !== GATEWAY_FREE_PLAN_PAUSE_REASON) return this.pauseIfFree(account);
+    const resumed = await this.options.repository.setAccountStatus(account.id, "ACTIVE", null).catch(() => null);
+    if (resumed) process.stdout.write(`space-gateway resumed ${account.id}: its provider serves free plans\n`);
+    // A failed write still lets it serve in this process; the next load stores the resume.
+    return resumed ?? { ...account, status: "ACTIVE", statusReason: null };
   }
 
   /** A free-plan account is paused for good (operator rule 2026-10-13), whatever its plan was when it was added. */
   private async pauseIfFree(account: GatewayAccountRecord): Promise<GatewayAccountRecord> {
-    if (account.status === "PAUSED" || !isGatewayFreePlan(account.planType)) return account;
+    if (account.status === "PAUSED" || !this.freePlanPaused(account.planType)) return account;
     const paused = await this.options.repository.setAccountStatus(account.id, "PAUSED", GATEWAY_FREE_PLAN_PAUSE_REASON).catch(() => null);
     if (paused) process.stdout.write(`space-gateway paused ${account.id}: its plan is free\n`);
     // A failed write still keeps it out of this process; the next load stores the pause.
@@ -164,7 +178,8 @@ export class AccountPool {
       planType: account.planType,
       healthTier: runtime.healthTier,
       accessTokenExpiresAt: toSeconds(account.credentialsExpiresAt),
-      weekDayStart: quotaKey ? null : this.dayStarts.get(account.id) ?? null
+      weekDayStart: quotaKey ? null : this.dayStarts.get(account.id) ?? null,
+      weekResetCredits: gatewayWeekResetCredits(account)
     };
   }
 
@@ -295,7 +310,7 @@ export class AccountPool {
   async credentials(account: GatewayAccountRecord, options?: { allowFreePlan?: boolean }): Promise<StoredCredentials> {
     const cipher = this.options.cipher();
     if (!cipher) throw Object.assign(new Error("The gateway encryption key is missing."), { code: "credential_key_missing" });
-    if (!options?.allowFreePlan && isGatewayFreePlan(account.planType)) { await this.pauseIfFree(account); this.invalidate(); throw freePlanError(); }
+    if (!options?.allowFreePlan && this.freePlanPaused(account.planType)) { await this.pauseIfFree(account); this.invalidate(); throw freePlanError(); }
     const current = JSON.parse(cipher.decrypt(account.credentialsEncrypted, account.id)) as StoredCredentials;
     if (!this.options.refresher.needsRefresh(account, current, this.nowMs())) return current;
     let result: StoredCredentials = current;
@@ -326,7 +341,7 @@ export class AccountPool {
     }
     this.invalidate();
     // The refresh showed the plan is now free: the request goes to another account.
-    if (updated && isGatewayFreePlan(updated.planType)) {
+    if (updated && this.freePlanPaused(updated.planType)) {
       await this.pauseIfFree(updated);
       if (!options?.allowFreePlan) throw freePlanError();
     }
@@ -336,7 +351,7 @@ export class AccountPool {
   /** Updates the stored plan after an upstream check; a free account is paused and a paid account paused only for being free becomes active. */
   async recordPlanType(account: GatewayAccountRecord, planType: string | null): Promise<GatewayAccountRecord> {
     if (!planType) return account;
-    if (isGatewayFreePlan(planType)) {
+    if (this.freePlanPaused(planType)) {
       const updated = account.planType === planType ? account
         : await this.options.repository.withAccountCredentialLock(account.id, async () => ({ planType })) ?? { ...account, planType };
       const paused = await this.pauseIfFree(updated);
@@ -387,7 +402,7 @@ export class AccountPool {
         return null;
       }
     }).catch(() => { outcome = "unreachable"; return null; });
-    if (outcome === "renewed" && updated && isGatewayFreePlan(updated.planType)) {
+    if (outcome === "renewed" && updated && this.freePlanPaused(updated.planType)) {
       await this.pauseIfFree(updated);
       this.invalidate();
       return null;
@@ -407,7 +422,7 @@ export class AccountPool {
   private refreshedUpdate(cipher: CredentialCipher, accountId: string, refreshed: RefreshedCredentials, current?: GatewayAccountRecord):
     { stored: StoredCredentials; update: GatewayCredentialUpdate } {
     const { planType, email, ...stored } = refreshed;
-    const unpauseFree = Boolean(planType && !isGatewayFreePlan(planType)
+    const unpauseFree = Boolean(planType && !this.freePlanPaused(planType)
       && current?.status === "PAUSED" && current.statusReason === GATEWAY_FREE_PLAN_PAUSE_REASON);
     return {
       stored,

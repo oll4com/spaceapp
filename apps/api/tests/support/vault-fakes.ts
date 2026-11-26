@@ -1,6 +1,6 @@
 import {
   VAULT_KDF_DEFAULTS, generateVaultSigningKey, generateVaultTransportKey, newVaultHandle, sealToVaultPublicKey, sealVaultEnvelope,
-  vaultBase64url, vaultRandomBytes, type VaultAuditEvent, type VaultItemRecord
+  vaultBase64url, vaultRandomBytes, type VaultAuditEvent, type VaultDelegationClaims, type VaultItemRecord, type VaultSignupGrantClaims
 } from "@space/contracts";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -13,23 +13,30 @@ import { cookieName, csrfHeaderName, signSession } from "../../src/auth.js";
 import { getApiConfig } from "../../src/config.js";
 import type { VaultBroker } from "../../src/vault/broker-client.js";
 import type { VaultStore } from "../../src/vault/routes.js";
-import { VaultConflictError } from "@space/db";
+import { VaultConflictError, type VaultFillTarget, type VaultState } from "@space/db";
 import { newVaultHandle as newHandle, signVaultCertificate } from "@space/contracts";
 
 // Synthetic values only. The fake store keeps what the Postgres repository keeps (its own tests cover storage).
 export const SENTINEL = "SYNTHETIC-vault-route-sentinel";
 const sessionSecret = "vault-routes-test-session-secret";
 
+type Delegation = { owner: string; certificate: { claims: VaultDelegationClaims }; keyEnvelope: unknown; fillEnvelopes: Record<string, Record<string, unknown>>; inboxKeyEnvelope?: unknown };
+type Inbox = NonNullable<Awaited<ReturnType<VaultStore["getInbox"]>>>;
+type PendingInput = Parameters<VaultStore["addPending"]>[1];
+type HandoffKey = Omit<Parameters<VaultStore["addHandoffKey"]>[1], "valueSealed"> & {
+  owner: string; valueSealed: string | null; kept: boolean; savedBy: string | null; createdAt: string; takenAt: string | null; takenByPaneId: string | null; usedAt: string | null; usedByPaneId: string | null;
+};
+
 export function fakeRepository(): VaultStore & { delegations: unknown[] } {
-  const vaults = new Map<string, any>();
+  const vaults = new Map<string, VaultState & { inbox?: Inbox }>();
   const items = new Map<string, { owner: string; record: VaultItemRecord }>();
   const nonces = new Map<string, { owner: string; purpose: string; epoch: number; used: boolean }>();
-  const delegations: unknown[] = [];
-  const protectedPanes = new Map<string, { owner: string; fill: any }>();
-  const pending: any[] = [];
-  const grants: Array<{ owner: string; certificate: any; revokedAt: string | null }> = [];
-  const handoffs: any[] = [];
-  const audit = new Map<string, Array<{ id: string; seq: number; event: any; prevHash: string; hash: string; createdAt: string }>>();
+  const delegations: Delegation[] = [];
+  const protectedPanes = new Map<string, { owner: string; fill: VaultFillTarget }>();
+  const pending: Array<PendingInput & { owner: string }> = [];
+  const grants: Array<{ owner: string; certificate: { claims: VaultSignupGrantClaims }; revokedAt: string | null }> = [];
+  const handoffs: HandoffKey[] = [];
+  const audit = new Map<string, Array<{ id: string; seq: number; event: VaultAuditEvent; prevHash: string; hash: string; createdAt: string }>>();
   const append = async (owner: string, event: VaultAuditEvent) => {
     if (!vaults.has(owner)) return null;
     const rows = audit.get(owner) ?? [];
@@ -40,12 +47,12 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
   return {
     delegations,
     getVault: async (owner) => vaults.get(owner) ?? null,
-    enroll: async (owner, input) => { const vault = { ...input, ownerUserId: owner, formatVersion: 1, recovery: null, epoch: 1, delegationGeneration: 0, auditSeq: 0, createdAt: "", updatedAt: "", agentAccess: false }; vaults.set(owner, vault); await append(owner, { actor: "OPERATOR", action: "ENROLL", result: "OK" }); return vault; },
+    enroll: async (owner, input) => { const vault: VaultState = { ...input, ownerUserId: owner, formatVersion: 1, recovery: null, epoch: 1, delegationGeneration: 0, auditSeq: 0, createdAt: "", updatedAt: "", agentAccess: false }; vaults.set(owner, vault); await append(owner, { actor: "OPERATOR", action: "ENROLL", result: "OK" }); return vault; },
     rotateUnlock: async (owner, epoch, input, action = "PASSWORD_ROTATE") => {
       const vault = vaults.get(owner); if (!vault) return null; Object.assign(vault, input, { epoch: vault.epoch + 1 });
       await append(owner, { actor: "OPERATOR", action, result: "OK" }); return vault;
     },
-    setRecovery: async (owner, recovery) => { const vault = vaults.get(owner); if (!vault) return false; vault.recovery = recovery; return true; },
+    setRecovery: async (owner, recovery) => { const vault = vaults.get(owner); if (!vault) return false; vault.recovery = recovery as VaultState["recovery"]; return true; },
     bumpEpoch: async (owner) => { const vault = vaults.get(owner); if (!vault) return null; return (vault.epoch += 1); },
     saveItems: async (owner, records) => vaults.has(owner) ? records.map((record) => { const known = items.get(record.metadata.id); if (known && known.owner !== owner) return null; items.set(record.metadata.id, { owner, record: record as VaultItemRecord }); return record as VaultItemRecord; }) : null,
     saveItem: async (owner, record) => { const known = items.get(record.metadata.id); if (known && known.owner !== owner) return null; items.set(record.metadata.id, { owner, record }); return record; },
@@ -63,7 +70,7 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
     revokeAgentAccess: async (owner) => {
       const vault = vaults.get(owner); if (!vault) return null;
       for (const grant of grants) if (grant.owner === owner) grant.revokedAt ??= new Date().toISOString();
-      for (let index = delegations.length - 1; index >= 0; index -= 1) if ((delegations[index] as { owner: string }).owner === owner) delegations.splice(index, 1);
+      for (let index = delegations.length - 1; index >= 0; index -= 1) if (delegations[index]?.owner === owner) delegations.splice(index, 1);
       vault.agentAccess = false; vault.delegationGeneration += 1; vault.epoch += 1; return { generation: vault.delegationGeneration, epoch: vault.epoch };
     },
     issueNonce: async (owner, purpose) => { const vault = vaults.get(owner); if (!vault) return null; const nonce = vaultBase64url.encode(vaultRandomBytes(32)); nonces.set(nonce, { owner, purpose, epoch: vault.epoch, used: false }); return { nonce, epoch: vault.epoch, generation: null, expiresAt: new Date(Date.now() + 60_000).toISOString() }; },
@@ -71,21 +78,21 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
     appendAudit: append,
     listAudit: async (owner, { limit = 50 } = {}) => [...(audit.get(owner) ?? [])].reverse().slice(0, limit),
     verifyAudit: async () => ({ ok: true, brokenAtSeq: null }),
-    protectPane: async (owner: string, paneId: string, fill: any) => { if (protectedPanes.has(paneId) && protectedPanes.get(paneId)!.owner !== owner) return false; protectedPanes.set(paneId, { owner, fill }); return true; },
+    protectPane: async (owner: string, paneId: string, fill: VaultFillTarget) => { if (protectedPanes.has(paneId) && protectedPanes.get(paneId)!.owner !== owner) return false; protectedPanes.set(paneId, { owner, fill }); return true; },
     unprotectPane: async (owner: string, paneId: string) => protectedPanes.get(paneId)?.owner === owner && protectedPanes.delete(paneId),
     protectedPane: async (paneId: string) => protectedPanes.get(paneId) ?? null,
-    getActiveDelegation: async (owner: string) => (delegations as Array<{ owner: string; certificate: any; keyEnvelope: unknown; fillEnvelopes: unknown; inboxKeyEnvelope?: unknown }>).filter((entry) => entry.owner === owner)
+    getActiveDelegation: async (owner: string) => delegations.filter((entry) => entry.owner === owner)
       .map((entry) => ({ generation: entry.certificate.claims.generation, certificate: entry.certificate, keyEnvelope: entry.keyEnvelope, fillEnvelopes: entry.fillEnvelopes, inboxKeyEnvelope: entry.inboxKeyEnvelope ?? null })).at(-1) ?? null,
-    extendDelegation: async (owner: string, input: any) => {
-      const entry = (delegations as Array<{ owner: string; certificate: any; fillEnvelopes: any }>).filter((candidate) => candidate.owner === owner).at(-1);
+    extendDelegation: async (owner: string, input: { basedOn: string; certificate: Delegation["certificate"]; handle: string; fieldEnvelopes: Record<string, unknown> }) => {
+      const entry = delegations.filter((candidate) => candidate.owner === owner).at(-1);
       if (!entry || entry.certificate.claims.certId !== input.basedOn) return "STALE";
       entry.certificate = input.certificate;
       entry.fillEnvelopes = { ...entry.fillEnvelopes, [input.handle]: { ...entry.fillEnvelopes[input.handle], ...input.fieldEnvelopes } };
       return "OK";
     },
-    setInbox: async (owner: string, input: any) => { const vault = vaults.get(owner); if (!vault) return false; vault.inbox = input; return true; },
+    setInbox: async (owner: string, input: Inbox) => { const vault = vaults.get(owner); if (!vault) return false; vault.inbox = input; return true; },
     getInbox: async (owner: string) => vaults.get(owner)?.inbox ?? null,
-    addPending: async (owner: string, input: any) => { pending.push({ owner, ...input }); return true; },
+    addPending: async (owner: string, input: PendingInput) => { pending.push({ owner, ...input }); return true; },
     listPending: async (owner: string) => pending.filter((entry) => entry.owner === owner).map(({ owner: _owner, ...entry }) => entry),
     setLoginPage: async (owner: string, handle: string, loginPage: string | null) => {
       const item = items.get(handle);
@@ -95,12 +102,12 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
       return filed + waiting.length;
     },
     deletePending: async (owner: string, id: string) => { const index = pending.findIndex((entry) => entry.owner === owner && entry.id === id); if (index < 0) return false; pending.splice(index, 1); return true; },
-    addSignupGrant: async (owner: string, certificate: any) => { if (!vaults.has(owner) || certificate.claims.ownerUserId !== owner) return false; grants.push({ owner, certificate, revokedAt: null }); return true; },
+    addSignupGrant: async (owner: string, certificate: { claims: VaultSignupGrantClaims }) => { if (!vaults.has(owner) || certificate.claims.ownerUserId !== owner) return false; grants.push({ owner, certificate, revokedAt: null }); return true; },
     listSignupGrants: async (owner: string) => grants.filter((grant) => grant.owner === owner && !grant.revokedAt && Date.parse(grant.certificate.claims.expiresAt) > Date.now()).reverse()
       .map(({ certificate }) => ({ id: certificate.claims.grantId, sites: certificate.claims.sites, dailyCap: certificate.claims.dailyCap, createdAt: certificate.claims.issuedAt, expiresAt: certificate.claims.expiresAt, revokedAt: null, certificate })),
     revokeSignupGrant: async (owner: string, id: string) => { const grant = grants.find((entry) => entry.owner === owner && entry.certificate.claims.grantId === id && !entry.revokedAt); if (!grant) return false; grant.revokedAt = new Date().toISOString(); return true; },
     // API keys handed to agents (plan clipboard:-qvpC_Q0rAVg): what the Postgres repository keeps, in memory.
-    addHandoffKey: async (owner: string, input: any) => { handoffs.push({ owner, kept: false, savedBy: null, ...input, createdAt: new Date().toISOString(), takenAt: null, takenByPaneId: null, usedAt: null, usedByPaneId: null }); return true; },
+    addHandoffKey: async (owner: string, input: Parameters<VaultStore["addHandoffKey"]>[1]) => { handoffs.push({ owner, kept: false, savedBy: null, ...input, createdAt: new Date().toISOString(), takenAt: null, takenByPaneId: null, usedAt: null, usedByPaneId: null }); return true; },
     listHandoffKeys: async (owner: string) => handoffs.filter((key) => key.owner === owner).map(({ owner: _owner, valueSealed, ...key }) => ({ ...key, hasValue: valueSealed !== null && (key.expiresAt === null || Date.parse(key.expiresAt) > Date.now()) })).reverse(),
     takeHandoffKey: async (owner: string, id: string, paneId: string) => {
       const key = handoffs.find((entry) => entry.owner === owner && entry.id === id);
@@ -125,7 +132,7 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
     },
     deleteHandoffKey: async (owner: string, id: string) => { const index = handoffs.findIndex((entry) => entry.owner === owner && entry.id === id); if (index < 0) return false; handoffs.splice(index, 1); return true; },
     // The Postgres repository's own claim checks are covered by its tests; here the next generation is enough.
-    createDelegation: async (owner, input: any) => {
+    createDelegation: async (owner, input: Omit<Delegation, "owner">) => {
       const vault = vaults.get(owner);
       if (!vault) return null;
       if (input.certificate.claims.generation !== vault.delegationGeneration + 1) throw new VaultConflictError("BAD_DELEGATION");
@@ -147,7 +154,7 @@ export async function fixture(options: { broker?: VaultBroker; gatewayAdminServi
   const brokerKey = await generateVaultTransportKey();
   const brokerSigning = await generateVaultSigningKey();
   // Tests make the broker misbehave: sign with another key, or sign wider claims than asked.
-  const tamper: { signWith?: Uint8Array; widen?: (claims: any) => any } = {};
+  const tamper: { signWith?: Uint8Array; widen?: (claims: Record<string, unknown>) => Record<string, unknown> } = {};
   const brokerCalls: string[] = [];
   const broker: VaultBroker = options.broker ?? {
     transportKey: async () => ({ publicKey: vaultBase64url.encode(brokerKey.publicKey), keyVersion: 1 }),
@@ -166,6 +173,9 @@ export async function fixture(options: { broker?: VaultBroker; gatewayAdminServi
     signupRevoke: async (input) => { brokerCalls.push(`signup-revoke:${input.grantId}`); return { revoked: true as const }; },
     signupAutoGrant: async () => { throw new Error("The fake broker mints no grants; vault-e2e uses the real one."); },
     delegatePending: async () => { throw new Error("The fake broker extends no delegation; vault-e2e uses the real one."); },
+    moveOut: async () => { throw new Error("The fake broker moves nothing; vault-broker.test uses the real one."); },
+    moveIn: async () => { throw new Error("The fake broker moves nothing; vault-broker.test uses the real one."); },
+    linkPin: async () => ({ pinned: false as const }),
     sealServerShare: async (input) => { brokerCalls.push(`seal:${input.ownerUserId}`); return sealVaultEnvelope(vaultRandomBytes(32), vaultRandomBytes(32), { ...input, purpose: "SERVER_SHARE" }); },
     unlock: async (input) => { brokerCalls.push(`unlock:${input.epoch}`); return sealToVaultPublicKey(vaultBase64url.decode(input.replyPublicKey), vaultRandomBytes(32), { ownerUserId: input.ownerUserId, vaultId: input.vaultId, keyVersion: 1 }); }
   };

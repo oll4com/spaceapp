@@ -8,7 +8,6 @@ import {
   browserToolActionInputSchema,
   spaceAgentChatActionInputSchema,
   spaceAgentClipboardActionInputSchema,
-  spaceAgentMemoryActionInputSchema,
   spaceAgentSkillActionInputSchema,
   spaceAgentTaskActionInputSchema
 } from "./schemas.js";
@@ -108,7 +107,7 @@ export const controlResourceHints: Partial<Record<ResourceOperation, string>> = 
   "tasks.update": "Update a task item. id: taskId, input: { status?, objective? }.",
   "files.publish": "Publish a text or base64 file (≤400 KB) to Agent Files only when the user asked for a file. input: { filename, mimeType, text | base64 }.",
   "media.publish": "Publish an image or video (≤400 KB) to room media. input: { filename, mimeType, base64 }.",
-  "files.preview": "Preview a published file. id: artifactId.",
+  "files.preview": "Preview a published file. id: its artifact id (artifact:...), never a file path (space_files_read reads a path).",
   "settings.appearance": "Set appearance. input: { theme?, zoomLevel?, terminalFontSize? }.",
   "settings.voice": "Set voice preferences. input: { enabled?, model?, voice?, language? }.",
   "models.list": "List models available to panes.",
@@ -151,12 +150,8 @@ export function classifyDotControlAction(action: ControlAction, context: { role:
     default: return allow("WRITE");
   }
 }
-/**
- * Risk of a Space-native tool. Saving to Space memory writes installation-wide knowledge that
- * every agent reads, so it always needs the owner's approval; a Dot's own memory is dot_memory.*.
- */
-export function dotNativeActionRisk(toolId: string, risk: DotToolRisk): DotActionRisk {
-  if (toolId === "memory.save") return "SENSITIVE";
+/** Risk of a Space-native tool. Chat Dots never reach the shared Space Memory; their own memory is dot_memory.*. */
+export function dotNativeActionRisk(_toolId: string, risk: DotToolRisk): DotActionRisk {
   return risk === "READ" ? "READ" : risk === "DESTRUCTIVE" ? "SENSITIVE" : "WRITE";
 }
 export function needsDotApproval(risk: DotActionRisk, permissionMode: string | null | undefined): boolean {
@@ -204,8 +199,6 @@ function actionSchema(union: z.ZodDiscriminatedUnion, type: string): Record<stri
 }
 
 const nativeTools: Array<{ id: string; title: string; description: string; risk: DotToolRisk; union: z.ZodDiscriminatedUnion; type: string }> = [
-  { id: "memory.search", title: "Search Space memory", description: "Search the shared Space memory (ROOM, PROJECT or SYSTEM scope). Your own memories are in dot_memory.recall.", risk: "READ", union: spaceAgentMemoryActionInputSchema, type: "search" },
-  { id: "memory.save", title: "Save to Space memory", description: "Save a fact to the shared Space memory that every agent reads, with provenance. Needs the user's approval; use dot_memory.remember for your own memory.", risk: "WRITE", union: spaceAgentMemoryActionInputSchema, type: "save" },
   { id: "clipboard.list", title: "List clipboard", description: "List the user's private Space clipboard, only when asked.", risk: "READ", union: spaceAgentClipboardActionInputSchema, type: "list" },
   { id: "clipboard.get", title: "Read clipboard item", description: "Read one private clipboard item by id, only when asked.", risk: "READ", union: spaceAgentClipboardActionInputSchema, type: "get" },
   { id: "clipboard.save", title: "Save clipboard note", description: "Save a requested note (≤10,000 characters) to the private clipboard.", risk: "WRITE", union: spaceAgentClipboardActionInputSchema, type: "save" },

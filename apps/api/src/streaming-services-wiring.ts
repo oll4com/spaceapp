@@ -83,7 +83,7 @@ export function createStreamingServices(deps: StreamingServicesDeps) {
           const control = await readOpenCodeServerControl(session.sessionId, stateRoot);
           if (control) {
             if (!control.directory && session.cwd) control.directory = session.cwd;
-            if (await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId, session.cwd ?? undefined).catch(() => false)) return true;
+            if (await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId).catch(() => false)) return true;
           }
           const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
           return roomTerminalState(screen.text) === "RUNNING";

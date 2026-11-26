@@ -1,6 +1,7 @@
 export { loadMigrations, migrationDirectory } from "./migrations.js";
 export * from "./system-health-repository.js";
-export { PostgresSpaceStore, createSpacePgPool, type PgClientLike, type PgPoolLike } from "./space-store.js";
+export { PostgresSpaceStore, createSpacePgPool, queryLabel, takeQueryRowCounts, type PgClientLike, type PgPoolLike, type PostgresSpaceStoreOptions } from "./space-store.js";
+export { TENANT_LOCAL, currentTenantId, tenancyEnabled, tenantScopedPool, withTenant } from "./tenant-context.js";
 export { CanonicalMemoryEmbeddings, type CanonicalEmbeddingRow } from "./canonical-memory-embeddings.js";
 export { PostgresTelegramPersistence } from "./telegram-persistence.js";
 export {
@@ -101,6 +102,7 @@ export * from "./nous-goals-repository.js";
 export * from "./nous-pane-summaries-repository.js";
 export * from "./nous-away-repository.js";
 export * from "./pane-reports-repository.js";
+export * from "./inbox-repository.js";
 export * from "./nous-attachment-repository.js";
 export * from "./mail-copilot-repository.js";
 export * from "./marketing-copilot-repository.js";

@@ -1,21 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Model, Provider } from "@space/contracts";
-import { InMemorySpaceStore } from "@space/runtime";
-import { createApp, type CreateAppOptions } from "../src/app.js";
-import { getApiConfig } from "../src/config.js";
 import { extractGenericPaneTitleCandidate, generateOpenCodePaneTitle, generateTerminalPaneTitle } from "../src/pane-title-generator.js";
-
-const csrfHeaderName = "x-space-csrf-token";
-
-// Isolate app-level tests from any live OpenCode controls on this host so the
-// shared-server title fallback stays deterministic (codex fallback expected).
-const opencodeTestStateRoot = await mkdtemp(join(tmpdir(), "space-opencode-state-"));
-afterAll(async () => {
-  await rm(opencodeTestStateRoot, { recursive: true, force: true });
-});
 
 function providerFixture(): Provider {
   return {
@@ -48,43 +33,6 @@ function modelFixture(): Model {
     supportsReasoning: true,
     defaultReasoningEffort: "low"
   };
-}
-
-async function authedApp(
-  configOverrides: NodeJS.ProcessEnv,
-  store: InMemorySpaceStore,
-  appOverrides: Omit<CreateAppOptions, "store" | "config" | "auth"> = {}
-) {
-  const app = await createApp({
-    opencodeStateRoot: opencodeTestStateRoot,
-    ...appOverrides,
-    store,
-    config: getApiConfig({
-      SPACE_AGENT_PANE_ENABLED: "true",
-      SPACE_ENABLE_CODEX_TURNS: "true",
-      SPACE_CODEX_APP_SERVER_ENABLED: "true",
-      SPACE_CODEX_LB_BASE_URL: "https://codex.example/v1",
-      SPACE_CODEX_LB_KEY_NAME: "space-test-title-generator",
-      ...configOverrides
-    }),
-    auth: {
-      sessionSecret: "test-secret-with-enough-length",
-      devLogin: true,
-      secureCookies: false
-    }
-  });
-  const login = await app.inject({
-    method: "POST",
-    url: "/api/auth/login",
-    payload: { email: "space@space.local", password: "space-dev" }
-  });
-  const cookieHeader = `space_session=${login.cookies.find((entry) => entry.name === "space_session")?.value}`;
-  const csrf = await app.inject({
-    method: "GET",
-    url: "/api/auth/csrf",
-    headers: { cookie: cookieHeader }
-  });
-  return { app, cookie: cookieHeader, csrfToken: csrf.json().csrfToken as string };
 }
 
 describe("terminal pane title generation", () => {

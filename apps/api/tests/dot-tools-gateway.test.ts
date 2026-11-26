@@ -268,12 +268,6 @@ describe("Dot gateway routes", () => {
     expect(vi.mocked(value.continueAfterApproval!).mock.calls.at(-1)![0].content).toMatch(/Run the same clipboard\.save call again now/);
     // Reads, and native tools that need no approval, never come here.
     expect((await call(server, "clipboard.list", {}, { callId: "call-list" })).json()).toMatchObject({ status: "BLOCKED", statusReason: expect.stringMatching(/runs inside the Dot runtime/) });
-    // Saving to the shared Space memory needs approval in every mode.
-    const full = deps();
-    (full.repository as unknown as { approvals: Map<string, { status: string }> }).approvals.set("dot_tool:space", { status: "RUNNING" } as never);
-    const fullServer = await app(full.value);
-    expect((await call(fullServer, "memory.save", { title: "T", body: "B", scope: "ROOM" }, { callId: "call-space", invocationId: "dot_tool:space" })).json())
-      .toMatchObject({ status: "APPROVAL_REQUIRED", statusReason: expect.stringMatching(/shared Space memory/) });
   });
 
   it("publishes a deliverable to Agent Files only after the owner approves it, in every mode", async () => {
@@ -371,7 +365,7 @@ describe("Dot gateway routes", () => {
     const { value } = deps({ run: { ...run, clientRequestId: "proactive-0123456789abcdef" } });
     const server = await app(value);
     for (const [toolId, args] of [["space.execute", { actions: [{ kind: "pane", operation: "minimize", target: { paneIds: ["pane:x"] } }] }],
-      ["computer.browser", {}], ["schedule.create", {}], ["memory.save", {}]] as const) {
+      ["computer.browser", {}], ["schedule.create", {}], ["clipboard.save", {}]] as const) {
       expect((await call(server, toolId, args as Record<string, unknown>)).json()).toMatchObject({ status: "BLOCKED", statusReason: expect.stringMatching(/read-only/) });
     }
     expect((await call(server, "space.inspect", {}, { callId: "call-read" })).json().status).toBe("COMPLETED");
@@ -387,8 +381,8 @@ describe("Dot gateway routes", () => {
     const server = await app(value);
     const searched = await server.inject({ method: "POST", url: "/api/internal/dots/tools/catalog", payload: { identity, search: { query: "inspect" } } });
     expect(searched.json().tools.map((tool: { id: string }) => tool.id)).toContain("space.inspect");
-    const described = await server.inject({ method: "POST", url: "/api/internal/dots/tools/catalog", payload: { identity, describe: { toolId: "memory.search" } } });
-    expect(described.json().tool.inputSchema.required).toEqual(["q"]);
+    const described = await server.inject({ method: "POST", url: "/api/internal/dots/tools/catalog", payload: { identity, describe: { toolId: "clipboard.get" } } });
+    expect(described.json().tool.id).toBe("clipboard.get");
     const spoofed = await server.inject({ method: "POST", url: "/api/internal/dots/tools/catalog", payload: { identity: { ...identity, dotId: otherDot }, search: {} } });
     expect(spoofed.statusCode).toBe(409);
   });

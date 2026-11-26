@@ -4,7 +4,6 @@ import {
   Bell,
   Bot,
   Clipboard,
-  FolderOpen,
   GitBranch,
   Images,
   Link as LinkIcon,

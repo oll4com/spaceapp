@@ -6,14 +6,14 @@
 //   node scripts/space-load-gate.mjs -- <command> [args...]        e.g.  -- npm test   |   -- sh -c "npm run build && npm test"
 //
 // OVERLOADED is Nous's rule (apps/api/src/nous/server-load.ts; apps/api/tests/space-load-gate-thresholds.test.ts keeps them
-// equal): only the physical host's swap past 90% (operator 3/11), read from the monitoring collector the API is configured
-// with and the host its SPACE_LOAD_HOST_SELECTOR names; without a selector (no hypervisor) this machine's /proc/meminfo. CPU,
-// RAM and the load average hold nothing.
+// equal): only swap past 90% (operator 3/11), the worse of the host the API's SPACE_LOAD_HOST_SELECTOR names (read from its
+// monitoring collector) and this VM's /proc/meminfo (14/11: the panes' VM swapped at 100% while pve read 8%); without a selector
+// (no hypervisor) this machine's alone. CPU, RAM and the load average hold nothing.
 // It waits at most 10 minutes and then runs anyway; when the load cannot be read it does not wait for it. Its own lines
 // start with "space-load-gate:" on stderr; the command's exit code is its exit code.
 import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
-import { constants } from "node:os";
+import { constants, hostname } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -80,14 +80,28 @@ export function hostSwapOfResult(result, now) {
   return { host, swapPercent: total[0] > 0 ? (100 * (total[0] - free[0])) / total[0] : 0 };
 }
 
-/** The host's swap: with a SPACE_LOAD_HOST_SELECTOR, that host from the collector's Prometheus; without one, this machine's /proc/meminfo. */
-export async function readLoad({ env = process.env, read = (path) => readFileSync(path, "utf8"), get = fetch, now = Date.now } = {}) {
+/** This machine's swap from /proc/meminfo; null when it cannot be read. */
+function machineSwap(read, host) {
+  let memory;
+  try { memory = read("/proc/meminfo"); } catch { memory = ""; }
+  const swapTotal = meminfo(memory, "SwapTotal"), swapFree = meminfo(memory, "SwapFree");
+  return { host, swapPercent: swapTotal ? 100 * (swapTotal - (swapFree ?? swapTotal)) / swapTotal : swapTotal === 0 ? 0 : null };
+}
+
+/**
+ * The swap that decides (server-load.ts's createHostSwap and worseSwap): with a SPACE_LOAD_HOST_SELECTOR, the worse of that host from
+ * the collector's Prometheus and this VM's /proc/meminfo (this VM's alone when the collector fails and it is past 90%); without one,
+ * this machine's.
+ */
+export async function readLoad({ env = process.env, read = (path) => readFileSync(path, "utf8"), get = fetch, now = Date.now, vmName = hostname() } = {}) {
   const matchers = parseLoadHostSelector(installedSetting("SPACE_LOAD_HOST_SELECTOR", { env, read }));
-  if (!matchers) {
-    const memory = read("/proc/meminfo");
-    const swapTotal = meminfo(memory, "SwapTotal"), swapFree = meminfo(memory, "SwapFree");
-    return { host: "this machine", swapPercent: swapTotal ? 100 * (swapTotal - (swapFree ?? swapTotal)) / swapTotal : null };
-  }
+  if (!matchers) return machineSwap(read, "this machine");
+  const vm = machineSwap(read, vmName);
+  const host = await hostLoad(matchers, { env, read, get, now }).catch((error) => { if (vm.swapPercent !== null && vm.swapPercent > 90) return null; throw error; });
+  return vm.swapPercent !== null && vm.swapPercent > (host?.swapPercent ?? 90) ? vm : host;
+}
+
+async function hostLoad(matchers, { env, read, get, now }) {
   const collector = installedSetting("SPACE_MONITORING_COLLECTOR_HOST", { env, read });
   if (!collector || !/^\d{1,3}(\.\d{1,3}){3}$/.test(collector)) throw new Error("SPACE_LOAD_HOST_SELECTOR is set without a collector (SPACE_MONITORING_COLLECTOR_HOST)");
   const response = await get(`http://${collector}:9090/api/v1/query?${new URLSearchParams({ query: hostSwapQuery(matchers) })}`, { redirect: "error", signal: AbortSignal.timeout(10_000) });

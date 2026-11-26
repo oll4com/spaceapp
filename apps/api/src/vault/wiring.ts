@@ -21,7 +21,7 @@ export type VaultModule = { repository: VaultStore | null; protection: VaultProt
 const unavailable = () => Promise.reject(new VaultBrokerUnavailableError());
 /** Dev never reaches stable's sockets, so it has no broker: enrollment and unlock fail closed there. */
 const noBroker: VaultBroker = { transportKey: unavailable, delegationKey: unavailable, delegate: unavailable, revoke: unavailable, issueUse: unavailable, openFill: unavailable, sealServerShare: unavailable, unlock: unavailable,
-  signupGrant: unavailable, signup: unavailable, signupRevoke: unavailable, signupAutoGrant: unavailable, delegatePending: unavailable };
+  signupGrant: unavailable, signup: unavailable, signupRevoke: unavailable, signupAutoGrant: unavailable, delegatePending: unavailable, moveOut: unavailable, moveIn: unavailable, linkPin: unavailable };
 
 export function registerVault(app: FastifyInstance, deps: {
   siteSignins?: SiteSigninsRepository;
@@ -45,7 +45,8 @@ export function registerVault(app: FastifyInstance, deps: {
   browser?: {
     vaultTarget?(pane: Pane): Promise<VaultHostTarget>;
     vaultFill?(pane: Pane, request: unknown, traceId: string): Promise<VaultHostFillResult>;
-    listPages?(pane: Pane): Promise<{ pages: Array<{ pageId: string; isActive: boolean }> }>;
+    listPages?(pane: Pane): Promise<{ activePageId: string | null; pages: Array<{ pageId: string; isActive: boolean; openerPageId?: string | null }> }>;
+    activatePage?(pane: Pane, pageId: string, traceId: string, context?: { holderType: "AGENT"; holderId: string }): Promise<unknown>;
   };
   routeOptions: Record<string, unknown>;
   overrides?: VaultOverrides;

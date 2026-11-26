@@ -50,9 +50,9 @@ export function installMobileGate(app: FastifyInstance, options: { sessionSecret
   // Body rules on the object the handler reads (the channel also checks and re-serializes before injecting, security review P2-3).
   app.addHook("preHandler", async (request, reply) => {
     const rule = request.mobileDevice?.rule;
-    const problem = rule?.body ? mobileBodyProblem(rule.body, request.body) : null;
+    const problem = rule?.body ? mobileBodyProblem(rule.body, request.body, request.mobileDevice!.scopes) : null;
     if (problem) return sendApiError(reply, 400, "MOBILE_BODY", problem);
-    if (rule?.artifactById || rule?.askRisk || rule?.decisionSignature || rule?.goalSignature || rule?.adminSignature) {
+    if (rule?.artifactById || rule?.planById || rule?.askRisk || rule?.decisionSignature || rule?.linkedDecisionSignature || rule?.goalSignature || rule?.adminSignature || rule?.superior || rule?.superiorSignature || rule?.inboxActSignature) {
       const check = checks.get(app);
       const refused = check ? await check(request, rule) : { status: 403, code: "MOBILE_SCOPE_DENIED", message: "Open this on a computer." };
       if (refused) return sendApiError(reply, refused.status, refused.code, refused.message);

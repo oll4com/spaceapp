@@ -54,6 +54,8 @@ export class BrowserHostClient {
   private readonly earlyFrames = new Map<string, BrowserHostBinaryFrame[]>();
   private readonly audioListeners = new Map<string, (chunk: BrowserHostAudioChunk) => void | Promise<void>>();
   private readonly earlyAudio = new Map<string, BrowserHostAudioChunk[]>();
+  /** The connection each subscription lives on: the host stops a connection's streams when it closes (server.ts). */
+  private readonly subscriptionEnds = new Map<string, { socket: Socket; end(): void }>();
 
   constructor(private readonly options: {
     socketPath: string;
@@ -108,16 +110,20 @@ export class BrowserHostClient {
     onFrame: (frame: BrowserHostBinaryFrame) => void | Promise<void>,
     hints: BrowserHostStreamHints = {}
   ): Promise<BrowserHostStreamHandle> {
+    const socket = await this.connect();
     const started = await this.request("startFrameStream", { sessionId, mode, hints }) as { id: string; profile: BrowserHostStreamProfile };
+    const ended = this.trackSubscription(started.id, socket);
     this.streamListeners.set(started.id, onFrame);
     for (const frame of this.earlyFrames.get(started.id) ?? []) void onFrame(frame);
     this.earlyFrames.delete(started.id);
     let stopped = false;
     return {
       ...started,
+      ended,
       stop: async () => {
         if (stopped) return;
         stopped = true;
+        this.subscriptionEnds.delete(started.id);
         this.streamListeners.delete(started.id);
         this.earlyFrames.delete(started.id);
         await this.request("stopFrameStream", { subscriptionId: started.id });
@@ -129,16 +135,20 @@ export class BrowserHostClient {
     sessionId: string,
     onChunk: (chunk: BrowserHostAudioChunk) => void | Promise<void>
   ): Promise<BrowserHostAudioStreamHandle> {
+    const socket = await this.connect();
     const started = await this.request("startAudioStream", { sessionId }) as { id: string; sampleRate: number; channels: number; format: "s16le" };
+    const ended = this.trackSubscription(started.id, socket);
     this.audioListeners.set(started.id, onChunk);
     for (const chunk of this.earlyAudio.get(started.id) ?? []) void onChunk(chunk);
     this.earlyAudio.delete(started.id);
     let stopped = false;
     return {
       ...started,
+      ended,
       stop: async () => {
         if (stopped) return;
         stopped = true;
+        this.subscriptionEnds.delete(started.id);
         this.audioListeners.delete(started.id);
         this.earlyAudio.delete(started.id);
         await this.request("stopAudioStream", { subscriptionId: started.id });
@@ -183,11 +193,8 @@ export class BrowserHostClient {
           `Browser host ${method} request timed out after ${timeoutMs}ms.`,
           { method, timeoutMs }
         ));
-        // The server processes requests serially per connection. If a request
-        // hung (e.g. a CDP call against a crashed Chrome), every later request
-        // on the same socket would keep timing out. Drop the socket so the
-        // next request reconnects on a fresh, unblocked connection.
-        if (this.socket === socket && !socket.destroyed) socket.destroy();
+        // The socket stays: the server bounds every request itself and queues per pane, so one wedged pane no longer blocks
+        // the connection, and destroying it failed every other pane's request with TRANSPORT_CLOSED (API audit 16/11).
       }, timeoutMs);
       timer.unref();
       this.pending.set(requestId, { resolve, reject, timer, socket });
@@ -243,7 +250,29 @@ export class BrowserHostClient {
       // client may have already reconnected on a fresh socket after a timeout
       // drop, so the stale connection must not tear those pending requests down.
       this.rejectPendingFor(socket, new BrowserHostError("BROWSER_HOST_TRANSPORT_CLOSED", "Browser host transport closed."));
+      this.endSubscriptionsOf(socket);
     });
+  }
+
+  /** Resolves when the connection that carries the subscription closes; a request that raced a reconnect ends at once. */
+  private trackSubscription(id: string, socket: Socket): Promise<void> {
+    return new Promise((resolve) => {
+      if (socket.destroyed || this.socket !== socket) resolve();
+      else this.subscriptionEnds.set(id, { socket, end: resolve });
+    });
+  }
+
+  /** The host already stopped these streams with the connection; their viewers would otherwise wait for frames forever. */
+  private endSubscriptionsOf(socket: Socket): void {
+    for (const [id, subscription] of [...this.subscriptionEnds]) {
+      if (subscription.socket !== socket) continue;
+      this.subscriptionEnds.delete(id);
+      this.streamListeners.delete(id);
+      this.earlyFrames.delete(id);
+      this.audioListeners.delete(id);
+      this.earlyAudio.delete(id);
+      subscription.end();
+    }
   }
 
   private handleMessage(message: unknown): void {

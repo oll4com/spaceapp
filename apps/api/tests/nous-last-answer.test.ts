@@ -70,4 +70,17 @@ describe("a CLI pane's last answer", () => {
     expect(roomTool).toHaveBeenCalledWith("read_pane", { pane: pane.id, lines: 120 }, expect.anything());
     expect((await tools.execute("space_read_pane", { room: "Main", pane: "Andy", reply: "first" }, ctx)).ok).toBe(false);
   });
+
+  it("answers a pane read that hangs FAILED after 20 s, well before the 55 s tool answer, so the turn goes on", async () => {
+    vi.useFakeTimers();
+    try {
+      const tools = createNousTools({
+        rooms: async () => [{ id: "room:main0001", name: "Main", kind: "WORKSPACE", ownerUserId: "user:operator", archivedAt: null }],
+        listPanes: async () => [pane], roomTool: () => new Promise(() => undefined)
+      } as unknown as NousToolDeps);
+      const read = tools.execute("space_read_pane", { room: "Main", pane: "Andy" }, { owner: "user:operator", turnId: "nous_turn:h1", callId: "toolu_h", traceId: "trace:h" });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(await read).toMatchObject({ ok: false, display: "Pane read timed out", result: expect.stringMatching(/^Pane read timed out after 20 s/) });
+    } finally { vi.useRealTimers(); }
+  });
 });

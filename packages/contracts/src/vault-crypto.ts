@@ -44,6 +44,8 @@ export async function deriveVaultKey(inputKey: Uint8Array, info: string, salt: U
 
 const aesKey = (key: Uint8Array, usage: KeyUsage) => {
   if (key.length !== 32) throw new VaultCryptoError("BAD_KEY");
+  // A wiped key (a lock zeroes it while a write may still run) never seals: what it sealed would never open again (19/11 OPEN_FAILED).
+  if (usage === "encrypt" && key.every((byte) => byte === 0)) throw new VaultCryptoError("BAD_KEY");
   return subtle().importKey("raw", bytes(key), "AES-GCM", false, [usage]);
 };
 
@@ -204,7 +206,8 @@ export async function openWithVaultPrivateKey(recipientPrivate: Uint8Array, reci
   } catch {
     throw new VaultCryptoError("OPEN_FAILED");
   }
-  const { epk: _epk, ...rest } = parsed.data;
+  const rest: Partial<typeof parsed.data> = { ...parsed.data };
+  delete rest.epk;
   try { return await openVaultEnvelope(key, { ...rest, alg: "A256GCM" }, { ...scope, purpose: "TRANSPORT" }); } finally { wipeVaultBytes(key); }
 }
 

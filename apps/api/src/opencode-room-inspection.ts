@@ -20,12 +20,13 @@ export async function roomOpenCodeInspection(control: OpenCodeServerControl) {
   const transcriptLines: string[] = [];
   for (const msg of messages) {
     if (!msg || typeof msg !== "object") continue;
-    const role = (msg as any).info?.role === "user" ? "User" : (msg as any).info?.role === "assistant" ? "Assistant" : null;
+    const message = msg as { info?: { role?: unknown }; parts?: unknown };
+    const role = message.info?.role === "user" ? "User" : message.info?.role === "assistant" ? "Assistant" : null;
     if (!role) continue;
-    const parts = Array.isArray((msg as any).parts) ? (msg as any).parts : [];
+    const parts: unknown[] = Array.isArray(message.parts) ? message.parts : [];
     const textParts = parts
-      .filter((p: any) => p && typeof p === "object" && p.type === "text" && typeof p.text === "string")
-      .map((p: any) => p.text.trim())
+      .filter((p): p is { type: "text"; text: string } => !!p && typeof p === "object" && (p as { type?: unknown }).type === "text" && typeof (p as { text?: unknown }).text === "string")
+      .map((p) => p.text.trim())
       .filter(Boolean);
     if (textParts.length > 0) {
       transcriptLines.push(`[${role}]\n${textParts.join("\n")}`);

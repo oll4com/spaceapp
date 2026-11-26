@@ -2,11 +2,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { InMemorySpaceStore } from "@space/runtime";
+import { InMemorySpaceStore, SpaceConflictError } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
 import type { BrowserSessionManager } from "../src/browser-sessions.js";
+import { stopAllThenStart } from "../src/pane-browser-routes.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 
 describe("CLI browser bridge Google account selection", () => {
@@ -132,12 +133,64 @@ describe("CLI browser bridge Google account selection", () => {
     expect((await app.inject({ method: "GET", url: `/api/panes/${own.id}/browser/route`, headers: session("USER") })).statusCode).toBe(403);
   });
 
+  it("relaunches the pane's Chrome on its page and asks its open handoff again on the new tab (operator order 20/11)", async () => {
+    const { room, browserPane } = fixture(admin.id);
+    const hung = store.createPaneBrowserSession({ sessionId: "browser_session:hung", agentNumber: 1, paneId: browserPane.id, roomId: room.id, profileId: "profile:hung",
+      profilePath: `${root}/profiles/hung`, viewport: "desktop", targetUrl: "https://careers.example.test/", currentUrl: "https://careers.example.test/apply", status: "READY", isActive: true });
+    const asked = store.createBrowserHandoffRequest({ sessionId: hung.sessionId, paneId: browserPane.id, roomId: room.id, requestedByType: "AGENT",
+      requestedById: "cli:cli_session:job", reason: "Sign in to the careers site", ttlSeconds: 1800 } as never);
+    stop.mockClear(); start.mockClear();
+    // The real host persists the new session; the mock does the same so the handoff has a session to land on.
+    start.mockImplementationOnce(async (input) => ({ ...session(input.pane.id, input.pane.roomId), session: store.createPaneBrowserSession({ sessionId: "browser_session:relaunched",
+      agentNumber: 1, paneId: input.pane.id, roomId: input.pane.roomId, profileId: "profile:hung", profilePath: `${root}/profiles/hung`, viewport: "desktop", targetUrl: null, status: "READY", isActive: true }) }) as never);
+    const signed = signSession({ id: admin.id, email: admin.email, role: "ADMIN" }, "test-cli-browser-accounts-secret");
+    const headers = { cookie: `space_session=${signed}`, "x-space-csrf-token": createCsrfToken(signed, "test-cli-browser-accounts-secret")! };
+    const put = await app.inject({ method: "PUT", url: `/api/panes/${browserPane.id}/browser/route`, headers, payload: { route: "greece" } });
+    expect(put.json(), put.body).toMatchObject({ route: "greece", restarted: true });
+    expect(stop).toHaveBeenCalledWith(browserPane.id, expect.any(String), expect.anything());
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ pane: expect.objectContaining({ id: browserPane.id }), viewport: "desktop", targetUrl: "https://careers.example.test/apply" }), expect.anything());
+    expect(store.getActiveBrowserHandoffRequest(hung.sessionId)).toBeNull();
+    expect(store.getActiveBrowserHandoffRequest("browser_session:relaunched")).toMatchObject({ paneId: browserPane.id, requestedByType: "AGENT",
+      requestedById: "cli:cli_session:job", reason: "Sign in to the careers site", status: "REQUESTED" });
+    expect(store.getBrowserHandoffRequest(asked.handoffRequestId)?.status).toBe("CANCELLED");
+  });
+
+  it("starts a hung Chrome again after its stop times out at the host, once the host's stop closes it (21/11, Job Copilot Andy)", async () => {
+    const { room, browserPane } = fixture(admin.id);
+    const hung = store.createPaneBrowserSession({ sessionId: "browser_session:hung-stop", agentNumber: 1, paneId: browserPane.id, roomId: room.id, profileId: "profile:hung-stop",
+      profilePath: `${root}/profiles/hung-stop`, viewport: "desktop", targetUrl: "https://careers.example.test/", currentUrl: "https://careers.example.test/login", status: "READY", isActive: true });
+    stop.mockClear(); start.mockClear();
+    // The host answers 30 s in while its stop runs on to the CDP bound, then closes the session.
+    stop.mockImplementationOnce(async () => {
+      setTimeout(() => store.updatePaneBrowserSession(hung.sessionId, { status: "CLOSED", runtimeState: "STOPPED", isActive: false, endedAt: new Date().toISOString() }), 50);
+      throw new Error("Browser host stopPane request timed out after 30000ms.");
+    });
+    const signed = signSession({ id: admin.id, email: admin.email, role: "ADMIN" }, "test-cli-browser-accounts-secret");
+    const headers = { cookie: `space_session=${signed}`, "x-space-csrf-token": createCsrfToken(signed, "test-cli-browser-accounts-secret")! };
+    const put = await app.inject({ method: "PUT", url: `/api/panes/${browserPane.id}/browser/route`, headers, payload: { route: "thailand" } });
+    expect(put.json(), put.body).toMatchObject({ route: "thailand", restarted: true });
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ pane: expect.objectContaining({ id: browserPane.id }), targetUrl: "https://careers.example.test/login" }), expect.anything());
+  }, 15_000);
+
+  it("answers a relaunch the operator's control refuses at once and never reports it restarted", async () => {
+    const { room, browserPane } = fixture(admin.id);
+    store.createPaneBrowserSession({ sessionId: "browser_session:held", agentNumber: 1, paneId: browserPane.id, roomId: room.id, profileId: "profile:held",
+      profilePath: `${root}/profiles/held`, viewport: "desktop", targetUrl: "https://careers.example.test/", status: "READY", isActive: true });
+    stop.mockClear(); start.mockClear();
+    stop.mockImplementationOnce(async () => { throw new SpaceConflictError("Browser control is held by operator user:1."); });
+    const signed = signSession({ id: admin.id, email: admin.email, role: "ADMIN" }, "test-cli-browser-accounts-secret");
+    const headers = { cookie: `space_session=${signed}`, "x-space-csrf-token": createCsrfToken(signed, "test-cli-browser-accounts-secret")! };
+    const put = await app.inject({ method: "PUT", url: `/api/panes/${browserPane.id}/browser/route`, headers, payload: { route: "greece" } });
+    expect(put.statusCode, put.body).toBe(409);
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it("offers a self-hosted install only this server's route: the VPN routes do not exist there", async () => {
     const manager = { startOrRestore: start, stopPane: stop, adoptPaneGoogleProfile: adopt, closeAll: async () => {},
       status: () => ({ enabled: true, statusReason: "Test", defaultUrl: "about:blank", checkedAt: new Date().toISOString() }) };
     const publicApp = await createApp({ store, browserSessionManager: manager as unknown as BrowserSessionManager,
       config: { ...config, ...getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true", SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "test-internal-token",
-        SPACE_ARTIFACT_ROOT: `${root}/browser-evidence`, SPACE_BROWSER_SESSIONS_PROFILE_ROOT: `${root}/profiles` }), publicDistribution: true },
+        SPACE_ARTIFACT_ROOT: `${root}/browser-evidence`, SPACE_BROWSER_SESSIONS_PROFILE_ROOT: `${root}/profiles` }), publicDistribution: true, connectorKeyFile: `${root}/connector.key` },
       auth: { sessionSecret: "test-cli-browser-accounts-secret", devLogin: false, secureCookies: false } });
     try {
       const { browserPane } = fixture(admin.id);
@@ -158,5 +211,19 @@ describe("CLI browser bridge Google account selection", () => {
     const proof = fixture(admin.id, "AGENT_PROOF");
     expect((await proof.command({ type: "LIST_ACCOUNTS" })).json().profiles.filter((profile: { profileId: string }) => profile.profileId.startsWith("google_account:"))).toEqual([]);
     expect((await proof.command({ type: "SELECT_ACCOUNT", profileId: account.id })).statusCode).toBe(409);
+  });
+});
+
+describe("DEV3D-019: a relaunch of several panes on one Chrome never leaves the panes it stopped closed", () => {
+  it("starts every stopped pane when a later stop is refused or one start fails, then answers the first error", async () => {
+    const started: string[] = [];
+    const held = new SpaceConflictError("Browser control is held by operator user:1.");
+    await expect(stopAllThenStart(["a", "b", "c"], async (id) => { if (id === "b") throw held; }, async (id) => { started.push(id); })).rejects.toBe(held);
+    expect(started).toEqual(["a"]);
+    started.length = 0;
+    const broken = new Error("start a failed");
+    await expect(stopAllThenStart(["a", "b"], async () => undefined, async (id) => { if (id === "a") throw broken; started.push(id); })).rejects.toBe(broken);
+    expect(started).toEqual(["b"]);
+    expect(await stopAllThenStart(["a", "b"], async () => undefined, async () => undefined)).toBe(2);
   });
 });

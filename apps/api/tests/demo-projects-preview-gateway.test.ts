@@ -1,7 +1,10 @@
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import Fastify from "fastify";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { InMemoryDemoProjectsRepository, type DemoProjectsRepository } from "@space/db";
 import { DemoCredentialStore } from "../src/demo-projects/credentials.js";
 import { registerDemoProjectsRoutes } from "../src/demo-projects/routes.js";
@@ -13,6 +16,10 @@ import { DemoProjectsService } from "../src/demo-projects/service.js";
  * must never write twice or escape as an uncaught exception: that crashed the
  * whole Space API once, so this is a hard regression guard.
  */
+// Its own folder: a fixed /tmp path another user created first (hz, 15/11) failed chmod with EPERM.
+const scratch = mkdtempSync(join(tmpdir(), "space-demo-gateway-"));
+afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
 interface GatewayContext {
   service: DemoProjectsService;
   repository: DemoProjectsRepository;
@@ -45,9 +52,9 @@ async function createGateway(
   const repository = new InMemoryDemoProjectsRepository();
   const service = new DemoProjectsService({
     repository,
-    credentialStore: new DemoCredentialStore("/tmp/space-demo-gateway-secrets"),
-    demoRoot: "/tmp/space-demo-gateway-demos",
-    varRoot: "/tmp/space-demo-gateway-var",
+    credentialStore: new DemoCredentialStore(join(scratch, "secrets")),
+    demoRoot: join(scratch, "demos"),
+    varRoot: join(scratch, "var"),
     apiPort: 4910,
     publicOrigin: "https://space.example",
     portRangeStart: 51_900,
@@ -70,9 +77,9 @@ async function createGateway(
     pid: process.pid,
     previewToken,
     runTokenHash: "0".repeat(64),
-    workspacePath: "/tmp/space-demo-gateway-var/runs/demo-run-gateway",
-    dataPath: "/tmp/space-demo-gateway-var/runs/demo-run-gateway/data",
-    logPath: "/tmp/space-demo-gateway-var/runs/demo-run-gateway/run.log",
+    workspacePath: join(scratch, "var", "runs/demo-run-gateway"),
+    dataPath: join(scratch, "var", "runs/demo-run-gateway/data"),
+    logPath: join(scratch, "var", "runs/demo-run-gateway/run.log"),
     health: null,
     lastError: null,
     startedAt: new Date().toISOString(),
@@ -104,9 +111,9 @@ describe("demo run reconciliation", () => {
     const repository = new InMemoryDemoProjectsRepository();
     const service = new DemoProjectsService({
       repository,
-      credentialStore: new DemoCredentialStore("/tmp/space-demo-gateway-secrets"),
-      demoRoot: "/tmp/space-demo-gateway-demos",
-      varRoot: "/tmp/space-demo-gateway-var",
+      credentialStore: new DemoCredentialStore(join(scratch, "secrets")),
+      demoRoot: join(scratch, "demos"),
+      varRoot: join(scratch, "var"),
       apiPort: 4910,
       publicOrigin: "https://space.example",
       portRangeStart: 51_900,
@@ -127,9 +134,9 @@ describe("demo run reconciliation", () => {
       pid: 4_194_303,
       previewToken: "stale-preview-token",
       runTokenHash: "0".repeat(64),
-      workspacePath: "/tmp/space-demo-gateway-var/runs/demo-run-stale",
-      dataPath: "/tmp/space-demo-gateway-var/runs/demo-run-stale/data",
-      logPath: "/tmp/space-demo-gateway-var/runs/demo-run-stale/run.log",
+      workspacePath: join(scratch, "var", "runs/demo-run-stale"),
+      dataPath: join(scratch, "var", "runs/demo-run-stale/data"),
+      logPath: join(scratch, "var", "runs/demo-run-stale/run.log"),
       health: null,
       lastError: null,
       startedAt: new Date().toISOString(),

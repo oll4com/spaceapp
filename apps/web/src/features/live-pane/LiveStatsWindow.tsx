@@ -117,7 +117,7 @@ export function LiveStatsWindow({
       await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {}
+    } catch { /* clipboard denied: the button just does not show "copied" */ }
   };
 
   return (

@@ -60,7 +60,7 @@ export function renderSpaceMetrics(input: { queues: QueueReports; gatewayUp: boo
   const readable = input.queues.map(({ name, report }) => ({ labels: `{queue="${name}"}`, report: report?.available ? report : null }));
   const each = (value: (report: DeployQueueReport) => number) => readable.flatMap(({ labels, report }) => (report ? [[labels, value(report)] as [string, number]] : []));
   gauge("space_merge_queue_readable", "1 when Space could read the merge queue's state, otherwise 0.", readable.map(({ labels, report }) => [labels, report ? 1 : 0]));
-  gauge("space_merge_queue_daemon_up", "1 while the merge queue daemon's heartbeat is fresh or a batch is in progress.", each((report) => (report.daemonRunning ? 1 : 0)));
+  gauge("space_merge_queue_daemon_up", "1 while the merge queue daemon's heartbeat is fresh, a batch is in progress or its process is alive.", each((report) => (report.daemonRunning ? 1 : 0)));
   gauge("space_merge_queue_paused", "1 while the merge queue is paused.", each((report) => (report.paused ? 1 : 0)));
   gauge("space_merge_queue_active_tickets", "Tickets queued or in progress.", each((report) => report.active.length));
   gauge("space_merge_queue_batch_phase_seconds", "Seconds the current batch has been in its phase, 0 with no batch.", each((report) => {
@@ -136,10 +136,14 @@ export function registerMetricsScrape(app: FastifyInstance, input: { tokenFile: 
   const meminfo = input.meminfo ?? (() => readFile("/proc/meminfo", "utf8"));
   app.get("/api/metrics/scrape", input.routeOptions, async (request, reply) => {
     if (!(await auth.allows(request))) return sendApiError(reply, 403, "METRICS_FORBIDDEN", "Metrics scrapes need the collector's token from a private-network address.");
-    const memory = parseMeminfo(await meminfo().catch(() => ""));
+    // Three independent reads: one wait for the slowest instead of their sum.
+    const [meminfoText, space, host] = await Promise.all([
+      meminfo().catch(() => ""),
+      input.space?.().catch(() => "") ?? "",
+      input.hostSwap?.read().catch(() => null) ?? null
+    ]);
+    const memory = parseMeminfo(meminfoText);
     reply.header("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
-    const space = await input.space?.().catch(() => "") ?? "";
-    const host = await input.hostSwap?.read().catch(() => null) ?? null;
     return `${input.render()}${renderLoadMetrics({ load5: Math.round(loadavg()[1]! * 100) / 100, cores: cpus().length || 1, memTotalBytes: totalmem(), ...memory, host })}${space}`;
   });
   const targets = input.targets ?? {};

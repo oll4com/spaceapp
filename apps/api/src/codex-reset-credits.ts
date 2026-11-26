@@ -17,6 +17,7 @@ export interface CodexResetCreditsRedemptionResult {
     outcome: CodexResetCreditRedemptionOutcome;
     usageVerified: boolean;
     creditIdHash: string | null;
+    windowsReset?: string[];
   };
 }
 

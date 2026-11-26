@@ -23,6 +23,8 @@ export interface PaneReportRouteDependencies {
   parseBody<TSchema extends z.ZodTypeAny>(schema: TSchema, body: unknown): z.infer<TSchema>;
   /** Nous's pane reports, once Nous is registered. */
   reports(): PaneReports | null;
+  /** The pane reported done or failed: its own CLI browsers are released (browser-reaper.ts releaseFor). */
+  workEnded?(paneId: string): Promise<void>;
 }
 
 export function registerPaneReportRoutes(app: FastifyInstance, deps: PaneReportRouteDependencies): void {
@@ -34,6 +36,8 @@ export function registerPaneReportRoutes(app: FastifyInstance, deps: PaneReportR
     const input = deps.parseBody(paneProgressSchema, request.body ?? {});
     const [room, pane] = await Promise.all([deps.store.getRoom(bridge.claims.roomId), deps.store.getPane(bridge.claims.paneId)]);
     const report = await reports.report(room, pane, input);
+    // W47 step 3 (Idle open browsers): not awaited, the agent's report never waits on a Browser Host stop.
+    if (input.status === "done" || input.status === "failed") void deps.workEnded?.(pane.id).catch((error: unknown) => request.log.warn({ err: error, paneId: pane.id }, "Own browsers could not be released."));
     // The stored summary, redacted: what Nous will read.
     return reply.code(201).send({ id: report.id, at: report.at, status: report.status, summary: report.summary });
   });

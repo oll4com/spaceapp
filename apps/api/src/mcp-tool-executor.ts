@@ -226,7 +226,10 @@ export function createMcpToolExecutor(options: {
           executionId: capture.executionId,
           status: capture.isError ? "FAILED" : "EXECUTED",
           code: capture.isError ? "TOOL_RETURNED_ERROR" : "TOOL_EXECUTION_OK",
-          message: capture.isError ? "MCP tool returned an error result." : "MCP tool execution completed.",
+          // 15/11: "MCP tool returned an error result." hid the tool's reason; the contract bounds message at 1000 characters,
+          // the whole answer stays in the artifact.
+          message: !capture.isError ? "MCP tool execution completed."
+            : capture.errorText ? `MCP tool returned an error: ${capture.errorText}`.slice(0, 1000) : "MCP tool returned an error result.",
           toolId: input.toolId,
           serverId: server.id,
           toolName: tool.name,

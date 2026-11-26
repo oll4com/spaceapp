@@ -1,6 +1,7 @@
 import { registerSiteSigninAgentRoutes, siteSigninFor, signinHandoffRecipe } from "./site-signins.js";
-import { checkSiteAccount, moveTabToWantedAccount, signinTarget, siteAccountLine, tabGoogleAccounts } from "./site-signin-account.js";
+import { checkSiteAccount, moveTabToWantedAccount, runsIn, signinTarget, siteAccountLine, tabGoogleAccounts } from "./site-signin-account.js";
 import { handoffTtlSeconds, ownerHandsAnswer, ownerQuietNow } from "./owner-clock.js";
+import { closedNightHandoff, nightHandoffLine } from "./notifications/browser-handoff.js";
 import { BROWSER_CONTROL_AGENT_RECLAIM_IDLE_MS, BROWSER_CONTROL_PRESENCE_HOLD_MAX_MS, createBrowserControlActivity, ownBrowserPane, releaseBrowserControlLease, settleEndedOperatorLease, type BrowserControlActivity } from "./browser-control-activity.js";
 import type {} from "./request-context.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
@@ -22,14 +23,15 @@ import { BrowserControlHeldError } from "./browser-errors.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
 import { assertBrowserHostPressKey } from "./browser-sessions.js";
 import { uploadablePaths, uploadBrowserFiles } from "./browser-file-upload.js";
-import { mailCodeHandoff, pageChallenge, pageReadout } from "./browser-page-readout.js";
-import { markSignin, OPERATOR_HANDS, RESET_ASK, RESET_URL, resetRefusal, VAULT_SIGNIN_ASK, vaultSigninHold } from "./signin-readback.js";
+import { authenticatorCodeAsk, mailCodeHandoff, pageChallenge, pageForms, pageReadout } from "./browser-page-readout.js";
+import { markSignin, namedAccounts, OPERATOR_HANDS, RESET_ASK, RESET_URL, resetRefusal, VAULT_SIGNIN_ASK, vaultSigninHold, type VaultLoginRef } from "./signin-readback.js";
 import { createTextCaptchaService } from "./browser-text-captcha.js";
 import { createSliderCaptchaService } from "./browser-slider-captcha.js";
+import { createAudioCaptchaService } from "./browser-audio-captcha.js";
 import { NOUS_FILES_ROOT } from "./nous/files.js";
 import { handoffHeldFrom } from "./cli-browser-cdp.js";
 import {
-  safeBrowserActionRequestForResponse, safeBrowserObservationText, safeBrowserObservationUrl
+  safeBrowserActionRequestForResponse, safeBrowserObservationText, safeBrowserObservationUrl, safeBrowserPagesForResponse
 } from "./browser-observation.js";
 import {
   AgentFileDocxNormalizationError, type AgentFileDocxNormalizer, cliAgentFilesEnabled, cliAgentFilesTokenHeader,
@@ -43,7 +45,7 @@ import type { PaneBrowserAccountControl } from "./pane-browser-routes.js";
 import { selectYouTubeAccountSchema } from "./youtube-accounts.js";
 import type { SpaceApiConfig } from "./config.js";
 import { sendApiError } from "./http-errors.js";
-import { assertBrowserPaneCompatible, getActiveBrowserSessionForPane, getPaneById } from "./pane-guards.js";
+import { assertBrowserPaneCompatible, assertNotOtherAgentsBrowser, getActiveBrowserSessionForPane, getPaneById, isOtherAgentsBrowser } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
 import { CHALLENGE_ATTEMPT_ACTION, pageAddress } from "./browser-challenge-attempt.js";
 import { headerString } from "./request-helpers.js";
@@ -73,6 +75,7 @@ import { registerPaneReportRoutes } from "./pane-report-routes.js";
 import { registerQueueOperatorGrantRoute } from "./queue-operator-grants.js";
 import type { PaneReports } from "./pane-reports.js";
 import { registerVaultAgentBridge, type VaultModule } from "./vault/wiring.js";
+import { vaultFlowStep } from "./vault/protection.js";
 import type { FreelanceCopilotService } from "./freelance-copilot/service.js";
 import type { JobApplyService } from "./job-apply/service.js";
 import { isT3AgentSessionId, t3AgentPrincipal, T3_AGENT_RUNTIME_ID } from "./t3code/agent-tokens.js";
@@ -83,9 +86,10 @@ import { refusalOf } from "./browser-reaper.js";
  * Browser status and the CLI bridge routes (Agent Files publishing, browser context, session, actions and commands
  * for CLI panes); the parent retains authentication, CSRF, errors and rate limits.
  */
+const hostOf = (address: string | null | undefined) => { try { return new URL(address ?? "").hostname; } catch { return null; } };
 /** nous_msg:5321471cb6334fd6ab52a30f (13/11: a CLI pane sent mails through Gmail web): a Gmail web visit is told the mail path; never blocked (Google sign-ins). */
 export function gmailWebNote(url: string): string {
-  let host = "";
+  let host: string;
   try { host = new URL(url).hostname; } catch { return ""; }
   return host === "mail.google.com" ? "Gmail web is not the mail path: read with space_mailcopilot space_mail_search/space_mail_thread_read and hand a mail to send to the Mail Copilot with space_mail_review_request. " : "";
 }
@@ -133,11 +137,16 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
   nous?: { current: { paneReports: PaneReports; coversApproval?(owner: string): Promise<boolean>; service?: { notice(owner: string, key: string, line: string): Promise<unknown> } } | null };
   /** Drops the pane's Playwright connections but the requester's when its handoff starts (the CDP proxy is created after these routes). */
   dropOtherAgents?(paneId: string, keepCliSessionId: string): void;
+  /** A browser pane of the room another terminal agent is done with, reused before a new one is made (browser-reaper.ts idleRoomBrowser). */
+  idleBrowser?(roomId: string): Promise<string | null>;
+  /** A pane's done or failed report releases the browsers it drove last (browser-reaper.ts releaseFor). */
+  releaseOwnBrowsers?(paneId: string): Promise<void>;
 }) {
   const { options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility, controlActivity,
     routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts } = deps;
   const textCaptcha = createTextCaptchaService();
   const sliderCaptcha = createSliderCaptchaService();
+  const audioCaptcha = createAudioCaptchaService();
   // While another agent's handoff waits, the operator's tab stays as they were sent to it: an agent may only read (handoffHeldFrom).
   const handoffReadCommands = new Set(["DEVTOOLS", "LIST_PAGES", "LIST_ACCOUNTS", "CAPTURE_STATUS", "LIST_ARTIFACTS", "PIN_ARTIFACT", "UNPIN_ARTIFACT", "HANDOFF_STATUS", "CANCEL_HANDOFF"]);
   async function assertNoForeignHandoff(paneId: string, cliSessionId: string) {
@@ -145,12 +154,19 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
     const held = session ? await handoffHeldFrom(store, session.sessionId, `cli:${cliSessionId}`) : null;
     if (held) throw new SpaceConflictError(held);
   }
+  // A Vault/MFA flow holds its browser (vaultFlowStep): another agent's step waits, the holder's goes to the flow's own tab.
+  const flowStep = (pane: Pane, cliSessionId: string, traceId: string) =>
+    deps.vault ? vaultFlowStep(deps.vault.protection, browserSessionManager, pane, `cli:${cliSessionId}`, traceId) : Promise.resolve();
   // The Google account a site wants (its sign-in recipe, or the account a Google sign-in page names) against the tab's account
   // (operator nous_msg:05e5af9f81ec45caa1f50f1b): never the pane's default account by accident. Like the account tools, only in a
   // room an ADMIN owns, since it reads the owner's saved Google sign-ins.
   async function siteAccountFor(pane: Pane, address: string | null | undefined, pageId?: string | null) {
     const accounts = paneBrowserAccounts.current;
     if (!accounts || !address) return null;
+    // Space's own pages and Google's sign-in returning to them stay in the tab's browser: /api/auth/google/start set the OAuth state
+    // cookies there, and in another account's browser the callback found none (15/11 Cleo/Nik: "Invalid or expired Google OAuth state").
+    const spaceHost = hostOf(config.browserEvidenceTargetOrigin);
+    if (spaceHost && (hostOf(address) === spaceHost || signinTarget(address).oauthReturnHost === spaceHost)) return null;
     const ownerUserId = (await store.getRoom(pane.roomId)).ownerUserId;
     const owner = ownerUserId ? await store.getControlActor(ownerUserId) : null;
     if (owner?.role !== "ADMIN") return null;
@@ -332,7 +348,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
     audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "task_item", targetId, metadata })
   });
   registerPaneReportRoutes(app, { store, routeOptions: defaultRouteRateLimitOptions, requireBridge: requireCliBrowserBridgeContext, parseBody,
-    reports: () => deps.nous?.current?.paneReports ?? null });
+    reports: () => deps.nous?.current?.paneReports ?? null, workEnded: deps.releaseOwnBrowsers });
   registerQueueOperatorGrantRoute(app, { routeOptions: defaultRouteRateLimitOptions, requireBridge: requireCliBrowserBridgeContext });
   async function requireCliAgentFilesContext(request: FastifyRequest, reply: FastifyReply) {
     if (!cliAgentFilesEnabled(config)) {
@@ -488,7 +504,13 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
   app.get("/api/cli/browser/context", defaultRouteRateLimitOptions, async (request, reply) => {
     const bridge = await requireCliBrowserBridgeContext(request, reply);
     if (!bridge) return undefined;
-    const browserSessions = await store.listActivePaneBrowserSessions(bridge.claims.roomId);
+    // Another running agent's copilot browser is not listed: its id as targetPaneId drove that agent's browser (15/11, Jack on Max's).
+    const panes = await store.listPanes(bridge.claims.roomId, false);
+    const browserSessions: PaneBrowserSession[] = [];
+    for (const session of await store.listActivePaneBrowserSessions(bridge.claims.roomId)) {
+      const pane = panes.find((entry) => entry.id === session.paneId);
+      if (!pane || !await isOtherAgentsBrowser(store, pane, bridge.claims.paneId)) browserSessions.push(session);
+    }
     await recordAudit(store, request, {
       action: "pane.cli.browser_context",
       targetType: "pane",
@@ -520,15 +542,18 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
     if (!bridge) return undefined;
     const input = parseBody(spaceCliBrowserSessionStartRequestSchema, request.body ?? {});
     const panes = await store.listPanes(bridge.claims.roomId, false);
-    // No target: this pane's own browser, else a new one; never a browser another agent drives.
+    // No target: this pane's own browser, else one another terminal agent of the room is done with, else a new one; never a browser another agent drives.
     let browserPane = input.targetPaneId ? panes.find((pane) => pane.id === input.targetPaneId) : ownBrowserPane(panes, bridge.claims.paneId, controlActivity);
     if (input.targetPaneId && !browserPane) {
       throw new SpaceNotFoundError(`Browser pane ${input.targetPaneId} was not found in room ${bridge.claims.roomId}.`);
     }
     if (browserPane) {
       assertBrowserPaneCompatible(browserPane);
+      await assertNotOtherAgentsBrowser(store, browserPane, bridge.claims.paneId);
+      await flowStep(browserPane, bridge.claims.cliSessionId, request.requestIdForSpace);
     } else {
-      browserPane = await store.createPane(
+      const idle = await deps.idleBrowser?.(bridge.claims.roomId).catch(() => null);
+      browserPane = panes.find((pane) => pane.id === idle) ?? await store.createPane(
         {
           roomId: bridge.claims.roomId,
           title: "CLI Browser",
@@ -579,8 +604,10 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         if (browserPane.roomId !== bridge.claims.roomId) {
           throw new SpaceNotFoundError(`Browser pane ${browserPane.id} was not found in room ${bridge.claims.roomId}.`);
         }
+        await assertNotOtherAgentsBrowser(store, browserPane, bridge.claims.paneId);
         await assertBrowserHostPressKey(browserSessionManager, actionRequest.action);
         await assertNoForeignHandoff(browserPane.id, bridge.claims.cliSessionId);
+        await flowStep(browserPane, bridge.claims.cliSessionId, request.requestIdForSpace);
         // A site whose sign-in lives in another Google account opens in that account's browser, not in the pane's default one.
         let accountNote: string | null = null;
         const gmailNote = actionRequest.action.type === "navigate" ? gmailWebNote(actionRequest.action.url) : "";
@@ -691,7 +718,11 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
     if (pane.roomId !== bridge.claims.roomId) {
       throw new SpaceNotFoundError(`Browser pane ${pane.id} was not found in room ${bridge.claims.roomId}.`);
     }
-    if (!handoffReadCommands.has(input.command.type)) await assertNoForeignHandoff(pane.id, bridge.claims.cliSessionId);
+    await assertNotOtherAgentsBrowser(store, pane, bridge.claims.paneId);
+    if (!handoffReadCommands.has(input.command.type)) {
+      await assertNoForeignHandoff(pane.id, bridge.claims.cliSessionId);
+      await flowStep(pane, bridge.claims.cliSessionId, request.requestIdForSpace);
+    }
     if (input.command.type === "LIST_ACCOUNTS" || input.command.type === "SELECT_ACCOUNT") {
       // Saved Google sign-ins belong to the room's owner and, as in the pane's account menu, need the ADMIN role.
       // Credentials never leave Chrome: the agent only chooses which saved profile the pane opens.
@@ -719,7 +750,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
           // Never silent: which account the pane opens by default, and each tab's account.
           effectiveEmail: effective?.email ?? null,
           byDefault: listing.selectedProfileId === null,
-          ...(pages ? { tabs: pages.pages.map((page) => ({ pageId: page.pageId, isActive: page.isActive, url: page.url,
+          ...(pages ? { tabs: pages.pages.map((page) => ({ pageId: page.pageId, isActive: page.isActive, url: safeBrowserObservationUrl(page.url),
             profileId: page.account?.profileId ?? listing.effectiveProfileId, email: page.account?.label ?? effective?.email ?? null })) } : {}),
           note: listing.selectedProfileId === null && effective?.email
             ? `No account was chosen for this pane: it opens in ${effective.email} (the primary Google account) by default. Sites whose sign-in recipe (space_site_signin_get) names another Google account open in that account's browser.`
@@ -798,9 +829,10 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
           // A new tab for a site whose sign-in lives in another Google account opens straight in that account's browser.
           const site = input.command.url ? await siteAccountFor(pane, input.command.url) : null;
           if (site) {
-            const check = { ...site.check, tab: site.check.pane, matches: site.check.wanted.profileId === null
-              ? site.check.pane.email?.toLowerCase() === site.check.wanted.email : site.check.wanted.profileId === site.check.paneProfileId };
-            if (!check.matches && check.wanted.profileId !== null && pane.mode !== "FREELANCE_COPILOT" && session.controlState !== "OPERATOR") {
+            const wanted = site.check.accounts.find((account) => runsIn(account, site.check.pane)) ?? site.check.wanted;
+            const check = { ...site.check, wanted, tab: site.check.pane, matches: runsIn(wanted, site.check.pane) };
+            // Several sign-ins and the pane in none: the new tab stays in the pane's account (siteAccountLine names them all).
+            if (!check.matches && check.wanted.profileId !== null && check.accounts.length === 1 && pane.mode !== "FREELANCE_COPILOT" && session.controlState !== "OPERATOR") {
               try {
                 const pages = await site.accounts.openTab(site.owner, pane, input.command.url!, check.wanted.profileId, request.requestIdForSpace, { holderType: "AGENT", holderId: actorId });
                 result = { ...pages, siteAccount: `New tab opened in ${check.wanted.email}'s browser. ${siteAccountLine({ ...check, matches: true }, false)}` };
@@ -927,20 +959,24 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         break;
       }
       case "REQUEST_HANDOFF": {
-        // The operator's local time (plan clipboard:9XSwTPyxXP1W): at night the request waits for their morning, alive until an hour after it.
+        // The operator's local time (plan clipboard:9XSwTPyxXP1W): in quiet hours the handoff waits on the card with its browser closed (below).
         const owner = (await store.getRoom(pane.roomId)).ownerUserId;
         const signinKind = ["LOGIN", "MFA"].includes(input.command.kind);
+        // 19/11 Braintrust: the live tab, not the session's stored address, says the site; a tab moved into another account's browser left
+        // currentUrl on google.com and the MFA card named google.com's sign-in. Unread page: the stored address.
+        const page = await pageChallenge({ config, pane, session }).catch(() => null);
+        const liveUrl = page?.url ?? session.currentUrl;
         // A Google sign-in page stands for the site it continues to: that site's recipe names the account.
-        const target = signinTarget(session.currentUrl);
-        const recipe = signinKind ? await signinHandoffRecipe(store, owner, target.site ? `https://${target.site}/` : session.currentUrl, input.command.triedStored) : {signin: null, blocked: false, site: null};
+        const target = signinTarget(liveUrl);
+        const recipe = signinKind ? await signinHandoffRecipe(store, owner, target.site ? `https://${target.site}/` : liveUrl, input.command.triedStored) : {signin: null, blocked: false, site: null};
         // The Google account this sign-in needs, never the pane's default one (operator nous_msg:05e5af9f81ec45caa1f50f1b): a tab in another
         // account moves into the wanted account's browser; signed in there, the agent goes on without the operator.
         let accountLine: string | null = null;
-        const site = signinKind ? await siteAccountFor(pane, session.currentUrl) : null;
+        const site = signinKind ? await siteAccountFor(pane, liveUrl) : null;
         if (site) {
           const held = session.controlState === "OPERATOR";
           const move = held ? { moved: false, error: "the operator holds this browser" }
-            : await moveTabToWantedAccount(site.accounts, site.owner, pane, site.check, target.destination ?? session.currentUrl ?? undefined, !site.check.wanted.signedIn,
+            : await moveTabToWantedAccount(site.accounts, site.owner, pane, site.check, target.destination ?? liveUrl ?? undefined, !site.check.wanted.signedIn,
               request.requestIdForSpace, { holderType: "AGENT", holderId: actorId });
           accountLine = siteAccountLine(site.check, move.moved) + (move.error && !site.check.matches ? ` (The tab could not move: ${move.error}.)` : "");
           if (move.moved && site.check.wanted.signedIn) {
@@ -957,7 +993,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         }
         // nous_msg:fe72e061: a reset or recovery handoff while the stored sign-in works is refused, unless the operator's order is passed.
         if (owner && RESET_ASK.test(input.command.reason)) {
-          const guard = resetRefusal(recipe.signin ?? await siteSigninFor(store, owner, target.site ? `https://${target.site}/` : session.currentUrl).catch(() => null), input.command.operatorOrder);
+          const guard = resetRefusal(recipe.signin ?? await siteSigninFor(store, owner, target.site ? `https://${target.site}/` : liveUrl).catch(() => null), input.command.operatorOrder);
           if (guard.refusal) { result = {status: "SIGNIN_WORKS", message: guard.refusal}; break; }
           if (guard.override) await recordAudit(store, request, { action: "pane.cli.browser_handoff.reset_override", targetType: "pane", targetId: pane.id,
             metadata: { roomId: pane.roomId, operatorOrder: guard.override } });
@@ -966,30 +1002,35 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         // 7/11 Oracle: a sign-in the Vault holds goes to the operator only once its login was filled and the page read back since the last
         // reset; triedStored alone does not say so. A bot check, a phone push or code, a camera and a payment still go through.
         const signinAsk = input.command.kind === "LOGIN" || (input.command.kind === "OTHER" && VAULT_SIGNIN_ASK.test(input.command.reason));
-        const vaultSite = signinAsk && owner && !OPERATOR_HANDS.test(input.command.reason) ? siteSigninKeySchema.safeParse({site: target.site ?? session.currentUrl ?? ""}) : null;
+        const vaultSite = signinAsk && owner && !OPERATOR_HANDS.test(input.command.reason) ? siteSigninKeySchema.safeParse({site: target.site ?? liveUrl ?? ""}) : null;
         if (owner && vaultSite?.success) {
           const vault = deps.vault;
           const step = await vaultSigninHold(owner, vaultSite.data.site, recipe.signin ?? await siteSigninFor(store, owner, vaultSite.data.site), async () => {
             if (!vault) return null;
-            const listed = await vault.agent.call({ owner, paneId: pane.id, roomId: pane.roomId, path: "list", body: { site: vaultSite.data.site }, traceId: request.requestIdForSpace ?? "" }) as { items?: unknown[] };
-            return Array.isArray(listed.items) ? listed.items.length : null;
-          });
+            const listed = await vault.agent.call({ owner, paneId: pane.id, roomId: pane.roomId, path: "list", body: { site: vaultSite.data.site }, traceId: request.requestIdForSpace ?? "" }) as { items?: VaultLoginRef[] };
+            return Array.isArray(listed.items) ? listed.items : null;
+          }, namedAccounts(input.command.reason, target.hintEmail));
           if (step) { result = {status: "READ_BACK_FIRST", message: step}; break; }
         }
         // nous_msg:243370cb: a check, code or other hands handoff whose page asks for an e-mailed code is the agent's (an unread page: its reason).
         if (input.command.kind !== "LOGIN") {
-          const page = await pageChallenge({ config, pane, session }).catch(() => null);
           const mailCode = mailCodeHandoff(page, input.command.reason, target.site);
           if (mailCode) { result = {status: "MAIL_CODE", message: mailCode}; break; }
         }
         const night = await ownerQuietNow(owner ? await store.getUserSettings(owner) : null, owner);
+        // At night the browser stays open with its form until the morning (Nous goal 91e45be1, 16/11); the card names the page should it close anyway.
+        const nightLine = night.quiet ? nightHandoffLine(liveUrl) : "";
+        // A new ask replaces the pane's night handoff still waiting on its closed browser.
+        const earlier = await closedNightHandoff(store, pane, session.sessionId);
+        if (earlier) await store.updateBrowserHandoffRequest(earlier.handoffRequestId, { status: "CANCELLED" });
+        const reason = `${input.command.kind}: ${recipe.site ? `[site:${recipe.site}] ` : ""}${accountLine ? `${accountLine} ` : ""}${recipe.signin ? `Stored method ${recipe.signin.method}, account ${recipe.signin.googleAccountEmail ?? recipe.signin.siteAccountEmail ?? "main"}. ` : ""}${page && authenticatorCodeAsk(page.text) ? "The page asks for the code from your authenticator app. " : ""}${input.command.reason}`;
         const handoff = await store.createBrowserHandoffRequest({
           sessionId: session.sessionId,
           paneId: pane.id,
           roomId: pane.roomId,
           requestedByType: "AGENT",
           requestedById: actorId,
-          reason: `${input.command.kind}: ${recipe.site ? `[site:${recipe.site}] ` : ""}${accountLine ? `${accountLine} ` : ""}${recipe.signin ? `Stored method ${recipe.signin.method}, account ${recipe.signin.googleAccountEmail ?? recipe.signin.siteAccountEmail ?? "main"}. ` : ""}${input.command.reason}`.slice(0, 500),
+          reason: `${reason.slice(0, 500 - nightLine.length)}${nightLine}`,
           // A login or MFA needs the operator to come to the pane and a phone; five minutes ran out before
           // they arrived and "Take control" then had nothing to accept. The agent waits up to 15 minutes.
           ttlSeconds: handoffTtlSeconds(night)
@@ -997,7 +1038,10 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         const handoffEvent = (await store.listEvents(pane.roomId)).find((event) => event.traceId === handoff.handoffRequestId);
         if (handoffEvent) eventBus.publish(handoffEvent);
         deps.dropOtherAgents?.(pane.id, bridge.claims.cliSessionId);
-        result = { handoff, operator: ownerHandsAnswer(night) };
+        if (!night.quiet) { result = { handoff, operator: ownerHandsAnswer(night) }; break; }
+        result = { handoff, operator: ownerHandsAnswer(night), message: `It is night for the operator (${night.local}), quiet until ${night.wakeLocal}: `
+          + "this browser stays open on this page with what you filled in, and the card waits for their morning. Stop here and do not close the tab; "
+          + "you are prompted once they did it, or if the card runs out after their morning." };
         break;
       }
       case "HANDOFF_STATUS": {
@@ -1035,6 +1079,11 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         await recordChallengeAttempt("Slider CAPTCHA");
         break;
       }
+      case "AUDIO_CAPTCHA": {
+        result = await audioCaptcha({ config, pane, session, command: input.command, checkControl: captchaControl });
+        await recordChallengeAttempt("Audio CAPTCHA");
+        break;
+      }
       case "UPLOAD_FILE": {
         // Like the CDP proxy: no automation while an operator holds the browser.
         if (await store.getActiveBrowserControlLease(session.sessionId)) throw new SpaceConflictError("An operator holds browser control; wait for the handoff to finish.");
@@ -1051,6 +1100,11 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         // The read-back a sign-in handoff or card and the next password reset wait for (signin-readback.ts).
         if (owner) markSignin(owner, `https://${readout.host}/`, "read");
         result = readout;
+        break;
+      }
+      case "PAGE_FORMS": {
+        if (await store.getActiveBrowserControlLease(session.sessionId)) throw new SpaceConflictError("An operator holds browser control; wait for the handoff to finish.");
+        result = await pageForms({ config, pane, session });
         break;
       }
       case "RECLAIM_CONTROL": {
@@ -1075,6 +1129,10 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         break;
       }
     }
+    // The holder's own tab switch carries its flow there.
+    const activePageId = (result as { activePageId?: unknown } | null)?.activePageId;
+    if (deps.vault?.protection.flowHold(pane.id)?.holder === actorId && typeof activePageId === "string"
+      && (input.command.type === "ACTIVATE_PAGE" || input.command.type === "CREATE_PAGE" && input.command.activate)) deps.vault.protection.holdFlow(pane.id, actorId, activePageId);
 
     await recordAudit(store, request, {
       action: "pane.cli.browser_command",
@@ -1088,6 +1146,6 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         commandType: input.command.type
       }
     });
-    return result;
+    return safeBrowserPagesForResponse(result);
   });
 }

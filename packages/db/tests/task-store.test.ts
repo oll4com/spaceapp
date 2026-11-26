@@ -132,6 +132,6 @@ describe("PostgresSpaceStore task history", () => {
     // The claim and its task run are one statement (plan clipboard:GA__W4qBxSPR).
     expect(claim.sql).toContain("WHERE id = $1 AND next_run_at = $2");
     expect(claim.sql).toContain("INSERT INTO task_runs");
-    expect(claim.values).toEqual([taskRow.id, "2026-10-15T10:00:00.000Z", "2026-10-15T12:00:00.000Z", "Sent.", true, "RUNNING", "2026-10-15T10:00:10.000Z"]);
+    expect(claim.values).toEqual([taskRow.id, "2026-10-15T10:00:00.000Z", "2026-10-15T12:00:00.000Z", "Sent.", true, "RUNNING", "2026-10-15T10:00:10.000Z", null, null]);
   });
 });

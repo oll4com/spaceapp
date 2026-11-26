@@ -147,6 +147,39 @@ describe("clipboard store", () => {
     expect(store.listClipboardItems("user:two", { source: "PLAN", includeCompleted: true, paneId: "pane:bob1234", page: 1, pageSize: 1 }).items).toEqual([]);
   });
 
+  it("counts a plan closed at 100% with a step not completed or failed as unfinished, like the Postgres store", () => {
+    const store = new InMemorySpaceStore();
+    const plan = (text: string) => store.upsertClipboardItem({ ownerUserId: "user:one", text, source: "PLAN", title: text, minimumModel: "gpt-5.6-sol" });
+    const step = (order: number, status: "COMPLETED" | "FAILED" | "PENDING") =>
+      ({ id: `s${order}`, order, title: `Step ${order}`, status, progress: 0, agent: null, notes: null, proof: null, startedAt: null, completedAt: null });
+    const left = plan("work left");
+    store.updateClipboardItemProgress("user:one", left.id, { progressPercentage: 100, steps: [step(1, "COMPLETED"), step(2, "COMPLETED")] });
+    // A step reopened on an already-closed plan stays open.
+    store.updateClipboardItemProgress("user:one", left.id, { stepUpdate: { stepIdOrOrder: 2, status: "PENDING" } });
+    const dropped = plan("only dropped steps");
+    store.updateClipboardItemProgress("user:one", dropped.id, { progressPercentage: 100, steps: [step(1, "COMPLETED"), step(2, "FAILED")] });
+    expect(store.listClipboardItems("user:one", { unfinished: true, page: 1, pageSize: 25 }).items.map((item) => item.id)).toEqual([left.id]);
+  });
+
+  it("closes the open steps of a plan that closes, unless the plan is parked", () => {
+    const store = new InMemorySpaceStore();
+    const plan = (text: string) => store.upsertClipboardItem({ ownerUserId: "user:one", text, source: "PLAN", title: text, minimumModel: "gpt-5.6-sol" });
+    const step = (order: number, status: "COMPLETED" | "FAILED" | "PENDING" | "IN_PROGRESS") =>
+      ({ id: `s${order}`, order, title: `Step ${order}`, status, progress: 0, agent: null, notes: null, proof: null, startedAt: null, completedAt: null });
+    const statuses = (id: string) => store.getClipboardItem("user:one", id)?.steps?.map((item) => item.status);
+    const viaProgress = plan("closed by progress");
+    store.updateClipboardItemProgress("user:one", viaProgress.id, { progressPercentage: 50, steps: [step(1, "COMPLETED"), step(2, "IN_PROGRESS"), step(3, "FAILED")] });
+    store.updateClipboardItemProgress("user:one", viaProgress.id, { progressPercentage: 100 });
+    expect(statuses(viaProgress.id)).toEqual(["COMPLETED", "COMPLETED", "FAILED"]);
+    const viaCheckbox = plan("closed by checkbox");
+    store.updateClipboardItemProgress("user:one", viaCheckbox.id, { progressPercentage: 40, steps: [step(1, "PENDING")] });
+    expect(store.setClipboardItemCompleted("user:one", viaCheckbox.id, true).steps?.[0]).toMatchObject({ status: "COMPLETED", progress: 100 });
+    const parked = plan("parked");
+    store.updateClipboardItemProgress("user:one", parked.id, { progressPercentage: 40, steps: [step(1, "PENDING")] });
+    store.updateClipboardItemProgress("user:one", parked.id, { parked: { reason: "Waits on the operator", since: "2026-11-22T00:00:00.000Z", conditions: [{ who: "OPERATOR", what: "Approve" }] } as never });
+    expect(store.setClipboardItemCompleted("user:one", parked.id, true).steps?.[0]?.status).toBe("PENDING");
+  });
+
   it("marks plans completed, hides them by request, and keeps the flag on re-save", () => {
     const store = new InMemorySpaceStore();
     const plan = store.upsertClipboardItem({

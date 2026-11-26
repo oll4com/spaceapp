@@ -3,7 +3,8 @@ import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fas
 import type { WebSocket } from "ws";
 import {
   LINK_APP, MOBILE_PAIRING_CONFIRM_MS, isAgentFileArtifact, MOBILE_UPDATE_REQUIRED_CLOSE, MobileNoiseHandshake, decodeMobileFrame, encodeMobileFrame, mobileAppUpdateRequired, mobileFrames, mobileHandshakePrologue, mobileHelloSchema,
-  mobileIntegrityRequestHash, mobilePairRequestSchema, mobilePairingPsk, vaultBase64url, type MobileUpdateRequired, type MobileFrame, type MobileNoiseTransport, type NotificationRaiseInput
+  mobileIntegrityRequestHash, mobilePairRequestSchema, mobilePairingPsk, vaultBase64url, type MobileUpdateRequired, type MobileFrame, type MobileNoiseTransport, type NotificationRaiseInput,
+  mobileScopeSchema
 } from "@space/contracts";
 import type { AppDeviceSessionRecord, AppDeviceSessionRepository, MobileDeviceScope, MobileInstanceKeyRepository } from "@space/db";
 import { makeSpaceId, type SpaceEventBus, type SpaceStore } from "@space/runtime";
@@ -13,6 +14,7 @@ import { requestIpForLog } from "../request-helpers.js";
 import { heldPaneReached, linkLease } from "../instance-link/lease.js";
 import { OPERATOR_TURN_GRACE_MS, operatorHeldPanes } from "../queue-operator-grants.js";
 import { linkRoute } from "../instance-link/routes.js";
+import type { LinkForward, LinkSink } from "../instance-link/ai-lend.js";
 import { attestationSerials, createAttestationStatusList, recheckDecideKeys, verifyDecideKeyAttestation, type AttestationStatusList } from "./attestation.js";
 import { mailPairingNotice } from "./pairing-mail.js";
 import type { MailCopilotGoogleAccess } from "../mail-copilot/service.js";
@@ -72,6 +74,7 @@ type Peer = { request: FastifyRequest | null; ip: string };
  */
 export type LiveChannel = { deviceId: string; app: string; name: string; ip: string; since: string; scopes: string[];
   last: { method: string; path: string; at: string } | null; rttMs: number | null };
+const OUTBOUND_FIRST_ID = 0x8000_0000;
 
 const bridges = new WeakMap<FastifyInstance, (request: FastifyRequest) => Promise<void>>();
 /** Runs before the session hook (app.ts): Nous 0.2.37's update download as its channel's own request (registerMobileChannel). */
@@ -102,7 +105,7 @@ export function registerMobileChannel(app: FastifyInstance, options: {
   const attestationStatus = options.attestationStatus ?? createAttestationStatusList();
   const sidHashOf = (deviceId: string) => sessionIdHash(mobileDeviceSid(options.sessionSecret, deviceId));
   const live = (row: AppDeviceSessionRecord | null): row is AppDeviceSessionRecord => Boolean(row && !row.revokedAt && row.expiresAt > iso() && row.sidSha256 === sidHashOf(row.id));
-  const channels = new Set<{ socket: WebSocket; inbound: () => number; deviceId: string; owner: string; live: LiveChannel; session: () => Promise<string | null> }>();
+  const channels = new Set<{ socket: WebSocket; inbound: () => number; deviceId: string; owner: string; live: LiveChannel; session: () => Promise<string | null>; forward: LinkForward }>();
   const lease = linkLease(options.store, now);
   const buffered = () => [...channels].reduce((sum, channel) => sum + channel.socket.bufferedAmount + channel.inbound(), 0);
   const overdue = (row: AppDeviceSessionRecord) => !row.confirmedAt && Date.parse(row.createdAt) + MOBILE_PAIRING_CONFIRM_MS <= now();
@@ -268,7 +271,7 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       // expires_at = last seen + 90 days, written at most once an hour (design §4.1).
       const current = !row.lastSeenAt || Date.parse(row.lastSeenAt) <= now() - 3600_000 ? (await options.devices.touch(row.id, iso(), iso(now() + MOBILE_DEVICE_IDLE_MS))) ?? row : row;
       const rotation = found.status === "ACTIVE" ? null : answering.find((key) => key.status === "ACTIVE")?.rotationStatement ?? null;
-      socket.send(found.handshake.writeMessage(json({ sessionId: `mobsess:${randomBytes(9).toString("base64url")}`, scopes: current.scopes ?? ["read"], serverTime: now(),
+      socket.send(found.handshake.writeMessage(json({ sessionId: `mobsess:${randomBytes(9).toString("base64url")}`, scopes: (current.scopes ?? ["read"]).filter((scope) => mobileScopeSchema.safeParse(scope).success), serverTime: now(),
         ...(rotation ? { rotation } : {}), limits: { maxFrame: NOISE_MESSAGE_MAX, maxInFlight: IN_FLIGHT_MAX } })));
       begin(found.handshake.split(), current);
     };
@@ -291,11 +294,13 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       answer();
     };
     const channel = { socket, inbound, deviceId: first.id, owner: first.ownerUserId, live: { deviceId: first.id, app: first.app, name: first.deviceName, ip: peer.ip,
-      since: iso(), scopes: first.scopes ?? ["read"], last: null, rttMs: null } as LiveChannel, session };
+      since: iso(), scopes: first.scopes ?? ["read"], last: null, rttMs: null } as LiveChannel, session, forward };
     channels.add(channel);
     const opened = now();
     const send = (frame: MobileFrame) => { if (socket.readyState === socket.OPEN) socket.send(transport.encrypt(encodeMobileFrame(frame))); };
     const control = (header: Record<string, unknown>) => send({ type: "ctl", header, body: new Uint8Array(0) });
+    // A link's welcome names only the scopes an older client parses (ADR-014 v2); the ones its owner granted follow here.
+    if ((first.scopes ?? []).some((scope) => !mobileScopeSchema.safeParse(scope).success)) control({ op: "scopes", scopes: first.scopes });
     const answer = (id: number, status: number, body: Uint8Array, headers: Record<string, string> = { "content-type": "application/json; charset=utf-8" }) => {
       for (const frame of mobileFrames("res", { id, s: status, h: headers }, body)) send(frame);
     };
@@ -308,7 +313,22 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       if (now() - rekeyedAt >= REKEY_MS) { control({ op: "rekey" }); transport.rekeySend(); rekeyedAt = now(); }
     }, PING_MS);
     ticker.unref();
-    socket.on("close", () => { clearInterval(ticker); unsubscribe?.(); channels.delete(channel); lease.release(channel.owner, channel.deviceId); });
+    socket.on("close", () => {
+      clearInterval(ticker); unsubscribe?.(); channels.delete(channel); lease.release(channel.owner, channel.deviceId);
+      for (const out of outbound.values()) out.sink.end(new Error("The link closed."));
+      outbound.clear();
+    });
+
+    // AI lending (plan step 6): requests this side sends to the linked client, by id from OUTBOUND_FIRST_ID (the client's own count from 1);
+    // their answers come back as res and chunk frames of that id and stream into the sink.
+    const outbound = new Map<number, { sink: LinkSink; seq: number }>();
+    let nextOutbound = OUTBOUND_FIRST_ID;
+    function forward(header: { m: string; p: string; h?: Record<string, string> }, body: Uint8Array, sink: LinkSink): () => void {
+      const id = nextOutbound++;
+      outbound.set(id, { sink, seq: -1 });
+      try { for (const frame of mobileFrames("req", { id, ...header }, body)) send(frame); } catch (error) { outbound.delete(id); throw error; }
+      return () => { if (outbound.delete(id)) control({ op: "cancel", id }); };
+    }
 
     /** Events as ids only, like /api/events/stream (design §6.1): a record of another owner never reaches this phone. */
     async function subscribe() {
@@ -355,7 +375,8 @@ export function registerMobileChannel(app: FastifyInstance, options: {
       channel.live.last = { method: header.m, path: header.p.split("?")[0]!, at: iso() };
       // One linked SpaceApp acts here at a time, and never once this SpaceApp's person took management back (lease.ts).
       const rule = row.app === LINK_APP ? linkRoute(header.m, header.p) : null;
-      const acts = !!rule && rule.scope === "act" && scopes.includes("act");
+      // manage, upgrade and nous take the lease as act does (ADR-014 v2); ai only offers a Gateway and vault lands only Vault data, no pane.
+      const acts = !!rule && rule.scope !== "read" && rule.scope !== "ai" && rule.scope !== "vault" && rule.scope !== "sync" && scopes.includes(rule.scope);
       // A link's act (or a try at a route links never reach) is audited here and on the linking SpaceApp under one trace (Λ4).
       // Its reads are not: the live view shows the last one, and Load reads every 30 s.
       const linkAudit = (status: number) => void (row.app === LINK_APP && rule?.scope !== "read" ? Promise.resolve(options.store.recordAuditEvent({
@@ -415,9 +436,19 @@ export function registerMobileChannel(app: FastifyInstance, options: {
         }
         return;
       }
+      const out = frame.type === "res" || frame.type === "chunk" ? outbound.get(frame.header.id as number) : undefined;
+      if (out) {
+        if (frame.type === "res" ? out.seq !== -1 : frame.header.seq !== out.seq + 1 || out.seq < 0) return void socket.close(4400);
+        if (frame.type === "res") out.sink.head(frame.header.s as number, (frame.header.h ?? {}) as Record<string, string>);
+        out.seq = frame.type === "res" ? 0 : out.seq + 1;
+        if (frame.body.length) out.sink.data(frame.body);
+        if (!frame.header.more) { outbound.delete(frame.header.id as number); out.sink.end(); }
+        return;
+      }
       let header: Parameters<typeof dispatch>[0], body = frame.body;
       if (frame.type === "chunk") {
         const id = frame.header.id as number;
+        if (id >= OUTBOUND_FIRST_ID) return; // the rest of an answer this side cancelled
         if (dropped.has(id)) { if (!frame.header.more) dropped.delete(id); return; }
         const upload = uploads.get(id);
         if (!upload || frame.header.seq !== upload.seq + 1) return void socket.close(4400);
@@ -481,6 +512,11 @@ export function registerMobileChannel(app: FastifyInstance, options: {
     closeDevices(ids: ReadonlySet<string>) { for (const channel of channels) if (ids.has(channel.deviceId)) channel.socket.close(4403); },
     /** The owner's open sessions, oldest first. */
     live(owner: string): LiveChannel[] { return [...channels].filter((channel) => channel.owner === owner).map((channel) => ({ ...channel.live })); },
+    /** A linked device's newest open session: requests to it, and a hook when it closes (AI lending, plan step 6). */
+    channelFor(deviceId: string): { forward: LinkForward; closed: (listener: () => void) => void } | null {
+      const channel = [...channels].reverse().find((one) => one.deviceId === deviceId && one.socket.readyState === one.socket.OPEN);
+      return channel ? { forward: channel.forward, closed: (listener) => void channel.socket.once("close", listener) } : null;
+    },
     /** A new RELAY offer: the relay client listens on its rid now, not at the next minute's sync. */
     relayOffered() { relay?.refresh(); }
   };

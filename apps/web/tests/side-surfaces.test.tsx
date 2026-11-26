@@ -14,6 +14,7 @@ import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 import type { SideSurface } from "../src/features/docks/dock-types.js";
 import { useSideSurfaceEffects, useSideSurfaces, type SideSurfacesContext } from "../src/features/docks/useSideSurfaces.js";
 import { CompactSideSurfaceDrawer, InlineSideSurface } from "../src/features/docks/SideSurfaceFrame.js";
+import { announceUiLanguage } from "../src/features/ui-language/ui-language.js";
 import { WORKSPACE_DOCK_SESSION_KEY } from "../src/features/workspace-session.js";
 import { announceNousFocusPhase } from "../src/features/nous-focus/nous-focus-events.js";
 
@@ -44,6 +45,7 @@ describe("useSideSurfaces", () => {
   beforeEach(() => {
     installSpaceRuntime(liveRuntime);
     window.sessionStorage.clear();
+    window.localStorage.removeItem(WORKSPACE_DOCK_SESSION_KEY);
     sourceControl.connections.mockReset().mockResolvedValue([]);
   });
   afterEach(() => cleanup());
@@ -70,6 +72,17 @@ describe("useSideSurfaces", () => {
     expect(JSON.parse(window.sessionStorage.getItem(WORKSPACE_DOCK_SESSION_KEY)!)).toEqual({ surface: "clipboard", desktopOpen: false, compactOpen: true });
     act(() => result.current.toggleSideSurface("tasks"));
     expect(JSON.parse(window.sessionStorage.getItem(WORKSPACE_DOCK_SESSION_KEY)!)).toEqual({ surface: "tasks", desktopOpen: true, compactOpen: true });
+    expect(JSON.parse(window.localStorage.getItem(WORKSPACE_DOCK_SESSION_KEY)!)).toEqual({ surface: "tasks", desktopOpen: true, compactOpen: true });
+  });
+
+  it("names the bell and Nous in the interface language and sets <html lang> (plan clipboard:aE7U1J_gU9OV step 7)", () => {
+    announceUiLanguage("el");
+    try {
+      const { result } = renderHook((props: Props) => useHarness(props), { initialProps: { ...base, initialDesktopOpen: false } });
+      expect(result.current.sideSurfaceToggleLabel("nous")).toBe("Εμφάνιση Nous");
+      expect(document.documentElement.lang).toBe("el");
+    } finally { announceUiLanguage("en"); }
+    expect(document.documentElement.lang).toBe("en");
   });
 
   it("toggles the inline desktop dock and keeps it mounted once opened", () => {
@@ -78,6 +91,7 @@ describe("useSideSurfaces", () => {
     expect(result.current.mountInlineSideSurface).toBe(false);
     expect(result.current.sideSurfaceToggleLabel("rooms")).toBe("Show rooms");
     expect(result.current.sideSurfaceToggleLabel("agent-files")).toBe("Open Agent Files");
+    expect(result.current.sideSurfaceToggleLabel("notifications")).toBe("Show notifications");
     act(() => result.current.toggleSideSurface("rooms"));
     expect(result.current.showInlineSideSurface).toBe(true);
     expect(result.current.sideSurfaceToggleLabel("rooms")).toBe("Hide rooms");
@@ -90,6 +104,23 @@ describe("useSideSurfaces", () => {
     // The title is the dock's short name, as on its button and in Docks settings.
     expect(result.current.activeSideSurfaceDockTitle).toBe("Media");
     expect(result.current.activeSideSurfaceCloseLabel).toBe("Close media dock");
+  });
+
+  it("the bell opens its own Notifications dock, not Nous, also with Nous hidden, and it comes back after a reload (operator 17/11, nous_msg:e1bcd1d9)", () => {
+    const nousHidden = (surface: SideSurface) => surface === "nous";
+    const { result } = renderHook((props: Props) => useHarness(props), { initialProps: { ...base, initialDesktopOpen: false, isDockHidden: nousHidden } });
+    expect(result.current.availableDocks).toContain("notifications");
+    expect(result.current.availableDocks).not.toContain("nous");
+    act(() => result.current.toggleSideSurface("notifications"));
+    expect(result.current.activeSideSurface).toBe("notifications");
+    expect(result.current.isDesktopSideSurfaceOpen).toBe(true);
+    act(() => result.current.openSideSurface("notifications"));
+    expect(result.current.activeSideSurface).toBe("notifications");
+    expect(JSON.parse(window.sessionStorage.getItem(WORKSPACE_DOCK_SESSION_KEY)!)).toMatchObject({ surface: "notifications" });
+    cleanup();
+    const reloaded = renderHook(() => useHarness({ ...base, isDockHidden: nousHidden, restoredDock: { surface: "notifications", desktopOpen: true, compactOpen: false } }));
+    expect(reloaded.result.current.activeSideSurface).toBe("notifications");
+    expect(reloaded.result.current.isSideSurfaceOpen).toBe(true);
   });
 
   it("uses the drawer on compact shells and remembers the trigger", () => {
