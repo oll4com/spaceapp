@@ -46,7 +46,9 @@ export const programsToolArgsSchema = z.object({
     + "whatItIs (what the service or program is, one line) and howWeUse (how SpaceApp/oll4 uses it and what that needs: a card, a paid plan, setup such as a DSN, "
     + "a deadline), both in the operator's language: write them with every approval (an approval without them is still saved as APPROVED and counted, the answer warns and his report waits for them). affiliate (page affiliate): what the approval gives, {network (Awin, CJ, Impact, Admitad, direct...), "
     + "publisherId, commission, cookieDays (number), trackingLink (the link or deep-link format with our id), couponFeed, payout (threshold and method), signIn (a Vault "
-    + "handle vault_item:..., never a password)}, replaced whole when given; its terms and restrictions go in commitments, the approval mail in mails. A new program needs parent, program and status, and is refused "
+    + "handle vault_item:..., never a password)}, replaced whole when given; its terms and restrictions go in commitments, the approval mail in mails. "
+    + "usage {state USED|UNUSED, evidence (one line: the server, bucket, live key or gateway call read, or what proves nothing uses it), checkedAt}: the verified usage, only "
+    + "from evidence read now (never a guess; with no proof either way leave it out or null, the page shows usage unknown); it wins over the usage the page derives from benefit lines. A new program needs parent, program and status, and is refused "
     + "when the same parent, program and project is already recorded (the answer names that id: update it). A field "
     + "left out keeps its value, null clears it; mails are added to the ones kept. locked [field names, e.g. amount]: fields the operator locked; the data files never "
     + "change them and an upsert changes or unlocks them only with a new source in sources (the operator's message or mail that says so). An approval, rejection or new approved amount sends the operator his full "
@@ -184,7 +186,7 @@ export function createNousPrograms(deps: { repository: NousProgramsRepository; n
     const base: NousProgram = kept ?? { id: fields.id, page: fields.page, parent: fields.parent!, program: fields.program!, project: null, url: null,
       status: fields.status!, statusReason: null, appliedAt: null, decidedAt: null, expectedReplyBy: null, validUntil: null, amount: null, commitments: null,
       account: null, contacts: [], mails: [], nextAction: null, reapply: null, sources: [], notes: null, givesMoney: null, tags: [], whatItIs: null, howWeUse: null, benefits: [], tiers: [],
-      locked: [], affiliate: null, company: null, createdAt: at, updatedAt: at };
+      locked: [], affiliate: null, company: null, usage: null, createdAt: at, updatedAt: at };
     const program: NousProgram = { ...base, ...definedOnly({ ...fields, sources }), mails: mergeMails(base.mails, fields.mails ?? []),
       benefits: fields.benefits ? keepUsage(base.benefits, fields.benefits) : base.benefits, createdAt: base.createdAt, updatedAt: at };
     // An affiliate program never sits on the Startup programs page (operator 18/11, nous_msg:38500dff).
@@ -368,7 +370,7 @@ export function programLine(program: NousProgram): string {
   const dates = [["applied", program.appliedAt], ["reply by", program.expectedReplyBy], ["decided", program.decidedAt], ["valid until", program.validUntil]]
     .filter(([, value]) => value).map(([label, value]) => `${label} ${day(value as string)}`);
   return `- [${program.id}] ${program.parent} › ${program.program}${program.project ? ` (${program.project})` : ""}${program.company ? ` · by ${program.company}` : ""} · ${program.status}`
-    + `${program.amount ? ` · ${program.amount.text}` : ""}${program.givesMoney ? " · MONEY" : ""}${program.awaitingCompletion ? " · AWAITING COMPLETION" : ""}${dates.length ? ` · ${dates.join(", ")}` : ""}${replyOverdue(program) ? " · REPLY OVERDUE" : ""} · ${program.mails.length} mails`
+    + `${program.amount ? ` · ${program.amount.text}` : ""}${program.givesMoney ? " · MONEY" : ""}${program.awaitingCompletion ? " · AWAITING COMPLETION" : ""}${program.usage ? ` · ${program.usage.state}` : ""}${dates.length ? ` · ${dates.join(", ")}` : ""}${replyOverdue(program) ? " · REPLY OVERDUE" : ""} · ${program.mails.length} mails`
     + `${program.reapply?.needed ? ` · RE-APPLY${program.reapply.why ? `: ${program.reapply.why}` : ""}` : ""}`;
 }
 
@@ -383,7 +385,7 @@ export function programText(program: NousProgram): string {
     ...row("Amount", program.amount ? `${program.amount.text}${program.amount.value !== null ? ` (${program.amount.value} ${program.amount.currency ?? ""})`.trimEnd() : ""}` : null),
     ...row("Gives money", program.givesMoney === null ? null : program.givesMoney ? "yes" : "no"), ...row("Tags", program.tags.join(", ")),
     ...row("Commitments", program.commitments), ...row("Account", program.account), ...row("Contacts", program.contacts.join(", ")),
-    ...row("Next", program.nextAction),
+    ...row("Next", program.nextAction), ...row("Usage", program.usage ? `${program.usage.state} (checked ${day(program.usage.checkedAt)}): ${program.usage.evidence}` : null),
     ...row("Re-apply", program.reapply?.needed ? `yes${program.reapply.why ? `: ${program.reapply.why}` : ""}${program.reapply.when ? ` (from ${program.reapply.when})` : ""}` : null),
     ...row("Sources", program.sources.join(", ")), ...row("Notes", program.notes), `Updated ${program.updatedAt}`,
     ...(program.benefits.length ? [`Benefits (${program.benefits.length}):`] : []),

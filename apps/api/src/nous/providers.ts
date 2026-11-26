@@ -175,13 +175,16 @@ export function createNousProviderCatalog(options: NousProviderCatalogOptions = 
     const keyBlocked = Boolean(pace?.stop || (typeof pace?.remainingUsd === "number" && pace.remainingUsd <= 0));
     const active = accounts.some((account) => account.provider === provider && quotaState(account).eligible
       && (id !== "claude" || (!keyBlocked && apiKey) || account.planType?.toLowerCase() !== "api"));
-    if (!active) return { ...base, reason: id === "claude"
+    const catalog = async () => (await modelsFor(id as SupportedProvider)).filter((model) => antigravityClaude || id !== "gemini" || model.id.startsWith("gemini-"));
+    // Operator 24/11 (nous_msg:f1fdc79968e2439b81554e03): a provider out of quota still lists its models (unavailable), so Settings offers every model.
+    const listed = !active && accounts.some((account) => account.provider === provider) ? await catalog().catch(() => []) : [];
+    if (!active) return { ...base, models: listed, reason: id === "claude"
       ? (apiKey && keyBlocked ? "Claude API monthly budget reached." : options.publicCredentialHost ? NOUS_PUBLIC_NO_CLAUDE
         : "No active Claude subscription account. Claude API credits do not serve Nous.")
       : accounts.some((account) => account.provider === provider) ? `Its Space Gateway accounts are paused or out of quota.`
       : `No active ${name} account in Space Gateway. Add one under Space Gateway → Accounts.` };
     try {
-      const models = (await modelsFor(id as SupportedProvider)).filter((model) => antigravityClaude || id !== "gemini" || model.id.startsWith("gemini-"));
+      const models = await catalog();
       return models.length ? { ...base, models, available: true, reason: null }
         : { ...base, reason: "The provider did not advertise a supported Nous model." };
     } catch {
@@ -287,13 +290,15 @@ export function createNousProviderCatalog(options: NousProviderCatalogOptions = 
     const auto = usable.some((route) => route.enabled)
       ? Object.entries(NOUS_SPACE_AUTO).map(([id, entry]) => ({ id, label: entry.label, efforts: ["auto", "low", "medium", "high", "xhigh", "max"] })) : [];
     const seen = new Set<string>();
-    const models = [...auto, ...usable.flatMap((route) => route.models.map((model) => ({ id: `${route.prefix}:${model.id}`, label: `${model.label} · ${route.name}`, efforts: model.efforts })))]
+    // Every route's models, the ones it cannot serve now marked: a model never disappears while its route has no quota (operator 24/11, f1fdc799).
+    const models = [...auto, ...all.flatMap((route) => route.models.map((model) => ({ id: `${route.prefix}:${model.id}`,
+      label: `${model.label} · ${route.name}${usable.includes(route) ? "" : " (unavailable now)"}`, efforts: model.efforts })))]
       .filter((model) => {
         if (seen.has(model.id)) return false;
         seen.add(model.id);
         return true;
       });
-    return { id: "space", name: NOUS_PROVIDER_NAMES.space, available: usable.length > 0 && models.length > 0, models: usable.length > 0 ? models : [],
+    return { id: "space", name: NOUS_PROVIDER_NAMES.space, available: usable.length > 0 && models.length > 0, models,
       reason: usable.length ? null : options.publicCredentialHost ? "This installation's credential container does not support this Nous provider yet."
         : `No Space Gateway route can serve now: ${all.map((route) => `${route.name}: ${route.reason ?? "off"}`).join("; ")}`,
       routes: all.map(({ route, name, runtime, enabled, available, reason, resetAt }) => ({ route, name, runtime, enabled, available, reason, resetAt: resetAt ?? null })) };

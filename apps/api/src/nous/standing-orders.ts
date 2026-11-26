@@ -1096,8 +1096,13 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       if (text && (!quiet || unpanedLeft.length + idle.length + taskItems.length + requestItems.length + freeItems.length > 0)) {
         lastUtilization.set(owner, at);
         // Every CLI pane not working is capacity to fill: the item asks a dispatch for each (or helpers, or the block recorded), not one.
-        const need = panes.filter((input) => savesToMemory(input.pane) && input.state !== "working" && !closing(input.pane.id)
-          && !shut.includes(poolOf(input.pane.id) ?? "\u0000")).length;
+        const notWorking = panes.filter((input) => savesToMemory(input.pane) && input.state !== "working" && !closing(input.pane.id));
+        const need = notWorking.filter((input) => !shut.includes(poolOf(input.pane.id) ?? "\u0000")).length;
+        // 2026-11-26 REVIEW (9 % while every pool was out of quota): when every CLI pane not working is on a pool with no room, quota is the
+        // cause: the line says so and Utilization is no item, so it is no act-needed miss until a pool has room (its other items still are).
+        const quotaOut = notWorking.length > 0 && need === 0;
+        const pools = [...new Set(notWorking.map((input) => poolOf(input.pane.id) ?? "unknown"))].join(", ");
+        const shown = quotaOut ? `Cause: quota. Every CLI pane not working runs on a pool out of room (${pools}): nothing to dispatch to them until a pool has room; no act needed for this line.\n${text.replace(" and no pool is at its limit", "")}` : text;
         // Goal 5acd171d (22/11 02:42-03:32Z: 13 of 17 INBOX lines carried it): its line lists the free panes and requests, which are items of
         // their own, so a left push re-arms only when the runnable work it counts changes.
         const runnable = /Runnable: [^.]*\./.exec(line!)?.[0];
@@ -1105,7 +1110,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
         // Goal 5acd171d (23/11: 135 of 633 INBOX turns in 24 h were a finished pane's urgent push after Space had handed out its work itself, with
         // no pane, plan or task left for Nous): urgent only while Nous has one of those to act on; else the line rides the inbox batch.
         const forNous = freeItems.length + unpanedLeft.length + idle.length + taskItems.length > 0;
-        await deps.notice(owner, "utilization-low", text, [...(quiet ? [] : [utilization]), ...freeItems, ...unpanedLeft, ...idle, ...taskItems, ...requestItems].map((item) => ({ ...item, always: true })), newlyFinished && forNous);
+        await deps.notice(owner, "utilization-low", shown, [...(quiet || quotaOut ? [] : [utilization]), ...freeItems, ...unpanedLeft, ...idle, ...taskItems, ...requestItems].map((item) => ({ ...item, always: true })), newlyFinished && forNous);
       }
     }
     if (deps.away && at - (lastAway.get(owner) ?? 0) >= RELIST_MS && await deps.away(owner).catch(() => false)) {

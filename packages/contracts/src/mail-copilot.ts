@@ -355,7 +355,7 @@ export type MailComposeInput = z.infer<typeof mailComposeInputSchema>;
 
 export const mailThreadActionSchema = z.object({
   account: emailSchema,
-  action: z.enum(["archive", "unarchive", "trash", "untrash", "star", "unstar", "read", "unread", "label", "unlabel", "move"]),
+  action: z.enum(["archive", "unarchive", "trash", "untrash", "star", "unstar", "read", "unread", "label", "unlabel", "move", "not_spam"]),
   /** label / unlabel / move: the Gmail label ids (or a label's name, resolved per account). */
   labelIds: z.array(z.string().min(1).max(200)).optional()
 }).strict();
@@ -373,6 +373,7 @@ export function mailThreadActionLabels(input: Pick<MailThreadAction, "action" | 
     case "label": return { addLabelIds: input.labelIds ?? [], removeLabelIds: [] };
     case "unlabel": return { addLabelIds: [], removeLabelIds: input.labelIds ?? [] };
     case "move": return { addLabelIds: input.labelIds ?? [], removeLabelIds: ["INBOX"] };
+    case "not_spam": return { addLabelIds: ["INBOX"], removeLabelIds: ["SPAM"] };
     default: return { addLabelIds: [], removeLabelIds: [] };
   }
 }

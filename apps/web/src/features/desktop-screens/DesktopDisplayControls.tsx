@@ -1,5 +1,5 @@
 import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
-import React, { useEffect, useState, useRef } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import { Monitor, Maximize2, X, ExternalLink } from "../ui-theme/app-icons.js";
 import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 import "./desktop-display-controls.css";
@@ -34,6 +34,12 @@ interface DesktopDisplayControlsProps {
   variant?: "titlebar" | "rail" | "toolbar";
 }
 
+function getDesktopBridge(): DesktopDisplayBridge | null {
+  return typeof window !== "undefined"
+    ? (window as unknown as { spaceDesktop?: DesktopDisplayBridge }).spaceDesktop ?? null
+    : null;
+}
+
 export function DesktopDisplayControls({
   activeRoomId,
   variant = "titlebar"
@@ -45,7 +51,7 @@ export function DesktopDisplayControls({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const desktopBridge = typeof window !== "undefined" ? (window as unknown as { spaceDesktop?: DesktopDisplayBridge }).spaceDesktop : null;
+  const desktopBridge = getDesktopBridge();
   const isDesktop = typeof window !== "undefined" && Boolean(
     desktopBridge?.isDesktop ||
     desktopBridge?.displays ||
@@ -53,10 +59,11 @@ export function DesktopDisplayControls({
   );
   const hasNativeMultiDisplay = Boolean(desktopBridge?.displays?.getAll);
 
-  const fetchDisplays = async () => {
-    if (desktopBridge?.displays?.getAll) {
+  const fetchDisplays = useCallback(async () => {
+    const bridge = getDesktopBridge();
+    if (bridge?.displays?.getAll) {
       try {
-        const list = await desktopBridge.displays.getAll();
+        const list = await bridge.displays.getAll();
         if (Array.isArray(list) && list.length > 0) {
           setDisplays(list);
           return;
@@ -90,7 +97,7 @@ export function DesktopDisplayControls({
         hasActiveWindow: true
       }]);
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (!isDesktop && !embedded) return;
@@ -99,7 +106,7 @@ export function DesktopDisplayControls({
       void fetchDisplays();
     }, 5000);
     return () => clearInterval(interval);
-  }, [isDesktop, embedded]);
+  }, [isDesktop, embedded, fetchDisplays]);
 
   useEffect(() => {
     const handleOpenDisplays = () => {
@@ -108,7 +115,7 @@ export function DesktopDisplayControls({
     };
     window.addEventListener("space:desktop:open-displays", handleOpenDisplays);
     return () => window.removeEventListener("space:desktop:open-displays", handleOpenDisplays);
-  }, []);
+  }, [fetchDisplays]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {

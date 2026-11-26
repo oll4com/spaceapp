@@ -31,19 +31,20 @@ export function DotToolsPanel({ dot, roomId, readTools, readReceipts }: { dot: D
   const [retry, setRetry] = useState(0);
   const [query, setQuery] = useState("");
   const [source, setSource] = useState<DotToolSource | "ALL">("ALL");
-  const key = `${dot?.dotId ?? "none"}:${roomId ?? ""}`;
+  const dotId = dot?.dotId ?? null;
+  const key = `${dotId ?? "none"}:${roomId ?? ""}`;
   const [result, setResult] = useState<ToolsResult>({ key: "", state: "loading", tools: [], receipts: [] });
   useEffect(() => {
     let current = true;
-    if (!dot) { setResult({ key, state: "unavailable", tools: [], receipts: [] }); return; }
+    if (!dotId) { setResult({ key, state: "unavailable", tools: [], receipts: [] }); return; }
     setResult({ key, state: "loading", tools: [], receipts: [] });
-    void Promise.all([readTools(dot.dotId, roomId), readReceipts(dot.dotId)]).then(([tools, receipts]) => {
+    void Promise.all([readTools(dotId, roomId), readReceipts(dotId)]).then(([tools, receipts]) => {
       if (!current) return;
-      if (tools.dotId !== dot.dotId || receipts.dotId !== dot.dotId || receipts.items.some(item => item.dotId !== dot.dotId)) throw Error("Dot tool identity mismatch");
+      if (tools.dotId !== dotId || receipts.dotId !== dotId || receipts.items.some(item => item.dotId !== dotId)) throw Error("Dot tool identity mismatch");
       setResult({ key, state: "ready", tools: tools.tools, receipts: receipts.items });
     }).catch(() => { if (current) setResult({ key, state: "unavailable", tools: [], receipts: [] }); });
     return () => { current = false; };
-  }, [key, retry, readTools, readReceipts]);
+  }, [dotId, key, roomId, retry, readTools, readReceipts]);
   const state = result.key === key ? result.state : "loading";
   const visible = useMemo(() => {
     const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
@@ -113,20 +114,21 @@ export function DotPanels({ tab, dot, session, sessionId: sessionIdOverride, roo
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [retry, setRetry] = useState(0);
-  const key = `${dot?.dotId ?? "none"}:${tab}`;
+  const dotId = dot?.dotId ?? null;
+  const key = `${dotId ?? "none"}:${tab}`;
   const [result, setResult] = useState<Result>({ key: "", state: "loading", items: [] });
   useEffect(() => {
     let current = true;
     if (tab === "Computer" || tab === "Tools") return;
-    if (!dot) { setResult({ key, state: "unavailable", items: [] }); return; }
+    if (!dotId) { setResult({ key, state: "unavailable", items: [] }); return; }
     setResult({ key, state: "loading", items: [] });
-    void Promise.all(resources[tab].map(resource => read(dot.dotId, resource))).then(collections => {
+    void Promise.all(resources[tab].map(resource => read(dotId, resource))).then(collections => {
       if (!current) return;
-      if (collections.some(collection => collection.dotId !== dot.dotId || collection.items.some(item => item.dotId !== dot.dotId))) throw Error("Dot collection identity mismatch");
+      if (collections.some(collection => collection.dotId !== dotId || collection.items.some(item => item.dotId !== dotId))) throw Error("Dot collection identity mismatch");
       setResult({ key, state: "ready", items: collections.flatMap(collection => collection.items) });
     }).catch(() => { if (current) setResult({ key, state: "unavailable", items: [] }); });
     return () => { current = false; };
-  }, [key, retry, read]);
+  }, [dotId, key, tab, retry, read]);
   const dotSessionId = sessionIdOverride !== undefined ? sessionIdOverride : dot && session?.dotId === dot.dotId ? session.binding.sessionId ?? null : null;
   if (tab === "Computer") return <DotComputer key={dot?.dotId ?? "none"} dot={dot} roomId={roomId} visible={visible} sessionId={dotSessionId} />;
   if (tab === "Tools") return <DotToolsPanel dot={dot} roomId={roomId} readTools={readTools} readReceipts={readReceipts} />;

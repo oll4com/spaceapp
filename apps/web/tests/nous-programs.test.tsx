@@ -349,8 +349,18 @@ it("derives whether a program is in use from its benefit lines, and Unknown when
   expect(programUsage({ ...approved, benefits: [line("ACTIVE", null, { remaining: usd(90) })] })).toBe("used");
   expect(programUsage({ ...approved, benefits: [line("ACTIVE", null, { allocations: [{ project: "SpaceApp", percent: null, purpose: null }] })] })).toBe("used");
   expect(programUsage({ ...approved, benefits: [line("ACTIVE", 0)] })).toBe("unused");
-  expect(programUsage({ ...approved, benefits: [line("PENDING", 0)] })).toBe("unused");
-  expect(programUsage({ ...approved, awaitingCompletion: true })).toBe("unused");
+  expect(programUsage({ ...approved, benefits: [line("EXPIRED", null)] })).toBe("unused");
+  expect(programUsage({ ...approved, benefits: [line("USED_UP", 100)] })).toBe("used");
+  // Operator 26/11 (nous_msg:2d0eb603): "not in use" only from evidence; a line not measured, still pending or awaiting completion is unknown.
+  expect(programUsage({ ...approved, benefits: [line("PENDING", 0)] })).toBe("unknown");
+  expect(programUsage({ ...approved, awaitingCompletion: true })).toBe("unknown");
+  expect(programUsage({ ...approved, awaitingCompletion: true, benefits: [line("ACTIVE", 5)] })).toBe("used");
+  expect(programUsage({ ...approved, benefits: [line("ACTIVE", 0), line("ACTIVE", null)] })).toBe("unknown");
+  // A verified usage wins over the lines.
+  const checked = { evidence: "UpCloud server fi-hel2 running", checkedAt: "2026-11-26T00:00:00.000Z" };
+  expect(programUsage({ ...approved, awaitingCompletion: true, usage: { state: "USED", ...checked } })).toBe("used");
+  expect(programUsage({ ...approved, benefits: [line("ACTIVE", 3)], usage: { state: "UNUSED", ...checked } })).toBe("unused");
+  expect(programUsage({ ...base, usage: { state: "USED", ...checked } })).toBe("unused");
   expect(programUsage({ ...approved, benefits: [line("NOT_VERIFIED", null)] })).toBe("unknown");
   expect(programUsage({ ...approved, benefits: [line("ACTIVE", null)] })).toBe("unknown");
 });

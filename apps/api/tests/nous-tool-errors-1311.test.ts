@@ -364,6 +364,21 @@ describe("Daily Nous errors 14/11: the tool round after the 13/11 promotes", () 
     expect(missing.result).toContain('whole with "messageId": "m3"');
   });
 
+  // 2026-11-25 REVIEW: a messageId from another thread is read in its own thread, naming the right threadId.
+  it("reads a messageId from another thread in that message's own thread", async () => {
+    const message = (messageId: string, text: string) => ({ messageId, from: { name: "", address: "a@example.com" }, to: [], receivedAt: "2026-11-25T08:00:00.000Z", text });
+    const threads: Record<string, { threadId: string; messages: ReturnType<typeof message>[] }> = {
+      t1: { threadId: "t1", messages: [message("m1", "First thread.")] },
+      m7: { threadId: "t2", messages: [message("m6", "Earlier."), message("m7", "The asked message.")] } };
+    const mail = { search: vi.fn(), accounts: vi.fn(async () => ["op@example.com"]),
+      read: vi.fn(async (_owner: string, _account: string, id: string) => ({ account: "op@example.com", subject: "S", ...threads[id]! })) };
+    const read = await tools({ mail: mail as unknown as NousToolDeps["mail"] }).execute("space_mail_read", { account: "op@example.com", threadId: "t1", messageId: "m7" }, ctx);
+    expect(mail.read).toHaveBeenLastCalledWith(owner, "op@example.com", "m7");
+    expect(read).toMatchObject({ ok: true, result: expect.stringContaining("(Message m7 is in thread t2, not t1: this is thread t2; use that threadId with this messageId.)") });
+    expect(read.result).toContain("The asked message.");
+    expect(read.result).not.toContain("First thread.");
+  });
+
   // Daily Nous errors 14/11 slice 5.
   it("refuses helpers called with both tasks and runId, or neither, naming which to give (subagents ×1)", async () => {
     const subagents = { run: vi.fn(), wait: vi.fn() };

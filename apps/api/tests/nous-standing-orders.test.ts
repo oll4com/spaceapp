@@ -494,6 +494,26 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
     expect(f.notice.mock.calls.filter((call) => (call as unknown[])[1] === "utilization-low")).toHaveLength(2);
   });
 
+  it("2026-11-26 REVIEW (9 % while every pool was out of quota): with every not-working CLI pane on a pool with no room, the line names quota and Utilization is no item", async () => {
+    const low = vi.fn(async () => "Utilization stayed under the 90% target for 15 min (now 9%) while the server is CALM and no pool is at its limit. Runnable: 0 plans.");
+    const cody = cli("pane:cody0001", "Cody", { terminalRuntimeId: "cli:codex" });
+    const panes: PaneState[] = [{ pane: andy, state: "idle", since: iso(T0 - 70 * MIN) }, { pane: cody, state: "done", since: iso(T0 - 70 * MIN) }];
+    const f = fixture({ panes, utilizationLow: low, spend: { mode: "NORMAL", avoid: [], refused: ["claude", "codex"] } });
+    f.state.settings = nousSettingsSchema.parse({ enabled: true });
+    await f.orders.tickOwner(owner);
+    const [, , text, items] = f.notice.mock.calls.find((call) => (call as unknown[])[1] === "utilization-low") as unknown as [string, string, string, Array<{ kind: string }>];
+    expect(text).toMatch(/^Cause: quota\. .*\(claude, codex\)/);
+    expect(text).not.toContain("no pool is at its limit");
+    expect(items.filter((item) => item.kind === "UTILIZATION")).toEqual([]);
+    // One pool with room: Utilization is an item again and the line carries no quota cause.
+    const room1 = fixture({ panes, utilizationLow: low, spend: { mode: "NORMAL", avoid: [], refused: ["codex"] } });
+    room1.state.settings = nousSettingsSchema.parse({ enabled: true });
+    await room1.orders.tickOwner(owner);
+    const [, , text1, items1] = room1.notice.mock.calls.find((call) => (call as unknown[])[1] === "utilization-low") as unknown as [string, string, string, Array<{ kind: string }>];
+    expect(text1).not.toContain("Cause: quota");
+    expect(items1.map((item) => item.kind)).toContain("UTILIZATION");
+  });
+
   it("R21-4 (REVIEW 1/11: 61 % with 4 of 23 CLI panes working; operator 1/11 23:05 BKK): the utilization line carries every stalled plan with no working pane and a step that can run, whatever its whole-plan wait", async () => {
     const low = vi.fn(async () => "Utilization stayed under the 90% target for 15 min.");
     const bob = cli("pane:bob00001", "Bob"), cody = cli("pane:cody0001", "Cody"), dana = cli("pane:dana0001", "Dana");

@@ -4,7 +4,7 @@ import { InMemoryNousRepository, InMemorySpaceNotificationsRepository } from "@s
 import { SpaceEventBus } from "@space/runtime";
 import { createNotificationService } from "../src/notifications/service.js";
 import { createNousRequests, deriveNousRequests } from "../src/nous/requests.js";
-import { checkableEvidence, createNousRequestDone, createReleaseShipped, uiProofMissing, dispatchedAnswerOnly, priorityPanesOf, quietRequestsOf } from "../src/nous/request-done.js";
+import { checkableEvidence, createNousRequestDone, createReleaseShipped, uiProofMissing, unfinishedLine, requestDoneReceiptKey, dispatchedAnswerOnly, priorityPanesOf, quietRequestsOf } from "../src/nous/request-done.js";
 import { createNousTools, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
 import { nousSubagentTools } from "../src/nous/subagents.js";
 import { itemActed } from "../src/nous/turn-items.js";
@@ -800,5 +800,88 @@ describe("UI work needs its screenshot (Daily Nous errors 14/11, nous_msg:53161b
     expect(await f.done.openList(owner)).toHaveLength(1);
     expect((await f.tools.execute("space_open_requests", { close: [{ ...close, verified: "space_look https://unboxexpert.com/p/1: the gallery and price show" }] }, ctx)).result).toMatch(/^Closed 1, 1 recorded in Done\./);
     expect((await f.tools.execute("space_request_done", { ...ui, verified: "screenshot of https://unboxexpert.com/p/1: the gallery shows" }, ctx)).ok).toBe(true);
+  });
+});
+
+describe("Unfinished work is a Needs you, never Done (operator 26/11, nous_msg:3055345176be403e8e2b169f)", () => {
+  // notification:91b298a0 reached Done at 05:39 UTC with this summary while its draft held [CONFIRM month/year].
+  const incident = "Γράφτηκε η απάντηση στον Michael. Μένει να συμπληρώσεις από πότε χρησιμοποιείς Claude Code στο example.invalid και να τη στείλεις από το Upwork.";
+  const draft = "Hi Michael,\n\nI have used Claude Code at example.invalid since [CONFIRM month/year].\n\nBest";
+  function asking(files: Record<string, string> = {}) {
+    const f = fixture();
+    const asks: Array<{ title: string; refs: { files?: string[]; notificationId?: string } }> = [];
+    const titles = new Map<string, string>();
+    const done = createNousRequestDone({ notes: f.notes, notifications: f.notifications, plan: async () => null, notice: f.notice, now: () => f.clock.now,
+      fileTexts: async (_who, refs) => refs.map((ref) => files[ref] ?? null),
+      // The wiring's ask returns the open decision with the same title: one item however often it is asked.
+      askOperator: async (_who, ask) => { asks.push(ask); if (!titles.has(ask.title)) titles.set(ask.title, `nous_decision:${titles.size + 1}`.padEnd(20, "0")); return titles.get(ask.title)!; } });
+    return { ...f, done, asks, titles };
+  }
+  const reply = { id: "nous_msg:luchetta0001", request: "Reply to Michael Luchetta on Upwork", where: "no code" as const, verified: "artifact:3qJ0xCk09Pop holds the reply" };
+
+  it("knows an unfilled placeholder and a step left to the operator from finished text", () => {
+    expect(unfinishedLine(incident)).toContain("Μένει να συμπληρώσεις");
+    expect(unfinishedLine(draft, true)).toContain("[CONFIRM month/year]");
+    expect(unfinishedLine("Reply drafted; send it yourself from Upwork.")).not.toBeNull();
+    expect(unfinishedLine("The release notes still say TODO in §2.")).not.toBeNull();
+    for (const text of ["Το κενό [CONFIRM month/year] το συμπλήρωσα με «Μάρτιο 2025».", "Δεν στάλθηκε τίποτα, σταμάτησα όπως ζήτησες.", "Sent; no [CONFIRM] placeholder is left.",
+      "Ο πελάτης έγραψε «todo bien, gracias».", "Deployed q-20261126-071634-06bc on dev.", "Δεν μένει να στείλεις τίποτα."]) expect(unfinishedLine(text), text).toBeNull();
+    // A file has no "filled" exemption: its placeholder is there.
+    expect(unfinishedLine("Replaced the [CONFIRM] later.", true)).not.toBeNull();
+  });
+
+  it("refuses the Done, asks ONE Needs you instead, and records a finished one", async () => {
+    const f = asking();
+    const result = await f.done.run(owner, { ...reply, summary: incident });
+    expect(result).toMatchObject({ ok: false, refused: true, display: "Not finished: not Done", result: expect.stringContaining("Needs you (nous_decision:1") });
+    await f.done.run(owner, { ...reply, summary: incident });
+    expect(new Set(f.asks.map((ask) => ask.title))).toEqual(new Set(["Not finished: Reply to Michael Luchetta on Upwork"]));
+    expect(f.titles.size).toBe(1);
+    expect(await f.notifications.list(owner, notificationListQuerySchema.parse({ kind: "REQUEST_DONE" }))).toEqual([]);
+    expect(await f.done.run(owner, { ...reply, summary: "Sent the reply to Michael on Upwork with the start date filled in." })).toMatchObject({ ok: true });
+  });
+
+  it("reads the draft a Done names and refuses its unfilled placeholder", async () => {
+    const f = asking({ "artifact:3qJ0xCk09Pop": draft });
+    const result = await f.done.run(owner, { ...reply, summary: "The reply to Michael is written." });
+    expect(result).toMatchObject({ refused: true, result: expect.stringContaining("artifact:3qJ0xCk09Pop: I have used Claude Code at example.invalid since [CONFIRM") });
+    expect(f.asks[0]!.refs.files).toEqual(["artifact:3qJ0xCk09Pop"]);
+    const clean = asking({ "artifact:3qJ0xCk09Pop": draft.replace("[CONFIRM month/year]", "March 2025") });
+    expect(await clean.done.run(owner, { ...reply, summary: "Sent the reply to Michael." })).toMatchObject({ ok: true });
+  });
+
+  it("a close with done: true that is unfinished keeps its request open", async () => {
+    const f = asking();
+    await f.notes.setNote(owner, `request-done:open:${"7".repeat(24)}`, JSON.stringify({ messageId: reply.id, summary: reply.request,
+      turnId: "nous_turn:oper0001", openedAt: "2026-10-29T10:00:00.000Z", reportedAt: "2026-10-29T10:00:00.000Z" }));
+    await f.notes.setNote(owner, "request-done:open-backfill", "2026-10-28T00:00:00.000Z");
+    await f.notes.setNote(owner, "request-done:open-cleanup", "2026-10-28T00:00:00.000Z");
+    const result = await f.done.closeMany(owner, [{ key: "7".repeat(24), outcome: "SELF", note: incident, done: true, where: "no code", verified: reply.verified }]);
+    expect(result.closed).toBe(0);
+    expect(result.counts.errors.join("\n")).toContain("not closed, Done not recorded");
+    expect(await f.done.openList(owner)).toHaveLength(1);
+    expect(f.asks).toHaveLength(1);
+  });
+
+  it("sends a Done already recorded with a placeholder back to open once, and leaves finished ones", async () => {
+    const f = fixture();
+    await f.tools.execute("space_request_done", { ...args, plan: undefined }, ctx);
+    // The incident's record, written before this guard.
+    const bad = await f.notifications.raise({ ownerUserId: owner, roomId: null, paneId: null, source: "NOUS", kind: "REQUEST_DONE", severity: "ATTENTION", title: "Your request is done", body: incident,
+      dedupeKey: `nous:done:${reply.id}`, link: { surface: "nous", target: "done" }, payload: { request: reply.request, summary: incident, where: "no code", verified: reply.verified }, telegram: null });
+    await f.notes.setNote(owner, requestDoneReceiptKey(reply.id), bad.id);
+    const asks: string[] = [];
+    const done = createNousRequestDone({ notes: f.notes, notifications: f.notifications, plan: async () => null, notice: f.notice, now: () => f.clock.now,
+      requestStatus: async (_who, ids) => new Map(ids.map((id) => [id, "DONE" as const])), askOperator: async (_who, ask) => { asks.push(ask.refs.notificationId!); return "nous_decision:asked0001"; } });
+    await f.notes.setNote(owner, "request-done:open-backfill", "2026-10-28T00:00:00.000Z");
+    await f.notes.setNote(owner, "request-done:open-cleanup", "2026-10-28T00:00:00.000Z");
+    await done.tick(owner);
+    await done.tick(owner);
+    const records = await f.notifications.list(owner, notificationListQuerySchema.parse({ kind: "REQUEST_DONE" }));
+    expect(records.find((record) => record.id === bad.id)?.status).toBe("RESOLVED");
+    expect(records.filter((record) => record.status !== "RESOLVED")).toHaveLength(1);
+    expect(asks).toEqual([bad.id]);
+    expect((await f.notes.listNotes(owner)).some((note) => note.key === requestDoneReceiptKey(reply.id))).toBe(false);
+    expect((await done.openList(owner)).map((entry) => entry.messageId)).toEqual([reply.id]);
   });
 });

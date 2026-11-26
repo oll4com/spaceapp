@@ -4,8 +4,8 @@ import { nousClientContextSchema, nousMessageIdSchema, requestDonePayloadSchema,
 import type { NousRepository } from "@space/db";
 import type { NotificationService } from "../notifications/service.js";
 import { TICKET_IN_WORDS } from "./followups.js";
-import { titleWords } from "./pane-notices.js";
-import { waitsOnOperatorClaim } from "./pane-watch.js";
+import { allNotifications, titleWords } from "./pane-notices.js";
+import { firstClaim, waitsOnOperatorClaim } from "./pane-watch.js";
 import type { NousTurnItem } from "./turn-items.js";
 import { emitMakeEvent } from "../make-webhooks.js";
 import { compareSemver } from "../app-version.js";
@@ -68,6 +68,7 @@ export const OPEN_REQUEST_PREFIX = `${REQUEST_DONE_NOTE_PREFIX}open:`;
 const OPEN_DAILY_KEY = `${REQUEST_DONE_NOTE_PREFIX}open-daily`;
 const OPEN_BACKFILL_KEY = `${REQUEST_DONE_NOTE_PREFIX}open-backfill`;
 const OPEN_CLEANUP_KEY = `${REQUEST_DONE_NOTE_PREFIX}open-cleanup`;
+const UNFINISHED_SWEEP_KEY = `${REQUEST_DONE_NOTE_PREFIX}unfinished-sweep`;
 /** An open request with nothing new for this long comes back in the day's one batched line (and counts as "no act" in the REVIEW). */
 export const OPEN_QUIET_MS = 6 * 3_600_000;
 const BACKFILL_MS = 7 * 86_400_000;
@@ -88,6 +89,27 @@ const UI_PROOF = /screen ?shot|space_look|space_authenticated_ui_proof|\.(?:png|
 export const uiProofMissing = (work: string, proof: string): boolean => UI_WORK.test(work) && !UI_PROOF.test(proof);
 export const UI_PROOF_HINT = "The request is UI work (a page, a view, a site): verified names the screenshot or space_look of the real page you took this turn "
   + "and what it showed (e.g. \"space_look https://…: the product page shows …\"). Take one now, then record it.";
+
+// Operator 26/11 (nous_msg:3055345176be403e8e2b169f): notification:91b298a0 reached Done at 05:39 UTC while its draft held "[CONFIRM month/year]" and
+// its summary said «Μένει να συμπληρώσεις … και να τη στείλεις από το Upwork»; the operator found it only by chance. Unfinished work is a Needs you, never Done.
+// Bare TODO/TBD/XXX only in capitals: "todo" is a Spanish word in a client's mail.
+const PLACEHOLDER = /\[(?:confirm|todo|tbd|fill|placeholder|xxx|συμπληρωσε|επιβεβαιωσε)(?!\p{L})[^\]\n]*\]/iu;
+const PLACEHOLDER_WORD = /(?<![\p{L}\d_])(?:TODO|TBD|XXX+)(?![\p{L}\d_])/u;
+// A summary may name a placeholder it filled or removed («Το κενό [CONFIRM] το συμπλήρωσα»); a draft file's placeholder is always unfilled.
+const PLACEHOLDER_HANDLED = /filled|replaced|removed|resolved|fixed|cleared|(?<!\p{L})(?:no|none|without|δεν|χωρις|κανενα|καμια)(?!\p{L})|συμπληρω(?:σα|θηκ|μεν)|αντικατ|αφαιρ|διορθ/iu;
+// The step left to the operator: «μένει/πρέπει να (το) στείλεις», "left for you to", "you still need to send" (negated ones are dropped by firstClaim).
+const LEFT_TO_OPERATOR = /(?<!\p{L})(?:μενει|μενουν|πρεπει|χρειαζεται) να (?:(?:τη|την|το|τα|τις|τους|τον) )?\p{L}{2,}(?:εις|ετε)(?!\p{L})|\b(?:left|remains?) (?:for|to) (?:you|the operator)\b|\byou (?:still )?(?:need|have) to (?:send|fill|confirm|submit|post|add|complete)\b|\b(?:send|submit|post) it yourself\b|\bfor you to (?:send|fill|confirm|submit|post|complete)\b/gu;
+/** Files a Done names: Agent Files, Mail reviews and absolute text paths (files.ts decisionFiles reads them inside its allowed roots only). */
+const LINKED_FILE = /\b(?:artifact|mailrev):[A-Za-z0-9_-]{6,}|(?<![\w/.-])\/(?:home|srv)\/[\w./-]+\.(?:md|txt|html?|eml)\b/g;
+/** The first sentence of `text` with an unfilled placeholder or, outside a file, a step left to the operator; null when it has none. */
+export function unfinishedLine(text: string, file = false): string | null {
+  const plain = (value: string) => value.normalize("NFD").replace(/\p{M}/gu, "");
+  const placeholder = text.split(/(?<=[.!?;…])\s+|\n+/).map((sentence) => sentence.trim()).find((sentence) => {
+    const bare = plain(sentence);
+    return (PLACEHOLDER.test(bare) || PLACEHOLDER_WORD.test(bare)) && (file || !PLACEHOLDER_HANDLED.test(bare));
+  });
+  return placeholder ?? (file ? null : firstClaim(text, LEFT_TO_OPERATOR));
+}
 
 /** The operator message an outcome answers: the one Nous named (a "-N" suffix is one of several requests in it), else the oldest the turn answers. */
 export function outcomeMessageIds(id: string | undefined, replyTo: readonly string[]): string[] {
@@ -186,8 +208,12 @@ export function createReleaseShipped(repository: Pick<NousRepository, "listOpera
 
 export function createNousRequestDone(deps: {
   notes: Pick<NousRepository, "listNotes" | "setNote" | "listTurnFacts" | "listAnswerLinks">;
-  notifications: Pick<NotificationService, "list" | "raise">;
+  notifications: Pick<NotificationService, "list" | "raise"> & Partial<Pick<NotificationService, "setStatus">>;
   plan(owner: string, id: string): Promise<ClipboardItem | null>;
+  /** The text of files a Done names (artifact:, mailrev:, paths; files.ts decisionFiles), null for an unreadable or binary one. */
+  fileTexts?(owner: string, refs: string[]): Promise<Array<string | null>>;
+  /** One Needs you question with no plan (a Nous decision: an open one with the same title is that one); its id. */
+  askOperator?(owner: string, ask: { title: string; body: string; recommendation: string; refs: { files?: string[]; notificationId?: string } }): Promise<string>;
   /** A plan whose Done was refused because it waits on the operator: open, under 100 %, waitsOn OPERATOR, so its Needs you item rises (plan-needs-you.ts). */
   holdForOperator?(owner: string, plan: ClipboardItem, what: string): Promise<void>;
   notice(owner: string, key: string, line: string, onDone?: () => Promise<void>, options?: { onDiscard?: () => Promise<void>; items?: NousTurnItem[] }): Promise<void>;
@@ -329,20 +355,45 @@ export function createNousRequestDone(deps: {
     }
   }
 
+  /** The unfinished line of a Done's summary or verified text, else of a file they name ("artifact:…: [CONFIRM …]"), and the files named. */
+  async function unfinishedOf(owner: string, texts: Array<string | undefined>): Promise<{ line: string; files: string[] } | null> {
+    const text = texts.filter(Boolean).join("\n");
+    const files = [...new Set(text.match(LINKED_FILE) ?? [])];
+    const own = unfinishedLine(text);
+    if (own) return { line: own, files };
+    const read = files.length && deps.fileTexts ? await deps.fileTexts(owner, files).catch(() => []) : [];
+    for (const [index, body] of read.entries()) {
+      const line = body ? unfinishedLine(body, true) : null;
+      if (line) return { line: `${files[index]}: ${line}`, files };
+    }
+    return null;
+  }
+  /** A refused Done's ONE Needs you item when it has no plan: a decision whose title is the request, so a retry finds the open one. */
+  const askInstead = (owner: string, request: string, summary: string, what: string, files: string[], notificationId?: string) => deps.askOperator?.(owner, {
+    title: clipWords(`Not finished: ${request.replace(/\s+/g, " ")}`, 200),
+    body: `Nous was about to record this request as Done, but it is not finished:\n\n${clipWords(what, 600)}\n\nWhat was done: ${clipWords(summary, 600)}`,
+    recommendation: "Answer with what is missing (a date, a fact, your go-ahead); Approve has Nous finish it as it stands. Nous records Done once it is really finished.",
+    // decision refs.files holds at most 10 (nousDecisionRefsSchema); the summary names every file.
+    refs: { ...(files.length ? { files: files.slice(0, 10) } : {}), ...(notificationId ? { notificationId } : {}) }
+  }).catch(() => undefined);
+
   /** space_request_done's record, unlocked: callers hold the owner's lock. */
-  async function writeDone(owner: string, args: Args, origin?: string): Promise<{ ok: boolean; display: string; result: string; refused?: boolean }> {
+  async function writeDone(owner: string, args: Args, origin?: string): Promise<{ ok: boolean; display: string; result: string; refused?: boolean; held?: boolean }> {
     const identity = args.plan ?? args.id ?? origin;
     if (!identity) return { ok: false, display: "The request needs an identity", result: "Give the original request id for a request without a plan." };
     // Operator 13/11 14:39 BKK: six decisions left to them reached Done, where Got it buries them. What waits on them is a Needs you, never Done.
     const held = args.plan ? await deps.plan(owner, args.plan).catch(() => null) : null;
     const claim = waitsOnOperatorClaim([args.request, args.summary, args.verified].filter(Boolean).join("\n"));
-    if (claim || held?.waitsOn?.kind === "OPERATOR") {
-      const what = held?.waitsOn?.kind === "OPERATOR" ? held.waitsOn.what : claim!;
+    const unfinished = claim || held?.waitsOn?.kind === "OPERATOR" ? null : await unfinishedOf(owner, [args.summary, args.verified]);
+    if (claim || held?.waitsOn?.kind === "OPERATOR" || unfinished) {
+      const what = held?.waitsOn?.kind === "OPERATOR" ? held.waitsOn.what : claim ?? unfinished!.line;
       if (held) await deps.holdForOperator?.(owner, held, what);
-      return { ok: false, refused: true, display: "Waits on the operator: not Done",
-        result: `Not recorded in Done: it leaves decisions or answers to the operator ("${clipWords(what, 160)}"). `
+      const asked = held ? undefined : await askInstead(owner, args.request, args.summary, what, unfinished?.files ?? []);
+      return { ok: false, refused: true, held: true, display: unfinished ? "Not finished: not Done" : "Waits on the operator: not Done",
+        result: `Not recorded in Done: ${unfinished ? "it is not finished" : "it leaves decisions or answers to the operator"} ("${clipWords(what, 160)}"). `
           + (held ? `${held.id} stays open under 100 % waiting on the operator. Ask them now with space_notify_operator with plan ${held.id} (a question, its options `
               + `and your recommendation; Approve / Reject for a yes/no); record Done once they have answered and the work is finished.`
+            : asked ? `Space asked the operator once in Needs you (${asked}): do not ask again; finish the work after their answer, then record Done.`
             : "Ask them with space_notify_operator (with the plan if there is one); record Done once they have answered and the work is finished.") };
     }
     const key = receiptKey(identity);
@@ -375,6 +426,45 @@ export function createNousRequestDone(deps: {
     if (!existing) emitMakeEvent(owner, "done", record.id, { id: record.id, summary: args.summary, planId: plan ?? null, tickets: args.tickets ?? [], verified: args.verified ?? null });
     await deps.notes.setNote(owner, key, record.id);
     return { ok: true, display: "Recorded the completed request in Done", result: `Notification ${record.id}. The operator can acknowledge it with Got it.` };
+  }
+
+  /** space_open_requests reopen, unlocked: callers hold the owner's lock. */
+  async function reopenMessage(owner: string, messageId: string, note: string): Promise<{ ok: boolean; line: string }> {
+    const notes = await deps.notes.listNotes(owner);
+    if (openRequestsOf(notes).some((entry) => entry.messageId === messageId)) return { ok: false, line: `${messageId}: already open, nothing reopened` };
+    if (deps.requestStatus && !(await deps.requestStatus(owner, [messageId])).has(messageId)) return { ok: false, line: `${messageId}: no such operator message, nothing reopened` };
+    const at = new Date(now()).toISOString();
+    const reason = clipWords(note, 300);
+    const closes = closedRequestsOf(notes).filter((entry) => entry.messageId === messageId);
+    for (const entry of closes) await save(owner, { ...entry, reopenedAt: at, reopenNote: reason });
+    await deps.notes.setNote(owner, receiptKey(messageId), null);
+    await save(owner, { key: `${OPEN_REQUEST_PREFIX}${createHash("sha256").update(`${messageId}|reopen|${at}`).digest("hex").slice(0, 24)}`, messageId,
+      summary: reason, turnId: "space_open_requests:reopen", openedAt: at, reportedAt: at, reopens: true });
+    return { ok: true, line: `${messageId}: reopened (${closes.length} close${closes.length === 1 ? "" : "s"} kept as reopened); it reads In progress until it is really done` };
+  }
+
+  /**
+   * Once (operator 26/11 nous_msg:3055345176be403e8e2b169f): every Done record not yet resolved whose summary, verified text or named file holds a
+   * placeholder or a step left to the operator goes back to open: the record is resolved, its receipt goes, its message reopens, and its ONE Needs you rises.
+   */
+  async function sweepUnfinished(owner: string): Promise<void> {
+    if (!deps.notifications.setStatus) return;
+    for (const record of await allNotifications(deps.notifications.list, owner, { status: "ALL", source: "NOUS", kind: "REQUEST_DONE" })) {
+      if (record.status === "RESOLVED") continue;
+      const earlier = payloadOf(record);
+      const found = await unfinishedOf(owner, [earlier.summary ?? record.body, earlier.verified]);
+      if (!found) continue;
+      await deps.notifications.setStatus(owner, record.id, "RESOLVED", { resolvedReason: clipWords(`Not finished: ${found.line}. Back to open; it waits in Needs you.`, 300), resolvedBy: "nous" },
+        "Nous: a Done record that was not finished went back to open");
+      const identity = record.dedupeKey?.startsWith("nous:done:") ? record.dedupeKey.slice("nous:done:".length) : null;
+      if (identity) await deps.notes.setNote(owner, receiptKey(identity), null);
+      const messageId = identity?.replace(/-\d+$/, "");
+      if (messageId && nousMessageIdSchema.safeParse(messageId).success) await reopenMessage(owner, messageId, `Done ${record.id} was not finished: ${found.line}`);
+      const plan = earlier.planId ? await deps.plan(owner, earlier.planId).catch(() => null) : null;
+      if (plan) await deps.holdForOperator?.(owner, plan, found.line);
+      else await askInstead(owner, String(earlier.request ?? record.title), String(earlier.summary ?? record.body), found.line, found.files, record.id);
+    }
+    await deps.notes.setNote(owner, UNFINISHED_SWEEP_KEY, new Date(now()).toISOString());
   }
 
   return {
@@ -451,7 +541,13 @@ export function createNousRequestDone(deps: {
             const result = await writeDone(owner, { request: clipWords(entry.summary, 300), summary: clipWords(item.note, 600), where: item.where!, ...(item.verified ? { verified: item.verified } : {}),
               ...(entry.plan ? { plan: entry.plan } : id ? { id } : {}), ...(entry.tickets?.length ? { tickets: entry.tickets } : {}) }, entry.key);
             if (result.ok) done += 1;
-            else counts.errors.push(`${ref}: closed, Done not recorded: ${clipWords(result.result, 200)}`);
+            else if (result.held) {
+              // Unfinished or waiting on the operator: the request stays open beside its Needs you item.
+              await save(owner, { ...entry, closedAt: undefined, closedReason: undefined });
+              entry.closedAt = undefined;
+              counts.closed -= 1; closed -= 1;
+              counts.errors.push(`${ref}: not closed, Done not recorded: ${clipWords(result.result, 200)}`);
+            } else counts.errors.push(`${ref}: closed, Done not recorded: ${clipWords(result.result, 200)}`);
             lines.push(`${ref}: ${result.result}`);
           }
           // A Done record also closes the open requests it matches.
@@ -467,19 +563,7 @@ export function createNousRequestDone(deps: {
      * no Done record and no other message's note is touched.
      */
     async reopen(owner: string, messageId: string, note: string): Promise<{ ok: boolean; line: string }> {
-      return serial(owner, async () => {
-        const notes = await deps.notes.listNotes(owner);
-        if (openRequestsOf(notes).some((entry) => entry.messageId === messageId)) return { ok: false, line: `${messageId}: already open, nothing reopened` };
-        if (deps.requestStatus && !(await deps.requestStatus(owner, [messageId])).has(messageId)) return { ok: false, line: `${messageId}: no such operator message, nothing reopened` };
-        const at = new Date(now()).toISOString();
-        const reason = clipWords(note, 300);
-        const closes = closedRequestsOf(notes).filter((entry) => entry.messageId === messageId);
-        for (const entry of closes) await save(owner, { ...entry, reopenedAt: at, reopenNote: reason });
-        await deps.notes.setNote(owner, receiptKey(messageId), null);
-        await save(owner, { key: `${OPEN_REQUEST_PREFIX}${createHash("sha256").update(`${messageId}|reopen|${at}`).digest("hex").slice(0, 24)}`, messageId,
-          summary: reason, turnId: "space_open_requests:reopen", openedAt: at, reportedAt: at, reopens: true });
-        return { ok: true, line: `${messageId}: reopened (${closes.length} close${closes.length === 1 ? "" : "s"} kept as reopened); it reads In progress until it is really done` };
-      });
+      return serial(owner, () => reopenMessage(owner, messageId, note));
     },
 
     /** Called only after a successful space_plan_create, with the server's turn reason, never a model-supplied flag. */
@@ -572,6 +656,7 @@ export function createNousRequestDone(deps: {
         if (!(await marks(owner)).has(OPEN_BACKFILL_KEY)) await backfill(owner);
         const before = await marks(owner);
         if (!before.has(OPEN_CLEANUP_KEY)) await cleanup(owner, before.get(OPEN_BACKFILL_KEY));
+        if (!before.has(UNFINISHED_SWEEP_KEY)) await sweepUnfinished(owner);
         const notes = await marks(owner);
         for (const [key, text] of notes) {
           if (!key.startsWith(`${REQUEST_DONE_NOTE_PREFIX}plan:`)) continue;

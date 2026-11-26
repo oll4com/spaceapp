@@ -40,6 +40,18 @@ export const PLAN_CARD_OPTIONS = ["Done", "Need help from an agent", "Not now"] 
 /** What a plan waits on the operator for: its waitsOn, else a parked plan's open OPERATOR condition; null when nothing of theirs. */
 export const operatorWait = (plan: ClipboardItem): string | null => plan.waitsOn?.kind === "OPERATOR" ? plan.waitsOn.what
   : planIsParked(plan) ? plan.parked.conditions.find((condition) => condition.who === "OPERATOR" && condition.state === "OPEN")?.what ?? null : null;
+/**
+ * Operator 26/11 14:36 BKK («μου λες για 5 αποφάσεις και δεν βλέπω καμία απόφαση»): a wait that asks the operator for decisions, choices or
+ * answers to questions cannot be answered on the plan's Done / Need help / Not now card. Each one is its own space_ask_operator decision, named
+ * on the wait by id: then those decisions are the plan's Needs you items (`ties`) with their option buttons, and Space raises no card of its own.
+ */
+const ASKS_DECISIONS = /\b(?:decid\w*|decisions?|choos\w*|choices?|questions?)\b|(?<!\p{L})(?:απ[οό]φ[αά]σ|επιλογ|επιλέξ|επίλεξ|διάλεξ|διαλέξ|ερώτησ|ερωτήσ)/iu;
+const DECISION_IDS = /nous_decision:[0-9a-f]{8,}/g;
+export const waitDecisionIds = (what: string): string[] => what.match(DECISION_IDS) ?? [];
+export const waitAsksUnlinkedDecisions = (what: string): boolean => ASKS_DECISIONS.test(what) && !waitDecisionIds(what).length;
+export const NOUS_PLAN_DECISIONS_RULE = "This operator wait asks for decisions, choices or answers, and the plan's own card only offers Done / Need help / Not now, so the operator "
+  + "could answer none of them (operator 26/11 14:36 BKK). Bring each one as its own space_ask_operator decision (one question each, with its options and refs.planId), "
+  + "then name every decision's id (nous_decision:…) in this wait's text. Nothing changed.";
 export const titleOf = (plan: ClipboardItem) => (plan.title ?? plan.text.split("\n")[0] ?? plan.id).slice(0, 200);
 /** The plans a card names: its `planId`, and the plan ids its items came from. */
 const plansOf = (card: SpaceNotification) => [card.payload.planId, ...(Array.isArray(card.payload.items) ? card.payload.items.map((item: { ref?: unknown }) => item?.ref) : [])]
@@ -220,13 +232,22 @@ export async function unblockPlanWait(store: PlanStore, owner: string, planId: s
  * Operator 13/11 15:37 BKK: a plan's item stayed open after its decision was approved and done. Every answer to a decision that names a plan
  * (whatever path answers it) ends the plan's wait on the operator, and the card Nous raised for that wait goes with it (a card carried from a
  * closed pane holds that pane's own ask and stays); a cancelled decision leaves both. The parked-plan check resumes a plan whose conditions are all met.
- * shortcut: a plan waiting on the operator for two things loses the wait on the first answer; give waitsOn the decision id if that happens.
+ * A wait that names several decisions by id ends only when none of them is still open.
  */
-export function closePlanWaitOnAnswer(repository: Pick<NousRepository, "answerDecision">, store: PlanStore, notifications?: Pick<Notifications, "list" | "resolve">): void {
+export function closePlanWaitOnAnswer(repository: Pick<NousRepository, "answerDecision" | "getDecision">, store: PlanStore, notifications?: Pick<Notifications, "list" | "resolve">): void {
   const answer = repository.answerDecision.bind(repository);
+  // 26/11 (plan m9BqtYYcfwzX: approving 1 of its 5 decisions met the wait): a wait naming its decisions ends when none of them is still open.
+  const othersOpen = async (owner: string, planId: string, id: string) => {
+    const plan = await store.getClipboardItem(owner, planId);
+    const what = plan ? operatorWait(plan) : null;
+    for (const other of what ? waitDecisionIds(what).filter((entry) => entry !== id) : []) {
+      if ((await repository.getDecision(owner, other).catch(() => null))?.status === "OPEN") return true;
+    }
+    return false;
+  };
   repository.answerDecision = async (owner, id, patch) => {
     const decision = await answer(owner, id, patch);
-    const planId = decision && decision.status !== "CANCELLED" ? decision.refs.planId : null;
+    const planId = decision && decision.status !== "CANCELLED" && !await othersOpen(owner, decision.refs.planId ?? "", id).catch(() => false) ? decision.refs.planId : null;
     if (!planId || !await unblockPlanWait(store, owner, planId, `Decision ${id} ${decision!.status.toLowerCase()}`).catch(() => false)) return decision;
     const key = planNoticeKey(planId);
     const cards = await notifications?.list(owner, { status: "WAITING", dedupeKey: key, limit: 200 }).catch(() => []) ?? [];

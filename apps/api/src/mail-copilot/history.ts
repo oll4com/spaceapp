@@ -81,7 +81,8 @@ export function classifyThreadChange(change: ThreadChange, ignoredLabels: Readon
   if (added.has("TRASH")) actions.push({ action: "TRASH", labelIds: [] });
   else if (removed.has("TRASH")) actions.push({ action: "UNTRASH", labelIds: [] });
   if (added.has("SPAM")) actions.push({ action: "SPAM", labelIds: [] });
-  else if (removed.has("SPAM")) actions.push({ action: "NOT_SPAM", labelIds: [] });
+  // Trashing a Spam message drops SPAM too: that is a trash, never a "Not spam".
+  else if (removed.has("SPAM") && !added.has("TRASH")) actions.push({ action: "NOT_SPAM", labelIds: [] });
   const leftInbox = removed.has("INBOX") && !added.has("TRASH") && !added.has("SPAM");
   if (leftInbox) actions.push(userAdded.length ? { action: "MOVE", labelIds: userAdded } : { action: "ARCHIVE", labelIds: [] });
   else if (added.has("INBOX") && !removed.has("TRASH") && !removed.has("SPAM")) actions.push({ action: "UNARCHIVE", labelIds: [] });

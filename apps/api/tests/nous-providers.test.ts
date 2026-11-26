@@ -49,7 +49,8 @@ describe("Nous provider catalog", () => {
     expect(providers.find((provider) => provider.id === "claude")?.reason).toContain("subscription");
     // The API-key account serves Nous only through "Claude via OpenCode" (nous_msg:35d3e36f8d414784bde8e43f, superseding 8/11), never Claude Code.
     expect(all[0].routes?.filter((route) => route.available).map((route) => route.route)).toEqual(["CLAUDE_OPENCODE"]);
-    expect(loader).not.toHaveBeenCalled();
+    // Paused or rate-limited accounts still list their models, unavailable, so Settings offers them (operator 24/11, f1fdc799).
+    expect(providers.find((provider) => provider.id === "codex")?.models.map((model) => model.id)).toEqual(["gpt-6-astra"]);
     // Space routes include only the 6 subscription/native routes: Claude, Codex, Claude OpenCode, Gemini Neon, Gemini 3.8 Flash and Claude (Antigravity).
     expect(all[0].routes?.map((route) => route.route)).toEqual(["CLAUDE", "CODEX", "CLAUDE_OPENCODE", "ANTIGRAVITY", "ANTIGRAVITY_CLAUDE", "ANTIGRAVITY_FLASH"]);
     expect(all[0].routes?.find((route) => route.route === "ANTIGRAVITY")?.name).toBe("Gemini Neon (Antigravity)");

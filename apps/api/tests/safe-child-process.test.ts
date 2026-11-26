@@ -1,4 +1,6 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -62,6 +64,10 @@ it("runs buffered commands in the exec helper with execFile's results, errors an
   const run = promisify(execFile);
   const printParent = ["-e", "process.stdout.write(String(process.ppid))"];
   expect((await run(process.execPath, printParent)).stdout).toBe(String(process.pid));
+  // Its own repository, so the test also runs where the tree is not a git checkout (the public export).
+  const root = mkdtempSync(join(tmpdir(), "space-exec-helper-git-"));
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "x"], { cwd: root });
   const helperPid = startExecHelper();
   try {
     expect(helperPid).toBeGreaterThan(0);
@@ -82,7 +88,6 @@ it("runs buffered commands in the exec helper with execFile's results, errors an
     expect((await run(process.execPath, printParent, { signal: new AbortController().signal })).stdout).toBe(String(process.pid));
 
     // Git through the helper: output, exit code, and a timeout that takes the process group.
-    const root = fileURLToPath(new URL("../../..", import.meta.url));
     expect((await execGit(root, ["rev-parse", "--is-inside-work-tree"])).stdout.trim()).toBe("true");
     expect(await execGit(root, ["rev-parse", "--verify", "--quiet", "refs/heads/space-exec-helper-missing"])).toMatchObject({ code: 1, stdout: "" });
     // Nous's space_git (public-host lag 14/11: it forked the 1-2 GB API): its output and git's own error, both from the helper.
@@ -109,6 +114,7 @@ it("runs buffered commands in the exec helper with execFile's results, errors an
     expect(takeSpawnCounts()).toEqual({ [`helper ${node} egress-status`]: 1, [`helper ${node} status`]: 1, "helper space-exec-helper-fixture broker status": 1, [`${node} replace`]: 1 });
   } finally {
     stopExecHelper();
+    rmSync(root, { recursive: true, force: true });
   }
   expect((await run(process.execPath, printParent)).stdout).toBe(String(process.pid));
 }, 30_000);

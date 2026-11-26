@@ -185,6 +185,22 @@ describe("Plan Needs you", () => {
     expect(await f.waiting()).toEqual([]);
   });
 
+  it("26/11 (plan m9BqtYYcfwzX): a wait naming several decisions ends only when none of them is still open", async () => {
+    const f = fixture([plan("clipboard:m9BqtYYcfwzX")]);
+    const repository = new InMemoryNousRepository();
+    const store = { getClipboardItem: (_owner: string, id: string) => f.state.plans.find((entry) => entry.id === id) ?? null,
+      updateClipboardItemProgress: (_owner: string, id: string, patch: object) => { f.state.plans = f.state.plans.map((entry) => entry.id === id ? { ...entry, ...patch } : entry); return null; } };
+    closePlanWaitOnAnswer(repository, store as never);
+    const ask = () => repository.createDecision({ ownerUserId: owner, category: "DIRECTION", title: "Tokens", body: "", options: [], recommendation: null,
+      action: null, refs: { planId: "clipboard:m9BqtYYcfwzX" } } as never);
+    const [first, second] = [await ask(), await ask()];
+    f.state.plans = [plan("clipboard:m9BqtYYcfwzX", { waitsOn: { kind: "OPERATOR", what: `Answer the 2 decisions ${first.id} and ${second.id}`, until: null } })];
+    await repository.answerDecision(owner, first.id, { status: "APPROVED", answer: null });
+    expect(f.state.plans[0]!.waitsOn).not.toBeNull();
+    await repository.answerDecision(owner, second.id, { status: "DECLINED", answer: null });
+    expect(f.state.plans[0]!.waitsOn).toBeNull();
+  });
+
   it("operator 13/11 nous_msg:0fa7d370 (Partner Advantage, decision c65eeee0): an approved decision meets the parked plan's operator condition and resolves Nous's card", async () => {
     const parked = { reason: "Waits on the operator", since: "2026-11-13T05:00:00.000Z", resumedAt: null, conditions: [
       { id: "c1", who: "OPERATOR", what: "Submit the case", check: { kind: "MANUAL" }, state: "OPEN", checkedAt: null, metAt: null, evidence: null },

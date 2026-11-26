@@ -101,9 +101,11 @@ async function revealNeed(paneId: string, target: string, live: () => boolean): 
 /** Going there is seeing it: an open record would be offered again on every other tab and after each reload (only OPEN: the read route
  * would turn a resolved record back into READ). R27-2: going to a card that offers "Go now" is that answer, scored once (the server keeps
  * the record READ for the visit). */
-function markWent(record: SpaceNotification | undefined): void {
+function markWent(record: SpaceNotification | undefined, resolved = false): void {
   const current = record ? peekNotificationStore().items.find((item) => item.id === record.id) ?? record : null;
   if (record) dropNeedsYouPeek(record.id);
+  // The place route resolved a card whose page is gone; a read or answer now could reopen it.
+  if (resolved) return;
   if (current && (current.status === "OPEN" || current.status === "READ") && needsYouAsk(current).options?.includes(NEEDS_YOU_GO_NOW)
     && (current.payload.answer as { text?: unknown } | undefined)?.text !== NEEDS_YOU_GO_NOW) {
     void api.answerNotification(current.id, { option: NEEDS_YOU_GO_NOW }).catch(() => current.status === "OPEN" ? markNotificationRead(current.id) : undefined);
@@ -151,9 +153,10 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
     setError(null);
     setRetry(null);
     // Operator 9/11 13:31 BKK («με πηγαινει σε ασχετα»): a card about a page goes where the server finds that page now (the card is rebound to
-    // it); a page no browser holds, with no address to open, moves nothing.
+    // it). nous_msg:c2e18abc (26/11): a page no browser holds still opens the card's own pane, without the dead tab; PAGE_GONE only when that pane is gone too.
     const found = asked.notification ? await api.needsYouPlace(asked.notification.id).catch(() => null) : null;
-    if (found?.page && !found.place) { navigating.current = false; setError(PAGE_GONE); return; }
+    const gone = Boolean(found?.page && !found.place);
+    const paneGone = gone ? PAGE_GONE : "This pane is no longer available. Open Needs you to check the request.";
     const detail = found?.place && asked.notification ? { ...asked, roomId: found.place.roomId, paneId: found.place.paneId,
       notification: { ...asked.notification, payload: { ...asked.notification.payload, browserPage: found.place } } } : asked;
     const record = detail.notification;
@@ -162,9 +165,9 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
     if (!leave && !visitRef.current && nousFullscreenShown()) {
       try {
         const pane = paneOf(detail.paneId) ?? (await api.panes(detail.roomId)).data.find((entry) => entry.id === detail.paneId);
-        if (!pane || pane.isClosed) throw new Error("This pane is no longer available. Open Needs you to check the request.");
-        markWent(record);
-        const page = record ? needsYouBrowserPage(record) : null;
+        if (!pane || pane.isClosed) throw new Error(paneGone);
+        markWent(record, gone);
+        const page = record && !gone ? needsYouBrowserPage(record) : null;
         const tab = page?.paneId === detail.paneId ? /^tab:(\S+)$/.exec(page.target ?? "")?.[1] : undefined;
         setFloat({ detail, record: record ?? null, target: { roomId: detail.roomId, paneId: detail.paneId, title: pane.title, browser: HANDOFF_MODES.has(pane.mode), ...(tab ? { pageId: tab } : {}) } });
       } catch (failure) {
@@ -187,7 +190,7 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
       // A cold room loads its panes after it is shown.
       for (let tries = 0; tries < 50 && !paneOf(detail.paneId); tries += 1) await wait(100);
       let pane = paneOf(detail.paneId);
-      if (!pane || pane.isClosed) throw new Error("This pane is no longer available. Open Needs you to check the request.");
+      if (!pane || pane.isClosed) throw new Error(paneGone);
       if (pane.isMinimized) { await latest.current.restorePane(pane); pane = paneOf(detail.paneId) ?? pane; }
       const maximizedByUs = !pane.isMaximized;
       if (maximizedByUs) await latest.current.toggleMaximize(pane);
@@ -195,16 +198,16 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
       // A copilot rail opens the question or review the notification points at (the same convention as a notification click).
       // A copilot's own handoff card (Job Copilot HANDOFF_REQUESTED) takes the browser too.
       // Operator 2/11 13:15 BKK: a card a CLI raised about a page opens the browser pane holding it, at its tab (atBrowserPage below).
-      const page = record ? needsYouBrowserPage(record) : null;
+      const page = record && !gone ? needsYouBrowserPage(record) : null;
       const atPage = page?.paneId === detail.paneId;
       const handoff = !record || atPage || record.source === "BROWSER_HANDOFF" || record.kind === "HANDOFF_REQUESTED";
-      const target = (atPage ? page.target : null) ?? record?.link.target ?? (record?.source === "BROWSER_HANDOFF" ? "browser" : record ? "activity" : null);
+      const target = gone ? null : (atPage ? page.target : null) ?? record?.link.target ?? (record?.source === "BROWSER_HANDOFF" ? "browser" : record ? "activity" : null);
       const same = visitRef.current?.paneId === detail.paneId;
       const nextVisit = { origin, roomId: detail.roomId, paneId: detail.paneId, maximizedByUs: maximizedByUs || Boolean(same && visitRef.current?.maximizedByUs),
         notificationId: record?.id ?? null, terminal: (pane.mode ?? "TERMINAL") === "TERMINAL", record: record ?? null };
       visitRef.current = nextVisit;
       setVisit(nextVisit);
-      markWent(record);
+      markWent(record, gone);
       // Every browser handoff uses the pane action; no focus path depends on a copilot strip being mounted.
       if (handoff && HANDOFF_MODES.has(pane.mode) && await api.browserHandoff(detail.paneId).then((result) => result.handoff?.status === "REQUESTED").catch(() => false)) {
         dispatchBrowserPaneActionEvent({ paneId: detail.paneId, action: "handoff", roomId: detail.roomId });

@@ -507,15 +507,37 @@ describe("Space provider catalog", () => {
     });
     const space = (await catalog.list()).find((provider) => provider.id === "space")!;
     expect(space.available).toBe(true);
-    expect(space.models.map((model) => model.id)).toEqual(["auto", "auto-balanced", "auto-light", "claude:claude-opus-5-5", "opencode-claude:claude-opus-5-5", "gemini:gemini-4-argon-high",
-      "antigravity-claude:claude-sonnet-5-5-medium", "gemini-flash:gemini-3.8-flash-high"]);
+    expect(space.models.map((model) => model.id)).toEqual(["auto", "auto-balanced", "auto-light", "claude:claude-opus-5-5", "codex:gpt-6-astra", "codex:gpt-6.1-sol", "codex:gpt-6-luna",
+      "opencode-claude:claude-opus-5-5", "gemini:gemini-4-argon-high", "antigravity-claude:claude-sonnet-5-5-medium", "gemini-flash:gemini-3.8-flash-high"]);
     // The Gemini provider itself keeps its Gemini models; Antigravity's Claude models are their own route.
     expect((await catalog.list()).find((provider) => provider.id === "gemini")!.models.map((model) => model.id)).toEqual(["gemini-4-argon-high", "gemini-3.8-flash-high"]);
     expect(space.routes!.map((entry) => `${entry.route}:${entry.enabled}:${entry.available}`)).toEqual(["CLAUDE:true:true", "CODEX:true:false", "CLAUDE_OPENCODE:true:true",
       "ANTIGRAVITY:true:true", "ANTIGRAVITY_CLAUDE:true:true", "ANTIGRAVITY_FLASH:true:true"]);
     expect(space.routes![1]).toMatchObject({ reason: expect.stringContaining("out of quota"), resetAt: "2999-01-01T00:00:00.000Z" });
+    // Operator 24/11 (f1fdc799): a route out of quota still lists its models, marked, so Settings can pick them; the turn skips that route until it has quota.
+    expect(space.models.find((model) => model.id === "codex:gpt-6-astra")!.label).toBe("Astra · Codex (unavailable now)");
+    expect(space.models.find((model) => model.id === "claude:claude-opus-5-5")!.label).toBe("Opus · Claude");
     await expect(catalog.validate({ provider: "space", model: "auto", effort: "high" })).resolves.toBeUndefined();
-    await expect(catalog.validate({ provider: "space", model: "codex:gpt-6-astra", effort: "high" })).rejects.toThrow(/not available/);
+    await expect(catalog.validate({ provider: "space", model: "codex:gpt-6-astra", effort: "high" })).resolves.toBeUndefined();
+    await expect(catalog.validate({ provider: "space", model: "codex:gpt-9", effort: "high" })).rejects.toThrow(/not available/);
+    const { attempts, skipped } = spaceAttempts({ model: "codex:gpt-6-astra", effort: "high" }, await catalog.routes());
+    expect(attempts).toEqual([]);
+    expect(skipped[0]).toMatchObject({ route: "CODEX", reason: expect.stringContaining("out of quota") });
+  });
+
+  // Operator 24/11 (nous_msg:f1fdc79968e2439b81554e03): Settings did not offer Neon while the Antigravity quota was full.
+  it("lists Gemini Neon while Antigravity is out of quota, and never tries or fails over onto it", async () => {
+    const neon = [{ id: "gemini-4-neon", label: "Neon", efforts: ["none"] }, { id: "gemini-4-hydrogen", label: "Hydrogen", efforts: ["none"] }];
+    const catalog = createNousProviderCatalog({
+      listAccounts: async () => ({ data: [{ provider: "CLAUDE", status: "ACTIVE", planType: "max" }, { provider: "ANTIGRAVITY", status: "QUOTA_EXCEEDED", planType: "pro" }] }),
+      modelLoaders: { claude: vi.fn(async () => claudeModels), gemini: vi.fn(async () => [...neon, ...geminiModels]) }
+    });
+    const space = (await catalog.list()).find((provider) => provider.id === "space")!;
+    expect(space.models.find((model) => model.id === "gemini:gemini-4-neon")?.label).toContain("(unavailable now)");
+    await expect(catalog.validate({ provider: "space", model: "gemini:gemini-4-neon", effort: "none" })).resolves.toBeUndefined();
+    const { attempts, skipped } = spaceAttempts({ model: "gemini:gemini-4-neon", effort: "none" }, await catalog.routes());
+    expect(attempts).toEqual([]);
+    expect(skipped).toMatchObject([{ route: "ANTIGRAVITY", model: "gemini-4-neon" }]);
   });
 
   it("reconsiders a quota-limited account at its cached reset, respecting weekly exhaustion and pauses", async () => {
@@ -527,7 +549,8 @@ describe("Space provider catalog", () => {
     expect((await catalog.routes())[0]!.available).toBe(false);
     time += 60_000;
     expect((await catalog.routes())[0]).toMatchObject({ available: true, quota: { ready: true } });
-    expect(loader).toHaveBeenCalledTimes(1);
+    // Once to list the models while out of quota, once when serving again.
+    expect(loader).toHaveBeenCalledTimes(2);
     account.secondaryWindow.usedPercent = 100;
     expect((await catalog.routes())[0]!.available).toBe(false);
     account.secondaryWindow.usedPercent = 50; account.status = "PAUSED";

@@ -125,6 +125,13 @@ export const nousProgramBenefitSchema = z.object({
 });
 export type NousProgramBenefit = z.output<typeof nousProgramBenefitSchema>;
 
+export const nousProgramUsageSchema = z.object({
+  state: z.preprocess(upper, z.enum(["USED", "UNUSED"])),
+  evidence: z.string().trim().min(1),
+  checkedAt: instant
+});
+export type NousProgramUsage = z.output<typeof nousProgramUsageSchema>;
+
 // A program's levels (OpenAI Partner Network: Registered, then the tiers above): REACHED, PENDING (applied, under review), NEXT (what comes
 // if approved), LATER.
 export const NOUS_PROGRAM_TIER_STATUSES = ["REACHED", "PENDING", "NEXT", "LATER"] as const;
@@ -193,6 +200,9 @@ export const nousProgramInputSchema = z.object({
   // APPROVED whose completion still waits on the provider (credit, activation, code, card verification; operator 11/11, nous_msg:a5e13d01):
   // the page lists it under Waiting too. null clears it (false).
   awaitingCompletion: z.boolean().nullable().transform((value) => value ?? false).optional(),
+  // Verified usage (operator 26/11, nous_msg:2d0eb603): USED or UNUSED from evidence read (a server, a bucket, a live key, a gateway call),
+  // with that evidence in one line; it wins over the usage the page derives from benefit lines. null clears it.
+  usage: nousProgramUsageSchema.nullable().optional(),
   // Grouped tags (NOUS_PROGRAM_TAGS; another slug is kept and shown as written). Replaced whole when given.
   tags: z.preprocess(list, z.array(z.string().trim().min(1).transform((tag) => tag.toLowerCase()))).optional(),
   // Operator 4/11 15:09 BKK (R73): what the service or program is, in one line, and how SpaceApp/oll4 uses it with what that needs (a card, a
@@ -217,7 +227,7 @@ export interface NousProgram {
   amount: { text: string; value: number | null; currency: string | null } | null;
   commitments: string | null; account: string | null; contacts: string[]; mails: NousProgramMail[]; nextAction: string | null;
   reapply: { needed: boolean; why: string | null; when: string | null } | null;
-  sources: string[]; notes: string | null; givesMoney: boolean | null; tags: string[]; whatItIs: string | null; howWeUse: string | null; benefits: NousProgramBenefit[]; tiers: NousProgramTier[]; affiliate?: NousProgramAffiliate | null; company?: string | null; locked?: string[]; awaitingCompletion?: boolean; createdAt: string; updatedAt: string;
+  sources: string[]; notes: string | null; givesMoney: boolean | null; tags: string[]; whatItIs: string | null; howWeUse: string | null; benefits: NousProgramBenefit[]; tiers: NousProgramTier[]; affiliate?: NousProgramAffiliate | null; company?: string | null; locked?: string[]; awaitingCompletion?: boolean; usage?: NousProgramUsage | null; createdAt: string; updatedAt: string;
 }
 
 /** The usage report's file (plan clipboard:MUFqsrKfQtAt): `{ generatedAt, entries: [{ id, benefits }] }`, merged into the stored lines. */

@@ -1703,6 +1703,9 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   const requestDone = createNousRequestDone({ releaseShipped: createReleaseShipped(repository), notes: repository, notifications: options.notifications, requestStatus: (owner, ids) => nousRequests.statuses(owner, ids),
     superiorCommands: async (owner) => new Set((await repository.listOperatorMessageRefs(owner)).flatMap((ref) => ref.superior ? [ref.id] : [])),
     plan: (owner, id) => Promise.resolve(store.getClipboardItem(owner, id)),
+    // Operator 26/11 (nous_msg:3055345176be403e8e2b169f): a Done whose summary or named draft is unfinished asks once in Needs you instead.
+    fileTexts: async (owner, refs) => (await files.decisionFiles(owner, refs)).map((file) => file.error || file.binary ? null : file.text),
+    askOperator: async (owner, ask) => (await late.service!.ask({ ownerUserId: owner, category: "DIRECTION", options: [], action: null, ...ask })).id,
     // Operator 13/11 14:39 BKK: a refused Done keeps (or reopens) its plan waiting on the operator, and its Needs you item rises now.
     holdForOperator: async (owner, plan, what) => {
       const waitsOn = { kind: "OPERATOR" as const, what, until: null };
@@ -3219,7 +3222,14 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     const { id } = options.parseQuery(z.object({ id: notificationIdSchema }).strict(), request.params);
     const card = await options.notifications.get(owner, id);
     if (!card) throw new SpaceNotFoundError("That notification does not exist.");
-    return await needsYouPlace(card);
+    const found = await needsYouPlace(card);
+    // nous_msg:c2e18abc (26/11): a card whose page is gone with no address to open has nothing left to act on, so it stops offering Go
+    // (as closedBrowserBoundCards in browser-handoff.ts; its asker hears the ask ended and asks again with a new page).
+    if (found.page && !found.place && (card.status === "OPEN" || card.status === "READ")) {
+      await options.notifications.setStatus(owner, card.id, "RESOLVED", { resolvedReason: "its page is no longer open" }, "its page is no longer open")
+        .catch((error: unknown) => app.log.warn({ err: error }, "A needs-you card whose page is gone could not be resolved."));
+    }
+    return found;
   });
   // The unified «Εισερχόμενα» (plan clipboard:aE7U1J_gU9OV): one view of needs-you, decisions, done, updates, alerts, Nous's queue and requests.
   registerUnifiedInboxRoutes(app, { routeOptions: options.routeOptions, owner: (request) => nousOwner(options, request), assertPerson: (request) => assertPerson(options, request),

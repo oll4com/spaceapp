@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -105,11 +106,19 @@ describe("GET and POST /api/version-sync on the linked SpaceApp", () => {
     expect((await post(app, { commit: B })).json()).toEqual({ status: "current", commit: B });
     expect((await post(app, { commit: B.slice(0, 10) })).json()).toEqual({ status: "current", commit: B });
     expect(runs).toEqual([]);
-    const head = await fullSyncCommit(undefined, null);
-    expect(head).toMatch(/^[0-9a-f]{40}$/);
-    expect(await fullSyncCommit(head!.slice(0, 10), null)).toBe(head);
-    expect(await fullSyncCommit("HEAD", null)).toBe(head);
-    expect(await fullSyncCommit("git:HEAD", null)).toBe(head);
+    // Its own repository, so the test also runs where the tree is not a git checkout (the public export).
+    const git = await mkdtemp(join(tmpdir(), "space-version-sync-git-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: git });
+      execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "x"], { cwd: git });
+      const head = await fullSyncCommit(undefined, null, git);
+      expect(head).toMatch(/^[0-9a-f]{40}$/);
+      expect(await fullSyncCommit(head!.slice(0, 10), null, git)).toBe(head);
+      expect(await fullSyncCommit("HEAD", null, git)).toBe(head);
+      expect(await fullSyncCommit("git:HEAD", null, git)).toBe(head);
+    } finally {
+      await rm(git, { recursive: true, force: true });
+    }
     expect(await fullSyncCommit(`commit:${A.slice(0, 8)}`, A)).toBe(A);
     expect(await fullSyncCommit("not-a-sha", A)).toBeNull();
     expect((await post((await setup({ enabled: false })).app, { commit: A })).json().error.code).toBe("VERSION_SYNC_OFF");

@@ -8,6 +8,7 @@ export const desktopSpell = (): DesktopSpell | undefined =>
 
 const BOUNDARY = /^[\s.,;:!?·)\]]$/u;
 const WORD_BEFORE = /[\p{L}\p{M}'’]+$/u;
+const bare = (word: string) => word.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 
 // Gboard corrects only a near miss: a suggestion further than two edits from the typed word is a guess, not a typo.
 function edits(a: string, b: string): number {
@@ -31,7 +32,12 @@ export function autocorrect(text: string, caret: number, spell: DesktopSpell, ke
   if (/[\p{N}_@/\\#.:=-]/u.test(text[start - 1] ?? "")) return null;
   if (/\p{Lu}/u.test(original.slice(1))) return null;
   if (!spell.isMisspelled(original)) return null;
-  const replacement = spell.suggestions(original)[0];
+  const suggestions = spell.suggestions(original);
+  // A missing Greek accent is the common typo, but Hunspell may rank a rarer stress first (καλήμερα before καλημέρα):
+  // use the only accent-only variant; with two or more, guessing the stress is wrong too often, so leave the word underlined.
+  const accentOnly = suggestions.filter((s) => s !== original && bare(s) === bare(original));
+  if (accentOnly.length > 1) return null;
+  const replacement = accentOnly[0] ?? suggestions[0];
   if (!replacement || replacement === original || edits(original.toLowerCase(), replacement.toLowerCase()) > 2) return null;
   return { start, original, replacement, boundary };
 }

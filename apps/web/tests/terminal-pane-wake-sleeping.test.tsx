@@ -13,7 +13,7 @@ function json(body: unknown, headers: Record<string, string> = {}) {
   return { ok: true, status: 200, headers: new Headers(headers), json: async () => body };
 }
 
-function sleepingPaneFetch(wakes: boolean) {
+function sleepingPaneFetch(wakes: boolean, resumedElsewhere = false) {
   const serverOffsetMs = 0;
   let awake = false;
   const wakeCalls: string[] = [];
@@ -60,7 +60,7 @@ function sleepingPaneFetch(wakes: boolean) {
     }
     if (method === "POST" && url === "/api/panes/pane%3Aclock/cli/wake") {
       wakeCalls.push(url);
-      awake = wakes;
+      awake = wakes || resumedElsewhere;
       return json({ woke: wakes }, date);
     }
     if (method === "POST" && url === "/api/panes/pane%3Aclock/cli/session") {
@@ -160,6 +160,23 @@ describe("a sleeping pane wakes when the operator focuses it", () => {
       await waitFor(() => expect(section.getAttribute("data-terminal-loading")).toBe("false"), { timeout: 5000 });
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(calls.wakeCalls).toEqual([]);
+      view.rerender(paneTree(terminalPane(OLD), true));
+      await waitFor(() => expect(section.getAttribute("data-terminal-has-session")).toBe("true"), { timeout: 5000 });
+      expect(calls.wakeCalls).toHaveLength(1);
+      expect(calls.posts).toEqual([]);
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // 26/11 (Zoe/Emma): Nous or the scheduler resumed the pane before the room opened, so wake answers false; the pane follows the new session.
+  it("attaches the session the server already resumed when the pane becomes visible", async () => {
+    const calls = sleepingPaneFetch(false, true);
+    const view = renderPane(terminalPane(OLD), false);
+    try {
+      const section = view.container.querySelector("section.terminal-pane")!;
+      await waitFor(() => expect(section.getAttribute("data-terminal-loading")).toBe("false"), { timeout: 5000 });
       view.rerender(paneTree(terminalPane(OLD), true));
       await waitFor(() => expect(section.getAttribute("data-terminal-has-session")).toBe("true"), { timeout: 5000 });
       expect(calls.wakeCalls).toHaveLength(1);

@@ -170,4 +170,18 @@ describe("Daily Nous errors 20/11", () => {
     expect(ask).toHaveBeenCalledTimes(2);
   });
 
+  // Operator 26/11 14:36 BKK: a wait asking the operator for decisions is held until each is its own decision, named on the wait by id.
+  it("holds an operator wait that asks for decisions without naming them, and passes one that names them", async () => {
+    const plan = { id: "clipboard:abcdefgh", kind: "PLAN", title: "Tokens", text: "", steps: [], parked: null, waitsOn: null, dependsOn: [] };
+    const update = vi.fn(async () => plan);
+    const run = (args: object) => tools({ plans: { get: async () => plan, list: async () => [plan], update } } as never).execute("space_plan_update", { plan: plan.id, ...args }, ctx);
+    const condition = (what: string) => ({ park: { reason: "Waits on the operator", conditions: [{ who: "OPERATOR", what, check: { kind: "MANUAL" } }] } });
+    expect(await run({ waitsOn: { kind: "OPERATOR", what: "Answer the 5 settings decisions in plan part 4" } })).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("space_ask_operator") });
+    expect(await run(condition("Απάντησε στις 5 αποφάσεις ρυθμίσεων"))).toMatchObject({ ok: false, refused: true });
+    expect(update).not.toHaveBeenCalled();
+    expect((await run({ waitsOn: { kind: "OPERATOR", what: `Answer the 2 decisions ${decision} and nous_decision:48fe31d325f24f05937b7b40` } })).refused).toBeFalsy();
+    expect((await run(condition("Sign the lease at the notary"))).refused).toBeFalsy();
+    expect(update).toHaveBeenCalledTimes(2);
+  });
+
 });

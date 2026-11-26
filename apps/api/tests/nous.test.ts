@@ -1327,11 +1327,11 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
       // nous_msg:f7b5fb39: closing a plan that waits on the operator needs the wait cleared or an OPERATOR park.
       const [waiting] = await f.run(["space_plan_create", { title: "Pick the lighter CLIs", text: "Decisions.", minimumModel: "claude-opus-5-5" }]);
       const waitId = /Plan (clipboard:[^ ]+) recorded/.exec(waiting!.result)![1]!;
-      const [setWait, held, answered] = await f.run(["space_plan_update", { plan: waitId, waitsOn: { kind: "OPERATOR", what: "Decisions A-F of the plan" } }],
+      const [setWait, held, answered] = await f.run(["space_plan_update", { plan: waitId, waitsOn: { kind: "OPERATOR", what: "Sign items A-F of the plan" } }],
         ["space_plan_update", { plan: waitId, executionStatus: "COMPLETED" }], ["space_plan_update", { plan: waitId, executionStatus: "COMPLETED", waitsOn: null }]);
       expect(setWait).toMatchObject({ ok: true });
       expect(held).toMatchObject({ ok: false, display: expect.stringContaining("It still waits on the operator") });
-      expect(held!.result).toContain("Decisions A-F of the plan");
+      expect(held!.result).toContain("Sign items A-F of the plan");
       expect(answered).toMatchObject({ ok: true, result: expect.stringContaining("COMPLETED") });
       const [parked, unknown, met] = await f.run(
         ["space_plan_update", { plan: id, executionStatus: "COMPLETED", park: { reason: "Waits for the vendor's fix.", conditions: [

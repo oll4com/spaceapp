@@ -103,11 +103,13 @@ export function approvedTotals(programs: NousProgram[]): { cash: string | null; 
 export type ProgramUsage = "used" | "unused" | "unknown";
 export function programUsage(program: NousProgram): ProgramUsage {
   if (program.status !== "APPROVED") return "unused";
+  // A usage verified from evidence (operator 26/11, nous_msg:2d0eb603) wins over what the lines suggest.
+  if (program.usage) return program.usage.state === "USED" ? "used" : "unused";
   const spent = (line: NousProgramBenefit) => line.used?.value ?? (typeof line.total?.value === "number" && typeof line.remaining?.value === "number" ? line.total.value - line.remaining.value : null);
+  if (program.benefits.some((line) => (line.status === "ACTIVE" || line.status === "USED_UP") && ((spent(line) ?? 0) > 0 || line.allocations.length > 0))) return "used";
+  // "Not in use" only from evidence: every active line measured at exactly 0, or every line expired. Unmeasured or awaiting completion is unknown.
   const active = program.benefits.filter((line) => line.status === "ACTIVE");
-  if (active.some((line) => (spent(line) ?? 0) > 0 || line.allocations.length > 0)) return "used";
-  if (awaitingCompletion(program) || (program.benefits.length > 0 && program.benefits.every((line) => line.status !== "ACTIVE" && line.status !== "NOT_VERIFIED"))
-    || (active.length > 0 && active.every((line) => spent(line) === 0))) return "unused";
+  if ((active.length > 0 && active.every((line) => spent(line) === 0)) || (program.benefits.length > 0 && program.benefits.every((line) => line.status === "EXPIRED"))) return "unused";
   return "unknown";
 }
 const USAGE_LABELS: Record<ProgramUsage, string> = { used: "In use", unused: "Not in use", unknown: "Usage unknown" };
@@ -285,7 +287,7 @@ function ProgramRow({ program, other, pool, expanded, onToggle, t }: { program: 
         <span className="nous-program-chevron" aria-hidden="true">{expanded ? <ChevronDown /> : <ChevronRight />}</span>
         <span className="nous-program-name">{program.program}{other ? <small>{other}</small> : null}</span>
         {program.page === "startup" ? programTags(program).map((id) => <span key={id} className={`nous-program-tag is-${id}`}>{TAG_LABELS[id as NousProgramTag] ? t(TAG_LABELS[id as NousProgramTag]) : id}</span>) : null}
-        {program.page === "startup" ? <span className={`nous-program-tag is-usage-${programUsage(program)}`}>{t(USAGE_LABELS[programUsage(program)])}</span> : null}
+        {program.page === "startup" ? <span className={`nous-program-tag is-usage-${programUsage(program)}`} title={program.usage?.evidence}>{t(USAGE_LABELS[programUsage(program)])}</span> : null}
         {program.company ? <span className="nous-program-tag is-company" title={t("Company that applied")}>{program.company}</span> : null}
         {program.affiliate?.network || program.affiliate?.commission ? <span className="nous-program-amount">{[program.affiliate.network, program.affiliate.commission].filter(Boolean).join(" · ")}</span> : null}
         <span className={`nous-program-status is-${program.status.toLowerCase()}`}>{t(awaitingCompletion(program) ? "Approved · waiting for completion" : STATUS_LABELS[program.status])}</span>

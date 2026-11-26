@@ -68,13 +68,16 @@ export function StickyNoteWindow({
     isDragging
   });
 
+  const latestTextRef = useRef(text);
+  latestTextRef.current = text;
+
   // Follow the initialText prop only when the parent changes it (e.g. the note was
   // reopened from the clipboard); local typing never snaps back to an old prop value.
   const lastInitialTextPropRef = useRef(initialText);
   useEffect(() => {
     if (initialText === lastInitialTextPropRef.current) return;
     lastInitialTextPropRef.current = initialText;
-    if (initialText !== text) {
+    if (initialText !== latestTextRef.current) {
       initialTextRef.current = initialText;
       setText(initialText);
     }
@@ -92,8 +95,6 @@ export function StickyNoteWindow({
   // One clipboard item holds the note: each save changes that item's text in place, so an agent note stays an agent note
   // with its room, pane and created time. A note deleted meanwhile is saved again as a new manual note.
   const itemIdRef = useRef(itemId);
-  const latestTextRef = useRef(text);
-  latestTextRef.current = text;
   const persistRef = useRef<(value: string) => Promise<void>>(async () => undefined);
   persistRef.current = async (value: string) => {
     setSaving(true);

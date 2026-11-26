@@ -35,7 +35,7 @@ const CLAUSE_BREAK = /^.*(?:[,;:(—–]|\s(?:και|and|αλλα|but|ομως)\
 // A screen label is not a claim: «quoted», "quoted", `code` or two+ words in capitals (ΣΕ ΠΕΡΙΜΕΝΟΥΝ, WAITING FOR YOU; Eva/Andy 16/11 08:41 BKK)
 // is blanked before folding, which would lowercase it and drop its backticks.
 const SCREEN_LABEL = /«[^»]*»|"[^"]*"|“[^”]*”|`[^`]*`|(?<!\p{L})\p{Lu}{2,}(?:[ \t]+\p{Lu}{2,})+(?!\p{L})/gu;
-function firstClaim(text: string, pattern: RegExp): string | null {
+export function firstClaim(text: string, pattern: RegExp): string | null {
   const fold = (value: string) => value.normalize("NFD").replace(/\p{M}/gu, "").replace(/’/g, "'").replace(/[*_`]/g, "").toLowerCase();
   return text.split(/(?<=[.!?;…])\s+|\n+/).map((sentence) => sentence.trim()).find((sentence) => {
     const plain = fold(sentence.replace(SCREEN_LABEL, " "));

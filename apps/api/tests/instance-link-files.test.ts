@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LinkFileError, pullLinkFile, type LinkCall } from "../src/instance-link/files.js";
 import type { InstanceLinks } from "../src/instance-link/routes.js";
+import { createNousFiles } from "../src/nous/files.js";
 import { historicalToolHold } from "../src/nous/tool-holds.js";
 import { createNousTools } from "../src/nous/tools.js";
 
@@ -144,6 +145,23 @@ describe("2026-11-25 REVIEW: space_remote_file folder and invalid/missing remote
     expect(server500.result).toContain("It answered 500");
 
     expect(new LinkFileError("x", { status: 404, refused: true })).toMatchObject({ status: 404, refused: true });
+  });
+
+  it("space_remote_file push holds folder, traversal and missing paths with guidance and sends nothing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "space-link-push-"));
+    tempDirs.push(root);
+    mkdirSync(join(root, "reports", "sub"), { recursive: true });
+    writeFileSync(join(root, "reports", "a.md"), "a\n");
+    const files = createNousFiles({ root, artifactRoot: root, rooms: async () => [], listArtifacts: async () => [], getArtifact: async () => { throw new Error("none"); } });
+    const request = vi.fn();
+    const links: InstanceLinks = { list: async () => [link], peers: async () => [], parity: async () => { throw new Error("unused"); }, lend: async () => { throw new Error("unused"); }, request: request as unknown as InstanceLinks["request"] };
+    const tools = createNousTools({ instanceLinks: () => links, files } as never);
+    const push = (path: string) => tools.execute("space_remote_file", { instance: "spaceapp-hz", direction: "push", path, roomId: "room:x" }, ctx as never);
+
+    expect(await push("reports")).toMatchObject({ ok: false, refused: true, result: "reports is a folder; push one of its files: a.md, sub/. Nothing sent." });
+    expect(await push("../etc/passwd")).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("Only files under") });
+    expect(await push("reports/missing.md")).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("No file or folder reports/missing.md") });
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("historicalToolHold recognizes the 24/11 folder, 400 MOBILE_BAD_PATH and 404 NOT_FOUND samples, while keeping 500/transport failures counted", () => {

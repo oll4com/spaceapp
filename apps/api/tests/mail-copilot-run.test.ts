@@ -527,6 +527,9 @@ describe("mail copilot run loop", () => {
     expect(Buffer.from(String(sends()[0]!.body!.raw), "base64url").toString("utf8")).toMatch(/^From: ntheo@corp\.example\r\n/);
     await expect(approve("t-none")).rejects.toThrow("This thread was written to ntheo@other.example, which me@gmail.com cannot send as; sending from me@gmail.com would break the rule");
     expect(sends()).toHaveLength(1);
+    // 23/11 Banggood, 26/11 Linkwise: the refusal comes when the review is asked, so no card reaches the operator or an allowance to fail on approval.
+    await expect(approve("t-none")).rejects.toThrow("No review was raised: add ntheo@other.example under Gmail's \"Send mail as\"");
+    expect((await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).map((event) => event.threadId)).toEqual(["t-alias"]);
   });
 
   it("answers a thread whose newest mail is our own corporate one from that address, never treating its third-party To as us (mailrev:7HMFUwuxnRSJ, NVIDIA 21/11)", async () => {

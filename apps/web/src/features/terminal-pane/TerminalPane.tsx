@@ -3628,8 +3628,12 @@ export const TerminalPane = memo(function TerminalPane({
     const current = sessionResponseRef.current;
     if ((current?.websocket && terminalStatus !== "closed") || wakeAskedForRef.current === current) return;
     wakeAskedForRef.current = current;
-    void api.wakeCliPane?.(pane.id).then(({ woke }) => {
-      if (!woke) return;
+    void api.wakeCliPane?.(pane.id).then(async ({ woke }) => {
+      // 26/11 (operator approved, Zoe/Emma): Nous or the scheduler may already have resumed it; follow that new session.
+      if (!woke) {
+        const active = await api.activeCliSession(pane.id, { includeTranscript: false });
+        if (!active || !isRecoverableCliSession(active.session) || active.session.sessionId === current?.session?.sessionId) return;
+      }
       api.clearActiveCliSessionFlight?.(pane.id);
       setConnectionAlert(null);
       void loadRuntimes(false);

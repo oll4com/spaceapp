@@ -40,12 +40,12 @@ export function ConnectionModal({
     if (!initialConnection) {
       if (engine === "POSTGRES") {
         setPort(5432);
-        if (database === "mysql") setDatabase("postgres");
-        if (username === "root") setUsername("postgres");
+        setDatabase((current) => (current === "mysql" ? "postgres" : current));
+        setUsername((current) => (current === "root" ? "postgres" : current));
       } else if (engine === "MYSQL") {
         setPort(3306);
-        if (database === "postgres") setDatabase("mysql");
-        if (username === "postgres") setUsername("root");
+        setDatabase((current) => (current === "postgres" ? "mysql" : current));
+        setUsername((current) => (current === "postgres" ? "root" : current));
       }
     }
   }, [engine, initialConnection]);

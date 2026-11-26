@@ -27,6 +27,8 @@ export interface GmailClient {
   /** The id of the draft's current message: Gmail gives an edited draft a new one. */
   draftMessageId(id: string): Promise<string>;
   deleteDraft(id: string): Promise<void>;
+  /** One page of the account's drafts: each draft's id with its current message's id and thread. */
+  listDrafts(pageToken?: string): Promise<{ drafts: Array<{ id: string; messageId: string; threadId: string }>; nextPageToken: string | null }>;
   trashMessage(id: string): Promise<void>;
   attachment(messageId: string, attachmentId: string): Promise<Buffer>;
   history(input: { startHistoryId: string; historyTypes?: readonly string[]; labelId?: string; pageToken?: string }): Promise<GmailJson>;
@@ -118,6 +120,12 @@ export function createGmailClient(input: { accessToken: string; fetchImpl?: type
     },
     async draftMessageId(id) {
       return String(((await call(`/drafts/${encodeURIComponent(id)}?format=minimal`)).message as { id?: string } | undefined)?.id ?? "");
+    },
+    async listDrafts(pageToken) {
+      const body = await call(`/drafts?maxResults=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`);
+      const drafts = (body.drafts as Array<{ id?: string; message?: { id?: string; threadId?: string } }> | undefined) ?? [];
+      return { drafts: drafts.filter((draft) => draft.id && draft.message?.id).map((draft) => ({ id: draft.id!, messageId: draft.message!.id!, threadId: draft.message!.threadId ?? "" })),
+        nextPageToken: typeof body.nextPageToken === "string" ? body.nextPageToken : null };
     },
     async deleteDraft(id) { await call(`/drafts/${encodeURIComponent(id)}`, { method: "DELETE" }); },
     async trashMessage(id) { await call(`/messages/${encodeURIComponent(id)}/trash`, { method: "POST" }); },

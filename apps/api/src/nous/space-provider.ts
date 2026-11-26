@@ -62,7 +62,9 @@ export function spaceAttempts(choice: SpaceChoice, routes: SpaceRoute[]): { expl
   if (!parsed) return { explicit: true, attempts: [], skipped: [] };
   if (!("auto" in parsed)) {
     const route = routes.find((entry) => entry.route === parsed.route);
-    const model = route?.models.find((entry) => entry.id === parsed.model);
+    // An unavailable route lists its models for Settings only; it is skipped with its reason, never tried.
+    const served = route?.available ? route.models : [];
+    const model = served.find((entry) => entry.id === parsed.model);
     const attempts: SpaceAttempt[] = [];
     const skipped: SpaceRouteFailure[] = [];
     if (route && model) attempts.push(attemptOf(route, model, choice.effort));
@@ -72,11 +74,11 @@ export function spaceAttempts(choice: SpaceChoice, routes: SpaceRoute[]): { expl
     if (parsed.route === "ANTIGRAVITY") {
       if (parsed.model.includes("argon") || parsed.model.includes("neon")) {
         // 22/11 c74c7453: Argon (or Neon) fails over to Neon, then Hydrogen, before Flash.
-        for (const next of [route?.models.find((entry) => /^gemini-\d+-neon\b/.test(entry.id)), route?.models.find((entry) => entry.id.includes("hydrogen"))]) {
+        for (const next of [served.find((entry) => /^gemini-\d+-neon\b/.test(entry.id)), served.find((entry) => entry.id.includes("hydrogen"))]) {
           if (route && next && next.id !== model?.id) attempts.push(attemptOf(route, next, choice.effort));
         }
       }
-      const flashRoute = routes.find((entry) => entry.route === "ANTIGRAVITY_FLASH" && entry.enabled);
+      const flashRoute = routes.find((entry) => entry.route === "ANTIGRAVITY_FLASH" && entry.enabled && entry.available);
       const flashModel = flashRoute ? routeModel(flashRoute.models, nousModelTier(parsed.model)) : null;
       if (flashRoute && flashModel) attempts.push(attemptOf(flashRoute, flashModel, choice.effort));
     }

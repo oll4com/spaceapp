@@ -395,14 +395,28 @@ describe("Needs you brings the operator to a pane", () => {
     unregister();
   });
 
-  it("operator 9/11 13:31 BKK: no browser holds the card's page and it has no address: nothing moves and the card says the page is no longer open", async () => {
+  it("nous_msg:c2e18abc: no browser holds the card's page and it has no address: Go still opens the card's own pane (no dead tab); only a gone pane says the page is no longer open", async () => {
     render(<Harness />);
     const record = needsYou("fal", { source: "NOUS", kind: "NEEDS_HANDS", dedupeKey: `nous:pane:${EMMA}`, link: { roomId: "room:work000001", paneId: EMMA, target: "tab:82CA" } });
     records = [record];
     place = { page: true, place: null, url: null };
     await act(async () => requestNousFocus({ roomId: "room:work000001", paneId: EMMA, immediate: true, notification: record }));
     await advance(200);
-    expect(calls).toEqual([]);
+    expect(calls).toEqual(["room room:work000001", `max ${EMMA}`, `select ${EMMA}`]);
+    expect(actions.some((action) => "pageId" in action)).toBe(false);
+    expect(screen.queryByText(/This page is no longer open/)).toBeNull();
+    // The place route resolved it; a read or Go now answer must not reopen it.
+    expect(fetched("/notifications/notification:fal/read") || fetched("/notifications/notification:fal/answer")).toBe(false);
+  });
+
+  it("nous_msg:c2e18abc: the card's page and its own pane are both gone: nothing moves and it says the page is no longer open", async () => {
+    emmaClosed = true;
+    render(<Harness />);
+    const record = needsYou("fal2", { source: "NOUS", kind: "NEEDS_HANDS", dedupeKey: `nous:pane:${EMMA}`, link: { roomId: "room:work000001", paneId: EMMA, target: "tab:82CA" } });
+    records = [record];
+    place = { page: true, place: null, url: null };
+    await act(async () => requestNousFocus({ roomId: "room:work000001", paneId: EMMA, immediate: true, notification: record }));
+    await advance(200);
     expect(actions).toEqual([]);
     expect(screen.getByRole("alert").textContent).toContain("This page is no longer open");
   });

@@ -124,9 +124,13 @@ const REJECTION_RULE = /\breject|\bmov(?:e|ing) forward\b|\bthanks? for applying
 /** B (2/11): a draft of ours on a thread not sent this long after it was made brings Nous one line; drafts older than DRAFT_WATCH_MS are left. */
 const DRAFT_UNSENT_MS = 15 * 60_000;
 const DRAFT_WATCH_MS = 48 * 3_600_000;
+/** Operator 26/11: a Gmail draft untouched this long is offered to the copilot to send; a younger one may still be being written. */
+const DRAFT_IDLE_MS = 30 * 60_000;
+/** Gmail empties Spam after 30 days: a Drafts or Spam item offered within this window is not offered again. */
+const FOLDER_SEEN_MS = 31 * 24 * 3_600_000;
 /** A pane action and the operator action it is in the log. */
 const LOGGED_ACTION: Partial<Record<MailThreadAction["action"], MailOperatorAction>> = {
-  archive: "ARCHIVE", unarchive: "UNARCHIVE", trash: "TRASH", untrash: "UNTRASH", star: "STAR", unstar: "UNSTAR", label: "LABEL", unlabel: "UNLABEL", move: "MOVE"
+  archive: "ARCHIVE", unarchive: "UNARCHIVE", trash: "TRASH", untrash: "UNTRASH", star: "STAR", unstar: "UNSTAR", label: "LABEL", unlabel: "UNLABEL", move: "MOVE", not_spam: "NOT_SPAM"
 };
 /** An Undo within this window removes the operator's own action from the log instead of recording the reverse. */
 const UNDO_WINDOW_MS = 15 * 60_000;
@@ -478,6 +482,59 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         + `Read the thread (space_mail_read ${draft.accountEmail} thread ${draft.threadId}), then have it sent (a review you or the operator approve) or deleted; until a sent message shows, never say it was answered.`, true)).catch(() => undefined);
     }
   }
+  /**
+   * Operator 26/11 ("check the drafts always, so a forgotten one goes out with the next check, and the spam folders for mail that went there by
+   * mistake"): every sync offers the copilot each Gmail draft untouched 30 minutes (once per saved version, none with a review open on its thread)
+   * and each Spam conversation (once; none the operator reported as spam) as TRIAGE items with `payload.folder`. Sending keeps the autonomy gate.
+   */
+  async function scanFolders(owner: string, pane: Pane, email: string, client: GmailClient): Promise<number> {
+    const at = Date.parse(now());
+    const since = new Date(at - FOLDER_SEEN_MS).toISOString();
+    const events = await repository.listEvents(owner, { accountEmail: email, types: ["TRIAGE", "REVIEW_REQUESTED", "REVIEW_DECIDED"], since });
+    const seen = new Set(events.filter((event) => event.type === "TRIAGE" && event.payload.folder).map((event) => event.payload.folder === "SPAM" ? `SPAM:${event.threadId}` : `DRAFT:${event.messageId}`));
+    const decided = new Set(events.filter((event) => event.type === "REVIEW_DECIDED").map((event) => event.payload.reviewId));
+    const reviewing = new Set(events.filter((event) => event.type === "REVIEW_REQUESTED" && !decided.has(event.payload.reviewId)).map((event) => event.threadId));
+    const reported = new Set((await repository.listActions(owner, { accountEmail: email, actions: ["SPAM"], actors: ["OPERATOR"], since })).map((action) => action.threadId));
+    let created = 0;
+    let pageToken: string | undefined;
+    const listed = new Set<string>();
+    do {
+      const page = await client.listDrafts(pageToken);
+      for (const draft of page.drafts) {
+        listed.add(draft.messageId);
+        if (seen.has(`DRAFT:${draft.messageId}`) || reviewing.has(draft.threadId)) continue;
+        const message = await client.message(draft.messageId, "metadata");
+        const savedAt = iso(message.internalDate);
+        if (!savedAt || at - Date.parse(savedAt) < DRAFT_IDLE_MS) continue;
+        const facts = ruleSubject(message);
+        const to = header(headersOf(message), "To");
+        await record(owner, { paneId: pane.id, type: "TRIAGE", status: "PENDING", accountEmail: email, threadId: draft.threadId, messageId: draft.messageId,
+          message: `Unsent draft in Drafts (draft ${draft.id}, last saved ${savedAt.slice(0, 16)} UTC): ${facts.subject || "(no subject)"} → ${to || "no recipient"}. `
+            + `If it is finished, send it (under ASSIST a review with attachmentsFrom: ${draft.messageId} when it carries files) and discard the draft once it went out (space_mail_delete draftId); `
+            + "if it is unfinished or unclear, ask the operator; never send a half-written draft.",
+          payload: { folder: "DRAFT", draftId: draft.id, subject: facts.subject, to, snippet: decodeEntities(String(message.snippet ?? "")).slice(0, 500), receivedAt: savedAt } });
+        created += 1;
+      }
+      pageToken = page.nextPageToken ?? undefined;
+    } while (pageToken);
+    // A waiting draft item whose version Gmail no longer holds (sent or discarded in Gmail, or edited: its new version comes next) is closed, never sent twice.
+    for (const item of events) if (item.type === "TRIAGE" && item.status === "PENDING" && item.payload.folder === "DRAFT" && item.messageId && !listed.has(item.messageId)) await repository.setItemStatus(owner, item.id, "DONE");
+    do {
+      const page = await client.listThreads({ labelIds: ["SPAM"], maxResults: 100, ...(pageToken ? { pageToken } : {}) });
+      for (const id of page.ids) {
+        if (seen.has(`SPAM:${id}`) || reported.has(id)) continue;
+        const thread = await threadSummary(email, await client.thread(id, "metadata"));
+        if (!thread) continue;
+        await record(owner, { paneId: pane.id, type: "TRIAGE", status: "PENDING", accountEmail: email, threadId: id, messageId: thread.messageId,
+          message: `In Spam: ${thread.subject || "(no subject)"} from ${thread.from.name || thread.from.address}. Real mail that Gmail took for spam (a person, a known correspondent, `
+            + "a service the operator uses; never phishing) goes back to the inbox with space_mail_not_spam and is then handled like any inbox mail; junk stays in Spam (report skipped).",
+          payload: { folder: "SPAM", from: thread.from, subject: thread.subject, snippet: thread.snippet, labelIds: thread.labelIds, receivedAt: thread.receivedAt } });
+        created += 1;
+      }
+      pageToken = page.nextPageToken ?? undefined;
+    } while (pageToken);
+    return created;
+  }
   async function mailAccounts(owner: string, pane: Pane | null, account: string): Promise<string[]> {
     const accounts = (await allowedAccounts(owner, pane)).filter((entry) => entry.inPane && entry.capabilities.includes("MAIL_READ"));
     if (account === "all") return accounts.map((entry) => entry.email);
@@ -558,6 +615,32 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
   /** The message a conversation is about: the newest one someone else sent (the operator's own reply is not the correspondent). */
   /** The account and every address the owner sends as: never the correspondent (13/11 cbc40ebc: a reply from the send-as alias ntheo@ was logged as the correspondent, so the Score never saw the Vultr send). */
   const mine = async (owner: string, account: string) => new Set([account, ...await ownAddresses(owner)].map((address) => address.toLowerCase()));
+  /** The address a reply goes from, and why it may not go at all (corporate rule f5bcfe1b); `send` and `requestReview` ask the same. */
+  async function replySender(owner: string, client: GmailClient, input: MailComposeInput, original: GmailJson | null) {
+    // A draft that names its thread but no message answers the thread's newest mail from someone else (mailrev:3s0bBNyEo799: AWS mail written to
+    // ntheo@spaceapp.dev went out from Gmail's default spaceappdv@gmail.com).
+    // Our own mail in the thread (Gmail's SENT label, or a From we send as) is never the one answered: its To is a third party, not us
+    // (mailrev:7HMFUwuxnRSJ, 21/11: ntheo@spaceapp.dev's mail to inceptionprogram@nvidia.com was read as written to NVIDIA).
+    let answered = (original?.payload as { headers?: unknown } | undefined)?.headers;
+    let ourFrom: string | null = null;
+    const threadId = input.threadId ?? (typeof original?.threadId === "string" ? original.threadId : null);
+    if (threadId) {
+      const own = await mine(owner, input.account);
+      const fromOf = (message: GmailJson) => senderAddress(header(headersOf(message), "From"));
+      const ours = (message: GmailJson) => own.has(fromOf(message)) || ((message.labelIds as string[] | undefined) ?? []).includes("SENT");
+      if (!original || ours(original)) {
+        const thread = await client.thread(threadId, "metadata").catch((error) => { throw gmailError(input.account, error); });
+        const messages = [...((thread.messages as GmailJson[] | undefined) ?? [])].reverse();
+        ourFrom = messages.filter(ours).map(fromOf).find((address) => address && !SHARED_MAIL_DOMAIN.test(address)) ?? null;
+        const other = messages.find((message) => !ours(message));
+        answered = other ? headersOf(await client.message(String(other.id), "metadata").catch((error) => { throw gmailError(input.account, error); })) : undefined;
+      }
+    }
+    const { sender, unsendable } = await senderFor(client, input.account, answered, ourFrom);
+    return { sender, unsendable: unsendable ? {
+      why: `This thread was written ${ourFrom ? "from" : "to"} ${unsendable}, which ${input.account} cannot send as; sending from ${sender.from} would break the rule to send only from corporate addresses.`,
+      remedy: `add ${unsendable} under Gmail's "Send mail as" for ${input.account}, or send from ${unsendable}'s own route.` } : null };
+  }
   function correspondent(messages: GmailJson[], own: ReadonlySet<string>): GmailJson | null {
     return [...messages].reverse().find((message) => !own.has(senderAddress(header(headersOf(message), "From")))) ?? messages.at(-1) ?? null;
   }
@@ -987,29 +1070,8 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const headers = (original?.payload as { headers?: unknown } | undefined)?.headers;
       const inReplyTo = header(headers, "Message-ID") || null;
       const references = header(headers, "References") || null;
-      // A draft that names its thread but no message answers the thread's newest mail from someone else (mailrev:3s0bBNyEo799: AWS mail written to
-      // ntheo@spaceapp.dev went out from Gmail's default spaceappdv@gmail.com).
-      // Our own mail in the thread (Gmail's SENT label, or a From we send as) is never the one answered: its To is a third party, not us
-      // (mailrev:7HMFUwuxnRSJ, 21/11: ntheo@spaceapp.dev's mail to inceptionprogram@nvidia.com was read as written to NVIDIA).
-      let answered = headers;
-      let ourFrom: string | null = null;
-      const threadId = input.threadId ?? (typeof original?.threadId === "string" ? original.threadId : null);
-      if (threadId) {
-        const own = await mine(owner, input.account);
-        const fromOf = (message: GmailJson) => senderAddress(header(headersOf(message), "From"));
-        const ours = (message: GmailJson) => own.has(fromOf(message)) || ((message.labelIds as string[] | undefined) ?? []).includes("SENT");
-        if (!original || ours(original)) {
-          const thread = await client.thread(threadId, "metadata").catch((error) => { throw gmailError(input.account, error); });
-          const messages = [...((thread.messages as GmailJson[] | undefined) ?? [])].reverse();
-          ourFrom = messages.filter(ours).map(fromOf).find((address) => address && !SHARED_MAIL_DOMAIN.test(address)) ?? null;
-          const other = messages.find((message) => !ours(message));
-          answered = other ? headersOf(await client.message(String(other.id), "metadata").catch((error) => { throw gmailError(input.account, error); })) : undefined;
-        }
-      }
-      const { sender, unsendable } = await senderFor(client, input.account, answered, ourFrom);
-      if (unsendable && by !== "operator") {
-        throw new SpaceConflictError(`This thread was written ${ourFrom ? "from" : "to"} ${unsendable}, which ${input.account} cannot send as; sending from ${sender.from} would break the rule to send only from corporate addresses. Nothing was sent: add ${unsendable} under Gmail's "Send mail as" for ${input.account}, or send from ${unsendable}'s own route.`);
-      }
+      const { sender, unsendable } = await replySender(owner, client, input, original);
+      if (unsendable && by !== "operator") throw new SpaceConflictError(`${unsendable.why} Nothing was sent: ${unsendable.remedy}`);
       let files: MimeAttachment[] = [];
       if (attach) {
         const parts = await attachmentsOf(client, input.account, attach.from);
@@ -1337,6 +1399,11 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
           { text: `${input.draft.subject}\n${input.draft.text}`, files: files.length }, input.draft.threadId);
         await refuseCommitment(owner, input.draft, scheduling);
         await refuseWorkingSigninSupport(owner, input.draft, order);
+        // 23/11 Banggood, 26/11 Linkwise (decisions e9aea0da, 7763df63): approved reviews the send then refused; the same check now runs before the card.
+        const client = await clientFor(owner, input.draft.account);
+        const original = input.draft.inReplyToMessageId ? await client.message(input.draft.inReplyToMessageId, "metadata").catch((error) => { throw gmailError(input.draft.account, error); }) : null;
+        const { unsendable } = await replySender(owner, client, input.draft, original);
+        if (unsendable) throw new SpaceConflictError(`${unsendable.why} No review was raised: ${unsendable.remedy}`);
       } catch (error) { await tellBlocked(owner, input.draft, error); throw error; }
       // R12-4: a reply an approved REPLY rule covers (the recipient as its sender, the subject without "Re:") recommends Approve on the card.
       const facts = { from: input.draft.to[0] ?? "", subject: input.draft.subject.replace(/^(?:re|aw|απ)\s*:\s*/iu, ""), labelIds: [], hasAttachment: false };
@@ -1537,7 +1604,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
             break;
           }
         } while (pageToken);
-        const created = await ingest(added);
+        const created = await ingest(added) + await scanFolders(owner, pane, email, client).catch(() => 0);
         const learned = await learnFromHistory(owner, email, client, entries, pane.id) + await backfill();
         await repository.setSyncState(owner, email, { historyId: latest, lastSyncedAt: now(), lastError: null, consecutiveFailures: 0 });
         return { created, reset: false, learned };

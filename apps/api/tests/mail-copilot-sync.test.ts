@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64url");
-interface FakeMessage { id: string; threadId: string; from: string; subject: string; labelIds: string[]; plain: string }
+interface FakeMessage { id: string; threadId: string; from: string; subject: string; labelIds: string[]; plain: string; date?: string }
 
 /** A Gmail whose history grows as the test "receives" mail; `expireHistory` makes history.list answer 404 once. */
 function fakeGmail(token: string) {
@@ -27,7 +27,7 @@ function fakeGmail(token: string) {
   const history: Array<{ id: number; entry: Record<string, unknown> }> = [];
   let historyId = 100;
   let expired = false;
-  const full = (message: FakeMessage) => ({ id: message.id, threadId: message.threadId, labelIds: message.labelIds, internalDate: String(Date.now()), snippet: message.plain.slice(0, 80),
+  const full = (message: FakeMessage) => ({ id: message.id, threadId: message.threadId, labelIds: message.labelIds, internalDate: String(message.date ? Date.parse(message.date) : Date.now()), snippet: message.plain.slice(0, 80),
     payload: { mimeType: "text/plain", headers: [{ name: "From", value: message.from }, { name: "To", value: "Me <me@gmail.com>" }, { name: "Subject", value: message.subject }, { name: "Message-ID", value: `<${message.id}@x>` }], body: { data: b64(message.plain) } } });
   /** Drafts Gmail still holds; any other id answers 404 (sent or discarded). */
   const drafts = new Set<string>();
@@ -52,6 +52,9 @@ function fakeGmail(token: string) {
     }
     // An expired history's gap (DATA-001): the inbox's threads, read by date, with every message the fake holds.
     if (path === "/threads" && /\bafter:\d+/.test(url.searchParams.get("q") ?? "")) return Response.json({ threads: [...new Set([...messages.values()].filter((message) => message.labelIds.includes("INBOX")).map((message) => message.threadId))].map((id) => ({ id })) });
+    // Drafts and Spam (26/11): a DRAFT message `<draftId>-msg` is that draft's current version.
+    if (path === "/drafts") return Response.json({ drafts: [...messages.values()].filter((message) => message.labelIds.includes("DRAFT")).map((message) => ({ id: message.id.replace(/-msg$/, ""), message: { id: message.id, threadId: message.threadId } })) });
+    if (path === "/threads" && url.searchParams.getAll("labelIds").includes("SPAM")) return Response.json({ threads: [...new Set([...messages.values()].filter((message) => message.labelIds.includes("SPAM")).map((message) => message.threadId))].map((id) => ({ id })) });
     if (path === "/threads") return Response.json({ threads: url.searchParams.get("q")?.includes("newer_than:30d") ? [...new Set([...messages.values()].map((message) => message.threadId))].map((id) => ({ id })) : [] });
     if (/^\/threads\/[^/]+\/(modify|trash)$/.test(path)) return Response.json({ id: path.split("/")[2] });
     const thread = /^\/threads\/([^/]+)$/.exec(path);
@@ -229,6 +232,7 @@ describe("mail copilot learns from Gmail history", () => {
     const change = (added: string[], removed: string[], extra: Partial<Parameters<typeof classifyThreadChange>[0]> = {}) => classifyThreadChange({ threadId: "t", messageIds: ["m"], added, removed, deleted: false, sent: [], ...extra }, new Set(["Label_9"]));
     expect(change(["SPAM"], ["INBOX"])).toEqual([{ action: "SPAM", labelIds: [] }]);
     expect(change(["INBOX"], ["SPAM"])).toEqual([{ action: "NOT_SPAM", labelIds: [] }]);
+    expect(change(["TRASH"], ["SPAM"])).toEqual([{ action: "TRASH", labelIds: [] }]);
     expect(change([], ["TRASH"])).toEqual([{ action: "UNTRASH", labelIds: [] }]);
     expect(change(["INBOX"], [])).toEqual([{ action: "UNARCHIVE", labelIds: [] }]);
     expect(change(["Label_3"], ["Label_4"])).toEqual([{ action: "LABEL", labelIds: ["Label_3"] }, { action: "UNLABEL", labelIds: ["Label_4"] }]);
@@ -473,6 +477,36 @@ describe("always-on Mail Copilot health and important mail (operator P0 1/11 03:
     await service.keepAlive(owner, pane, "Cleo");
     const tel = lines.find((entry) => entry.key === "mail-draft-unsent:d-tel")!;
     expect(tel.line).toContain("Its review was blocked: Not raised: Mail Copilot memory");
+  });
+
+  it("operator 26/11: every check offers each draft idle 30 minutes and each Spam conversation once; not_spam takes one back to the inbox", async () => {
+    const { repository, gmail, service, pane, tick } = setup();
+    const draft = (id: string, threadId: string, date: string) => gmail.seed({ id: `${id}-msg`, threadId, from: "Me <me@gmail.com>", subject: `Draft ${id}`, labelIds: ["DRAFT"], plain: "Hello", date });
+    draft("d-old", "t-old", "2026-10-31T06:00:00.000Z");
+    draft("d-new", "t-new", "2026-10-31T07:00:00.000Z"); // saved 7 minutes ago: maybe still being written
+    draft("d-rev", "t-rev", "2026-10-31T05:00:00.000Z"); // a review is open on its thread
+    await repository.createEvent({ ownerUserId: owner, paneId: pane.id, runId: null, accountEmail: "me@gmail.com", threadId: "t-rev", messageId: null, type: "REVIEW_REQUESTED", status: null, message: "review", payload: { reviewId: "mailrev:open" } });
+    gmail.seed({ ...mail("s-real", "Anna <anna@client.example>", "Invoice 42", "Here it is"), labelIds: ["SPAM"] });
+    gmail.seed({ ...mail("s-junk", "Shop <offers@shop.example>", "Win", "Click"), labelIds: ["SPAM"] });
+    await repository.recordAction({ ownerUserId: owner, accountEmail: "me@gmail.com", threadId: "t-s-junk", messageId: null, action: "SPAM", labelIds: [], fromAddress: "offers@shop.example",
+      fromDomain: "shop.example", subject: "Win", subjectKey: null, actor: "OPERATOR", source: "GMAIL", ruleId: null, occurredAt: "2026-10-30T09:00:00.000Z" });
+    await service.syncAccount(owner, pane, "me@gmail.com"); // the first look only sets the cursor
+    expect((await service.syncAccount(owner, pane, "me@gmail.com")).created).toBe(2);
+    const items = () => repository.listEvents(owner, { types: ["TRIAGE"], status: ["PENDING"] });
+    expect((await items()).map((item) => [item.payload.folder, item.threadId]).sort()).toEqual([["DRAFT", "t-old"], ["SPAM", "t-s-real"]]);
+    expect((await items()).find((item) => item.payload.folder === "DRAFT")).toMatchObject({ messageId: "d-old-msg", payload: { draftId: "d-old" } });
+    expect((await service.syncAccount(owner, pane, "me@gmail.com")).created).toBe(0); // once each
+    tick("2026-10-31T07:31:00.000Z");
+    expect((await service.syncAccount(owner, pane, "me@gmail.com")).created).toBe(1);
+    expect((await items()).some((item) => item.threadId === "t-new")).toBe(true);
+    // Sent or discarded in Gmail itself while its item waited: the item closes instead of the copilot sending it again.
+    gmail.seed({ id: "d-old-msg", threadId: "t-old", from: "Me <me@gmail.com>", subject: "Draft d-old", labelIds: ["SENT"], plain: "Hello" });
+    await service.syncAccount(owner, pane, "me@gmail.com");
+    expect((await items()).some((item) => item.threadId === "t-old")).toBe(false);
+
+    await service.modify(owner, pane, "t-s-real", { account: "me@gmail.com", action: "not_spam" }, "agent");
+    expect(gmail.calls()).toContain("/threads/t-s-real/modify");
+    expect((await repository.listActions(owner, { threadId: "t-s-real", actions: ["NOT_SPAM"] })).map((action) => action.actor)).toEqual(["AGENT"]);
   });
 
   it("starts a stopped CLI within a minute and tells Nous; kicks a stalled run again and, after two kicks that brought nothing, sends ONE urgent line", async () => {

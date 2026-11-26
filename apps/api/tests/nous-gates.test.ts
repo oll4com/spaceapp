@@ -326,6 +326,7 @@ describe("Nous's gates", () => {
       recommendation: null, refs, action: null, status: "OPEN", answer: null, outcome: null, createdAt, answeredAt: null });
     const decisions = [open("nous_decision:2ddd8bb7", "Start the example.invalid clearance sale today", minutes(3)),
       open("nous_decision:plan0001", "Lab plan order", minutes(10), { planId: "clipboard:labplan00001" }),
+      open("nous_decision:48fe31d3", "Tokens 2/5: Τα panes χωρίς κώδικα να ξεκινούν σε Sonnet αντί για Opus;", minutes(5), { planId: "clipboard:m9BqtYYcfwzX" }),
       open("nous_decision:old00001", "Renew the Hetzner box", minutes(90)),
       open("nous_decision:880c1706", "Send the kits mail to the 133 shops", minutes(1), { files: ["/var/lib/spaceapp-user/agent-workspace/kits/mail.html"] }),
       open("nous_decision:2e8ad90b", "Plesk του public-host: να περάσουμε σε Web Admin μηνιαίο (~$17/μήνα) αντί για ανανέωση του Web Pro με €280,39 στις 25/11;", minutes(2))];
@@ -336,16 +337,21 @@ describe("Nous's gates", () => {
     // R19-2: a gate (REFUSED, not FAILED) naming the exact next call; it named space_nous_withdraw, which does not exist.
     expect(await question("example.invalid clearance sale: start today and floor price")).toMatchObject({ ok: false, refused: true, display: "nous_decision:2ddd8bb7 already asks this",
       result: expect.stringContaining('is still open about the same thing: that card is the ask. Wait for its answer, or ask once with everything in one decision and "replaces": "nous_decision:2ddd8bb7"') });
-    expect(await question("Which lab first?", { planId: "clipboard:labplan00001" })).toMatchObject({ ok: false, display: "nous_decision:plan0001 already asks this" });
     // R20-dup-2 (30/10: 880c1706 and 1c9db57f, the same files 2.5 s apart): the same file to approve is the same ask, whatever its title.
     expect(await question("Approve the shop mail text", { files: ["/var/lib/spaceapp-user/agent-workspace/kits/mail.html"] })).toMatchObject({ ok: false, display: "nous_decision:880c1706 already asks this" });
     // 12/11 04:54 (e02eaed6 beside 2e8ad90b, both answered no: 2 misses): the same ask reworded with other prices and dates.
     expect(await question("Plesk: να περάσουμε από Web Pro (~$330/έτος) σε Web Admin (~$187/έτος) πριν τις 25/11;")).toMatchObject({ ok: false, display: "nous_decision:2e8ad90b already asks this" });
+    expect(await question("Lab plan: the order of the labs", { planId: "clipboard:labplan00001" })).toMatchObject({ ok: false, display: "nous_decision:plan0001 already asks this" });
     expect(ask).not.toHaveBeenCalled();
+    // Operator 26/11 (Tokens 1/5 … 5/5): another question on the same plan is its own card.
+    expect((await question("Which lab first?", { planId: "clipboard:labplan00001" })).ok).toBe(true);
+    const tokens = { planId: "clipboard:m9BqtYYcfwzX" };
+    expect((await question("Tokens 1/5: which model runs the nous-operator?", tokens)).ok).toBe(true);
+    expect((await question("Tokens 4/5: set an API spending cap?", tokens)).ok).toBe(true);
     // Another subject, or the same subject asked over an hour ago: asked.
     expect((await question("Renew the Hetzner box")).ok).toBe(true);
     expect((await question("Pick the Upwork niche")).ok).toBe(true);
-    expect(ask).toHaveBeenCalledTimes(2);
+    expect(ask).toHaveBeenCalledTimes(5);
   });
 
   it("refuses a copilot item an open or approved decision of the last day decides, and the same files approved within 10 minutes (R44-1)", async () => {

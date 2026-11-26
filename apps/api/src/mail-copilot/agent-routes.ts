@@ -103,7 +103,7 @@ export function registerMailCopilotAgentRoutes(app: FastifyInstance, service: Ma
     const { ruleId, ...input } = parseBody(mailThreadActionSchema.extend({ ruleId: ruleIdSchema.optional() }), request.body ?? {});
     await service.modify(bridge.owner, bridge.pane, params.threadId, input, "agent", ruleId);
     const type = input.action === "archive" ? "ARCHIVED" : input.action === "trash" ? "TRASHED" : input.action === "label" || input.action === "unlabel" || input.action === "move" ? "LABELED" : input.action === "star" ? "STARRED" : null;
-    const verb = input.action === "label" ? "labeled" : input.action === "unlabel" ? "unlabeled" : input.action === "move" ? "moved" : `${input.action}d`;
+    const verb = input.action === "label" ? "labeled" : input.action === "unlabel" ? "unlabeled" : input.action === "move" ? "moved" : input.action === "trash" ? "trashed" : input.action === "star" ? "starred" : `${input.action}d`;
     if (type) await service.record(bridge.owner, { paneId: bridge.pane.id, type, accountEmail: input.account, threadId: params.threadId, message: `The copilot ${verb} a conversation`, payload: { action: input.action, labelIds: input.labelIds ?? [] } });
     await deps.audit(request, "mail_copilot.agent.modify", params.threadId, { account: input.account, action: input.action });
     return { ok: true };

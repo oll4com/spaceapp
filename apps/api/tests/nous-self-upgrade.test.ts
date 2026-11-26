@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -2358,12 +2359,22 @@ describe("8/11 REVIEW: secret-path guard by file name, not folder substrings", (
       inspectPane: async () => ({ text: "", state: "IDLE", sessionId: "session:1", models: catalog, tasks: [] }) as never,
       listPanes: async () => [{ ...pane("pane:andy0001", "Andy"), terminalRuntimeId: "cli:gemini" }]
     });
-    const noCommit = await f.tools.execute("space_remote", { instance: "spaceapp-hz", method: "POST", path: "/api/version-sync" }, ctx);
-    expect(noCommit.ok).toBe(true);
-    const fullHead = (request.mock.calls[0]![4] as { commit: string }).commit;
-    expect(fullHead).toMatch(/^[0-9a-f]{40}$/);
-    await f.tools.execute("space_remote", { instance: "spaceapp-hz", method: "POST", path: "/api/version-sync", body: { commit: fullHead.slice(0, 9) } }, ctx);
-    expect(request.mock.calls[1]![4]).toEqual({ commit: fullHead });
+    // Its own repository (space_remote resolves through SPACE_GIT_ROOT), so the test also runs where the tree is not a git checkout (the public export).
+    const git = mkdtempSync(join(tmpdir(), "space-remote-sync-git-"));
+    execFileSync("git", ["init", "-q"], { cwd: git });
+    execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "x"], { cwd: git });
+    vi.stubEnv("SPACE_GIT_ROOT", git);
+    try {
+      const noCommit = await f.tools.execute("space_remote", { instance: "spaceapp-hz", method: "POST", path: "/api/version-sync" }, ctx);
+      expect(noCommit.ok).toBe(true);
+      const fullHead = (request.mock.calls[0]![4] as { commit: string }).commit;
+      expect(fullHead).toBe(execFileSync("git", ["rev-parse", "HEAD"], { cwd: git, encoding: "utf8" }).trim());
+      await f.tools.execute("space_remote", { instance: "spaceapp-hz", method: "POST", path: "/api/version-sync", body: { commit: fullHead.slice(0, 9) } }, ctx);
+      expect(request.mock.calls[1]![4]).toEqual({ commit: fullHead });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(git, { recursive: true, force: true });
+    }
 
     for (const action of [
       { kind: "resource", operation: "files.preview", input: { id: "artifact:abc12345" } },

@@ -112,20 +112,22 @@ export function SettingsDisclosure({ title, description, help, keywords, scope, 
   const sectionRef = useRef<HTMLElement>(null);
   const headerRef = useRef<HTMLHeadingElement>(null);
   const openedByUser = useRef(false);
+  const setActiveSection = sections?.setActive;
+  const revealOnOpen = sections?.revealOnOpen ?? false;
   const requestNonce = sections?.request?.key === sectionKey ? sections?.request?.nonce : undefined;
   // Search finds the English words and the words shown in the operator's language.
   const matches = settingsSearchMatches(sections?.query ?? "", [title, description, help, keywords, t(title), t(description), help && t(help)]);
   useEffect(() => {
     if (!sectionKey || requestNonce === undefined || !claimSettingsRequest(`section:${sectionKey}`, requestNonce)) return;
     setVisited(true);
-    if (sections) sections.setActive(id); else setLocalOpen(true);
+    if (setActiveSection) setActiveSection(id); else setLocalOpen(true);
     sectionRef.current?.scrollIntoView?.({ block: "start" });
-  }, [requestNonce]);
+  }, [id, requestNonce, sectionKey, setActiveSection]);
   useEffect(() => {
     if (!open || !openedByUser.current) return;
     openedByUser.current = false;
-    if (sections?.revealOnOpen) headerRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [open]);
+    if (revealOnOpen) headerRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [open, revealOnOpen]);
   return (
     <section ref={sectionRef} className="settings-disclosure" data-title={title} data-open={open} data-section={sectionKey} hidden={hidden || !matches}>
       <h3 ref={headerRef}>

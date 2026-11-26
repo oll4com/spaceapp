@@ -198,6 +198,14 @@ it("keeps what a program gives as benefit lines and its tiers, replaced whole by
     { owner, turnId: "turn:b", callId: "call:b", traceId: "trace:b" });
   expect(read.result).toContain("- API credits · ACTIVE · crew@spaceapp.dev · total $1,000 · used $400 (usage as of 2026-11-03T00:00:00.000Z) · source mail 9/10");
   expect(read.result).toContain("- Select · NEXT · gives: Co-sell");
+  // A verified usage (operator 26/11, nous_msg:2d0eb603): set by an upsert, shown to Nous, cleared with null.
+  await programs.upsert(owner, { id: "nvidia-inception", usage: { state: "used", evidence: "Gateway NVIDIA calls today", checkedAt: "2026-11-26" } });
+  expect((await programs.get(owner, "nvidia-inception"))!.usage).toEqual({ state: "USED", evidence: "Gateway NVIDIA calls today", checkedAt: "2026-11-26T00:00:00.000Z" });
+  const again = await createNousTools({ programs } as never).execute("space_programs", { action: "read", id: "nvidia-inception" },
+    { owner, turnId: "turn:c", callId: "call:c", traceId: "trace:c" });
+  expect(again.result).toContain("Usage: USED (checked 2026-11-26): Gateway NVIDIA calls today");
+  await programs.upsert(owner, { id: "nvidia-inception", usage: null });
+  expect((await programs.get(owner, "nvidia-inception"))!.usage).toBeNull();
 });
 
 it("lays the daily usage report on the stored benefit lines, and a data file written later keeps it", async () => {
