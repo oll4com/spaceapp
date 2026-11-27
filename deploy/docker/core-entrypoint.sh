@@ -63,6 +63,16 @@ for file in /run/spaceapp-secrets/make/space-make-*; do
   if [ -f "$file" ]; then install -o spaceapp -g spaceapp -m 0400 "$file" /opt/spaceapp/secrets/; fi
 done
 
+# Nous Cloud (plan clipboard:yw_pvUb_616N): the provisioner's per-account Space Gateway entry and key, so the box's Nous
+# runs on Auto; absent, Nous runs as on any install.
+rm -f /opt/spaceapp/secrets/nous-cloud-gateway.key
+if [ -f /run/spaceapp-secrets/nous-cloud/gateway-url ] && [ -f /run/spaceapp-secrets/nous-cloud/gateway.key ]; then
+  install -o spaceapp -g spaceapp -m 0400 /run/spaceapp-secrets/nous-cloud/gateway.key /opt/spaceapp/secrets/nous-cloud-gateway.key
+  SPACE_NOUS_CLOUD_GATEWAY_URL="$(head -c 512 /run/spaceapp-secrets/nous-cloud/gateway-url | tr -d '[:space:]')"
+  SPACE_NOUS_CLOUD_GATEWAY_KEY_FILE=/opt/spaceapp/secrets/nous-cloud-gateway.key
+  export SPACE_NOUS_CLOUD_GATEWAY_URL SPACE_NOUS_CLOUD_GATEWAY_KEY_FILE
+fi
+
 sh deploy/docker/memory-names.sh "$SPACE_MEMORY_ROOT"
 if [ ! -e "$SPACE_MEMORY_ROOT/space_memory.md" ]; then
   install -o spaceapp -g spaceapp -m 0600 \

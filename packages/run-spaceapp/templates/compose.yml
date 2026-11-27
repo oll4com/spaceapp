@@ -72,6 +72,8 @@ services:
       - ./backups:/backups
       # The Make app's files (space-make-*), copied by the entrypoint for the API's user; empty means the Make routes answer 404.
       - ./secrets/make:/run/spaceapp-secrets/make:ro
+      # Nous Cloud boxes only: the provisioner's Space Gateway entry and key (gateway-url, gateway.key); empty on any other install.
+      - ./secrets/nous-cloud:/run/spaceapp-secrets/nous-cloud:ro
     secrets:
       - setup-token
       - session-secret
