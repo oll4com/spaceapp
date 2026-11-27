@@ -15,6 +15,10 @@ import { DEFAULT_FREE_MODEL } from './opencode-first-run.mjs';
 const MCP_URL = /^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?\/api\/cli\/nous\/mcp$/;
 const TOKEN = /^[A-Za-z0-9._-]{20,512}$/;
 const FREE_MODEL = /^opencode\/[a-z0-9][a-z0-9._-]{0,100}$/;
+// Nous Cloud (plan clipboard:yw_pvUb_616N step 5): the box's own SpaceApp Gateway entry and its per-account key; model auto, the key's models and providers.
+const GATEWAY_URL = /^https:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?\/api\/nous-cloud\/gateway\/v1$/;
+const GATEWAY_KEY = /^sk-sgw-[A-Za-z0-9_-]{20,200}$/;
+export const GATEWAY_MODEL = 'space/auto';
 // Space's NOUS_SYSTEM_MAX_CHARS, as in claude-agent.mjs.
 const SYSTEM_MAX_CHARS = 60_000;
 // The longest event line read: a tool event can carry a long tool answer, only the answer text matters here.
@@ -24,11 +28,12 @@ const TURN_MS = 20 * 60_000;
 
 /** The checked request, or null when it is not one this helper runs. */
 export function nousRequest(raw) {
-  const { system = '', prompt, mcpUrl, mcpToken, maxTurns, shell, stream } = raw ?? {};
+  const { system = '', prompt, mcpUrl, mcpToken, maxTurns, shell, stream, gateway } = raw ?? {};
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 400_000 || typeof system !== 'string' || system.length > SYSTEM_MAX_CHARS ||
       typeof mcpUrl !== 'string' || !MCP_URL.test(mcpUrl) || typeof mcpToken !== 'string' || !TOKEN.test(mcpToken) ||
       !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 99) return null;
-  return { system, prompt, mcpUrl, mcpToken, maxTurns, shell: shell === true, stream: stream === true };
+  if (gateway !== undefined && (typeof gateway?.baseUrl !== 'string' || !GATEWAY_URL.test(gateway.baseUrl) || typeof gateway.apiKey !== 'string' || !GATEWAY_KEY.test(gateway.apiKey))) return null;
+  return { system, prompt, mcpUrl, mcpToken, maxTurns, shell: shell === true, stream: stream === true, ...(gateway ? { gateway: { baseUrl: gateway.baseUrl, apiKey: gateway.apiKey } } : {}) };
 }
 
 /** The Getting Started pane's model: what the first run saved in this wrapper's config, else the first run's default. */
@@ -46,7 +51,10 @@ export function nousConfig(request) {
     // Zen refuses its free tier ("Free usage limit reached") to a request with none of OpenCode's own tools (hz lab 13/11): read stays,
     // confined to the turn's empty work folder by external_directory.
     permission: { '*': 'deny', read: 'allow', external_directory: 'deny', 'space_nous_*': 'allow', ...(request.shell ? { shell: 'allow' } : {}) },
-    agent: { nous: { mode: 'primary', prompt: '{file:./system.md}', steps: request.maxTurns } }
+    agent: { nous: { mode: 'primary', prompt: '{file:./system.md}', steps: request.maxTurns } },
+    // The key comes from the environment too. A translated route has no thinking, so none is asked for.
+    ...(request.gateway ? { enabled_providers: ['space'], provider: { space: { npm: '@ai-sdk/anthropic', name: 'Space Gateway',
+      options: { baseURL: request.gateway.baseUrl, apiKey: '{env:SPACE_NOUS_GATEWAY_KEY}' }, models: { auto: { name: 'Auto', limit: { context: 128_000, output: 16_000 } } } } } } : {})
   };
 }
 
@@ -134,7 +142,7 @@ export async function main(input, { env = process.env, out = process.stdout, bin
   try { raw = JSON.parse(input); } catch { /* refused below */ }
   const request = nousRequest(raw);
   if (!request) { process.stderr.write('Invalid Nous request.\n'); return 64; }
-  const model = await paneModel(env.XDG_CONFIG_HOME);
+  const model = request.gateway ? GATEWAY_MODEL : await paneModel(env.XDG_CONFIG_HOME);
   const scratch = await mkdtemp(join(env.TMPDIR || tmpdir(), 'spaceapp-opencode-nous-'));
   const work = join(scratch, 'work');
   const children = [];
@@ -158,7 +166,8 @@ export async function main(input, { env = process.env, out = process.stdout, bin
     const childEnv = { PATH: env.PATH, LANG: 'C.UTF-8', USER: env.USER, HOME: scratch, TMPDIR: scratch, OPENCODE_DISABLE_AUTOUPDATE: 'true',
       OPENCODE_DISABLE_PROJECT_CONFIG: '1', XDG_CONFIG_HOME: join(scratch, 'config'), XDG_DATA_HOME: join(scratch, 'data'), XDG_STATE_HOME: join(scratch, 'state'),
       // The provider packages and model catalog OpenCode already fetched; nothing of the panes' sessions or settings.
-      XDG_CACHE_HOME: env.XDG_CACHE_HOME || join(scratch, 'cache'), SPACE_NOUS_MCP_TOKEN: request.mcpToken, OPENCODE_SERVER_PASSWORD: password };
+      XDG_CACHE_HOME: env.XDG_CACHE_HOME || join(scratch, 'cache'), SPACE_NOUS_MCP_TOKEN: request.mcpToken, OPENCODE_SERVER_PASSWORD: password,
+      ...(request.gateway ? { SPACE_NOUS_GATEWAY_KEY: request.gateway.apiKey } : {}) };
     const server = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '0'], { cwd: work, env: childEnv, detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
     children.push(server);
     const serverUrl = await waitForListening(server, 30_000);

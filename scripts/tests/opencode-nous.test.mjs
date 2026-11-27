@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
-import { main, nousConfig, nousRequest, openCodeOutputReader, paneModel } from '../../deploy/docker/opencode-nous.mjs';
+import { GATEWAY_MODEL, main, nousConfig, nousRequest, openCodeOutputReader, paneModel } from '../../deploy/docker/opencode-nous.mjs';
 
 const token = 'tok_0123456789abcdefghij'; // synthetic MCP token; gitleaks:allow
 const turn = (extra = {}) => ({ prompt: 'What waits?', system: 'You are Nous.', mcpUrl: 'http://spaceapp-core:4911/api/cli/nous/mcp', mcpToken: token, maxTurns: 40, ...extra });
@@ -21,6 +21,22 @@ test('a free-model Nous turn takes only a checked request and allows only Nous\'
   assert.equal(config.agent.nous.steps, 40);
   assert.ok(!JSON.stringify(config).includes(token));
   assert.equal(nousConfig(nousRequest(turn({ shell: true }))).permission.shell, 'allow');
+});
+
+const gateway = { baseUrl: 'https://space.example:4911/api/nous-cloud/gateway/v1', apiKey: 'sk-sgw-syntheticsyntheticsyntheticsynthetic01' }; // synthetic key; gitleaks:allow
+
+test('a Nous Cloud turn reaches only its SpaceApp\'s Gateway entry with a Gateway key, the key never in the config (plan clipboard:yw_pvUb_616N step 5)', () => {
+  assert.deepEqual(nousRequest(turn({ gateway })).gateway, gateway);
+  for (const bad of [{ ...gateway, baseUrl: 'http://space.example/api/nous-cloud/gateway/v1' }, { ...gateway, baseUrl: 'https://evil.example/v1' },
+    { ...gateway, apiKey: 'sk-ant-other' }, { baseUrl: gateway.baseUrl }, 'x', null]) assert.equal(nousRequest(turn({ gateway: bad })), null, JSON.stringify(bad));
+  const config = nousConfig(nousRequest(turn({ gateway })));
+  assert.deepEqual(config.enabled_providers, ['space']);
+  assert.equal(config.provider.space.options.baseURL, gateway.baseUrl);
+  assert.ok(config.provider.space.models.auto);
+  assert.ok(!JSON.stringify(config).includes(gateway.apiKey));
+  assert.equal(GATEWAY_MODEL, 'space/auto');
+  // Without one, the free model's config as before.
+  assert.equal(nousConfig(nousRequest(turn())).provider, undefined);
 });
 
 test('the turn uses the model the Getting Started pane saved, else the first run\'s default', async () => {
@@ -68,7 +84,7 @@ if (mode === 'serve') {
   }).listen(0, '127.0.0.1', function () { console.log('opencode server listening on http://127.0.0.1:' + this.address().port); });
 } else {
   const config = readFileSync(process.env.XDG_CONFIG_HOME + '/opencode/opencode.json', 'utf8');
-  const report = { args, token: process.env.SPACE_NOUS_MCP_TOKEN, config, cwd: process.cwd(), stdin: readFileSync(0, 'utf8') };
+  const report = { args, token: process.env.SPACE_NOUS_MCP_TOKEN, gatewayKey: process.env.SPACE_NOUS_GATEWAY_KEY ?? null, config, cwd: process.cwd(), stdin: readFileSync(0, 'utf8') };
   console.log(JSON.stringify({ type: 'step_start' }));
   console.log(JSON.stringify({ type: 'text', part: { text: JSON.stringify(report) } }));
   console.log(JSON.stringify({ type: 'step_finish', part: { tokens: { input: 1, output: 1 } } }));
@@ -87,5 +103,14 @@ if (mode === 'serve') {
   assert.equal(report.stdin, 'What waits?');
   assert.ok(!report.config.includes(token));
   assert.ok(records.some((record) => record.event?.type === 'content_block_delta'));
+  assert.equal(report.gatewayKey, null);
+  assert.deepEqual(await readdir(tmp), []);
+  // A Nous Cloud turn: model auto on the Space Gateway provider, its key only in the environment.
+  const cloud = sink();
+  assert.equal(await main(JSON.stringify(turn({ gateway })), { env: { PATH: process.env.PATH, TMPDIR: tmp }, out: cloud.stream, binary: bin }), 0);
+  const cloudReport = JSON.parse(JSON.parse(cloud.chunks.join('').trim().split('\n').at(-1)).result);
+  assert.equal(cloudReport.args.at(-1), 'space/auto');
+  assert.equal(cloudReport.gatewayKey, gateway.apiKey);
+  assert.ok(!cloudReport.config.includes(gateway.apiKey));
   assert.deepEqual(await readdir(tmp), []);
 });
