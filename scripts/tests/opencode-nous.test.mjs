@@ -32,6 +32,8 @@ test('a Nous Cloud turn reaches only its SpaceApp\'s Gateway entry with a Gatewa
   const config = nousConfig(nousRequest(turn({ gateway })));
   assert.deepEqual(config.enabled_providers, ['space']);
   assert.equal(config.provider.space.options.baseURL, gateway.baseUrl);
+  // Chat Completions (<base>/chat/completions): Codex, the step-3 default route, has no Messages path on /pools/space.
+  assert.equal(config.provider.space.npm, '@ai-sdk/openai-compatible');
   assert.ok(config.provider.space.models.auto);
   assert.ok(!JSON.stringify(config).includes(gateway.apiKey));
   assert.equal(GATEWAY_MODEL, 'space/auto');

@@ -52,8 +52,8 @@ export function nousConfig(request) {
     // confined to the turn's empty work folder by external_directory.
     permission: { '*': 'deny', read: 'allow', external_directory: 'deny', 'space_nous_*': 'allow', ...(request.shell ? { shell: 'allow' } : {}) },
     agent: { nous: { mode: 'primary', prompt: '{file:./system.md}', steps: request.maxTurns } },
-    // The key comes from the environment too. A translated route has no thinking, so none is asked for.
-    ...(request.gateway ? { enabled_providers: ['space'], provider: { space: { npm: '@ai-sdk/anthropic', name: 'Space Gateway',
+    // The key comes from the environment too. Chat Completions: the account key's default route (Codex) serves no Messages through /pools/space.
+    ...(request.gateway ? { enabled_providers: ['space'], provider: { space: { npm: '@ai-sdk/openai-compatible', name: 'Space Gateway',
       options: { baseURL: request.gateway.baseUrl, apiKey: '{env:SPACE_NOUS_GATEWAY_KEY}' }, models: { auto: { name: 'Auto', limit: { context: 128_000, output: 16_000 } } } } } } : {})
   };
 }
