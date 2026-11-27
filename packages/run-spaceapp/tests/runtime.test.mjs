@@ -202,6 +202,6 @@ test("only the core gets the pane bridge secret; no other container mounts the s
   const services = compose.slice(compose.indexOf("services:\n"), compose.search(/^secrets:$/m)).split(/^  (?=[a-z][\w-]*:$)/m).slice(1);
   const holders = services.filter((block) => block.includes("agent-token-secret")).map((block) => block.split(":")[0]);
   assert.deepEqual(holders, ["spaceapp-core"]);
-  // Only subfolders: providers (CLI) and make (core only, make-secrets-mount.test.mjs), never the folder with the core's secrets.
-  for (const block of services) assert.doesNotMatch(block, /\.\/secrets(?!\/providers:|\/make:)/, block.split(":")[0]);
+  // Only subfolders: providers (CLI), make and nous-cloud (core only, read-only: make-/nous-cloud-secrets-mount.test.mjs), never the folder with the core's secrets.
+  for (const block of services) assert.doesNotMatch(block, /\.\/secrets(?!\/providers:|\/make:|\/nous-cloud:)/, block.split(":")[0]);
 });
