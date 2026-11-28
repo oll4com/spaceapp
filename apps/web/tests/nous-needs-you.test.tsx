@@ -108,7 +108,7 @@ describe("a plan's \"What it needs from you\" (plan clipboard:PHmjUTRmWM6C step 
     expect(shown()).toEqual(["Decide colour", "andy needs you"]);
     // The card keeps its question, and closed its recommended answer; the rest on Details.
     expect(within(section).getByRole("heading", { name: "Which colour?" })).toBeTruthy();
-    expect(within(section).getByRole("button", { name: "Blue" }).className).toContain("is-primary");
+    expect(within(section).getByRole("button", { name: "Blue" }).className).toContain("is-recommended");
     fireEvent.click(within(section).getByRole("button", { name: "Details" }));
     expect(within(section).getByRole("button", { name: "Blue Recommended" })).toBeTruthy();
     expect(within(section).getByRole("button", { name: "Red" })).toBeTruthy();

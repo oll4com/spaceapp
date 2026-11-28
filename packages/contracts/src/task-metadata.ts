@@ -10,6 +10,8 @@ export const taskTopicSchema = z.object({
   source: z.enum(["local", "native", "ai"]),
   at: z.string().datetime({ offset: true }),
   hasImages: z.boolean().optional(),
+  /** Nous sent the prompt this line names. */
+  fromNous: z.boolean().optional(),
 });
 export type TaskTopic = z.infer<typeof taskTopicSchema>;
 export const taskTopicsMax = 12;

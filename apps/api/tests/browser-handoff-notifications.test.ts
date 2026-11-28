@@ -41,7 +41,7 @@ function setup() {
 }
 
 describe("browser handoff notifications", () => {
-  it("records a new handoff on the same pane and site within 30 minutes without an alert, and counts handoffs in the daily review (R20-asks-1)", async () => {
+  it("records a new handoff on the same pane and site within 24 hours without an alert, and counts handoffs in the daily review (R20-asks-1)", async () => {
     // 30/10: 50 handoff notices reached the operator, 1 acknowledged.
     const { store, repository, notifications, room } = setup();
     const eventBus = new SpaceEventBus();
@@ -67,6 +67,10 @@ describe("browser handoff notifications", () => {
     };
     expect(await ask("LOGIN: career5.successfactors.eu: sign in")).toEqual({ payload: { site: "career5.successfactors.eu", ask: goNow("Sign in to career5.successfactors.eu") }, options: {} });
     expect(await ask("CAPTCHA: career5.successfactors.eu: tick the box")).toEqual({ payload: { site: "career5.successfactors.eu", repeat: true, ask: goNow("Solve the check on career5.successfactors.eu") }, options: { held: true } });
+    // 2026-11-27 REVIEW (26/11: x.com on one pane asked again 75 min after the first, untaken): still a repeat 2 h later.
+    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2 * 3_600_000);
+    expect((await ask("CAPTCHA: career5.successfactors.eu: tick the box again")).options).toEqual({ held: true });
+    later.mockRestore();
     // 6/11 PayPal: a one-time code is never held (it expires in minutes), and its card takes the code for the CLI that asked.
     expect(await ask("MFA: career5.successfactors.eu: the SMS code", `cli:${kateCli.sessionId}`)).toEqual({ payload: { site: "career5.successfactors.eu", codePane: kate.id,
       ask: { question: "Enter the sign-in code on career5.successfactors.eu", code: true, answer: { kind: "PANE" } } }, options: {} });
@@ -76,7 +80,7 @@ describe("browser handoff notifications", () => {
     const handoffs = await repository.list(owner, { status: "ALL", source: "BROWSER_HANDOFF", limit: 10 });
     const since = new Date(Date.now() - 60_000).toISOString();
     expect(renderDailyReview({ facts: [], decisions: [], handoffs, since, day: "2026-10-31", hour: 3 }))
-      .toContain("- Browser handoffs asked of the operator: 5 (1 repeats on the same pane and site, held without an alert); acknowledged 0");
+      .toContain("- Browser handoffs asked of the operator: 6 (2 repeats on the same pane and site, held without an alert); acknowledged 0");
     stop();
   });
 

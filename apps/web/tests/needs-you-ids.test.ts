@@ -14,4 +14,9 @@ describe("Needs you ids read as what they name", () => {
     expect(labelIds(kept, "el")).toBe("Run `space-queue approve q-20261101-175041-f9b4` for ερώτηση freelance, see https://example.com/x?pane=pane:abcdefgh and note:abcdefghij.");
     expect(labelIds("Run `qm destroy 207` on pct:210", "el")).toBe("Run `qm destroy 207` on CT 210");
   });
+
+  it("plan clipboard:va__qa_eBMYr: a pane the board knows reads as its name, an unknown one as «pane»", () => {
+    const panes = new Map([["pane:iris0000001", { name: "Iris" }]]);
+    expect(labelIds("Waiting on pane pane:iris0000001 and pane:other000001.", "en", panes)).toBe("Waiting on pane Iris and pane.");
+  });
 });

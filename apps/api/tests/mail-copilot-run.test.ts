@@ -22,6 +22,7 @@ vi.setConfig({ testTimeout: 30_000 });
 const temporaryRoots: string[] = [];
 afterEach(async () => {
   await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  vi.restoreAllMocks();
 });
 
 const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64url");
@@ -547,6 +548,16 @@ describe("mail copilot run loop", () => {
     // 23/11 Banggood, 26/11 Linkwise: the refusal comes when the review is asked, so no card reaches the operator or an allowance to fail on approval.
     await expect(approve("t-none")).rejects.toThrow("No review was raised: add ntheo@other.example under Gmail's \"Send mail as\"");
     expect((await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).map((event) => event.threadId)).toEqual(["t-alias"]);
+    // Queue.md 1219 (decision 7763df63): a review raised before that check, or whose route went since, is named before Nous approves it.
+    await repository.createEvent({ ownerUserId: owner, paneId: pane.id, runId: null, accountEmail: "me@gmail.com", threadId: "t-none", messageId: null, type: "REVIEW_REQUESTED", status: null,
+      message: "Review: AWS case", payload: { reviewId: "mailrev:oldUnrouted01", draft: { account: "me@gmail.com", to: ["aws-activate@amazon.example"], cc: [], bcc: [], subject: "Re: AWS Activate Case: 01246620", text: "Please.", threadId: "t-none" } } });
+    expect(await service.reviewUnsendable(owner, "mailrev:oldUnrouted01")).toMatch(/cannot send as; .* Add the route: add ntheo@other\.example under Gmail's "Send mail as"/);
+    const [alias] = (await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).filter((event) => event.threadId === "t-alias");
+    expect(await service.reviewUnsendable(owner, String(alias!.payload.reviewId))).toBeNull();
+    // Daily Nous errors 27/11 (decision e561e184): the card's From is the address the send uses, never the mailbox it is read in.
+    expect((await service.reviewDraft(owner, String(alias!.payload.reviewId)))!.headers[0]).toEqual(["From", "ntheo@corp.example"]);
+    expect((await service.reviewDraft(owner, "mailrev:oldUnrouted01"))!.headers[0]![1]).toMatch(/^me@gmail\.com \(cannot send: This thread was written to ntheo@other\.example/);
+    expect(await service.reviewUnsendable(owner, "mailrev:unknown00001")).toBeNull();
   });
 
   it("answers a thread whose newest mail is our own corporate one from that address, never treating its third-party To as us (mailrev:7HMFUwuxnRSJ, NVIDIA 21/11)", async () => {
@@ -699,6 +710,7 @@ describe("mail copilot run loop", () => {
   it("starts the daily organize run once a day at the pane's hour in the owner's zone, only unpaused with a CLI, over the whole inbox (operator 2026-10-27), and an hourly pass (operator 26/11)", async () => {
     let clock = "2026-10-27T01:30:00.000Z"; // 08:30 in Bangkok
     const repository = new InMemoryMailCopilotRepository(() => clock);
+    vi.spyOn(Date, "now").mockImplementation(() => Date.parse(clock)); // the fake Gmail dates its mail from Date.now
     const inbox: FakeMessage[] = [
       { id: "m1", threadId: "t1", from: "Anna <anna@acme.com>", subject: "Interview", minutesAgo: 30, labelIds: ["INBOX"], plain: "Tuesday?" },
       { id: "m2", threadId: "t2", from: "Datadog <no-reply@greenhouse.io>", subject: "Thank you for applying", minutesAgo: 60 * 24 * 5, labelIds: ["INBOX"], plain: "Received" },
@@ -751,10 +763,20 @@ describe("mail copilot run loop", () => {
     clock = "2026-10-27T12:00:00.000Z";
     await service.dailyRun(owner, pane, zone);
     expect((await repository.listEvents(owner, { paneId: pane.id, types: ["TRIAGE"], limit: 50 })).length).toBe(5);
+    // Our own reply in a decided conversation is no new mail: it stays decided (REV1127-006).
+    inbox.push({ id: "m4r", threadId: "t4", from: "Me <me@gmail.com>", subject: "Re: Contract", minutesAgo: 20, labelIds: ["SENT"], plain: "Will do" });
+    clock = "2026-10-27T13:00:00.000Z"; // the next hourly pass
+    await service.dailyRun(owner, pane, zone);
+    expect(await pendingThreads()).not.toContain("t4");
+    // New mail in a decided conversation brings it back: its older decision no longer counts (26/11).
+    inbox.push({ id: "m6", threadId: "t4", from: "Bob <bob@acme.com>", subject: "Re: Contract", minutesAgo: 10, labelIds: ["INBOX"], plain: "Signed" });
+    clock = "2026-10-27T14:00:00.000Z";
+    await service.dailyRun(owner, pane, zone);
+    expect(await pendingThreads()).toEqual(["t1", "t2", "t3", "t4", "t5"]);
 
     clock = "2026-10-28T02:30:00.000Z"; // the next day; waiting items are not made twice; the run idle since yesterday gets its kickoff again
     expect(await service.dailyRun(owner, pane, zone)).toBe(true);
-    expect((await repository.listEvents(owner, { paneId: pane.id, types: ["TRIAGE"], limit: 50 })).length).toBe(5);
+    expect((await repository.listEvents(owner, { paneId: pane.id, types: ["TRIAGE"], limit: 50 })).length).toBe(6);
     const kicked = kickoffs.length; // the daily one, the 18:00 pass's when the run sat idle
     expect(kicked).toBeGreaterThanOrEqual(2);
     // New mail with work items starts the run on its own; a run kicked a minute ago is not kicked again; nothing pending starts nothing.

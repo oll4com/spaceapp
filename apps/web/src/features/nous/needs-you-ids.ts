@@ -32,10 +32,13 @@ const stem = (word: string) => word.normalize("NFD").replace(/\p{M}/gu, "").toLo
  * `text` with Space's ids read as what they name (code spans untouched); Proxmox guests read as VM/CT numbers. An id right after a word
  * that already names it ("plan clipboard:…", «του πλάνου clipboard:…») just goes.
  */
-export function labelIds(text: string, language: UiLanguage): string {
+export function labelIds(text: string, language: UiLanguage, panes?: ReadonlyMap<string, { name: string }>): string {
   return text.split(/(`[^`]*`)/).map((part, index) => index % 2 ? part : part
     .replace(AFTER_NAME, "")
-    .replace(new RegExp(`(\\p{L}+)?(\\s*)${ID.source}`, "gu"), (_all, word: string | undefined, space: string, prefix: string) => {
+    .replace(new RegExp(`(\\p{L}+)?(\\s*)${ID.source}`, "gu"), (_all, word: string | undefined, space: string, prefix: string, id: string) => {
+      // Plan clipboard:va__qa_eBMYr: a pane the board knows reads as its name.
+      const pane = prefix === "pane" ? panes?.get(`pane:${id}`)?.name : undefined;
+      if (pane) return `${word ?? ""}${space}${pane}`;
       const label = prefix === "pane" ? ["pane", "pane"] as const : LABELS[prefix]!;
       if (word && space && label.join(" ").split(" ").some((named) => named.length >= 4 && stem(named) === stem(word))) return word;
       return `${word ?? ""}${space}${label[language === "el" ? 0 : 1]}`;

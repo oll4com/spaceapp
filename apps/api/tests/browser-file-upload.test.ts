@@ -33,25 +33,34 @@ describe("browser file upload", () => {
     await expect(uploadablePaths([join(base, "workspace/secrets/..")], allowed)).rejects.toThrow(/not one of this pane's files/);
   });
 
+  type Node = { nodeId: number; nodeName: string; attributes?: string[]; frameId?: string; children?: Node[]; shadowRoots?: Node[]; contentDocument?: Node };
+  const doc = (nodeId: number, ...children: Node[]): Node => ({ nodeId, nodeName: "#document", children: [{ nodeId: nodeId + 1, nodeName: "HTML", children }] });
+  const fileInput = (nodeId: number): Node => ({ nodeId, nodeName: "INPUT", attributes: ["name", "type", "type", "file"] });
+  const calls: Array<{ method: string; params?: Record<string, unknown>; sessionId?: string }> = [];
+  const upload = async (documents: Record<string, Node>, index?: number) => {
+    calls.length = 0;
+    const client = {
+      send: async <T,>(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<T> => {
+        calls.push({ method, params, sessionId });
+        if (method === "Target.attachToTarget" && params?.targetId === "frame:gone") throw new Error("No target with given id found");
+        if (method === "Target.attachToTarget") return { sessionId: params?.targetId === "page:owned" ? "page-session" : `session:${String(params?.targetId)}` } as T;
+        if (method === "DOM.getDocument") return { root: documents[sessionId ?? ""] } as T;
+        return {} as T;
+      },
+      close: vi.fn()
+    };
+    const options = { config: { browserSessionsProfileRoot: "/profiles" }, pane: { id: "pane:owned", roomId: "room:owned" },
+      session: { activePageId: "page:owned", pages: [{ pageId: "page:owned" }] }, paths: ["/w/cv.pdf"], index } as unknown as Parameters<typeof uploadBrowserFiles>[0];
+    const result = await uploadBrowserFiles(options, async () => client).catch((error: Error) => error);
+    expect(calls.at(-1)).toMatchObject({ method: "Target.detachFromTarget", params: { sessionId: "page-session" } });
+    expect(client.close).toHaveBeenCalledOnce();
+    return { result, set: calls.filter((call) => call.method === "DOM.setFileInputFiles") };
+  };
+
   it("sets the one matching file input of the active tab, asks for an index when several match, and always lets the tab go", async () => {
     const run = async (inputs: number[], index?: number) => {
-      const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
-      const client = {
-        send: async <T,>(method: string, params?: Record<string, unknown>): Promise<T> => {
-          calls.push({ method, params });
-          if (method === "Target.attachToTarget") return { sessionId: "page-session" } as T;
-          if (method === "DOM.getDocument") return { root: { nodeId: 1 } } as T;
-          if (method === "DOM.querySelectorAll") return { nodeIds: inputs } as T;
-          return {} as T;
-        },
-        close: vi.fn()
-      };
-      const options = { config: { browserSessionsProfileRoot: "/profiles" }, pane: { id: "pane:owned", roomId: "room:owned" },
-        session: { activePageId: "page:owned", pages: [{ pageId: "page:owned" }] }, paths: ["/w/cv.pdf"], index } as unknown as Parameters<typeof uploadBrowserFiles>[0];
-      const result = await uploadBrowserFiles(options, async () => client).catch((error: Error) => error);
-      expect(calls.at(-1)).toMatchObject({ method: "Target.detachFromTarget", params: { sessionId: "page-session" } });
-      expect(client.close).toHaveBeenCalledOnce();
-      return { result, set: calls.filter((call) => call.method === "DOM.setFileInputFiles") };
+      const { result, set } = await upload({ "page-session": doc(1, { nodeId: 5, nodeName: "INPUT", attributes: ["type", "text"] }, ...inputs.map(fileInput)) }, index);
+      return { result, set: set.map(({ method, params }) => ({ method, params })) };
     };
     const one = await run([11]);
     expect(one.result).toMatchObject({ uploaded: ["cv.pdf"], fileInputs: 1, index: 0 });
@@ -62,5 +71,23 @@ describe("browser file upload", () => {
     expect((await run([11, 12], 1)).set[0]?.params?.nodeId).toBe(12);
     expect(String((await run([])).result)).toMatch(/No file input/);
     expect(String((await run([11], 3)).result)).toMatch(/index 3 is past them/);
+  });
+
+  // 27/11 (Azure portal support request): the upload dialog's input is in a cross-site iframe, which runs as its own target.
+  it("finds file inputs inside same-process iframes, shadow roots and out-of-process iframes, and lets every frame go", async () => {
+    const documents = {
+      "page-session": doc(1,
+        { nodeId: 10, nodeName: "IFRAME", frameId: "frame:same", contentDocument: doc(20, { nodeId: 22, nodeName: "DIV", shadowRoots: [{ nodeId: 23, nodeName: "#document-fragment", children: [fileInput(24)] }] }) },
+        { nodeId: 11, nodeName: "IFRAME", frameId: "frame:support" }),
+      "session:frame:support": doc(1, { nodeId: 3, nodeName: "IFRAME", frameId: "frame:gone" }, fileInput(7))
+    };
+    const ambiguous = await upload(documents);
+    expect(String(ambiguous.result)).toMatch(/2 file inputs on this page/);
+    const { result, set } = await upload(documents, 1);
+    expect(result).toMatchObject({ fileInputs: 2, index: 1 });
+    expect(set).toEqual([{ method: "DOM.setFileInputFiles", params: { files: ["/w/cv.pdf"], nodeId: 7 }, sessionId: "session:frame:support" }]);
+    expect(calls.filter((call) => call.method === "Target.detachFromTarget").map((call) => call.params?.sessionId))
+      .toEqual(["session:frame:support", "page-session"]);
+    expect((await upload(documents, 0)).set[0]).toMatchObject({ params: { nodeId: 24 }, sessionId: "page-session" });
   });
 });

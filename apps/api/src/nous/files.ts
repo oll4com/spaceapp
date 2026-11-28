@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
-import { access, lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isAgentFileArtifact, isRoomMediaArtifact, type Artifact, type NousDecisionAction, type Room } from "@space/contracts";
 import { redactMemoryText, SpaceNotFoundError } from "@space/runtime";
@@ -322,6 +322,7 @@ export function createNousFiles(deps: NousFilesDeps) {
     const handle = await open(at(copy), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o664);
     try {
       await handle.writeFile(Buffer.concat([kept, Buffer.from(text)]));
+      await handle.chmod(0o664);
       await handle.close();
       await rename(at(copy), at(name));
       return kept.length + Buffer.byteLength(text);
@@ -397,6 +398,9 @@ export function createNousFiles(deps: NousFilesDeps) {
       if (bytes > NOUS_OWN_FILE_MAX_BYTES) throw new Error(`The text is ${bytes} bytes; a file holds at most ${NOUS_OWN_FILE_MAX_BYTES} bytes.`);
       await mkdir(deps.ownRoot!, { recursive: true, mode: 0o2775 });
       const parent = await openWorkspacePath(deps.ownRoot!, dirname(absolute), true, true);
+      // 27/11 (queue.md 644 in a 2750 folder: no pane could mark a line DONE, so fixed lines were handed out daily): the space group writes
+      // what Nous writes. EPERM: a folder or file a pane owns keeps its mode.
+      await chmod(descriptorPath(parent), 0o2775).catch(() => undefined);
       const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK
         | (input.mode === "write" ? constants.O_EXCL : input.mode === "replace" ? constants.O_TRUNC : constants.O_APPEND);
       const name = basename(absolute);
@@ -418,6 +422,7 @@ export function createNousFiles(deps: NousFilesDeps) {
         if (!before.isFile()) throw new Error(`${shown} is not a regular file: choose another name.`);
         if (before.size + bytes > NOUS_OWN_FILE_MAX_BYTES) throw new Error(`${shown} would grow past ${NOUS_OWN_FILE_MAX_BYTES} bytes: start another file.`);
         await handle.writeFile(input.text);
+        await handle.chmod(0o664).catch(() => undefined);
         return written(input.mode, shown, bytes, (await handle.stat()).size);
       } finally { await handle?.close(); await parent.close(); }
     },

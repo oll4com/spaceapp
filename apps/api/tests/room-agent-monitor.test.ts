@@ -4,7 +4,7 @@ import { InMemoryRoomAgentMonitorRepository } from "@space/db";
 import { SpaceNotFoundError } from "@space/runtime";
 import type { DashboardActivityDetail } from "../src/agents-dashboard.js";
 import {
-  createRoomAgentMonitor, notePanePrompted, notePaneReached, notePaneSent, OVERLAP_COORDINATED, ROOM_MONITOR_ACTIVE_MS, ROOM_MONITOR_PROMPTED_MS, ROOM_MONITOR_EMPTY_MS, ROOM_MONITOR_OVERLAP_MS, ROOM_MONITOR_OVERLAP_REPEAT_MS, ROOM_MONITOR_QUIET_MS, roomMonitorEventText, roomMonitorTransition
+  createRoomAgentMonitor, notePanePrompted, notePaneReached, notePaneSent, OVERLAP_COORDINATED, ROOM_MONITOR_ACTIVE_MS, ROOM_MONITOR_PROMPTED_MS, ROOM_MONITOR_EMPTY_MS, ROOM_MONITOR_OVERLAP_MS, ROOM_MONITOR_OVERLAP_REPEAT_MS, ROOM_MONITOR_QUIET_MS, ROOM_MONITOR_SUPERSEDE_MS, roomMonitorEventText, roomMonitorTransition
 } from "../src/room-agent-monitor.js";
 import { waitCloser } from "../src/nous/progress.js";
 
@@ -200,6 +200,39 @@ describe("room agent monitor", () => {
     const resolved = await c.repository.getEvent(wait.eventId);
     expect(resolved).toMatchObject({ status: "RESOLVED", decision: "Needs you: no model could decide this prompt. The pane moved on before anyone answered." });
     expect(waitCloser(resolved!).who).toBe("the operator (escalated to them)");
+  });
+
+  it("27/11 REVIEW: a young generic wait that turns into a named stop resolves as that stop; an older escalated one keeps the operator", async () => {
+    const c = setup();
+    c.advance(Date.now() - c.now()); // the in-memory repository stamps events with the real clock
+    const waitThen = async () => {
+      c.set({ "pane:dana-term": { status: "working", source: "native" } });
+      await c.monitor.tick();
+      c.advance(ROOM_MONITOR_ACTIVE_MS);
+      c.set({ "pane:dana-term": { status: "waiting", reason: "Needs input", source: "screen" } });
+      await c.monitor.tick();
+      const wait = (await c.repository.listEvents("room:monitor1")).find((event) => event.kind === "WAITING" && event.status === "OPEN")!;
+      await c.repository.updateEvent(wait.eventId, { status: "ESCALATED", decision: "Needs you: the Room Agent could not read the question." }, ["OPEN"]);
+      return wait;
+    };
+    // Andy 26/11 15:51: the usage-limit text showed 3 s after "Needs input".
+    const young = await waitThen();
+    c.advance(ROOM_MONITOR_ACTIVE_MS);
+    c.set({ "pane:dana-term": { status: "waiting", reason: "Usage limit", source: "screen" } });
+    await c.monitor.tick();
+    const superseded = await c.repository.getEvent(young.eventId);
+    expect(superseded).toMatchObject({ status: "RESOLVED", decision: "The wait was the pane's Usage limit, recorded as its own event." });
+    expect(waitCloser(superseded!).byAgent).toBe(false);
+    expect(waitCloser(superseded!).who).toBe("the pane itself (it moved on)");
+    expect((await c.repository.listEvents("room:monitor1")).filter((event) => event.kind === "USAGE_LIMIT")).toHaveLength(1);
+
+    // A wait that sat past the window was a real one: it keeps its escalation when the pane then stops.
+    c.advance(ROOM_MONITOR_ACTIVE_MS);
+    const old = await waitThen();
+    c.advance(ROOM_MONITOR_SUPERSEDE_MS + 1);
+    c.set({ "pane:dana-term": { status: "waiting", reason: "API error", source: "native" } });
+    await c.monitor.tick();
+    expect(await c.repository.getEvent(old.eventId)).toMatchObject({ status: "ESCALATED", decision: "Needs you: the Room Agent could not read the question." });
   });
 
   it("records HANDLED when a text Space typed for Nous reached the pane during the wait or up to 30 s before it (item 29a)", async () => {

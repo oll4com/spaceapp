@@ -81,6 +81,8 @@ export interface SessionPayload {
   user: AuthUser;
   exp: number;
   iat?: number;
+  /** The issue time in ms: logout-all stores its cut in ms, so a login in the same second as the cut stays valid (27/11). */
+  iatMs?: number;
   /** 2: a sliding operator session (security addendum step 12); absent on older cookies and ephemeral sessions. */
   v?: 2;
   /** The CSRF token clients derived from the cookie this one renewed, so their cached value keeps working. */
@@ -190,7 +192,8 @@ export function signSessionWithTtl(user: AuthUser, secret: string, ttlSeconds: n
   const payload: SessionPayload = {
     user,
     exp: Math.floor(nowMs / 1000) + ttlSeconds,
-    iat: Math.floor(nowMs / 1000)
+    iat: Math.floor(nowMs / 1000),
+    iatMs: nowMs
   };
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const sig = createHmac("sha256", secret).update(body).digest("base64url");
@@ -203,19 +206,21 @@ export function signSessionWithTtl(user: AuthUser, secret: string, ttlSeconds: n
  */
 export function signMobileSession(user: AuthUser, secret: string, input: { sid: string; app: string; device: string; scopes: string[] }, nowMs = Date.now()): string {
   if (secret.length < 16) throw new Error("SPACE_SESSION_SECRET must be at least 16 characters.");
-  const payload: SessionPayload = { user, exp: Math.floor(nowMs / 1000) + 3600, iat: Math.floor(nowMs / 1000), v: 2, sid: input.sid, app: input.app,
+  const payload: SessionPayload = { user, exp: Math.floor(nowMs / 1000) + 3600, iat: Math.floor(nowMs / 1000), iatMs: nowMs, v: 2, sid: input.sid, app: input.app,
     mobile: { device: input.device, scopes: input.scopes } };
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
   return `${body}.${createHmac("sha256", secret).update(body).digest("base64url")}`;
 }
 
-export function signSession(user: AuthUser, secret: string, nowMs = Date.now(), carried: { iat?: number; lc?: string; sid?: string; app?: string } = {}): string {
+export function signSession(user: AuthUser, secret: string, nowMs = Date.now(), carried: { iat?: number; iatMs?: number; lc?: string; sid?: string; app?: string } = {}): string {
   if (user.id === "user:operator-proof") throw new Error("Proof operators cannot receive persistent sessions.");
   if (secret.length < 16) throw new Error("SPACE_SESSION_SECRET must be at least 16 characters.");
   const payload: SessionPayload = {
     user,
     exp: Math.floor(nowMs / 1000) + persistentOperatorSessionTtlSeconds,
     iat: carried.iat ?? Math.floor(nowMs / 1000),
+    // A renewal of an older cookie without iatMs keeps none: its whole-second iat still counts.
+    ...(carried.iat === undefined ? { iatMs: nowMs } : carried.iatMs !== undefined ? { iatMs: carried.iatMs } : {}),
     v: 2,
     sid: carried.sid ?? randomBytes(32).toString("hex"),
     ...(carried.lc ? { lc: carried.lc } : {}),
@@ -272,9 +277,10 @@ export function renewSessionIfDue(sessionToken: string | undefined, secret: stri
   // A mobile app's device session keeps its fixed 30 days: the app signs in again (Nous decision 2026-10-23).
   if (payload.exp <= now || payload.user?.id === "user:operator-proof" || payload.app) return null;
   const issuedAt = typeof payload.iat === "number" ? payload.iat : undefined;
+  const issuedAtMs = typeof payload.iatMs === "number" ? payload.iatMs : undefined;
   if (payload.v === 2) {
     if (payload.exp - now >= slidingSessionRenewBelowSeconds) return null;
-    return signSession(payload.user, secret, nowMs, { iat: issuedAt, lc: payload.lc, sid: payload.sid });
+    return signSession(payload.user, secret, nowMs, { iat: issuedAt, iatMs: issuedAtMs, lc: payload.lc, sid: payload.sid });
   }
   // Ephemeral sessions (proofs, captures: at most 12 hours) are never stretched.
   if (issuedAt !== undefined && payload.exp - issuedAt <= maximumEphemeralLifetimeSeconds) return null;
@@ -545,7 +551,7 @@ export function verifySession(
       return null;
     }
     const user = authUserSchema.parse(parsed.user);
-    const iatMs = typeof parsed.iat === "number" ? parsed.iat * 1000 : undefined;
+    const iatMs = typeof parsed.iatMs === "number" ? parsed.iatMs : typeof parsed.iat === "number" ? parsed.iat * 1000 : undefined;
     if (store.isRevoked(token, user.id, iatMs)) {
       return null;
     }

@@ -179,6 +179,8 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
         return await run();
       } catch (error) {
         const text = redactMemoryText(error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
+        // The 409 below keeps only the message; the stack is what finds the cause (27/11: "Maximum call stack size exceeded" had none).
+        app.log.warn({ err: error, notificationId: record.id }, "Needs-you answer failed.");
         await deps.notifications.addPayload?.(owner, record.id, { answerError: { at: new Date().toISOString(), text } }).catch(() => null);
         await deps.inbox?.(owner, `needs-you-answer-failed:${record.id}`, `The operator's answer "${answer}" to "${ask.question}"${found ? ` (${found.room.name} · ${paneLabel(found.pane)})` : ""}`
           + ` did not go through: ${text}. The card stays open in Needs you; fix the cause or answer it in the pane.`).catch(() => undefined);

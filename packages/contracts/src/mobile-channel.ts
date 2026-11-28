@@ -264,7 +264,7 @@ export const MOBILE_ROUTE_SCOPES: Readonly<Record<string, MobileRouteRule>> = {
   "GET /api/nous/live/voice": { scope: "read", person: true }, "PATCH /api/nous/live/voice": actPerson,
   "POST /api/nous/live/realtime": actPerson, "POST /api/nous/live/realtime/tool": actPerson,
   "POST /api/nous/live/realtime/exchange": actPerson,
-  "POST /api/nous/messages": actPerson, "DELETE /api/nous/messages": act, "POST /api/nous/stop": act, "POST /api/nous/attachments": act,
+  "POST /api/nous/messages": actPerson, "DELETE /api/nous/messages": act, "POST /api/nous/stop": act, "PUT /api/nous/read-mark": act, "POST /api/nous/attachments": act,
   "DELETE /api/nous/attachments/:id": act,
   "POST /api/notifications/:id/answer": { scope: "act", person: true, body: "noAlways", askRisk: true },
   // A paired phone registers its own FCM token (operator 17/11, nous_msg:e58363a2): the phone the operator opens again gets pushes on its own.

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { loadavg } from "node:os";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { NOUS_LOAD_TARGET, nousLoadRangeSchema, type NousLoad, type NousLoadAverage, type NousLoadPart, type NousLoadPartKey, type NousLoadRange, type NousSpendMode, type NousGoal } from "@space/contracts";
+import { NOUS_LOAD_TARGET, nousLoadRangeSchema, type Pane, type NousLoad, type NousLoadAverage, type NousLoadPart, type NousLoadPartKey, type NousLoadRange, type NousSpendMode, type NousGoal } from "@space/contracts";
 import type { NousLoadBucket, NousRepository } from "@space/db";
 import type { HealthCollectorSample } from "../system-health-collector.js";
 import { classifyLoad, hostSwapText, type HostSwap, type HostSwapReader, type NousLoadLevel } from "./server-load.js";
@@ -195,6 +195,13 @@ export const goalPieces = (goals: NousGoal[]): Array<{ key: string; text: string
       + "goal; if no such step exists, report that in one line and stop." }));
 
 /**
+ * Operator 24/11 13:07 BKK (nous_msg:be8aea8592914e98b55cf568, memory 258fedce; rule 509eb378 one pane = one task): 25 panes with their own work got a
+ * hygiene sweep when idle, reported it done and were closed with their own work half done. Sweeps go only to panes Space opened for them, marked by this title.
+ */
+export const NOUS_SWEEP_PANE_TITLE = "Hygiene sweeps (Space)";
+export const sweepPane = (pane: Pick<Pane, "title" | "titleSource">) => pane.titleSource === "manual" && pane.title === NOUS_SWEEP_PANE_TITLE;
+
+/**
  * 22/11 (operator nous_msg:37276cdc «Δεν έχεις πουσαρει καθόλου όλο το βράδυ στο 90%»): when every plan, fix, finding and goal is given, a free strong
  * pane gets a hygiene sweep of one code area: unlabeled GitHub issues, failing/flaky tests, tsc errors, then eslint warnings (~4k), so the hand-out never runs dry.
  */
@@ -216,6 +223,9 @@ export function sweepPieces(root: string): Array<{ key: string; text: string }> 
       + "set --max-warnings in package.json to the real warning count it reports (never higher than now), change nothing else, submit that one ticket to the dev "
       + "merge queue and report it with space-progress done." });
 }
+
+/** A hand-out text sweepPieces wrote (a sweep or the lint ceiling). */
+export const sweepHandout = (text: string) => /^(?:Hygiene sweep of |Lint ceiling \()/.test(text);
 
 /** Whether any git-changed file path falls in a `sweep:<area>` piece (goal 5acd171d: skip clean areas until dev touches them). */
 export function sweepAreaTouched(key: string, files: readonly string[]): boolean {

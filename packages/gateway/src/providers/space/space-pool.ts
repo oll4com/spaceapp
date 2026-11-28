@@ -66,6 +66,9 @@ export function fittedOutput(payload: Record<string, unknown>, error: string): R
   return key && input > 0 && window - input > 0 && window - input < (payload[key] as number) ? { ...payload, [key]: window - input } : null;
 }
 const MAX_ERROR_BODY = 64 * 1024;
+/** A route outside the client key's providers (server.ts authenticate): auto passes over it; an explicit model gets the refusal. */
+const NOT_ALLOWED = "provider_not_allowed";
+const errorCodeOf = (text: string) => { try { const code = (JSON.parse(text) as { error?: { code?: unknown } }).error?.code; return typeof code === "string" ? code : ""; } catch { return ""; } };
 
 export interface SpacePoolOptions {
   settings: () => Promise<GatewaySettings>;
@@ -139,7 +142,7 @@ export function registerSpacePoolRoutes(app: FastifyInstance, options: SpacePool
   };
 
   /** A route's model ids for this caller (its key may narrow them); a short cache spares the native catalogs. */
-  async function routeModels(request: FastifyRequest, route: GatewayProviderRoute): Promise<{ ids: string[]; limits: Record<string, ModelLimits> } | { status: number; message: string }> {
+  async function routeModels(request: FastifyRequest, route: GatewayProviderRoute): Promise<{ ids: string[]; limits: Record<string, ModelLimits> } | { status: number; message: string; code?: string }> {
     const path = SPACE_ROUTE_PATHS[route].models;
     if (!path) return { status: 404, message: "This route has no gateway-key protocol." };
     const auth = createHash("sha256").update(`${request.headers.authorization ?? ""}\0${request.headers["x-api-key"] ?? ""}`).digest("hex");
@@ -151,7 +154,7 @@ export function registerSpacePoolRoutes(app: FastifyInstance, options: SpacePool
     if (route !== "CLAUDE" && route !== "CLAUDE_OPENCODE") delete headers["anthropic-version"];
     try {
       const response = await fetchImpl(`${base}${path}`, { method: "GET", headers, redirect: "error" });
-      if (!response.ok) return { status: response.status, message: (await response.text()).slice(0, 300) };
+      if (!response.ok) { const text = (await response.text()).slice(0, MAX_ERROR_BODY); return { status: response.status, message: text.slice(0, 300), code: errorCodeOf(text) }; }
       const data = (await response.json() as { data?: Array<Record<string, unknown>> }).data ?? [];
       const listed = data.filter((item): item is Record<string, unknown> & { id: string } => typeof item?.id === "string");
       const ids = listed.map((item) => item.id);
@@ -255,6 +258,7 @@ export function registerSpacePoolRoutes(app: FastifyInstance, options: SpacePool
       if (CLOUD_CREDIT_ROUTES.has(route) && isClaudeCodeRequest(request.headers)) continue;
       const models = await routeModels(request, route);
       if (!("ids" in models)) {
+        if (models.code === NOT_ALLOWED) continue;
         if (spaceRefusalOf(models.status, "").kind === "auth") return reply.code(models.status).send(spaceError(protocol, models.status, "invalid_api_key", models.message, { route }));
         refusals.push({ route, model: null, status: models.status, kind: "unknown", scope: null, code: "models_unavailable", message: models.message, resets_at: null });
         continue;
@@ -266,6 +270,7 @@ export function registerSpacePoolRoutes(app: FastifyInstance, options: SpacePool
       const translated = isTranslated(route, protocol);
       if (outcome instanceof Response && outcome.ok) return send(reply, outcome, route, model, refusals, translated);
       const refused = outcome instanceof Response ? await refusal(route, model, outcome) : outcome;
+      if (refused.code === NOT_ALLOWED) continue;
       // Auth and request errors stop here: no other route is used to get around a refused key or a bad request. A translated free route's
       // request error is its own limit (max_tokens, Groq's 413 per-minute tokens) on a request the Claude route took, so the next route tries.
       if (!FAILS_OVER.has(refused.kind) && !(translated && refused.kind === "other")) return reply.code(refused.status).header("x-space-route", route)
@@ -292,6 +297,7 @@ export function registerSpacePoolRoutes(app: FastifyInstance, options: SpacePool
       if (!protocols.length) { routes.push({ route, name: NOUS_SPACE_ROUTES[route].name, enabled, available: false, protocols, reason: "No gateway-key protocol (Gemini CLI and Nous only)." }); continue; }
       if (!enabled) { routes.push({ route, name: NOUS_SPACE_ROUTES[route].name, enabled, available: false, protocols, reason: "Off in Space Gateway's provider order." }); continue; }
       const models = await routeModels(request, route);
+      if (!("ids" in models) && models.code === NOT_ALLOWED) { routes.push({ route, name: NOUS_SPACE_ROUTES[route].name, enabled, available: false, protocols, reason: "Not allowed for this key." }); continue; }
       if (!("ids" in models) && spaceRefusalOf(models.status, "").kind === "auth") return reply.code(models.status).send(spaceError("chat", models.status, "invalid_api_key", "Invalid or missing gateway key."));
       routes.push({ route, name: NOUS_SPACE_ROUTES[route].name, enabled, available: "ids" in models, protocols, reason: "ids" in models ? null : `Models unavailable (${models.status}).` });
       if ("ids" in models) for (const id of models.ids) data.push({ id: idOf(route, id), object: "model", created: 0, owned_by: "space", route, protocols, ...models.limits[id] });

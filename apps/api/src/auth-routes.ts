@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
-import { acceptUserInviteInputSchema, appWebViewIdSchema, appWebViewOf, appWebViewReturnUrl, type AppWebViewId, type AuthUser, loginInputSchema } from "@space/contracts";
+import { acceptUserInviteInputSchema, appWebViewIdSchema, appWebViewOf, appWebViewReturnUrl, type AppWebViewId, type AuthUser, loginInputSchema, missingGoogleCapabilities } from "@space/contracts";
 import { type GoogleAccount, nowIso, SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import {
   type AuthConfig, authenticateLogin, buildGoogleAuthUrl, cookieName, defaultSessionRevocationStore,
@@ -269,11 +269,22 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     });
     return { ok: true, googleAuthEnabled: true };
   });
-  async function resolveOrRegisterGoogleUser(info: { email: string; sub: string; name?: string; picture?: string }): Promise<AuthUser> {
+  async function resolveOrRegisterGoogleUser(info: { email: string; sub: string; name?: string; picture?: string }, signup?: { terms: string },
+    request?: FastifyRequest): Promise<AuthUser> {
     const user = await store.getUserByGoogleId?.(info.sub);
-    if (!user) throw new Error("This Google account is not linked to any SpaceApp user. Please log in with your credentials and link your Google account in Settings.");
-    // Login only reads membership. Only the authenticated linking flow can create it.
-    return user;
+    if (user) return user;
+    // K2 §4 (headless): the only way in without an account is a sign-up started with the current terms, for an invited email.
+    if (config.headless) {
+      if (!signup) throw new SpaceConflictError("No account yet for this Google account. Create one from the Nous app.");
+      // shortcut: P1 serves one EU region; take the region from the cells config when a second one opens.
+      const created = signup.terms === config.signupTermsVersion
+        ? await store.signUpWithGoogleInvite?.({ identity: info, termsVersion: signup.terms, region: "eu", now: nowIso() }) : null;
+      if (!created) throw new SpaceConflictError("Sign-up is by invitation for now, and this Google account's email has no open invitation.");
+      if (request) await recordAudit(store, request, { actorUserId: created.id, action: "account.signup", targetType: "user", targetId: created.id, metadata: { termsVersion: signup.terms } });
+      return created;
+    }
+    // Self-hosted login only reads membership. Only the authenticated linking flow can create it.
+    throw new Error("This Google account is not linked to any SpaceApp user. Please log in with your credentials and link your Google account in Settings.");
   }
   function isGoogleProofSession(request: FastifyRequest): boolean {
     const session = verifySession(request.cookies[cookieName], auth.sessionSecret);
@@ -378,6 +389,14 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     if (reset && (!options.appSignIn || stepUp || linking || query?.app !== undefined || query?.desktopHandoff !== undefined || query?.mobile !== undefined || query?.handoff !== undefined)) {
       return sendApiError(reply, 400, "RESET_UNAVAILABLE", "Reset your password from the SpaceApp sign-in page in a browser.");
     }
+    // K2 §4: a headless sign-up names the terms version it accepted and confirms 18+; the callback makes the account only for an invited email.
+    const signup = query?.signup === "1";
+    if (signup && (!config.headless || !config.signupTermsVersion || linking || stepUp || reset)) {
+      return sendApiError(reply, 400, "SIGNUP_UNAVAILABLE", "Sign-up is not open on this server.");
+    }
+    if (signup && (query?.terms !== config.signupTermsVersion || query?.adult !== "1")) {
+      return sendApiError(reply, 400, "SIGNUP_TERMS_REQUIRED", "Accept the current terms and confirm you are 18 or older to sign up.");
+    }
     // A desktop sign-in must name the desktop app's loopback port and PKCE challenge; a bare handoff id would hand the
     // session to whoever chose it (run-spaceapp 1.1.7 review, Codex finding 1).
     const desktopBinding = query?.desktopHandoff === undefined ? null
@@ -400,6 +419,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       // A step-up sends its nonce to Google too: an ID token without auth_time passes only with this nonce and an iat after startedAt.
       ...(stepUp ? { stepUp: true, startedAt: Date.now() } : {}),
       ...(reset ? { reset: true, startedAt: Date.now() } : {}),
+      ...(signup ? { signup: { terms: config.signupTermsVersion } } : {}),
       ...(ticket ? { appState: ticket.state, ...(ticket.app === "nous" ? { appId: ticket.app } : {}) } : {}),
       // SpaceApp Android's Web tab: linking finishes in the phone's browser and comes back to the WebView (APP_WEBVIEW_RETURN_URIS).
       ...(linking && !stepUp && appWebViewOf(request.headers["user-agent"]) ? { webView: appWebViewOf(request.headers["user-agent"]) } : {})
@@ -886,10 +906,11 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     for (const name of ["space_oauth_state", "space_oauth_pkce", "space_oauth_link_user", "space_oauth_desktop_handoff", "space_oauth_mobile", APP_SIGNIN_COOKIE]) reply.clearCookie(name, { path: "/" });
     const verifiedState = verifyOAuthState(state, auth.sessionSecret);
     let transaction: { nonce?: string; userId: string | null; sessionHash: string | null; codeChallenge: string; expiresAt: number; stepUp?: boolean; reset?: boolean; startedAt?: number;
-      appState?: string; appId?: "nous"; webView?: AppWebViewId } | null = null;
+      appState?: string; appId?: "nous"; webView?: AppWebViewId; signup?: { terms: string } } | null = null;
     try {
       transaction = z.object({ nonce: z.string().min(16).optional(), userId: z.string().nullable(), sessionHash: z.string().nullable(), codeChallenge: z.string().min(43),
-        expiresAt: z.number(), stepUp: z.literal(true).optional(), reset: z.literal(true).optional(), startedAt: z.number().optional(), appState: z.string().optional(), appId: z.literal("nous").optional(), webView: appWebViewIdSchema.optional() })
+        expiresAt: z.number(), stepUp: z.literal(true).optional(), reset: z.literal(true).optional(), startedAt: z.number().optional(), appState: z.string().optional(), appId: z.literal("nous").optional(), webView: appWebViewIdSchema.optional(),
+          signup: z.object({ terms: z.string().min(1) }).optional() })
         .parse(JSON.parse(Buffer.from(verifiedState ?? "", "base64url").toString("utf8")));
     } catch { /* Reject malformed and legacy transactions; a fresh start is safe. */ }
     // SpaceApp Android: a link started in the Web tab ended in the phone's browser, without the WebView's cookies; the WebView finishes it.
@@ -986,7 +1007,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
           ? { nonce: transaction.nonce, startedAtS: Math.floor(transaction.startedAt / 1000) } : undefined);
         if (refusal) return fail(refusal.message, refusal.reason);
       }
-      const user = await resolveOrRegisterGoogleUser(googleInfo);
+      const user = await resolveOrRegisterGoogleUser(googleInfo, transaction.signup, request);
       await recordAudit(store, request, {
         actorUserId: user.id,
         action: "auth.google.login",
@@ -1055,7 +1076,9 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
 </html>`);
       }
 
-      return reply.redirect("/");
+      // One tap after a Google sign-in (27/11): the workspace offers to grant what Space uses on this account (Gmail, Calendar, YouTube) until it has it all.
+      const granted = await connectorServiceRef.current?.googleCapabilities(user.id, googleInfo.email).catch(() => null);
+      return reply.redirect(granted && missingGoogleCapabilities(granted).length ? `/?googleGrant=${encodeURIComponent(googleInfo.email)}` : "/");
     } catch (err) {
       request.log.warn({ event: "GOOGLE_OAUTH_FAILED" }, "Google OAuth callback failed");
       const clientMessage = err instanceof SpaceConflictError || (err instanceof Error && err.message.includes("not linked"))

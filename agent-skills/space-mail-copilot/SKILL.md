@@ -95,7 +95,8 @@ Sessions without these MCP tools (Claude panes run native tools only) call them 
   A reply that must carry files (a CV in the thread's Gmail draft): pass `attachmentsFrom: <messageId of that draft>`; the review
   lists the files and the approved reply carries them. Never ask the operator to send it by hand for the attachments.
   Never promise a call, a visit or a payment in a reply unless a memory allows it; the server refuses it and names the policy to write instead.
-  Any time you propose, book or accept for a call, interview or meeting starts and ends within the operator's appointment hours: read them (`hours`) from `space_appointments` first, never from memory; a time the other side set outside them is recorded as it is and you ask them to move it.
+  Any time you propose, book or accept for a call, interview or meeting starts and ends within the operator's appointment hours: read them (`hours`) from `space_appointments` (server `space_progress`) first, never from memory; a time the other side set outside them is recorded as it is and you ask them to move it.
+  A call, interview or meeting the mail sets goes into the operator's Appointments with `space_appointment_add` (server `space_progress`, `sourceRef` `gmail:<account>:<threadId>`); without MCP tools, call it through `space-capability call`. It is always available: never report it missing.
 - **Calendar invitations** (any level): answer Yes/No/Maybe with `space_mail_calendar_respond {account, eventId or iCalUID, response,
   summary}` (the eventId is the `eid` of the invitation's Google link, decoded; the iCalUID is the invite's UID), then `space_mail_review_wait`.
   It is always a review: the server answers the organizer only when the operator approves. An account without Google Calendar is refused

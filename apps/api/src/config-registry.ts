@@ -41,6 +41,8 @@ export const apiConfigRegistry = {
   codexLbKeyFile: field(["SPACE_GATEWAY_KEY_FILE", "SPACE_CODEX_LB_KEY_FILE"], "sensitive", "parser"),
   codexLbKeyName: field(["SPACE_GATEWAY_KEY_NAME", "SPACE_CODEX_LB_KEY_NAME"], "sensitive", "parser"),
   gatewayUrl: field(["SPACE_GATEWAY_URL"], "public", "parser"),
+  nousCloudGatewayUrl: field(["SPACE_NOUS_CLOUD_GATEWAY_URL"], "public", "parser"),
+  nousCloudGatewayKeyFile: field(["SPACE_NOUS_CLOUD_GATEWAY_KEY_FILE"], "sensitive", "parser"),
   codexAppServerEnabled: field(["SPACE_CODEX_APP_SERVER_ENABLED"], "public", "boolean"),
   codexAppServerCommand: field(["SPACE_CODEX_APP_SERVER_COMMAND"], "sensitive", "parser"),
   codexAppServerTransport: field(["SPACE_CODEX_APP_SERVER_TRANSPORT"], "sensitive", "parser"),
@@ -187,7 +189,7 @@ export const apiConfigRegistry = {
   monitoringCollector: field(["SPACE_MONITORING_COLLECTOR_NETWORK", "SPACE_MONITORING_COLLECTOR_HOST"], "sensitive", "parser"),
   loadHostSelector: field(["SPACE_LOAD_HOST_SELECTOR"], "sensitive", "parser"),
   trustedProxies: field(["SPACE_TRUSTED_PROXIES"], "sensitive", "parser"),
-  optionalModules: field(["SPACE_OPTIONAL_MODULES", "SPACE_PUBLIC_DISTRIBUTION"], "public", "derived"),
+  optionalModules: field(["SPACE_OPTIONAL_MODULES", "SPACE_PUBLIC_DISTRIBUTION", "SPACE_HEADLESS"], "public", "derived"),
   harnessHealthTimeoutMs: field(["SPACE_HARNESS_HEALTH_TIMEOUT_MS"], "public", "positive-integer"),
   harnessProxyTimeoutMs: field(["SPACE_HARNESS_PROXY_TIMEOUT_MS"], "public", "positive-integer"),
   t3CodeEnabled: field(["SPACE_T3CODE_ENABLED"], "public", "boolean"),
@@ -204,7 +206,11 @@ export const apiConfigRegistry = {
   workflowsEnabled: field(["SPACE_PUBLIC_DISTRIBUTION", "SPACEAPP_WORKFLOWS_ENABLED"], "public", "derived"),
   publicDistribution: field(["SPACE_PUBLIC_DISTRIBUTION"], "public", "derived"),
   // Invites and per-user sign-in (plan clipboard:VrMJ14wJPmVs); off until each user has an isolated CLI container.
-  multiUserEnabled: field(["SPACE_MULTI_USER_ENABLED"], "public", "boolean"),
+  multiUserEnabled: field(["SPACE_MULTI_USER_ENABLED", "SPACE_HEADLESS"], "public", "derived"),
+  // Nous Computer control plane (K2); forces multi-user and no optional modules, refuses contradicting settings.
+  headless: field(["SPACE_HEADLESS", "SPACE_RUNTIME_STORE", "SPACE_PUBLIC_DISTRIBUTION", "SPACE_MULTI_USER_ENABLED", "SPACE_OPTIONAL_MODULES"], "public", "derived"),
+  // Headless sign-up stays closed until the terms version exists (K2 §4.2).
+  signupTermsVersion: field(["SPACE_SIGNUP_TERMS_VERSION", "SPACE_HEADLESS"], "public", "derived"),
 } satisfies Partial<Record<ApiConfigKey, ConfigField>>;
 
 // Completeness is enforced by config-registry.test.ts, not by the type

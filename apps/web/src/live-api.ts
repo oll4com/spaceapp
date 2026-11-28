@@ -379,6 +379,7 @@ import type {
   GatewayClaudeApiKeyUse,
   GatewayAnthropicAdminStatus,
   GatewayAnthropicBillingReport,
+  NousCloudReport,
   GatewayPoolModels,
   GatewayFreeLedger,
   CodexUsageAccountList,
@@ -1824,8 +1825,10 @@ export const api = {
   deleteNousSharedMemory: (id: string, revision: number) => request<{ deleted: boolean }>(`/api/nous/shared-memory/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify({ revision }) }),
   updateNousSharedMemoryPolicy: (input: Partial<Pick<SharedMemoryPolicy, "autoApprove" | "dailyUpgrade">>) => request<{ policy: SharedMemoryPolicy }>("/api/nous/shared-memory/policy", { method: "PATCH", body: JSON.stringify(input) }),
   /** The latest page since the last Clear (`since` its last `cursor`: only the rows changed since), or a page further back (`before` a message id; `cleared` the newest rows Clear hid). */
-  nousMessages: (page: { before?: string; cleared?: boolean; since?: string } = {}) => request<{ messages: NousMessage[]; hasMore?: boolean; clearedAt?: string | null; cursor?: string; waiting?: string[]; attachments?: Record<string, NousAttachment[]> }>(
+  nousMessages: (page: { before?: string; cleared?: boolean; since?: string } = {}) => request<{ messages: NousMessage[]; hasMore?: boolean; clearedAt?: string | null; readUpTo?: string | null; cursor?: string; waiting?: string[]; attachments?: Record<string, NousAttachment[]> }>(
     `/api/nous/messages${page.before ? `?before=${encodeURIComponent(page.before)}` : page.cleared ? "?cleared=1" : page.since ? `?since=${encodeURIComponent(page.since)}` : ""}`),
+  /** Moves the Conversation's shared last-read mark forward (nous_msg:443bb5d5); answers the mark now. */
+  nousReadMark: (at: string) => request<{ readUpTo: string }>("/api/nous/read-mark", { method: "PUT", body: JSON.stringify({ at }) }),
   /** The Requests tab: every operator message, newest first, with how it ended; `before` a message id pages further back, `status` filters; `q` keeps those holding any of its words; `counts` cover every message `q` keeps. */
   nousRequests: (before?: string, status?: NousRequestStatus, limit?: number, q?: string) => {
     const query = new URLSearchParams({ ...(before ? { before } : {}), ...(status ? { status } : {}), ...(limit ? { limit: String(limit) } : {}), ...(q ? { q } : {}) }).toString();
@@ -2090,6 +2093,9 @@ export const api = {
   notification: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}`, { cache: "no-store" }),
   markNotificationRead: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
   ackNotification: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}/ack`, { method: "POST" }),
+  /** A needs-you card closed without an answer: acknowledged and marked dismissed (the unified inbox's DISMISS). */
+  dismissNotification: (id: string) => request<import("@space/contracts").UnifiedInboxActResult>(`/api/nous/unified-inbox/${encodeURIComponent(`notification:${id}`)}/act`,
+    { method: "POST", body: JSON.stringify({ action: "DISMISS" }) }),
   /** Needs you as questions (plan clipboard:5AQvaoSR-IZa): the operator's answer from the card goes where the record's ask says. */
   answerNotification: (id: string, input: import("@space/contracts").NotificationAnswerInput) => request<import("@space/contracts").NotificationAnswerResult>(`/api/notifications/${encodeURIComponent(id)}/answer`,
     { method: "POST", body: JSON.stringify(input) }),
@@ -2260,6 +2266,7 @@ export const api = {
   removeGatewayAnthropicAdminKey: () => request<{ removed: boolean }>("/api/admin/gateway/anthropic-admin", { method: "DELETE" }),
   syncGatewayAnthropicBilling: () => request<GatewayAnthropicAdminStatus>("/api/admin/gateway/anthropic-admin/sync", { method: "POST", body: JSON.stringify({}) }),
   gatewayAnthropicBilling: (days: number) => request<GatewayAnthropicBillingReport>(`/api/admin/gateway/anthropic-billing?days=${days}`),
+  nousCloud: (days: number) => request<NousCloudReport>(`/api/admin/nous-cloud?days=${days}`),
   gatewayPoolModels: () => request<GatewayPoolModels>("/api/admin/gateway/pool-models"),
   gatewayFreeLedger: () => request<GatewayFreeLedger>("/api/admin/gateway/free-ledger"),
   gatewayAccounts: () => request<GatewayAccountList>("/api/admin/gateway/accounts"),

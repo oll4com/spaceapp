@@ -105,7 +105,7 @@ export function registerAppSignIn(app: FastifyInstance, options: Omit<AppSignInO
   /** AI lending (plan step 6): this SpaceApp's Gateway admin (its keys), a key by hash, and its address. */
   /** Vault→Vault over a Space Link (plan clipboard:TcX66vjNuZDv step 2). */
   linkVault?: () => Pick<VaultModule, "repository" | "broker">;
-  linkGateway?: { service: () => GatewayAdminService; keyByHash: (keyHash: string) => Promise<{ isActive: boolean; expiresAt: string | null } | null>; url: string };
+  linkGateway?: { service: () => GatewayAdminService; keyByHash: (keyHash: string) => Promise<{ isActive: boolean; expiresAt: string | null; name: string; allowedProviders?: string[] } | null>; url: string };
   events?: Parameters<typeof registerMobileChannel>[1]["events"] } & Pick<Parameters<typeof registerMobileChannel>[1], "google" | "gmailFetch">): AppSignIn {
   const repository = options.databaseUrl ? PostgresAppDeviceSessionRepository.fromConnectionString(options.databaseUrl) : new InMemoryAppDeviceSessionRepository();
   const signIn = createAppSignIn({ ...options, repository });

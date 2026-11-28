@@ -27,7 +27,7 @@ import { fitPrompt as fitSections, fitWhole, historyLines, NOUS_PROMPT_BUDGET_CH
 import { fitPrompt, worldParts, type PromptPart } from "./prompt-budget.js";
 import { dispatchedAnswerOnly, outcomeMessageIds } from "./request-done.js";
 import { NOUS_SAVE_REQUEST } from "./save-request.js";
-import { NOUS_ITEM_HOLDS, QUESTION_ACT_LINE, REVIEW_ACT_LINE, renderItemsHold, renderItemsLeft, unhandledItems, type NousTurnAct, type NousTurnItem } from "./turn-items.js";
+import { NOUS_ITEM_HOLDS, QUESTION_ACT_LINE, REVIEW_ACT_LINE, dispatches, renderItemsHold, unhandledItems, type NousTurnAct, type NousTurnItem } from "./turn-items.js";
 import { heldCardLine, heldQuestionItem, renderHeldQuestions, type HeldCopilotQuestion } from "./copilot-questions.js";
 import { MAY_DELETE_OWN_ANSWER, MAY_PUBLISH_ANSWER, MAY_RESTART_HOLD_LINE, MAY_RESTART_HOSTS_ANSWER, mayRestartHostsCovers, restartHostOf, type RestartFacts, type RestartHost, MAY_SEND_ANSWER, MAY_SEND_HOLD_LINE, deleteOwnTargets, mayDeleteOwnCovers, mayDeleteTestCovers, testDeleteTargets, type TestResourceRecord, mayPublishCovers, mayPublishProduct,
   MAY_SEND_NOT_COVERED, maySendKind, RULE_DIFFERS_LINE, OPERATOR_READS_FIRST, operatorReadsFirst, NEVER_BUY_ANSWER, neutralizePricesLine, purchaseAsk, MAY_CLEAN_SYSTEM_ANSWER, mayCleanSystemCovers, cleanupTargets, priceTokens, pricesLine, sendActionText, type OwnArtifact, type PublishFacts } from "./allowances.js";
@@ -328,7 +328,7 @@ const TURN_CLAIMS = [
     check: "Open the file now: if it says what you told the operator, answer NOTHING_NEW; if not, tell them plainly what it really contains and get it fixed." },
   // shortcut: any ok live check proves a down claim, not only one of the host or account named; match the subject if a checked-elsewhere claim is corrected.
   { key: "down-claim", find: downClaim,
-    proof: new Set(["space_net_check", "space_execute", "space_remote", "space_read_pane", "space_look", "space_browser_tabs", "space_db_query", "space_ops_gateway", "space_ops_usage", "space_token_usage", "space_link_parity"]),
+    proof: new Set(["space_net_check", "space_execute", "space_remote", "space_read_pane", "space_look", "space_browser_tabs", "space_db_query", "space_ops_gateway", "space_ops_nous_cloud", "space_ops_usage", "space_token_usage", "space_link_parity"]),
     says: "a host, route or account is unreachable or held", missing: "ran no live check", display: "says something is unreachable or held, with no live check this turn",
     rule: "Down means checked (corrections 19/11 82e4ccfb «the gateway is unreachable from Thailand», the operator's WireGuard peer reaches it; 21/11 5ef0bb8b «accounts HELD», "
       + "3 of 5 were ACTIVE): say a host, service or route cannot be reached, or accounts are held, paused or blocked, only in a turn whose live check showed it "
@@ -647,6 +647,8 @@ export interface NousServiceDeps {
   mailContext?(owner: string, refs: NousDecision["refs"], named?: string[]): Promise<string[]>;
   /** Nous 13/11: the copilot's rule memory that requires this review (so the operator reads it before it goes out), or null. */
   reviewRequiredBy?(owner: string, action: Extract<NousDecisionAction, { type: "COPILOT" }>): Promise<{ id: string; text: string } | null>;
+  /** Queue.md 1219: why approving this Mail review would fail at the send (no "Send mail as" route for its thread's address), or null. */
+  reviewUnsendable?(owner: string, action: Extract<NousDecisionAction, { type: "COPILOT" }>): Promise<string | null>;
   /** A plan's title (refs.planId), so a send of a funding or credits plan stays the operator's (OPERATOR_READS_FIRST). */
   planTitle?(owner: string, planId: string): Promise<string | null>;
   /** The texts a decision sends (refs.files), each whole or null when unreadable: their prices go on the card. */
@@ -1105,8 +1107,8 @@ export function createNousService(deps: NousServiceDeps) {
   /**
    * Hold A (plan clipboard:ZWJJdBgHm64Z, operator 31/10 22:19 BKK «δεν προχωράς τίποτα μόνο σου»): a background turn's NOTHING_NEW, or empty
    * answer, is not taken while an item its lines carried had no act in it. Those lines go back to the inbox at once under a hold line
-   * (their onDone waits, so a "looks finished" request keeps its evidence unseen); after NOUS_ITEM_HOLDS holds in a row the items go to the
-   * chat instead. Returns the keys of the carried lines held back. The requests the turn acted on are reported either way (the REVIEW).
+   * (their onDone waits, so a "looks finished" request keeps its evidence unseen); after NOUS_ITEM_HOLDS holds in a row the items are kept in entry.left
+   * (internal; operator 27/11: never in the operator's chat). Returns the keys of the carried lines held back. The requests the turn acted on are reported either way (the REVIEW).
    */
   async function holdItems(owner: string, entry: OwnerRuntime, live: LiveTurn, extra: { standing?: QueuedStanding; lines?: Array<[string, InboxLine]> }, silent: boolean): Promise<Set<string>> {
     const held = new Set<string>();
@@ -1151,7 +1153,6 @@ export function createNousService(deps: NousServiceDeps) {
       if (fresh) entry.inboxSince = now();
     }
     for (const item of spent) entry.left.set(item.key, leftShape(item));
-    if (spent.length) await addMessage(owner, live.turnId, "ANSWER", "DONE", renderItemsLeft(spent), { reason: live.reason, startedAt: live.startedAt });
     return held;
   }
 
@@ -1816,13 +1817,16 @@ export function createNousService(deps: NousServiceDeps) {
     messages: (owner: string, limit = 200) => deps.repository.listMessages(owner, limit),
 
     /** The dock's page: the newest `limit` dialogue rows (since the last Clear) or further back; `hasMore` while older dialogue exists (31/10). */
-    async messagePage(owner: string, limit: number, page: NousMessagePage): Promise<{ messages: NousMessage[]; hasMore: boolean; clearedAt?: string | null }> {
+    async messagePage(owner: string, limit: number, page: NousMessagePage): Promise<{ messages: NousMessage[]; hasMore: boolean; clearedAt?: string | null; readUpTo?: string | null }> {
       const messages = await deps.repository.listMessages(owner, limit, undefined, page);
       const oldest = messages.find((message) => message.kind !== "TOOL");
       const further = oldest ? { before: oldest.id } : page.sinceClear ? {} : null;
       return { messages, hasMore: further !== null && (await deps.repository.listMessages(owner, 1, 0, further)).length > 0,
-        ...(page.sinceClear ? { clearedAt: await deps.repository.conversationClearedAt(owner) } : {}) };
+        ...(page.sinceClear ? { clearedAt: await deps.repository.conversationClearedAt(owner), readUpTo: await deps.repository.conversationReadUpTo(owner) } : {}) };
     },
+
+    /** The Conversation's last-read mark (nous_msg:443bb5d5), shared by every client; a time ahead of the server's clock is read as now. */
+    markRead: (owner: string, at: string) => deps.repository.markConversationRead(owner, new Date(Math.min(Date.parse(at), Date.now())).toISOString()),
 
     operatorMessageRefs: (owner: string) => deps.repository.listOperatorMessageRefs(owner),
     operatorMessageByClientId: (owner: string, clientId: string) => deps.repository.operatorMessageByClientId(owner, clientId),
@@ -1978,9 +1982,10 @@ export function createNousService(deps: NousServiceDeps) {
         + "leave what is left to space_nous_followup or the plan's next step." : "";
       const carried = !helper && !wrap && running?.reason === "OPERATOR" && !running.controller.signal.aborted ? takeUndelivered(runtime(owner), running) : [];
       // Score 13/11 (31 of 70 slow first answers in 7 days came after 8 to 105 tool calls): past NOUS_REPLY_NUDGE_MS, an operator turn with no answer yet is told so.
-      const waited = !helper && running?.reason === "OPERATOR" && name !== "space_reply_now" && running.waitingSince !== undefined
-        ? now() - Date.parse(running.waitingSince) : 0;
-      const nudge = waited >= NOUS_REPLY_NUDGE_MS ? `The operator has waited ${Math.round(waited / 1_000)} s with no answer: call space_reply_now now with the short answer `
+      const waiting = !helper && running?.reason === "OPERATOR" && name !== "space_reply_now" && running.waitingSince !== undefined;
+      const waited = waiting ? now() - Date.parse(running!.waitingSince!) : 0;
+      // 27/11 f08eb3b1 (134 s): the work went to a pane at 23 s, then one 104 s model step before any answer; a turn that sent its work knows its answer.
+      const nudge = waited >= NOUS_REPLY_NUDGE_MS || (waiting && outcome.ok && dispatches({ name, args })) ? `The operator has waited ${Math.round(waited / 1_000)} s with no answer: call space_reply_now now with the short answer `
         + "(what you found or will do), then go on with the work." : "";
       const held = !helper && running?.reason === "OPERATOR" ? running.held?.splice(0) ?? [] : [];
       if (!carried.length && !held.length && !nudge && !wrap) return outcome;
@@ -2187,6 +2192,11 @@ export function createNousService(deps: NousServiceDeps) {
       // Nous 13/11: a corrected ask with the replaced one's title got its id and then cancelled itself; it is a new card with the new text and action.
       const same = open.find((decision) => decision.id !== options.replaces && decision.title.trim().toLowerCase() === input.title.trim().toLowerCase());
       if (same) return served(same);
+      // Queue.md 1219 (decisions e9aea0da 23/11, 7763df63 26/11 approved and then failed): a Mail review approve or edit the send would refuse
+      // raises no card; the pane that asked is told the route to add. An unreadable mailbox leaves it to the send's own check.
+      const mailSend = input.action?.type === "COPILOT" && input.action.copilot === "MAIL" && input.action.item === "REVIEW" && input.action.decision !== "reject" ? input.action : null;
+      const unsendable = mailSend && deps.reviewUnsendable ? await deps.reviewUnsendable(input.ownerUserId, mailSend).catch(() => null) : null;
+      if (unsendable) throw new SpaceConflictError(`${unsendable} No decision was raised: tell the Mail Copilot pane${mailSend!.paneId ? ` ${mailSend!.paneId}` : ""} to have that route added, then ask again.`);
       const kind = standingKind(input);
       const stored = await deps.settings(input.ownerUserId);
       // Security review P1-3 (Nous Pro step 7, C7 remainder): an ask from a turn the operator started on a paired phone is never approved
@@ -2211,8 +2221,10 @@ export function createNousService(deps: NousServiceDeps) {
       const review = item?.item === "REVIEW" ? item : null;
       const asked = item && open.find((decision) => decision.id !== options.replaces && decision.action?.type === "COPILOT"
         && decision.action.copilot === item.copilot && decision.action.itemId === item.itemId);
+      // lessons-unclear-card (27/11, nous_decision:fe3c969b «Τι με ρωτάς δεν έχω καταλάβει;;;»): the card opened with the memory's id and 300 characters
+      // of its internal text; the operator reads in plain words why it is his (Nous reads the rule in the copilot memory itself).
       const heldFor = (review && deps.reviewRequiredBy ? await deps.reviewRequiredBy(input.ownerUserId, review).then((memory) => memory
-        && `copilot memory ${memory.id} requires that you read this review ("${clip(memory.text.replace(/\s+/g, " "), 300)}")`, () => "the copilot's rule memories could not be read to check this review") : null)
+        && "your Mail Copilot rules say you read this mail before it goes", () => "the Mail Copilot rules could not be read to check this mail") : null)
         || (asked ? `the open decision "${clip(asked.title, 200)}" already asks you about this item` : null)
         || replacedUnread(input, coveredKind && options.replaces ? open.find((decision) => decision.id === options.replaces) : undefined)
         // Daily Nous errors 23/11 (nous_decision:8bf54f47 Moonstone, 16/11 and 21/11 alike): Nous said the send differs from an operator rule

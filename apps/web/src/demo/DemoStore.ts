@@ -1186,6 +1186,7 @@ export class DemoStore {
       case "saveGatewayAnthropicAdminKey": return Promise.resolve({ configured: false, keyHint: null, savedAt: null, lastSyncAt: null, lastError: null, upstream: [] });
       case "removeGatewayAnthropicAdminKey": return Promise.resolve({ removed: false });
       case "gatewayAnthropicBilling": return Promise.resolve({ status: { configured: false, keyHint: null, savedAt: null, lastSyncAt: null, lastError: null, upstream: [] }, days: [] });
+      case "nousCloud": return Promise.resolve({ at: DEMO_FIXED_AT, days: args[0], installs: [] });
       case "gatewaySettings": return Promise.resolve(structuredClone(this.demoGatewaySettings));
       case "updateGatewaySettings":
         this.demoGatewaySettings = { ...this.demoGatewaySettings, ...(args[0] as object), updatedAt: DEMO_FIXED_AT };

@@ -4,8 +4,9 @@ import { randomUUID } from "node:crypto";
 import type { GatewayRepository, GatewayApiKeyRecord } from "@space/db";
 import { hashGatewayApiKey, readPresentedApiKey } from "./api-keys.js";
 import { gatewayErrors } from "./errors.js";
-import { lanDecision, type LanAccess } from "./lan-access.js";
-import { trackKeyRequest } from "./policy.js";
+import { isLoopback, lanDecision, type LanAccess } from "./lan-access.js";
+import { requestProvider, trackKeyRequest } from "./policy.js";
+import { sameToken } from "./admin/codex-sign-in.js";
 import { clientRequestId } from "./proxy-util.js";
 import { staleRead, type StaleRead } from "./stale-read.js";
 
@@ -57,6 +58,8 @@ export interface GatewayServerOptions {
     | { event: "gateway.model_request"; reqId: string; transportRequestId: string; nativeTurnId: string }) => void;
   /** Requests one API key may start per minute (default 1200). */
   keyRequestsPerMinute?: number;
+  /** Tells the loopback hand-off to the paid Claude API key (space-pool.ts) from a client's own header, for a key's provider list. */
+  internalToken?: string | null;
   /** NGW_MODE=nous: tenant keys and the shared ledger replace the Space Gateway key check (nous/http.ts). */
   tenancy?: { authenticate(request: FastifyRequest, reply: FastifyReply): Promise<void>;
     /** onRequest: the paths NGW_MODE=nous answers at all. */
@@ -186,6 +189,12 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     if (!key) return reply.code(401).send(gatewayErrors.invalidApiKey());
     if (!key.isActive) return reply.code(401).send(gatewayErrors.inactiveApiKey());
     if (key.expiresAt && Date.parse(key.expiresAt) <= now().getTime()) return reply.code(401).send(gatewayErrors.expiredApiKey());
+    if (key.allowedProviders?.length) {
+      const keyOnly = request.headers["x-space-gateway-route"] === "CLAUDE_API_KEY" && isLoopback(request.socket.remoteAddress)
+        && sameToken(String(request.headers["x-space-internal-token"] ?? "") || null, options.internalToken ?? null);
+      const provider = requestProvider(request.url.split("?")[0]!, Boolean(request.headers["anthropic-version"]), keyOnly);
+      if (!provider || !key.allowedProviders.includes(provider)) return reply.code(403).send(gatewayErrors.providerNotAllowed(provider));
+    }
     const at = now().getTime();
     let window = keyWindows.get(key.id);
     if (!window || at - window.startedAt >= 60_000) keyWindows.set(key.id, window = { startedAt: at, count: 0 });

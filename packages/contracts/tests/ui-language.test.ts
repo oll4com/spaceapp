@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptLanguages, agentLanguageOf, uiLanguageOf, updateUserSettingsInputSchema, userSettingsSchema } from "../src/index.js";
+import { acceptLanguages, agentLanguageOf, agentWritingLanguageOf, uiLanguageOf, updateUserSettingsInputSchema, userSettingsSchema } from "../src/index.js";
 
 describe("UI language (operator 1/11 11:59 BKK)", () => {
   it("is the operator's choice, else Voice input's Greek, else English", () => {
@@ -33,5 +33,12 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
     expect([agentLanguageOf({ agentLanguage: "fr" }), agentLanguageOf(null)]).toEqual(["en", "en"]);
     expect(updateUserSettingsInputSchema.parse({ uiLanguage: "en", agentLanguage: "el" })).toEqual({ uiLanguage: "en", agentLanguage: "el" });
     expect(userSettingsSchema.parse({ agentLanguage: "fr" }).agentLanguage).toBeUndefined();
+  });
+
+  it("lets agents write Thai (Nous Cloud, operator 27/11) while SpaceApp's own translations read it as English", () => {
+    expect(updateUserSettingsInputSchema.parse({ agentLanguage: "th" })).toEqual({ agentLanguage: "th" });
+    expect(updateUserSettingsInputSchema.safeParse({ uiLanguage: "th" }).success).toBe(false);
+    expect([agentWritingLanguageOf({ uiLanguage: "el", agentLanguage: "th" }), agentLanguageOf({ uiLanguage: "el", agentLanguage: "th" })]).toEqual(["th", "en"]);
+    expect(agentWritingLanguageOf({ uiLanguage: "el" })).toBe("el");
   });
 });

@@ -50,6 +50,17 @@ describe("Nous's cards to the operator", () => {
     expect([card.paneId, card.link]).toEqual([null, { roomId: room.id, paneId: andy.id }]);
   });
 
+  it("operator 27/11 (card 279efb10): files said to be in Agent Files are attached, and a choice with no pane names its plan", async () => {
+    const { notices } = fixture();
+    const item = { text: "Order the KVM server. Legal drafts terms-2026-11-27 are in Agent Files for you to read.", question: "Which server do you order?",
+      options: ["Hetzner AX102", "Scaleway EM-B230E"], recommended: "Hetzner AX102" };
+    const ask = (extra: Record<string, unknown>, it: Record<string, unknown> = item) => notices.notify(owner, room, null, { room: "Freelance", title: "Server order", checked: ["Dana's report: the order is an operator step"], items: [it], ...extra });
+    expect(await ask({ plan: "clipboard:plan0001abcd" })).toMatchObject({ ok: false, refused: true, display: "Attach the files it names" });
+    const plain = { ...item, text: "Order the KVM server for the alpha cells." };
+    expect(await ask({}, plain)).toMatchObject({ ok: false, refused: true, display: "Name the plan the question comes from" });
+    expect((await ask({ plan: "clipboard:plan0001abcd" }, plain)).ok).toBe(true);
+  });
+
   it("closedSince: the pane cards raised since a time that are closed now (13/11 REVIEW, one subject on 3 cards)", async () => {
     const f = fixture();
     await f.notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Upwork needs you", items: [{ text: "Pass the Cloudflare check" }] });
@@ -971,6 +982,17 @@ describe("1056: a recommendation against a saved principle rule (13/11 REVIEW: V
     expect(principleConflicts("Buy the Pro plan", "Pavago hiring tool: Pro plan or the free open-source alternative", rules)).toMatchObject([{ principle: "a free option first" }]);
     expect(principleConflicts("Buy the Pro plan", "Pavago hiring tool: Pro plan or skip", rules)).toEqual([]);
     expect(principleConflicts("Use the free tier", "Pro plan or the free tier", rules)).toEqual([]);
+  });
+  it("operator 27/11 (11beca47): a server order or a new monthly cost goes against 'what we already own before a purchase'; a free/owned pick or a no does not", () => {
+    const rules = [rule("space_memory:11beca47", "Operator: Τι σας ρωτάμε: Το Nous Computer …",
+      "εχουμε τοσες επιλγοές σερωερ δωρεαν και μου λες να αγορασουμε???? ποτε μα ποτε δεν θα προχωραμε σε λυση αγοράς οταν διαθετουμε δωρεαν!!!")];
+    const card = "Nous Computer alpha: server order\nOrder the bare-metal KVM server for the alpha cells (a payment, yours only).\nWhich server do you order?\nHetzner AX102\nScaleway EM-B230E";
+    expect(principleConflicts("Hetzner AX102", card, rules)).toMatchObject([{ principle: expect.stringMatching(/^what we already own/), rule: { id: "space_memory:11beca47" } }]);
+    expect(principleConflicts("Ναι\nNous Computer server", "Χρειάζεται φυσικός server που τον νοικιάζουμε. Είναι νέο μηνιαίο κόστος.", rules)).toMatchObject([{ principle: expect.stringMatching(/^what we already own/) }]);
+    expect(principleConflicts("Use the E2B credits we already have", card, rules)).toEqual([]);
+    expect(principleConflicts("No", card, rules)).toEqual([]);
+    expect(principleConflicts("Accept the 2 orders", "Skroutz: 2 new orders for Friday", rules)).toEqual([]);
+    expect(principleConflicts("Hetzner AX102", card, [rule("space_memory:x", "Tools", "Prefer Hetzner.")])).toEqual([]);
   });
   it("the operator reads funding mail before it is sent: sending a funding mail unread is flagged, showing the draft is not", () => {
     const rules = [rule("space_memory:fund0001", "Funding outreach", "The operator reads every funding mail before it is sent.")];

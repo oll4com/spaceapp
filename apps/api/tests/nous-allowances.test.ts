@@ -12,7 +12,8 @@ const ask = (refs: Partial<NousDecision["refs"]> = {}, title = "Send the pilot o
   options: [], recommendation: "Yes. Πρόβλεψη: ναι (90%)", action, refs: { files: ["active/pilots/offer.md"], sendKind: "pilot-offer", recipients: ["ann@acme.io"], ...refs } });
 
 function fixture(maySend = true, hashes: Array<{ ref: string; sha256: string | null; size: number | null }> | null = null,
-  reviewRequiredBy?: (owner: string, action: unknown) => Promise<{ id: string; text: string } | null>, planTitle?: (owner: string, id: string) => Promise<string | null>) {
+  reviewRequiredBy?: (owner: string, action: unknown) => Promise<{ id: string; text: string } | null>, planTitle?: (owner: string, id: string) => Promise<string | null>,
+  reviewUnsendable?: (owner: string, action: unknown) => Promise<string | null>) {
   const repository = new InMemoryNousRepository();
   const raise = vi.fn(async () => ({}) as never);
   const resolve = vi.fn(async () => {});
@@ -22,7 +23,7 @@ function fixture(maySend = true, hashes: Array<{ ref: string; sha256: string | n
   const service = createNousService({ repository, runner: async () => ({ text: "", isError: false }), tools: { execute: vi.fn() } as never,
     world: async () => ({ text: "", overview: { plans: [], needsHands: [], trains: "", planMap: null } }), settings: async () => settings as never,
     saveSettings: async (_owner, value) => { settings = value as never; return value; }, notifications: { raise, resolve } as never, executeAction,
-    sendTexts: texts, ...(hashes ? { fileHashes: async () => hashes } : {}), ...(reviewRequiredBy ? { reviewRequiredBy } : {}), ...(planTitle ? { planTitle } : {}), timeZone: async () => "Asia/Bangkok" });
+    sendTexts: texts, ...(hashes ? { fileHashes: async () => hashes } : {}), ...(reviewRequiredBy ? { reviewRequiredBy } : {}), ...(planTitle ? { planTitle } : {}), ...(reviewUnsendable ? { reviewUnsendable } : {}), timeZone: async () => "Asia/Bangkok" });
   return { repository, raise, resolve, executeAction, service, texts, setSettings: (value: object) => { settings = { ...settings, ...value }; } };
 }
 
@@ -119,7 +120,9 @@ describe("May send in the decision flow", () => {
     const given = await f.service.ask({ ...ask({ sendKind: "mail-reply", files: [] }, "Approve the edited Arize reply?"), action: { ...review, decision: "edit", text: "Hi Arize team," } });
     for (const decision of [inferred, given]) {
       expect(decision.status).toBe("OPEN");
-      expect(decision.body).toMatch(/^Not covered by "May send to third parties": copilot memory mailmem:SLvZ9IZgCRc4 requires that you read this review \("Funding mail always gets a DRAFT \+ space_mail_review_request: the operator reads it/);
+      // lessons-unclear-card (27/11): plain words, never the memory's id or its internal text.
+      expect(decision.body).toMatch(/^Not covered by "May send to third parties": your Mail Copilot rules say you read this mail before it goes\.\n/);
+      expect(decision.body).not.toMatch(/mailmem:|space_mail_review_request/);
     }
     expect(held).toHaveBeenCalledWith(owner, review);
     expect(f.executeAction).not.toHaveBeenCalled();
@@ -133,9 +136,25 @@ describe("May send in the decision flow", () => {
     // Memories that cannot be read hold it too; with no such memory the allowance runs it as before.
     const unread = fixture(true, null, async () => { throw new Error("db down"); });
     expect(await unread.service.ask({ ...ask({}, "Approve the Arize reply?"), refs, action: review })).toMatchObject({ status: "OPEN",
-      body: expect.stringMatching(/^Not covered by "May send to third parties": the copilot's rule memories could not be read/) });
+      body: expect.stringMatching(/^Not covered by "May send to third parties": the Mail Copilot rules could not be read/) });
     const free = fixture(true, null, async () => null);
     expect(await free.service.ask({ ...ask({}, "Approve the Arize reply?"), refs, action: review })).toMatchObject({ status: "APPROVED", answer: "Approved by allowance maySend (send kind mail-review)" });
+  });
+
+  it("queue.md 1219 (decision 7763df63 26/11): a Mail review approve the send would refuse raises no card; a reject, or an unreadable mailbox, goes on", async () => {
+    const why = "This thread was written to partners@unboxexpert.com, which spaceappdv@gmail.com cannot send as; … Add the route: add partners@unboxexpert.com under Gmail's \"Send mail as\".";
+    const unsendable = vi.fn(async () => why);
+    const review = { type: "COPILOT" as const, copilot: "MAIL" as const, item: "REVIEW" as const, itemId: "mailrev:OmoCClRILWT4", paneId: "pane:lmItO4Q9x_RZ", decision: "approve" };
+    const refs = { files: [], recipients: ["partners@linkwi.se"] };
+    const held = fixture(true, null, async () => null, undefined, unsendable);
+    await expect(held.service.ask({ ...ask({}, "Approve the Linkwise reply?"), refs, action: review })).rejects.toThrow(/cannot send as.*No decision was raised: tell the Mail Copilot pane pane:lmItO4Q9x_RZ/s);
+    expect(unsendable).toHaveBeenCalledWith(owner, review);
+    expect(held.executeAction).not.toHaveBeenCalled();
+    expect(held.raise).not.toHaveBeenCalled();
+    expect((await held.service.ask({ ...ask({}, "Send back the Linkwise reply?"), refs, action: { ...review, decision: "reject" } })).status).toBe("APPROVED");
+    expect(unsendable).toHaveBeenCalledTimes(1);
+    const unread = fixture(true, null, async () => null, undefined, async () => { throw new Error("gmail down"); });
+    expect((await unread.service.ask({ ...ask({}, "Approve the Linkwise reply?"), refs, action: review })).status).toBe("APPROVED");
   });
 
   it("lessons-mail-review-preempt: nothing runs under May send on a review an open decision already asks the operator about", async () => {

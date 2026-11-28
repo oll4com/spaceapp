@@ -210,7 +210,7 @@ async function pollPlatform(
   context: PollContext & StreamingBotRuntimeOptions
 ): Promise<PollOutcome> {
   const options = context;
-  const client = await context.credentialStore.readClient(platform);
+  const client = await context.credentialStore.clientFor(platform, auth.credentialRef);
   const token = await context.tokenManager.getToken(platform, auth.credentialRef);
 
   const fetchResult = platform === "YOUTUBE"

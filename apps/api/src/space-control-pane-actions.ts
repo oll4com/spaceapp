@@ -5,6 +5,7 @@ import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import { isCodexDirectParityRuntime, isOpenCodeDirectParityRuntime } from "./cli-parity.js";
 import { COMPOSER_CHECKED_RUNTIMES, draftNoticeLine, isDraftError, submitCliPrompt } from "./cli-prompt-submit.js";
 import type { CliTerminalManager } from "./cli-terminal.js";
+import { noteNousPrompt } from "./task-title-service.js";
 import { verifyGeminiPaneSession } from "./gemini-session-verification.js";
 import type { NousWiring } from "./nous/wiring.js";
 import type { createOpenCodeServerControlResolver } from "./opencode-server-control.js";
@@ -119,6 +120,8 @@ export function createSpaceControlPaneActions(deps: SpaceControlPaneActionDeps) 
     roomCliObservationCache.delete(pane.id);
     // The Room Agent monitor reads the room at once and on every tick for a while, so a short turn files its turn-end report.
     notePanePrompted(pane.roomId);
+    // Nous's calls carry request ids "nous:<turn>:<call>" (nous/tools.ts); its title line shows the Nous icon.
+    if(sourceRequestId?.startsWith("nous:"))noteNousPrompt(pane.id,text);
     try {
     if(pane.mode==="CHAT"){
       // Control request IDs can occupy all 128 characters. The native Chat

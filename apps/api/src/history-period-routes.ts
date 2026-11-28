@@ -60,7 +60,8 @@ export const HISTORY_FLOORS: Record<string, { key: string; as: "iso" | "day" | "
   "/api/admin/gateway/logs/facets": { key: "from", as: "iso" },
   "/api/admin/gateway/logs/export.csv": { key: "from", as: "iso" },
   "/api/admin/gateway/reports": { key: "from", as: "day" },
-  "/api/admin/gateway/anthropic-billing": { key: "days", as: "days" }
+  "/api/admin/gateway/anthropic-billing": { key: "days", as: "days" },
+  "/api/admin/nous-cloud": { key: "days", as: "days" }
 };
 
 const timeOf = (row: Row, at?: string) => Date.parse(String(row[at ?? TIME_KEYS.find((key) => typeof row[key] === "string") ?? ""]));

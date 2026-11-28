@@ -13,7 +13,7 @@ import { brokerScopeSchema } from "./broker-scopes.js";
 import { patchSchema } from "./partial-update.js";
 import { historySettingsSchema } from "./history-period.js";
 import { paneHibernateSettingsSchema } from "./pane-hibernate.js";
-import { uiLanguageSchema } from "./ui-language.js";
+import { agentLanguageSchema, uiLanguageSchema } from "./ui-language.js";
 import { MAX_ROOM_LIMIT, MAX_ROOMS } from "./room-names.js";
 import { taskMetadataSchema } from "./task-metadata.js";
 import { t3CodePaneMetadataSchema } from "./t3code.js";
@@ -8990,7 +8990,7 @@ export const userSettingsSchema = z.object({
   /** The interface language (ui-language.ts); unset follows Voice input's Greek, else English. */
   uiLanguage: uiLanguageSchema.optional().catch(undefined),
   /** The language Nous, agents and copilots write to the operator in (ui-language.ts); unset follows the interface language. */
-  agentLanguage: uiLanguageSchema.optional().catch(undefined),
+  agentLanguage: agentLanguageSchema.optional().catch(undefined),
   updatedAt: isoDateTimeSchema.optional()
 });
 
@@ -9074,7 +9074,7 @@ export const updateUserSettingsInputSchema = z.object({
   appointmentHours: appointmentHoursSchema.optional(),
   paneHibernate: paneHibernateSettingsSchema.optional(),
   uiLanguage: uiLanguageSchema.optional(),
-  agentLanguage: uiLanguageSchema.optional()
+  agentLanguage: agentLanguageSchema.optional()
 }).strict();
 
 export const authMeSchema = z.object({

@@ -77,7 +77,9 @@ export function createNousMailContext(deps: NousMailContextDeps) {
       const accounts = deps.accounts ? await cached(`${owner}\n@accounts`, () => deps.accounts!(owner).catch(() => [])) : [];
       const own = [...(refs.mailThread ? [refs.mailThread.account] : []), ...accounts];
       const targets = mailTargets(addresses, own);
-      const extra = mailTargets(named, own).filter((target) => !targets.includes(target));
+      // lessons-unclear-card (27/11, nous_decision:fe3c969b): a send to people gets their mail only; the links its text names (github.com, x.com,
+      // linkedin.com, the operator's own sites) filled the card with 16 lines about other mail. Named sites count only for an ask to no one.
+      const extra = targets.length ? [] : mailTargets(named, own).filter((target) => !targets.includes(target));
       const picked = [...targets.map((target) => ({ target, quiet: false })), ...extra.map((target) => ({ target, quiet: true }))];
       return (await Promise.all(picked.map(async ({ target, quiet }) => (await targetLines(owner, target)).filter((line) => !quiet || !/: (?:none|unknown \(the mail read failed\))$/.test(line))))).flat();
     },

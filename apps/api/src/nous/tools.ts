@@ -28,7 +28,7 @@ import { LinkFileError, pullLinkFile, pushLinkFile, type LinkCall } from "../ins
 import { linkRoute, type InstanceLinks, type InstanceLinkView, type LinkParity } from "../instance-link/routes.js";
 import { fullSyncCommit } from "../instance-link/version-sync.js";
 import type { LinkSyncCategory } from "../instance-link/settings-sync.js";
-import { LINK_REMOTE_ROUTES, LINK_ROUTE_SCOPES, NOUS_CLIENT_APPS, isTestRoom, COPILOT_QUESTION_SOURCES, heldForNous } from "@space/contracts";
+import { LINK_REMOTE_ROUTES, LINK_ROUTE_SCOPES, NOUS_CLIENT_APPS, isTestRoom, COPILOT_QUESTION_SOURCES, heldForNous, heldUnderAllowance, needsOperatorHandsText } from "@space/contracts";
 import { readFile, stat } from "node:fs/promises";
 import { COPILOT_ACTION_DECISIONS, MARKETING_STALE_REVIEW, copilotActionProblem, copilotDecisionFor } from "./copilot-actions.js";
 import { basename } from "node:path";
@@ -70,11 +70,11 @@ import { SECURITY_OWN_HOST_KINDS } from "../security-copilot/service.js";
 import { MONITORING_OWN_HOST_KINDS } from "../monitoring-copilot/service.js";
 import { answersSameQuestion, cardStems, foldText, sameCardSubject, FOCUS_PANE_DESCRIPTION, focusPaneSchema, holdsFact, NOUS_PLAN_NOTICE_PREFIX, NOUS_PREDICT_FROM_WORDS, NOUS_PREDICTION_RULE, actItemsMissingLink, handsItemsMissingLink, NOUS_ACT_LINK_RULE, NOUS_HANDS_RULE, nousCheckedSchema, notifyOperatorArgsSchema, cannotWorkRules, principleConflicts, ruleRecommendation, titleWords,
   type NousPaneNotices } from "./pane-notices.js";
-import { paneCheckedArgsSchema, waitsOnOperatorClaim, type NousPaneWatch } from "./pane-watch.js";
-import { nousOpsGatewayArgsSchema, nousOpsGatewayText, nousOpsServicesArgsSchema, nousOpsServicesText, nousOpsUsageArgsSchema, nousOpsUsageText, type NousOpsDeps } from "./ops-views.js";
+import { paneCheckedArgsSchema, waitsOnOperatorClaim, waitsWithoutPaneClaim, type NousPaneWatch } from "./pane-watch.js";
+import { nousOpsGatewayArgsSchema, nousOpsGatewayText, nousOpsNousCloudArgsSchema, nousOpsNousCloudText, nousOpsServicesArgsSchema, nousOpsServicesText, nousOpsUsageArgsSchema, nousOpsUsageText, type NousOpsDeps } from "./ops-views.js";
 import { NOUS_CARD_ANSWER, nousProgressText, type NousScorecard } from "./progress.js";
 import { historicalToolHold, PLAN_MAP_ANSWER } from "./tool-holds.js";
-import { NOUS_PLAN_DECISIONS_RULE, waitAsksUnlinkedDecisions } from "./plan-needs-you.js";
+import { NOUS_PLAN_DECISIONS_RULE, waitAsksUnlinkedDecisions, waitDecisionIds } from "./plan-needs-you.js";
 import { COPILOT_CONTROL_DESCRIPTION, copilotControlActionSchema, type CopilotControlAction } from "./copilot-control.js";
 import { calmPromptActionSchema, holdCalmPrompts, holdUnlessAllowed, type NousHeld } from "./held-dispatch.js";
 import { NOUS_AWAY_GRANTS, nousAwayArgsSchema, type NousAwayArgs, type NousAwayTurn } from "./away.js";
@@ -101,6 +101,7 @@ import { classifyAttachment } from "../attachment-readers.js";
 import { nousGitArgsSchema, type NousGit } from "./git.js";
 import { NOUS_DB_GUESSED_TABLES, nousDbArgsSchema, type NousDb } from "./db.js";
 import { decisionActionFailed, nousDecisionsText, nousQueueText } from "./workbench.js";
+import { sweepHandout, sweepPane } from "./utilization.js";
 import type { DeployQueueReport } from "@space/contracts";
 import type { NousSubagents } from "./subagents.js";
 import { redactMemoryText, SpaceConflictError, SpaceFeatureDisabledError } from "@space/runtime";
@@ -271,6 +272,8 @@ export interface NousToolDeps {
     resolve(owner: string, id: string, reason?: string): Promise<boolean>;
     /** One of the owner's notifications by id, whatever its status. */
     get?(owner: string, id: string): Promise<SpaceNotification | null>;
+    /** A card held for Nous shown to the operator now (NotificationService.releaseHeldForNous); null when it is not held. */
+    releaseHeldForNous?(owner: string, id: string): Promise<SpaceNotification | null>;
     /** The source's copilot question cards that no longer wait (RESOLVED or ACKED), newest first. */
     closedQuestions?(owner: string, source: NotificationSource): Promise<SpaceNotification[]>;
     /** R41: a notification of another account (space_db_query reads every account's rows), never its text. */
@@ -467,6 +470,8 @@ export const NOUS_TOOL_RESULT_MAX_CHARS = 40_000;
 export const NOUS_PANE_READ_MS = 20_000;
 /** A paged answer stays readable this long: a turn runs at most 20 minutes, its helpers within it. */
 const RESULT_PAGES_KEEP_MS = 60 * 60_000;
+/** An idle pane's progress report this long past Space's turn end is no open work (openWorkGuard): Standing orders' default finishedAfterMinutes. */
+const STALE_PROGRESS_MS = 30 * 60_000;
 /** R64: what Claude Code shows of an answer it saved to a file (its 2,000-character preview); every longer answer is kept for the turn. */
 const CLI_PREVIEW_CHARS = 2_000;
 /** Space Memory matches a space_memory_recall page holds (the memory list's page). */
@@ -510,13 +515,26 @@ export function nearestIssues(issues: readonly ZodIssue[], path: PropertyKey[] =
  */
 export function renamedArgs(schema: unknown, raw: Record<string, unknown>, issues: readonly ZodIssue[]): Record<string, unknown> | null {
   if (!(schema instanceof z.ZodObject)) return null;
+  const shape = schema.shape as Record<string, z.ZodType>;
   const missing = [...new Set(issues.filter((issue) => issue.path.length === 1 && raw[issue.path[0] as string] === undefined).map((issue) => String(issue.path[0])))];
-  const extra = Object.keys(raw).filter((key) => !(key in schema.shape));
-  if (missing.length !== 1 || extra.length !== 1) return null;
-  const { [extra[0]!]: value, ...rest } = raw;
-  let given = value;
-  if (typeof value === "string" && /^\s*[[{]/.test(value)) try { given = JSON.parse(value); } catch { /* kept as text: the schema names what is wrong */ }
-  return { ...rest, [missing[0]!]: given };
+  const extra = Object.keys(raw).filter((key) => !(key in shape));
+  let named = raw;
+  if (missing.length === 1 && extra.length === 1) { const { [extra[0]!]: value, ...rest } = raw; named = { ...rest, [missing[0]!]: jsonText(value) }; }
+  // 27/11 (space_stop_pane {panes: "[\"Kate\"]"} for its one pane): a value that does not fit its field is tried as JSON text, as its one item, as a list of it.
+  const fitted = Object.fromEntries(Object.entries(named).map(([key, value]) => [key, shape[key] ? fitArg(shape[key], value) : value]));
+  return named !== raw || Object.keys(fitted).some((key) => fitted[key] !== raw[key]) ? fitted : null;
+}
+
+function jsonText(value: unknown): unknown {
+  if (typeof value === "string" && /^\s*[[{]/.test(value)) try { return JSON.parse(value) as unknown; } catch { /* kept as text: the schema names what is wrong */ }
+  return value;
+}
+
+function fitArg(field: z.ZodType, value: unknown): unknown {
+  if (field.safeParse(value).success) return value;
+  const given = jsonText(value);
+  const tries = Array.isArray(given) ? [given, ...given.length === 1 ? [given[0]] : []] : [given, [given]];
+  return tries.find((one) => field.safeParse(one).success) ?? given;
 }
 
 /**
@@ -590,7 +608,9 @@ export const securityAsk = (item: Pick<SpaceNotification, "kind" | "source" | "t
   if (PAIRING_ASK.test(text)) return "device pairing";
   if (VAULT_ASK.test(text)) return "a Vault change";
   if (PAYMENT_ASK.test(text)) return "a payment or KYC";
-  return OWN_TEST_ASK.test(text) ? "the operator's own interview or test" : null;
+  if (OWN_TEST_ASK.test(text)) return "the operator's own interview or test";
+  // Operator 27/11 (nous_msg:766ca4f6): Nous closed a held Crosschq ID.me check with a reason; an identity check is theirs alone too.
+  return needsOperatorHandsText(`${text}\n${(item.payload.ask as { question?: unknown } | undefined)?.question ?? ""}`) ? "the operator's own identity check" : null;
 };
 /** A report that says the ask's work is done: a DONE report, or one that is no wait and says done or ok. */
 export const reportSaysDone = (report: { status: string; summary: string }) => report.status === "DONE"
@@ -600,8 +620,9 @@ export const reportSaysDone = (report: { status: string; summary: string }) => r
 const forcedCloseActionSchema = z.object({
   // R39-1 (1/11 16:36 UTC): a forced close by name or with a state failed "Unrecognized key: force": it takes Space Control's close target.
   kind: z.literal("pane"), operation: z.literal("close"), target: controlTargetSchema.extend({ state: controlTargetSchema.shape.state.unwrap().optional() }),
-  when: z.enum(["NOW", "AFTER_TURN"]).optional(), force: z.literal(true)
-}).strict().describe("Close panes although they still work or have open work; a pane an unanswered needs-you request waits on, or one not finished with its memory save verified, stays open regardless.");
+  when: z.enum(["NOW", "AFTER_TURN"]).optional(), force: z.literal(true),
+  operatorMessageId: nousMessageIdSchema.optional().describe("The operator's own message ordering this close, when it came in an earlier turn (space_conversation).")
+}).strict().describe("Close panes although they still work or have open work; a pane an unanswered needs-you request waits on, stays open regardless; one not finished with its memory save verified stays open unless the operator ordered the close (this turn, or operatorMessageId) or its provider has no room.");
 
 /** Words that make Space's safety guard read a pane text as destructive (named back to Nous when it holds one, queue item 28). */
 const DESTRUCTIVE_WORDS = /\b(?:delete[sd]?|deleting|drop(?:ped|s)?|remove[sd]?|removing|rm\s+-r\w*|wipe[sd]?|truncate[sd]?|purge[sd]?|destroy(?:ed|s)?|reset|kill(?:ed|s)?|prune[sd]?|erase[sd]?|force[- ]push|overwrite[sd]?|uninstall(?:ed|s)?|format)\b/gi;
@@ -646,6 +667,12 @@ const QUOTA_ROOM_PERCENT = 10;
 const ROOM_WAIT = /\bno (?:provider )?room\b|\bhas room\b|\bnoRoomGuard\b|\bwithout room\b|χωρίς (?:όριο|χώρο)/i;
 /** Queue items 846 + 915: the reason a caller gives for a wait the words alone do not justify. */
 const waitReason = z.string().trim().min(1).max(500).optional().describe("Only with a wait over an hour whose words name no fixed date or time, reset, ticket, ETA or the operator: what really holds it (kept in the record).");
+/**
+ * Operator 24/11 e61c70fd «όταν είχα δώσει ένα πλάνο για εκτέλεση δεν θα το σταματάς εσύ» and 27/11 dd60e760: plan bxrJ-oNb9sJp was held twice
+ * (and parked again after it) on a "2/12 BF/CM freeze" a pane wrote into memory as the operator's rule; "2/12" passed as a real date. A freeze
+ * names a period work must not run; only the operator sets one. "Πάγωμα 1-2 s στο app" (a UI freeze bug) is no period and passes.
+ */
+const PLAN_FREEZE = /\b(?:code|deploy(?:ment)?|release|change|merge|sales?|bf|cm|holiday)[ -]freeze\b|\bfreeze (?:until|till|through|ends?)\b|\bfreeze\b[^.\n]{0,20}\d{1,2}\/\d{1,2}|\d{1,2}\/\d{1,2}[^.\n]{0,20}\bfreeze\b|\bembargo\b|(?:μετά|πριν|λόγω)(?: (?:το|του))? π[άα]γ[ωώ]μ|π[άα]γωμα (?:έως|μέχρι|ως) |π[άα]γ[ωώ]μ[^.\n]{0,20}\d{1,2}\/\d{1,2}|\d{1,2}\/\d{1,2}[^.\n]{0,20}π[άα]γ[ωώ]μ/i;
 /**
  * Queue items 846 + 915 (goal 35813e48, operator «Μην αφήνεις για αύριο ότι μπορείς να κάνεις σήμερα τώρα!!»; 2026-11-04 REVIEW: 32 of 133 deferrals
  * could run the same day): a time wait over an hour whose words name no real hold (R31's classifier) is refused; an explicit reason overrides it.
@@ -893,7 +920,9 @@ export function noQuestionRefusal(ask: ReturnType<typeof cardAsk>): string | nul
   if (texts.some((text) => TO_AGENT.test(text))) return NO_ASK("these words are for Nous or an agent. Do that work yourself (or send it to the pane); the operator gets a card only for what they must answer or do");
   const text = [...texts, ...ask.steps].join("\n");
   if (DONE_QUESTION.test(text)) return NO_ASK("a card never asks whether the operator did something. Read the page, setting or pane yourself; if it is not done, ask for the act itself with its link");
-  if (QUESTION.test(text) || ACT.test(text) || YOUR_ACT.test(text) || CHECKOUT_PAYMENT_ASK.test(text) || BOT_CHECK_ASK.test(text) || DATA_ASK.test(text) || DOCUMENT_ASK.test(text)) return null;
+  if (QUESTION.test(text) || ACT.test(text) || YOUR_ACT.test(text) || CHECKOUT_PAYMENT_ASK.test(text) || BOT_CHECK_ASK.test(text) || DATA_ASK.test(text) || DOCUMENT_ASK.test(text)
+    // 27/11 (the Crosschq ID.me card took 3 tries): an identity check or the operator's own interview or test is an act only they can do, however worded.
+    || needsOperatorHandsText(text)) return null;
   return NO_ASK("it has no question and no act for the operator. Put the concrete question (\"Which plan do we buy?\") with options and your recommendation, or the act only they can do (\"Approve the npm sign-in at the link\")");
 }
 const DOCUMENT_SOURCES: Array<[string, RegExp]> = [["a mail search", /\bmail|inbox|gmail|αλληλογραφ/i],
@@ -1057,6 +1086,20 @@ export function unprovenNowHold(items: ReadonlyArray<{ text: string; question?: 
   }
   return null;
 }
+/** A Vault fill that missed its field (sealed-fill's own codes, or the words an agent writes for it), English or Greek. */
+const VAULT_FILL_GAP = /\b(?:FIELD|QR)_NOT_FOUND(?:_AFTER_RELOAD)?\b|\bvault(?:'s)?(?: fill)? (?:cannot|can't|could not|couldn't|does not|doesn't|did not|didn't|fails? to|failed to) (?:fill|type)|\bvault fill (?:fails|failed)|vault\S* δεν (?:γεμίζ|συμπληρών|μπορεί να (?:γεμίσ|συμπληρώσ))/i;
+/**
+ * Lessons 1029-vault-origin, 1030-vault-not-login, 1102-card-before-signin, vault-username-anonymous-field (27/11 NBG Business: Jack's card
+ * "the Vault cannot fill NBG's username box" was released to the operator; he wanted the Vault fixed): a sign-in the Vault holds but cannot
+ * fill is Space's code to fix, never the operator's hands. `ruleDiffers` lets it through.
+ */
+export function vaultFillGapRefusal(texts: readonly string[]): string | null {
+  const gap = texts.map((text) => VAULT_FILL_GAP.exec(text)?.[0]).find(Boolean);
+  if (!gap) return null;
+  return `"${gap}" is a Vault fill gap: Space's code to fix, never the operator's hands (operator 29/10 «Μην με ρωτας εμενα να περασω τους κωδικους», 27/11 NBG Business). `
+    + "Brief a pane with the fix in apps/api/src/vault/sealed-fill.ts (the role it missed and the page's field markup), then the agent fills again. "
+    + "Nothing was shown. Only if the operator must act despite it, raise the item again with ruleDiffers saying why.";
+}
 /**
  * Operator nous_msg:fcea1c9e1c704703949edd86 (7/11 Oracle: a sign-in card while the Vault held the password the agent never tried and read
  * back): a sign-in or password card for a site whose login the Vault holds waits for the agent's fill and masked readout (signin-readback.ts).
@@ -1213,9 +1256,9 @@ const openRequestCloseItem = z.object({
   outcome: z.enum(["SELF", "HELPER", "OPERATOR", "DROPPED"]).describe("How it really ended; DROPPED: no longer wanted or not a request. "
     + "SELF or HELPER is refused unless note or verified names something checkable: a ticket q-…, a commit, an id like artifact:… or nous_msg:…, a URL or route, or a screenshot"),
   note: z.string().trim().min(1).max(600).describe(`Why it closes; with done, the Done summary in the operator's language; DROPPED: why it is no longer wanted (${CLOSE_EVIDENCE_MIN}+ characters)`),
-  done: z.boolean().optional().describe("SELF or HELPER only: also record it in Done"),
-  where: requestDoneArgsSchema.shape.where.optional().describe("With done: where it is live"),
-  verified: requestDoneArgsSchema.shape.verified.describe(`Required with done: what you checked in this turn on the real surface the operator uses and what it showed (${CLOSE_EVIDENCE_MIN}+ characters)`)
+  done: z.boolean().optional().describe("SELF or HELPER only: also record it in Done (a SELF or HELPER close always does)"),
+  where: requestDoneArgsSchema.shape.where.optional().describe("Required with SELF, HELPER or done: where it is live"),
+  verified: requestDoneArgsSchema.shape.verified.describe(`Required with SELF, HELPER or done: what you checked in this turn on the real surface the operator uses and what it showed (${CLOSE_EVIDENCE_MIN}+ characters)`)
 });
 /** The close items of a JSON Lines file, each validated like a close item (note cut to 600); a bad or repeated line is an error. */
 export function closeFileItems(text: string): { items: Array<z.infer<typeof openRequestCloseItem>>; errors: string[] } {
@@ -1286,7 +1329,9 @@ const schemas = {
   space_stop_pane: z.object({ room: roomRef, pane: paneRef }),
   space_restart_pane: z.object({ room: roomRef, panes: z.array(paneRef).min(1) }),
   space_close_pane: z.object({ room: roomRef, panes: z.array(paneRef).min(1),
-    force: z.boolean().optional().describe("Close although the pane still works or has open work. Never past a pane not finished with its memory save verified (operator 26/11). A pane an unanswered needs-you request or browser handoff waits on stays open regardless: close its card first with space_resolve_notification and a `reason` when it waits on no one now.") }),
+    moved: z.string().trim().min(1).max(300).optional().describe("Where this pane's work moved (the pane, plan or request now carrying it), when its provider has no room so it cannot run \"save to memory\": Space saves its newest report to Space Memory and closes it without its own save turn. Panes whose pool has room are not affected."),
+    operatorMessageId: nousMessageIdSchema.optional().describe("With force: the operator's own message ordering this close, when it came in an earlier turn (space_conversation)."),
+    force: z.boolean().optional().describe("Close although the pane still works or has open work. Past a pane not finished with its memory save verified, or one waiting for quota, only on the operator's own close order: this turn's, or the message operatorMessageId names (operator 26/11, 28/11); a pane whose provider has no room needs no save. A pane an unanswered needs-you request or browser handoff waits on stays open regardless: close its card first with space_resolve_notification and a `reason` when it waits on no one now.") }),
   space_create_room: z.object({ name: z.string().trim().min(1).max(120).describe("The new room's name.") }),
   space_rename_room: z.object({ room: roomRef, name: z.string().trim().min(1).max(120).describe("The room's new name.") }),
   space_room_status: z.object({ room: roomRef }),
@@ -1340,7 +1385,8 @@ const schemas = {
     // 20/11 (plan clipboard:VypZ4sl7NR04): every plan was on Opus, so its non-code panes (sales, applications, SEO) spent ~40% of the coding panes' tokens.
     minimumModel: z.string().trim().min(1).max(160).optional().describe("The plan's new minimum model, when its work is lighter or heavier than set: claude-opus-5-5 (or gemini-4-neon when Claude models are unavailable) for code, security or architecture work; claude-sonnet-5-5 with minimumReasoning high for research, writing, applications, sales, marketing, admin and browser work."),
     minimumReasoning: z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]).optional(),
-    reason: waitReason.describe("With a waitsOn: what really holds it (kept in the record). Needed for a wait over an hour whose words name no fixed date, reset, ticket, ETA or the operator, and for any non-operator wait on a plan with open steps no pane works on now (say why each open step needs it).")
+    reason: waitReason.describe("With a waitsOn: what really holds it (kept in the record). Needed for a wait over an hour whose words name no fixed date, reset, ticket, ETA or the operator, and for any non-operator wait on a plan with open steps no pane works on now (say why each open step needs it)."),
+    order: z.string().trim().min(1).optional().describe("Only for a wait or park that names a freeze (\"the 2/12 freeze\", code/release freeze): the id of the operator's own message that set it (space_conversation).")
   }),
   space_plan_create: z.object({
     title: z.string().trim().min(1).max(160), text: z.string().trim().min(1).max(100_000).describe("The whole plan: goal, context, constraints."),
@@ -1615,6 +1661,7 @@ const schemas = {
   space_ops_services: nousOpsServicesArgsSchema,
   space_ops_usage: nousOpsUsageArgsSchema,
   space_ops_gateway: nousOpsGatewayArgsSchema,
+  space_ops_nous_cloud: nousOpsNousCloudArgsSchema,
   space_nous_away: nousAwayArgsSchema,
   space_vault_fill: nousVaultFillArgsSchema,
   space_vault_list: nousVaultListArgsSchema,
@@ -1677,7 +1724,7 @@ const descriptions: Record<NousToolName, string> = {
   space_open_panes: "Open new panes in a room (for a plan that has no agent). At most 8 at once.",
   space_stop_pane: "Interrupt a pane's running turn.",
   space_restart_pane: "Restart panes (close and reopen in place), e.g. a stuck CLI.",
-  space_close_pane: "Close a finished pane once Space's Standing orders show its memory save verified (or you read the save in its reports); a closed pane can be reopened with its history. An OPERATOR_TEST pane too, once the task it was given is done, unless the operator turned that off. A pane stopped on its provider's usage limit is not finished: it stays open until its reset.",
+  space_close_pane: "Close a finished pane once Space's Standing orders show its memory save verified (Space checks it again when you close: a Space Memory save naming the pane, a report with its memory id, or its finished save turn); a closed pane can be reopened with its history. An OPERATOR_TEST pane too, once the task it was given is done, unless the operator turned that off. A pane stopped on its provider's usage limit is not finished: it stays open until its reset, unless its work moved to another pane (`moved`).",
   space_create_room: "Create a new room (e.g. for a copilot), then open panes in it with space_open_panes.",
   space_rename_room: "Rename one of the operator's rooms.",
   space_room_status: "Read one room in depth: every pane with its live activity, model and task, active plans, the Room Agent's recent monitor events, each pane's worktree, changed files and merge-queue ticket, overlaps and release trains.",
@@ -1830,6 +1877,7 @@ const descriptions: Record<NousToolName, string> = {
     + "verified (required for stable or dev): what you checked on the surface the operator uses (the stable route he reads, the installed app with his data, the page on his device size) and what it showed; the card shows it as \"Checked:\".",
   space_notify_operator: "What only the operator's hands can do (sign-in, password, CAPTCHA, a click bot protection blocks, a document or an answer only they have): ONE card per pane in their notifications, and a click takes them to the pane. For a plan's ask with no pane, give `plan` (clipboard:<id>) and no pane: one card per plan, in the plan's room. Give the whole list for that pane each time (English, up to 12 items); it replaces the card's list and alerts them once. Ask: give an item a question, its options and your recommendation (the card asks the newest item with a `target`, else the first that asks); their answer comes back as their message about the pane. Give the item its `target` (thread:<account>:<threadId> for a mail, url:https://… for a page): Go to pane opens exactly that, not the pane's default view; on a browser pane a hands item needs it (url: or tab:). An item asking for a value only the operator has (a phone number, a name, an amount) takes `answerKind: \"text\"`: the card shows a text field and Send, and what they type comes back as their answer; a question without options (not sign-in or install work) is asked so by default. Any other item without options is asked 'Go now' (recommended), 'Failed' or 'Need links/steps'. A one-time code (2FA, OTP, SMS) is an item with `code: true`: the operator types it on the card and Space types it into the pane, keeping it nowhere. Never list these in your answer; say only how many panes wait. Decisions still go through space_ask_operator.",
   space_nous_followup: "Remind yourself later instead of waiting or asking a pane to ping you: op add with a note and one trigger (at or inMinutes; ticket: a merge-queue ticket id, fires when it ends; room and pane: fires when that pane finishes its turn), op list, op cancel with the follow-up id. It comes back as an inbox line.",
+  space_ops_nous_cloud: "Read only: the Nous Cloud installs (oll4.com): user, status (running, asleep, revoked), sandbox uptime, version, database, disk and memory, app version and device, last seen, the models that answered (free or charged), requests, errors and the latest error text, sign-ins, and tokens, model cost and sandbox cost per day.",
   space_ops_services: "Read only: the server's service health checks (warnings, critical), API request errors of the last 5 minutes, and failed or stopped services. Restarts and service control stay with the operator.",
   space_ops_usage: "Read only: token usage per model with its API value (range 1h, 24h, 7d, 30d; default 24h) and Space Gateway's state, accounts, keys and last 24 hours.",
   space_ops_gateway: "Read only: Space Gateway detail: accounts (status, usage windows), keys (names, models, limits; never a key), the newest request metadata, "
@@ -1854,7 +1902,7 @@ export interface NousToolDefinition { name: string; description: string; inputSc
  * repository and its merge queue and release trains, Space Gateway (web search too), the Research Council (its members need
  * Space Gateway or stable's worker), the root-owned Vault broker (kept keys need none), the host's CLI update-all (sudo).
  */
-export const NOUS_PUBLIC_HIDDEN: ReadonlySet<string> = new Set(["space_git", "space_queue_status", "space_release", "space_ops_gateway", "space_vault_fill", "space_vault_list", "space_vault_save", "space_browser_set_route", "space_cli_update", "space_transfer",
+export const NOUS_PUBLIC_HIDDEN: ReadonlySet<string> = new Set(["space_git", "space_queue_status", "space_release", "space_ops_gateway", "space_ops_nous_cloud", "space_vault_fill", "space_vault_list", "space_vault_save", "space_browser_set_route", "space_cli_update", "space_transfer",
   "space_codex_reset_credits", "space_web_search", "space_council_models", "space_council_start", "space_council_runs", "space_council_run", "space_council_answer", "space_council_approve", "space_council_clipboard_plan"]);
 
 export function nousToolDefinitions(options: { copilots: boolean; publicInstall?: boolean }): NousToolDefinition[] {
@@ -1978,6 +2026,7 @@ export function nousToolLabel(name: string, args: Record<string, unknown>): stri
     case "space_notify_operator": return `Notifying the operator about ${text(args.pane) || text(args.plan) || text(args.room)}`;
     case "space_nous_followup": return args.op === "add" ? "Setting a follow-up" : args.op === "cancel" ? "Cancelling a follow-up" : "Reading my follow-ups";
     case "space_ops_services": return "Checking the services";
+    case "space_ops_nous_cloud": return "Reading Nous Cloud telemetry";
     case "space_ops_usage": return "Checking token usage and Space Gateway";
     case "space_ops_gateway": return `Reading Space Gateway's ${text(args.view)}`;
     case "space_vault_fill": return `Asking the Vault to fill ${text(args.pane)}${at}`;
@@ -2239,6 +2288,17 @@ export function createNousTools(deps: NousToolDeps) {
    * answered): R53's check for cards. An operator rule or earlier answer (tag operator-rule) holding the item's question decides it; a fact question (no
    * hands work) that a Space Memory or copilot memory entry holds is read, not asked. `ruleDiffers` on the item lets it through and shows on the card.
    */
+  /** Operator 27/11 (nous_msg:766ca4f6, the ID.me card waited its hour after Nous's card on it was refused): a refused card frees the held
+   *  questions its items name to Needs you now. An approval held under "May send" stays Nous's. */
+  async function releaseNamedHeld(owner: string, items: Array<{ ref?: string }>): Promise<string[]> {
+    const released: string[] = [];
+    for (const ref of new Set(items.map((item) => item.ref).filter((ref): ref is string => Boolean(ref?.startsWith("notification:"))))) {
+      const held = await deps.notifications.get?.(owner, ref).catch(() => null);
+      if (!held?.payload.heldForNous || heldUnderAllowance(held)) continue;
+      if (await deps.notifications.releaseHeldForNous?.(owner, ref).catch(() => null)) released.push(ref);
+    }
+    return released;
+  }
   async function heldAnswer(owner: string, paneId: string | null, items: Array<{ text: string; question?: string; options?: string[]; recommended?: string; code?: true; ruleDiffers?: string; triedStored?: string;
     ref?: string; target?: string; steps?: string[] }>, plan?: string):
     Promise<NousToolOutcome | null> {
@@ -2252,6 +2312,11 @@ export function createNousTools(deps: NousToolDeps) {
       ?? noQuestionRefusal({ ...said, texts: [...said.texts, paneAsk!.body, (paneAsk!.payload.ask as { question?: string } | undefined)?.question ?? ""] }));
     if (refused) return hold("The pane's held card stays held", `Card ${paneAsk!.id} ("${clipText(paneAsk!.title, 80)}") from the pane's agent stays held: `
       + refused.replace(/^Not raised: /, "").replace(/ Nothing raised\.$/, " Nothing was shown."));
+    const releasing = Boolean(paneAsk?.payload.heldForNous);
+    const gap = !items.some((item) => item.ruleDiffers) && vaultFillGapRefusal([...items.flatMap((item) => [item.text, item.question ?? ""]),
+      ...releasing ? [paneAsk!.title, paneAsk!.body, (paneAsk!.payload.ask as { question?: string } | undefined)?.question ?? ""] : []]);
+    if (gap) return hold(releasing ? "The pane's held card stays held" : "The Vault fill is Space's to fix",
+      releasing ? `Card ${paneAsk!.id} ("${clipText(paneAsk!.title, 80)}") from the pane's agent stays held: ${gap}` : gap);
     const released = paneAsk && deps.paneNotices?.release ? await deps.paneNotices.release(owner, paneAsk, items).catch(() => null) : null;
     if (released) return { ok: true, display: "Showed the pane's held card to the operator", result: `Card ${released.id} ("${clipText(released.title, 80)}") from the pane's agent `
       + "was held for you; it shows in Needs you now with your note first. Their answer goes to that pane and reaches you; nothing else was raised." };
@@ -2273,8 +2338,10 @@ export function createNousTools(deps: NousToolDeps) {
       if (nightSlot) return hold("A daytime slot is offered", nightSlot);
       const stems = cardStems(asked);
       // Their earlier answer to the same question, or (R53's match) a rule naming exactly one of the item's options.
-      const answer = rules.find((entry) => answersSameQuestion(stems, entry));
-      const named = answer ? null : ruleRecommendation({ question: asked, options: item.options }, rules);
+      // Operator 27/11 (nous_msg:766ca4f6, the ID.me card refused by a rule that folds identity mail into a list): no rule answers for the operator's hands.
+      const hands = needsOperatorHandsText(words);
+      const answer = hands ? undefined : rules.find((entry) => answersSameQuestion(stems, entry));
+      const named = answer || hands ? null : ruleRecommendation({ question: asked, options: item.options }, rules);
       const rule = answer ?? (named ? rules.find((entry) => entry.id === named.rule.id) : undefined);
       if (rule) return hold("Your rule already answers this", `The operator's ${answer ? "earlier answer" : "rule"} [${rule.id}] "${clipText(rule.title, 200)}" already decides `
         + `"${clipText(asked, 120)}"${named ? `: "${named.option}"` : ""}. Act on it now (space_memory_recall reads it); nothing was raised. Only if this case really differs, `
@@ -3147,8 +3214,10 @@ export function createNousTools(deps: NousToolDeps) {
     const text = `${item.title}\n${item.body ?? ""}`;
     // 21/11 (goal 5acd171d: 269 of 324 refusals, one re-woken turn a minute per card): a copilot's NEEDS_USER still held for Nous was never
     // shown to the operator, so nothing waits on them yet; operator 2/11 made it Nous's to close. A code ask and an agent's needs-you stay guarded.
+    // 27/11 (notification:f04ea31b, Crosschq ID.me, closed by Nous while held): an identity check or the operator's own interview or test stays guarded too.
     if (item.kind === "NEEDS_USER" && COPILOT_QUESTION_SOURCES.includes(item.source) && heldForNous(item)
-      && !(item.payload.ask as { code?: unknown } | undefined)?.code && !codeAsk([text])) return null;
+      && !(item.payload.ask as { code?: unknown } | undefined)?.code && !codeAsk([text])
+      && !needsOperatorHandsText(`${text}\n${(item.payload.ask as { question?: unknown } | undefined)?.question ?? ""}`)) return null;
     if (paneId && item.roomId && deps.codePageOpen && ((item.payload.ask as { code?: unknown } | undefined)?.code || codeAsk([text]))
       && (await deps.codePageOpen(owner, { id: paneId, roomId: item.roomId }, item.link?.target ?? undefined, text).catch(() => true)) === false) return null;
     if (!reportId) {
@@ -3201,10 +3270,21 @@ export function createNousTools(deps: NousToolDeps) {
    * Operator 21/11 23:27 BKK nous_msg:63896af5 (Dino/Finn, a Gemini CLI they had opened 75 s before, closed at "Needs input"): a pane the operator
    * opened or prompted (operatorPaneReason) closes only on the operator's own close order in this turn.
    */
+  /** The operator's own close order in this turn («κλείσε», "close it"), never their "stop closing" («σταμάτα να μου κλείνεις»). */
+  function closeOrder(message: string): boolean {
+    return /\bclose\b|κλε[ιί]σ(?:ε|τε)/i.test(message) && !/\b(?:don'?t|do not|never|stop)\b|μην|σταμ[αά]τα|ποτ[εέ]/i.test(message);
+  }
+  function operatorOrderedClose(ctx: NousToolContext): boolean {
+    return closeOrder(ctx.turn?.reason === "OPERATOR" && ctx.turn.operatorMessage?.person ? ctx.turn.operatorMessage.content : "");
+  }
+  /** This turn's operator close order, or (28/11 nous_msg:50ad2dd4, ordered in an earlier turn) the operator message the call names as its order. */
+  async function operatorOrderedCloseBy(ctx: NousToolContext, messageId: unknown): Promise<boolean> {
+    if (operatorOrderedClose(ctx)) return true;
+    const source = typeof messageId === "string" && messageId ? await memorySource(messageId, ctx).catch(() => null) : null;
+    return closeOrder(source?.content ?? "");
+  }
   function operatorPanesGuard(panes: Pane[], ctx: NousToolContext): NousToolOutcome | null {
-    const message = ctx.turn?.reason === "OPERATOR" && ctx.turn.operatorMessage?.person ? ctx.turn.operatorMessage.content : "";
-    // Their close order («κλείσε», "close it"), never their "stop closing" («σταμάτα να μου κλείνεις»).
-    if (/\bclose\b|κλε[ιί]σ(?:ε|τε)/i.test(message) && !/\b(?:don'?t|do not|never|stop)\b|μην|σταμ[αά]τα|ποτ[εέ]/i.test(message)) return null;
+    if (operatorOrderedClose(ctx)) return null;
     const theirs = panes.flatMap((pane) => { const why = operatorPaneReason(pane); return why ? [`${paneLabel(pane)} (${why})`] : []; });
     return theirs.length ? hold("The operator's pane stays open", `${theirs.join("; ")}: the operator works there. Only the operator closes it, or asks you to `
       + "in their own message; do not close it, list it as finished or ask it to save. Nothing was closed.") : null;
@@ -3236,8 +3316,9 @@ export function createNousTools(deps: NousToolDeps) {
    * Claude quota as if they had finished. A pane waiting on its provider's quota stays open until it reports done or failed; force does not
    * pass it. Null: none waits.
    */
-  async function quotaGuard(owner: string, roomId: string, paneIds: string[]): Promise<NousToolOutcome | null> {
-    if (!deps.quotaWaits || !paneIds.length) return null;
+  async function quotaGuard(owner: string, roomId: string, paneIds: string[], operatorForced = false): Promise<NousToolOutcome | null> {
+    // Operator 28/11 00:52 BKK «do not wait for it any more, give their work to Claude and close them»: their own close order with force passes.
+    if (!deps.quotaWaits || !paneIds.length || operatorForced) return null;
     const waits = [];
     // nous_msg:f0d48b42: protected only until Space handed its task to a provider with room (quota-handover.ts); then it closes.
     for (const wait of (await deps.quotaWaits(roomId).catch(() => [])).filter((entry) => paneIds.includes(entry.paneId) && !entry.handedOver && !longQuotaWait(entry.resetsAt))) {
@@ -3247,7 +3328,7 @@ export function createNousTools(deps: NousToolDeps) {
     if (!waits.length) return null;
     return hold(`Left ${waits.length === 1 ? "a pane" : "panes"} waiting for its provider's quota open`, `${waits.map((wait) => `${wait.label} waits for its provider's reset at `
       + `${wait.resetsAt ? `${wait.resetsAt.slice(0, 16).replace("T", " ")} UTC` : "a time its CLI did not name"}`).join("; ")}: its last turn stopped on the usage limit with its work unfinished, `
-      + "so it is not finished. Leave it open and send it \"continue\" after the reset (or move its work to a pane with quota); it closes once it reports done. force does not pass this.");
+      + "so it is not finished. Leave it open and send it \"continue\" after the reset (or move its work to a pane with quota); it closes once it reports done. force passes this only on the operator's own close order (this turn's, or with its operatorMessageId).");
   }
 
   /**
@@ -3295,8 +3376,18 @@ export function createNousTools(deps: NousToolDeps) {
     if (!deps.paneLastWorkReport || !panes.length) return null;
     // A pane whose task Space handed to a pane with quota (quota-handover.ts) has no work left here.
     const moved = new Set((await deps.quotaWaits?.(roomId).catch(() => []) ?? []).filter((wait) => wait.handedOver).map((wait) => wait.paneId));
-    const open = (await Promise.all(panes.filter((pane) => !moved.has(pane.id)).map(async (pane) => ({ pane, last: await deps.paneLastWorkReport!(owner, pane.id).catch(() => null) }))))
-      .flatMap(({ pane, last }) => last && last.status !== "DONE" && last.status !== "FAILED" ? [{ pane, last }] : []);
+    // Operator 28/11 (nous_msg:d2faedf0; Work/Max, Jack, Andy idle for hours, save and close both refused): a progress or started report
+    // that Space's own turn end followed STALE_PROGRESS_MS ago with nothing since ended its turn (scheduled runs report their result as progress).
+    // Plans, tasks and questions still hold the pane through Standing orders' closeouts; needs_* and blocked stay open work.
+    const stale = async (pane: Pane, last: { status: string; at: string }) => {
+      if (last.status !== "PROGRESS" && last.status !== "STARTED") return false;
+      const newest = await deps.paneLastReport?.(owner, pane.id).catch(() => null);
+      return newest?.status === "TURN_END" && newest.source === "AUTO" && newest.at >= last.at && Date.now() - Date.parse(newest.at) >= STALE_PROGRESS_MS;
+    };
+    const open = (await Promise.all(panes.filter((pane) => !moved.has(pane.id)).map(async (pane) => {
+      const last = await deps.paneLastWorkReport!(owner, pane.id).catch(() => null);
+      return { pane, last: last && last.status !== "DONE" && last.status !== "FAILED" && !await stale(pane, last) ? last : null };
+    }))).flatMap(({ pane, last }) => last ? [{ pane, last }] : []);
     if (!open.length) return null;
     return hold(`${open.map(({ pane }) => paneLabel(pane)).join(", ")} ${open.length === 1 ? "has" : "have"} open work`,
       `${open.map(({ pane, last }) => `${paneLabel(pane)} last reported ${last.status.toLowerCase()} at ${last.at.slice(0, 16).replace("T", " ")} UTC ("${clipText(last.summary, 160)}")`).join("; ")}, `
@@ -3339,7 +3430,8 @@ export function createNousTools(deps: NousToolDeps) {
               return hold(`${paneLabel(pane)} is not ready to close`,
                 `${paneLabel(pane)} is ${entry.state}: not finished or ready to close. Only send "save to memory" when a pane is finished and ready to close (operator 25/11).`);
             }
-            if (entry.skip !== null) {
+            // 27/11: standing orders send "save to memory" to fresh and board-check panes (Nous re-checked the board's wait); every other skip keeps the pane.
+            if (entry.skip !== null && entry.skip !== "fresh" && entry.skip !== "board-check") {
               return hold(`${paneLabel(pane)} is not ready to close`,
                 `${paneLabel(pane)} is kept open (${entry.skip}): not ready to close. Only send "save to memory" when a pane is finished and ready to close (operator 25/11).`);
             }
@@ -3354,17 +3446,29 @@ export function createNousTools(deps: NousToolDeps) {
    * Operator 26/11 (nous_msg:8bd8bc39, f4eb77ff: 19 panes closed in 35 s, one with a verified save): a pane closes only once Standing orders
    * read it finished with its memory save verified, or with nothing to save (`roomCloseouts` closable). `force` never passes this; each refused pane is named.
    */
-  async function closeReadyGuard(owner: string, roomId: string, panes: Pane[]): Promise<NousToolOutcome | null> {
+  async function closeReadyGuard(owner: string, roomId: string, panes: Pane[], operatorForced = false): Promise<NousToolOutcome | null> {
+    // Operator 28/11 00:52 BKK (Antigravity panes with no quota refused even with force): their own close order with force passes,
+    // and a pane whose provider has no room cannot run "save to memory", so it is not held for one.
+    if (operatorForced) return null;
+    const rooms = deps.providerRooms && panes.length ? await deps.providerRooms(owner).catch(() => [] as NousProviderRoom[]) : [];
+    const stuck = new Set([...noRoomPools(rooms), ...noBalancePools(rooms)].map((room) => room.key));
+    const pools = stuck.size ? await livePools(panes) : [];
+    panes = panes.filter((_, index) => !stuck.has(pools[index] ?? "\u0000"));
     if (!deps.closeouts?.roomCloseouts || !panes.length) return null;
     const closeouts = await deps.closeouts.roomCloseouts(owner, roomId).catch(() => null);
     if (!closeouts) return hold("Could not read whether the panes finished", "Space could not read the panes' finished and save state, so nothing was closed. Try again later.");
     const refused = panes.flatMap((pane) => {
       const entry = closeouts.find((c) => c.pane.id === pane.id);
-      return entry && !entry.closable ? [`${paneLabel(pane)}: ${entry.skip ? `kept open (${entry.skip})` : entry.state === "done" || entry.state === "idle" ? entry.save : entry.state}`] : [];
+      // Plan clipboard:u78xLyqRp6kD: fresh and board-check panes close once saved, so their refusal names the save, not the skip.
+      const kept = entry?.skip && entry.skip !== "fresh" && entry.skip !== "board-check" ? entry.skip : null;
+      const pass = kept === "keep-open" ? ": your space_pane_checked holds it until its next check; a verified save with no prompt since, or an OK_WORKING/NEEDS_ACTION verdict, clears it"
+        : kept === "unknown" ? ": Space could not read its browser or when it finished; try again later" : "";
+      return entry && !entry.closable ? [`${paneLabel(pane)}: ${kept ? `kept open (${kept}${pass})` : entry.state === "done" || entry.state === "idle" || entry.skip ? entry.save : entry.state}`] : [];
     });
     if (!refused.length) return null;
     return hold(`${refused.length} of ${panes.length} ${panes.length === 1 ? "pane is" : "panes are"} not ready to close`, `Not finished with a verified memory save: ${refused.join("; ")}. `
-      + "Nothing was closed. Check each pane one by one: when it is finished send it \"save to memory\", and close it alone once Space shows the save verified. force does not pass this (operator 26/11).");
+      + "Nothing was closed. Check each pane one by one: when it is finished send it \"save to memory\", and close it alone once Space shows the save verified; "
+      + "a pane that cannot answer it: save its state yourself (space_memory_save naming its pane id or \"Room/Pane\"), then close it. force passes this only on the operator's own close order (this turn's, or with its operatorMessageId) (operator 26/11, 28/11).");
   }
 
   /** The panes a Space Control action names: target ids and names, and a pane-scoped browser operation's id. */
@@ -3861,9 +3965,11 @@ export function createNousTools(deps: NousToolDeps) {
       // Goal 5acd171d (23/11, 17 h of pane rows): 70 work sends reached idle Claude panes still holding a finished piece's 45-120k context,
       // re-read on each of its requests (~$25/day). Work for a pane whose save is verified, nothing typed since, starts a fresh session, as the
       // new pane the close-out would have given it; its memory holds the rest (scheduled tasks and the copilots /clear the same way).
-      if (!saving && !ctx.answering && deps.pressKeys && deps.closeouts?.savedUnprompted) {
-        const saved = await deps.closeouts.savedUnprompted(ctx.owner, panes.filter((pane) => pane.terminalRuntimeId === "cli:claude").map((pane) => pane.id)).catch(() => new Set<string>());
-        for (const pane of panes.filter((entry) => saved.has(entry.id))) {
+      // Goal 5acd171d (26/11: sweep panes ran sweep after sweep in one Gemini chat, 198M tokens, 562 requests over 150k, up to 277k): a sweep's text is
+      // whole and a new sweep ends the pane's last one (standing-orders.ts), so Space's sweep pane starts each hand-out fresh too.
+      if (!saving && !ctx.answering && deps.pressKeys) {
+        const saved = deps.closeouts?.savedUnprompted ? await deps.closeouts.savedUnprompted(ctx.owner, panes.filter((pane) => pane.terminalRuntimeId === "cli:claude").map((pane) => pane.id)).catch(() => new Set<string>()) : new Set<string>();
+        for (const pane of panes.filter((entry) => saved.has(entry.id) || (sweepPane(entry) && sweepHandout(args.text)))) {
           const observed = await deps.inspectPane(pane).catch(() => null);
           if (observed?.state !== "IDLE" || !observed.sessionId || !roomComposerEmpty(observed.text ?? "")) continue;
           await deps.pressKeys(observed.sessionId, "/clear", ctx.traceId);
@@ -4082,7 +4188,8 @@ export function createNousTools(deps: NousToolDeps) {
           return { ...look, display: `Looked at ${label}: no CLI, nothing answered`, result: `${label} is a ${kind}: there is no prompt to answer and nothing was typed. `
             + `Its page now (what only the operator can do there goes to them with space_notify_operator):\n${look.result}` };
         }
-        return fail(`${label} has no CLI`, `${label} is a ${kind}: there is no prompt to answer. `
+        // Daily Nous errors 23/11 19:46Z: the answer names the tools that reach the pane; a refusal, not a failure.
+        return hold(`${label} has no CLI`, `${label} is a ${kind}: there is no prompt to answer. `
           + (found.pane.mode === "BROWSER" ? "See its page with space_look and its tabs with space_browser_tabs; " : "Read it with space_read_pane; ")
           + "what only the operator can do there goes to them with space_focus_pane.");
       }
@@ -4140,7 +4247,8 @@ export function createNousTools(deps: NousToolDeps) {
       if (!panes) return capNote(ctx.owner, room, first, null, asking);
       const needed = (await openPanes(room.id)).length + asking - cap;
       const asked = new Set((await deps.paneNeeds?.(ctx.owner).catch(() => []) ?? []).map((item) => item.paneId));
-      const chosen = panes.filter((entry) => entry.closable && !asked.has(entry.pane.id)).slice(0, Math.max(0, needed));
+      // A saved pane closable past its own question or keep-open check (28/11) is Nous's call to close, not this automatic one.
+      const chosen = panes.filter((entry) => entry.closable && (entry.skip === null || entry.skip === "fresh" || entry.skip === "board-check") && !asked.has(entry.pane.id)).slice(0, Math.max(0, needed));
       const refused = (outcome: NousToolOutcome) => capNote(ctx.owner, room, { ...outcome, result: `${outcome.result}\nNot enough finished panes with a verified save to close `
         + `(${chosen.length} of ${needed}). Do not repeat this open: close one of the idle panes below (send "save to memory" first), or open the panes in a room with space.` }, panes, asking);
       if (needed <= 0 || chosen.length < needed) return refused(first);
@@ -4285,9 +4393,25 @@ export function createNousTools(deps: NousToolDeps) {
       }
       const due = await dueTasks(ctx.owner, ids);
       if (due.length) return await closeAfterTask(ctx.owner, panes, due) ?? (await taskGuard(ctx.owner, ids))!;
-      const waiting = await quotaGuard(ctx.owner, room.id, ids) ?? await needsYouGuard(ctx.owner, ids) ?? (args.force ? null : await workingGuard(panes, "close") ?? await openWorkGuard(ctx.owner, room.id, panes))
-        ?? await closeReadyGuard(ctx.owner, room.id, panes);
+      // Operator 28/11 (Work/Emma, Work/Nik, Copilots/Iris: Gemini with no room refuses "save to memory" and every prompt, so they never closed):
+      // a pane whose pool has no room and whose work moved closes on its newest report, saved here, past its quota and open-work holds.
+      const pools = args.moved ? await livePools(panes) : [];
+      const stranded = new Set((await Promise.all(panes.map(async (pane, index) => args.moved && await noRoomGuard(ctx.owner, [pools[index] ?? null], "") ? pane.id : null))).filter((id): id is string => id !== null));
+      const kept = panes.filter((pane) => !stranded.has(pane.id));
+      const ordered = args.force === true && await operatorOrderedCloseBy(ctx, args.operatorMessageId);
+      const waiting = await quotaGuard(ctx.owner, room.id, kept.map((pane) => pane.id), ordered) ?? await needsYouGuard(ctx.owner, ids) ?? (args.force ? null : await workingGuard(panes, "close") ?? await openWorkGuard(ctx.owner, room.id, kept))
+        ?? await closeReadyGuard(ctx.owner, room.id, kept, ordered);
       if (waiting) return waiting;
+      for (const pane of panes.filter((entry) => stranded.has(entry.id))) {
+        if (!deps.memory) return hold(`${paneLabel(pane)} was not closed`, "Space Memory is unavailable, so its newest report could not be saved; nothing was closed.");
+        const last = await deps.paneLastWorkReport?.(ctx.owner, pane.id).catch(() => null) ?? null;
+        const body = `${paneLabel(pane)} (${pane.id}) closed with no room on its provider; its work moved to: ${args.moved}\n`
+          + (last ? `Newest report (${last.status}, ${last.at}): ${last.summary}` : "It sent no report.");
+        if (nousMemoryHasMetadata(body)) return hold(`${paneLabel(pane)} was not closed`, "Its newest report carries embedded memory metadata, so Space did not save it; nothing was closed.");
+        const saved = await deps.memory.save({ scope: "ROOM", roomId: room.id, title: `${paneLabel(pane)}: closed, work moved (no room)`.slice(0, 160), body, provenance: `nous:pane-close:${pane.id}` },
+          `nous:${ctx.turnId}:${ctx.callId}`.slice(0, 128)).catch(() => null);
+        if (!saved) return fail(`${paneLabel(pane)} was not closed`, "Saving its newest report to Space Memory failed; nothing was closed. Try again later.");
+      }
       // The operator asked Nous to close finished panes (2026-10-17); closing keeps the pane's history for a reopen.
       const closed = fromRoom(await deps.roomTool("close_pane", { panes: ids }, roomCtx(ctx, room.id, true)));
       // Daily Nous errors 13/11 17:31 (Cody's Marketing Copilot, a dev.to post due 19/11): the 9/11 close guard is a refusal, with what to do.
@@ -4457,10 +4581,13 @@ export function createNousTools(deps: NousToolDeps) {
       // Queue item 38: a close through Space Control gets space_close_pane's needs-you guard; `force` is Nous's own, never Space Control's.
       const closes = (args.actions as Array<Record<string, unknown>>).filter((action) => action.kind === "pane" && action.operation === "close");
       const paneIdsOf = (actions: Array<Record<string, unknown>>) => actions.flatMap((action) => (action.target as { paneIds?: string[] } | undefined)?.paneIds ?? []);
-      const waitingOnClose = operatorPanesGuard(roomPanes.filter((pane) => paneIdsOf(closes).includes(pane.id)), ctx) ?? await taskGuard(ctx.owner, paneIdsOf(closes)) ?? await quotaGuard(ctx.owner, room.id, paneIdsOf(closes)) ?? await needsYouGuard(ctx.owner, paneIdsOf(closes))
+      // Operator 28/11: their own close order in this turn lets a forced close pass the quota and save holds.
+      const ordered = await Promise.all(closes.map((action) => action.force === true && operatorOrderedCloseBy(ctx, action.operatorMessageId)));
+      const guarded = paneIdsOf(closes.filter((_, index) => !ordered[index]));
+      const waitingOnClose = operatorPanesGuard(roomPanes.filter((pane) => paneIdsOf(closes).includes(pane.id)), ctx) ?? await taskGuard(ctx.owner, paneIdsOf(closes)) ?? await quotaGuard(ctx.owner, room.id, guarded) ?? await needsYouGuard(ctx.owner, paneIdsOf(closes))
         ?? await workingGuard(roomPanes.filter((pane) => paneIdsOf(closes.filter((action) => action.force !== true)).includes(pane.id)), "close")
         ?? await openWorkGuard(ctx.owner, room.id, roomPanes.filter((pane) => paneIdsOf(closes.filter((action) => action.force !== true)).includes(pane.id)))
-        ?? await closeReadyGuard(ctx.owner, room.id, roomPanes.filter((pane) => paneIdsOf(closes).includes(pane.id)));
+        ?? await closeReadyGuard(ctx.owner, room.id, roomPanes.filter((pane) => guarded.includes(pane.id)));
       if (waitingOnClose) return waitingOnClose;
       // nous_msg:f0d48b42: a prompt, a model or a new pane onto a pool with no room is refused as space_send_to_pane's, set_pane_model's and open_panes'.
       const pooled = await Promise.all((args.actions as Array<Record<string, unknown>>).map(async (action) => {
@@ -4477,7 +4604,7 @@ export function createNousTools(deps: NousToolDeps) {
       const targets = pooled.some((entry) => entry.pools.length && !entry.targets) ? null : pooled.flatMap((entry) => entry.targets ?? []);
       const noRoom = await noRoomGuard(ctx.owner, pooled.flatMap((entry) => entry.pools), "Nothing was done.", targets);
       if (noRoom) return noRoom;
-      args = { ...args, actions: (args.actions as Array<Record<string, unknown>>).map((action) => without(action, "force")) } as typeof args;
+      args = { ...args, actions: (args.actions as Array<Record<string, unknown>>).map((action) => without(action, "force", "operatorMessageId")) } as typeof args;
       // R11-6 (b) (28/10 15:41 BKK: restarts of Cleo/Finn, a Job Copilot, answered "Pane control applied" and did nothing: Space Control's
       // restart only returns a rail pane's record): a restart of a copilot pane's CLI is its rail's stop and start, and the answer says what ran.
       const railRestarts = (args.actions as Array<Record<string, unknown>>).filter((action) => action.kind === "pane" && (action.operation === "restart" || action.operation === "resume"))
@@ -4935,12 +5062,27 @@ export function createNousTools(deps: NousToolDeps) {
     async space_plan_update(args, ctx) {
       const runNow = args.waitsOn?.kind === "DATE" ? await deferralProblem(ctx.owner, args.waitsOn.what, args.waitsOn.until, args.reason) : null;
       if (runNow) return hold("Run it now", runNow);
+      // A wait or park that holds the plan (an OPERATOR wait or condition asks the operator, so it holds nothing by Nous's word) on a freeze needs the operator's order.
+      const holds = (args.waitsOn && args.waitsOn.kind !== "OPERATOR") || args.park?.conditions.some((condition) => condition.who !== "OPERATOR");
+      const freeze = holds ? [args.reason, args.waitsOn?.what, args.park?.reason, ...(args.park?.conditions ?? []).map((condition) => condition.what)]
+        .find((words) => words && PLAN_FREEZE.test(words)) : undefined;
+      if (freeze && !(args.order && await memorySource(args.order, ctx))) return hold("Only the operator freezes a plan",
+        `"${clipText(freeze, 160)}" holds the plan on a freeze, and no operator message that set it was given (order). A plan the operator gave runs until they stop it `
+        + "(operator 24/11 «όταν είχα δώσει ένα πλάνο για εκτέλεση δεν θα το σταματάς εσύ»); a freeze in memory or a pane's notes is not their order. Run its next steps now; "
+        + "if going live in that period is a real risk, ask the operator (space_ask_operator) and wait with kind OPERATOR. Nothing changed.");
       // 14/11 (824bd787): an OPERATOR wait becomes Space's Needs you card for the plan, so one for their hands or a site carries its link the same way.
       const wait = args.waitsOn?.kind === "OPERATOR" ? [{ text: args.waitsOn.what }] : [];
       if (handsItemsMissingLink(wait).length || actItemsMissingLink(wait, false).length) return hold("The wait needs its link",
         `${handsItemsMissingLink(wait).length ? NOUS_HANDS_RULE : NOUS_ACT_LINK_RULE} The plan's card shows waitsOn.what: put the page's https link in it, or raise the card with space_notify_operator (its item's target). Nothing changed.`);
       const asks = [...wait.map((item) => item.text), ...(args.park?.conditions ?? []).filter((condition) => condition.who === "OPERATOR").map((condition) => condition.what)];
       if (asks.some(waitAsksUnlinkedDecisions)) return hold("Ask each decision first", NOUS_PLAN_DECISIONS_RULE);
+      // 2026-11-27 REVIEW (operator asks 36 on 26/11): plan m9BqtYYcfwzX's wait on its decisions came back after 3c4a8346 was answered 07:44 UTC and
+      // Space raised its card again at 10:01 and 10:50. A wait whose named decisions are none of them open asks the operator nothing.
+      const named = [...new Set(asks.flatMap(waitDecisionIds))];
+      const openDecisions = named.length && deps.decisions ? await deps.decisions(ctx.owner, undefined, ["OPEN"]).catch(() => null) : null;
+      if (openDecisions && !named.some((id) => openDecisions.some((decision) => decision.id.startsWith(id)))) return hold("Already answered",
+        `None of ${named.join(", ")} is open: the operator answered or it was withdrawn. Read the answer (space_nous_decisions) and carry the plan on; `
+        + "if something new needs them, ask it with space_ask_operator and name that decision's id in the wait. Nothing changed.");
       const before = await planOf(ctx.owner, args.plan);
       if (before) args.plan = before.id;
       let parked: PlanParked | null | undefined = args.park === null ? null : args.park ? planParkedSchema.parse(args.park) : undefined;
@@ -5259,7 +5401,12 @@ export function createNousTools(deps: NousToolDeps) {
       } else if (args.op === "open" || args.op === "join" || args.op === "leave" || args.op === "captain") {
         return fail("Name the room and pane", `${args.op} needs the room and the pane.`);
       }
-      const result = await deps.releaseTrain(releaseTrainInputSchema.parse(input), actor);
+      // Daily Nous errors 26/11 07:33Z ("0.1.29 is open (captain Dana): join it instead"): the train's conflicts name the next call; a refusal, not a failure.
+      const result = await deps.releaseTrain(releaseTrainInputSchema.parse(input), actor).catch((error: unknown) => {
+        if (error instanceof SpaceConflictError) return hold(`Release train: ${args.op} refused`, error.message);
+        throw error;
+      });
+      if (typeof result !== "string") return result;
       return { ok: true, display: args.op === "status" ? "Read the release trains" : `Release train: ${args.op} done`, result: clip(result) };
     },
     async space_conversation(args, ctx) {
@@ -5577,7 +5724,7 @@ export function createNousTools(deps: NousToolDeps) {
       if (!prediction) return fail("Asked without a prediction", `prediction is required: ${NOUS_PREDICTION_RULE} Nothing asked.`);
       // R53 (goal 7365014c, lesson lessons-1103-predict-from-known-rules): an operator rule that names exactly one of the options answers the
       // decision (the cards' R11-2 (6) match), so it is not asked: Nous acts on it, or names how this case differs.
-      const rule = args.options?.length && !args.ruleDiffers && deps.operatorRules
+      const rule = args.options?.length && !args.ruleDiffers && deps.operatorRules && !needsOperatorHandsText(`${args.title}\n${args.body}`)
         ? ruleRecommendation({ question: args.title, options: args.options }, await deps.operatorRules().catch(() => [])) : null;
       if (rule) return hold("Your rule already answers this", `The operator's rule [${rule.rule.id}] "${clipText(rule.rule.title, 120)}" answers "${clipText(args.title, 120)}": `
         + `"${rule.option}". Act on it now (space_memory_recall reads the rule); nothing was asked. Only if this case really differs from the rule, ask again with ruleDiffers saying how.`);
@@ -6152,6 +6299,11 @@ export function createNousTools(deps: NousToolDeps) {
         if (!carded) return hold(`${paneLabel(found.pane)} has no card for the operator`, `Your note says ${paneLabel(found.pane)} waits for the operator, and they have no Needs you `
           + "card or open decision on it. Raise the card first (space_notify_operator) or give another reason.");
       }
+      // lessons-pane-pileup 27/11: a work pane kept for a promote or a third party's reply holds a pane slot for nothing; it saves and closes, the work reopens one.
+      const outside = (args.verdict === "KEEP_OPEN" || args.verdict === "WAITING_DATE") && found.pane.mode === "TERMINAL" ? waitsWithoutPaneClaim(args.note ?? "") : null;
+      if (outside) return hold(`${paneLabel(found.pane)} need not stay open`, `Your note ("${clipText(outside, 120)}") waits on a promote or a third party, which the pane `
+        + `does not act on. Send it exactly "save to memory" and close it once the save shows (space_close_pane); the plan step or follow-up reopens a pane with the work. `
+        + "Keep it open only for work the pane itself does: record that reason.");
       // R21-appstudio-kick (c) (Alex/Emma idle 18:18-01:11 UTC 30/10 with three briefs waiting, read as working).
       const briefs = args.verdict === "OK_WORKING" ? deps.briefsWaiting?.(found.pane.id) : null;
       // 5/11 (8 holds in 6 h): the watch's snapshot outlives a kickoff (Kate held 5 s after "its agent got the kickoff"): a pane RUNNING now works.
@@ -6940,6 +7092,10 @@ export function createNousTools(deps: NousToolDeps) {
       }
       return deps.followups.run(ctx.owner, reason && followup.note ? { ...followup, note: `${followup.note} (wait reason: ${reason})` } : followup, pane);
     },
+    async space_ops_nous_cloud(args) {
+      if (!deps.ops) return fail("Ops views are unavailable");
+      return { ok: true, display: "Read Nous Cloud telemetry", result: await nousOpsNousCloudText(deps.ops, args) };
+    },
     async space_ops_services() {
       if (!deps.ops) return fail("Ops views are unavailable");
       return { ok: true, display: "Checked the services", result: await nousOpsServicesText(deps.ops) };
@@ -7280,6 +7436,8 @@ export function createNousTools(deps: NousToolDeps) {
       // a handler's answer that says it did nothing and names what is open is a refusal too.
       // 14/11 (19:19 space_pane_reports room "Bob", a pane): an unknown room's answer lists every room with its open panes, so a refusal too.
       const outcome = !handled.ok && /^No (?:open pane|room) named "|\bNothing (?:was asked|asked|answered|changed|closed|was recorded|raised)\b/.test(handled.result) ? { ...handled, refused: true } : handled;
+      const freed = tool === "space_notify_operator" && !outcome.ok ? await releaseNamedHeld(ctx.owner, (parsed.data as { items: Array<{ ref?: string }> }).items) : [];
+      if (freed.length) outcome.result += `\nThe held card${freed.length === 1 ? "" : "s"} ${freed.join(", ")} now show${freed.length === 1 ? "s" : ""} in the operator's Needs you as raised.`;
       if (outcome.ok && work.length) noteWorkSends(ctx.owner, work);
       if (outcome.ok && work.length) await deps.requestDone?.rebound(ctx.owner, work.map(({ pane, text }) => ({ paneId: pane.id, text }))).catch(() => undefined);
       const note = moved?.note ?? (resolved?.closedElsewhere && outcome.ok ? resolved.closedElsewhere : alreadyClosed);

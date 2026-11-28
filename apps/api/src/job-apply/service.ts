@@ -22,7 +22,9 @@ import {
   JOB_APPLY_IMPORTED_URL_PREFIX,
   JOB_APPLY_MAIL_CATEGORIES,
   JOB_APPLY_MAIL_LABELS,
+  JOB_APPLY_INTERVIEW_LABEL,
   JOB_APPLY_MAIL_ROOT_LABEL,
+  JOB_APPLY_OLD_INTERVIEW_LABEL,
   JOB_APPLY_NO_CONFIRMATION_NOTE,
   JOB_APPLY_UNRECORDED_ROLE,
   jobApplyMemoryCreateSchema,
@@ -92,9 +94,9 @@ import { connectorSealContext, type ConnectorCrypto } from "../dot-connectors.js
 import { createDiscovery, type Discovery } from "./discovery.js";
 import { createSalaryResearch, salaryResearchNote, type SalaryResearch, type SalaryResearchRequest, type SalaryResearchResult } from "./salary.js";
 import { CONFIRMATION_SEARCH_TERMS, companyKey, GmailMailboxError, matchConfirmationEmail, openGmailMailbox, searchGmail } from "./gmail-mailbox.js";
-import { ensureJobApplyLabels, fileGmailThreads, gmailMessageText, gmailThreadIds, unlabelGmailMessages, listGmailTriageMessages } from "./gmail-organize.js";
+import { ensureJobApplyLabels, fileGmailThreads, gmailLabelThreads, gmailMessageText, gmailThreadIds, gmailThreadNewestAt, unlabelGmailMessages, listGmailTriageMessages } from "./gmail-organize.js";
 import { cleanupJobMailLabels, cleanupNote } from "./mail-label-cleanup.js";
-import { closeInterviewTask, findThreadTask, recordInterviewTask, remindInterviews, setInterviewDeadline, siblingDeadline, taskDeadline, type InterviewNotifications, type InterviewRequest, type PassMail } from "./interview-tasks.js";
+import { closeInterviewTask, findThreadTask, interviewStage, recordInterviewTask, remindInterviews, setInterviewDeadline, siblingDeadline, taskDeadline, threadAppointments, type InterviewNotifications, type InterviewRequest, type PassMail } from "./interview-tasks.js";
 import { classifyApplicationMail, digestQuery, displaySender, hasReceiptSubject, isApplicationMail, isJobAlert, isJobDigest, isJobReceipt, matchApplicationCompany, reportsCompletion, senderAddress, triageQueries } from "./mail-triage.js";
 import { extractCode, extractLinksFromText, type MailboxFactory, type MailboxMessageSummary, type MailboxReader } from "./mailbox.js";
 
@@ -364,6 +366,16 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     return { email: record.googleEmail, capabilities: google ? await google.googleCapabilities(owner, record.googleEmail).catch(() => []) : [], available: Boolean(google?.googleConfigured) };
   }
   /** Every Google account allowed for Space; Job Copilot reads mail from all that allowed it. */
+  /** Every test or interview task (all pages). */
+  async function threadTasks(owner: string): Promise<TaskItem[]> {
+    const tasks: TaskItem[] = [];
+    for (let page = 1; ; page += 1) {
+      const { items } = await options.store.listTaskItems(owner, { q: "Gmail thread: ", page, pageSize: 100 });
+      tasks.push(...items);
+      if (items.length < 100) return tasks;
+    }
+  }
+
   async function googleMailAccounts(owner: string): Promise<JobApplyGoogleMailAccount[]> {
     const google = options.google?.() ?? null;
     return google ? await google.googleAccounts(owner).catch(() => []) : [];
@@ -851,6 +863,38 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
                 application: matchApplicationCompany(message, companies) });
             }
           })().catch(() => undefined);
+          // Interview stages (operator 27/11): Action needed keeps only a step we owe; a booked interview goes under Interview, a finished one or a closed process under Old Interview.
+          await (async () => {
+            const asked = await gmailLabelThreads({ accessToken, fetchImpl: options.gmailFetch, labelId: labels.ids.ACTION_NEEDED });
+            const booked = await gmailLabelThreads({ accessToken, fetchImpl: options.gmailFetch, labelId: labels.interview });
+            const tasks = await threadTasks(owner);
+            const appointments = await appointmentsFor(options.store)?.repository.list(owner, new Date(0).toISOString()) ?? [];
+            const taskOf = (threadId: string) => tasks.find((task) => task.objective.includes(`Gmail thread: ${threadId} (`)) ?? null;
+            const threadOf = (ref: string) => {
+              const gmail = /^gmail:([^:\s]+):(\S+)$/.exec(ref);
+              const task = gmail ? null : tasks.find((item) => ref === item.id || ref === `task:${item.id}`);
+              const line = task ? /^Gmail thread: (\S+) \((.+)\)$/m.exec(task.objective) : null;
+              return gmail ? (gmail[1] === email ? gmail[2]! : null) : line?.[2] === email ? line[1]! : null;
+            };
+            // A booked interview whose thread a later receipt filed elsewhere comes back under Interview.
+            const ahead = appointments.filter((item) => item.kind === "INTERVIEW" && item.status === "UPCOMING" && Date.parse(item.startsAt) > nowMs)
+              .map((item) => threadOf((item.sourceRef ?? "").split("#")[0]!)).filter((threadId): threadId is string => Boolean(threadId));
+            const moves = { INTERVIEW: [] as string[], OLD_INTERVIEW: [] as string[] };
+            for (const threadId of new Set([...asked, ...booked, ...ahead])) {
+              const filedAs = booked.includes(threadId) ? "INTERVIEW" : asked.includes(threadId) ? "ACTION_NEEDED" : null;
+              const task = taskOf(threadId);
+              const own = threadAppointments(appointments, email, threadId, task);
+              const newestAt = task || own.length ? null : await gmailThreadNewestAt({ accessToken, fetchImpl: options.gmailFetch, threadId }).catch(() => null);
+              const stage = interviewStage({ task, appointments: own, newestAt, nowMs, filed: filedAs ?? undefined });
+              if (stage === "OLD_INTERVIEW" && filedAs) moves.OLD_INTERVIEW.push(threadId);
+              if (stage === "INTERVIEW" && filedAs !== "INTERVIEW") moves.INTERVIEW.push(threadId);
+            }
+            await fileGmailThreads({ accessToken, fetchImpl: options.gmailFetch, threadIds: moves.INTERVIEW, labelId: labels.interview, archive: false, jobLabelIds: labels.all });
+            await fileGmailThreads({ accessToken, fetchImpl: options.gmailFetch, threadIds: moves.OLD_INTERVIEW, labelId: labels.oldInterview, archive: true, jobLabelIds: labels.all });
+            if (moves.INTERVIEW.length || moves.OLD_INTERVIEW.length) await record(owner, { paneId, type: "MAIL", payload: { category: "INTERVIEW_STAGES", account: email,
+              interview: moves.INTERVIEW, oldInterview: moves.OLD_INTERVIEW },
+              message: `Filed ${moves.INTERVIEW.length} thread${moves.INTERVIEW.length === 1 ? "" : "s"} under ${JOB_APPLY_INTERVIEW_LABEL} and ${moves.OLD_INTERVIEW.length} under ${JOB_APPLY_OLD_INTERVIEW_LABEL} from ${email}` });
+          })().catch(() => undefined);
           result.confirmations += filed.CONFIRMATION.length;
           result.rejections += filed.REJECTION.length;
           result.actionNeeded += filed.ACTION_NEEDED.length;
@@ -936,12 +980,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     async report(owner: string): Promise<NousJobReport> {
       const [applications, events, settings] = await Promise.all([repository.listApplications(owner, {}), repository.listEvents(owner, { types: ["MAIL"] }),
         options.store.getUserSettings(owner)]);
-      const tasks: TaskItem[] = [];
-      for (let page = 1; ; page += 1) {
-        const { items } = await options.store.listTaskItems(owner, { q: "Gmail thread: ", page, pageSize: 100 });
-        tasks.push(...items);
-        if (items.length < 100) break;
-      }
+      const tasks = await threadTasks(owner);
       const appointments = await appointmentsFor(options.store)?.repository.list(owner, new Date(0).toISOString()) ?? [];
       return buildJobReport({ applications, events, tasks, appointments, timeZone: ownerWorkingTimeZone(settings), now: new Date(now()) });
     },

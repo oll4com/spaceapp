@@ -17,6 +17,11 @@ const SWEEP_EVERY_MS = 30_000;
 /** Overlaps need git and the merge queue, so a room's are read at most once a minute. */
 export const ROOM_MONITOR_OVERLAP_MS = 60_000;
 /**
+ * 27/11 REVIEW (Andy, Gemini, 26/11 15:51 UTC: "Needs input" read 3 s before its usage-limit text, escalated as an unanswered question):
+ * a generic wait this young that turns into a named stop was that stop being drawn; the stop's own event carries it.
+ */
+export const ROOM_MONITOR_SUPERSEDE_MS = 60_000;
+/**
  * R10-6 (28/10: "Dana and Emma change the same files" recorded 5 times in 2 hours, 09:02-10:59 UTC, each gone a few minutes later): an
  * overlap that comes back on the same files within the hour is not recorded again; a new file, or a merge conflict, is at once.
  */
@@ -149,6 +154,14 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
     }
   }
 
+  async function supersedeWaits(roomId: string, paneId: string, reason: string) {
+    for (const event of await options.repository.listEvents(roomId, { paneId, statuses: ["OPEN", "ESCALATED"] })) {
+      if (event.kind !== "WAITING" || now() - Date.parse(event.createdAt) > ROOM_MONITOR_SUPERSEDE_MS) continue;
+      const resolved = await options.repository.updateEvent(event.eventId, { status: "RESOLVED", decision: `The wait was the pane's ${reason}, recorded as its own event.` }, ["OPEN", "ESCALATED"]);
+      if (resolved) await options.onEvent?.(resolved);
+    }
+  }
+
   /** W45 step 1: an open overlap one of whose panes got a text from Nous or the Room Agent since it was recorded is HANDLED at once. */
   async function settleOverlaps(roomId: string) {
     const open = overlapOpen.get(roomId);
@@ -233,6 +246,7 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
         previous.set(pane.id, record);
         // A pane that moved on from a question or a stop leaves no open problem to announce again.
         if ((before?.activity === "WAITING" || before?.reason === "Not running") && record.activity !== "WAITING") await resolveWaiting(roomId, pane.id);
+        else if (before?.activity === "WAITING" && record.activity === "WAITING" && attentionKind(record.reason) !== "WAITING") await supersedeWaits(roomId, pane.id, record.reason!);
       }
       let transition = roomMonitorTransition(before, record);
       const detail = sample.details[pane.id];

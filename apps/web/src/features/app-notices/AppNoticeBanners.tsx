@@ -3,6 +3,7 @@ import { GlobalApiErrorAlert } from "../../core-api-availability.js";
 import { ShieldAlert, X } from "../ui-theme/app-icons.js";
 import type { AppNotices } from "./useAppNotices.js";
 import { useUiText } from "../ui-language/ui-language.js";
+import { GoogleGrantPrompt } from "../agent-pane/DotConnections.js";
 
 /** The banner stack at the top of the workspace, in display order. */
 export function AppNoticeBanners({ notices, actionError, onDismissActionError, vpnCityNotice, vpnCityNoticeRef, onDismissVpnCityNotice, isRoomFocusMode, isDemoRuntime }: {
@@ -72,6 +73,7 @@ export function AppNoticeBanners({ notices, actionError, onDismissActionError, v
           <div className="notice-row"><span>{clipboardNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => notices.setClipboardNotice(null)}><X aria-hidden="true" /></button></div>
         </div>
       ) : null}
+      <GoogleGrantPrompt />
       {accountNotice ? (
         <div className="banner ok" role="status">
           <div className="notice-row"><span>{t(accountNotice)}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => notices.setAccountNotice(null)}><X aria-hidden="true" /></button></div>

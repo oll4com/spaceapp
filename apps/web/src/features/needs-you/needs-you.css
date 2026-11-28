@@ -58,10 +58,6 @@
 .ny-badge { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 0.72rem; font-weight: 600;
   background: color-mix(in srgb, currentColor 18%, transparent); }
 .ny-badge svg { width: 12px; height: 12px; }
-/* A review's Approve and Decline never look alike (operator 12/11 21:38 BKK, both read «Απόρριψη» and looked the same): green and filled, red and outlined. */
-.ny-card .dock-kit-button.ny-approve, .ny-card .dock-kit-button.ny-approve:hover:not(:disabled) { border-color: transparent; background: var(--needs-ok); color: var(--modern-bg, #101010); }
-.ny-card .dock-kit-button.ny-decline { border-color: color-mix(in srgb, var(--needs-urgent) 60%, transparent); background: transparent; color: var(--needs-urgent); }
-.ny-card .dock-kit-button.ny-decline:hover:not(:disabled) { border-color: var(--needs-urgent); background: color-mix(in srgb, var(--needs-urgent) 12%, transparent); color: var(--needs-urgent); }
 .ny-card .dock-kit-button { min-height: 34px; padding: 0 14px; border-radius: 999px; font-size: 13px; }
 .ny-card .dock-kit-button svg { width: 15px; height: 15px; }
 .ny-details { display: grid; gap: 14px; min-width: 0; }
@@ -106,10 +102,12 @@ button.ny-choice-media:focus-visible { outline: 2px solid var(--modern-accent, #
 .ny-field input, .ny-field textarea { flex: 1 1 auto; width: 0; min-width: 0; min-height: 34px; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--modern-border, #303030);
   border-radius: 10px; background: var(--modern-bg, #090909); color: inherit; font: inherit; font-size: 14px; resize: vertical; }
 .ny-field input:focus-visible, .ny-field textarea:focus-visible { outline: 2px solid var(--modern-accent, #82aaff); outline-offset: 1px; }
-.ny-footer { display: flex; flex-wrap: wrap; gap: 4px 16px; padding-top: 8px; border-top: 1px solid var(--modern-border, #303030); }
+.ny-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; padding-top: 8px; border-top: 1px solid var(--modern-border, #303030); }
 .ny-link { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; padding: 0; border: 0; background: transparent; color: var(--modern-muted, #aaaaaa);
   font: inherit; font-size: 12.5px; cursor: pointer; }
 .ny-link:hover { color: var(--modern-text, #f5f5f5); }
+/* (0,3,0) beats the room theme's ".space-shell[data-room-theme] button" (0,2,1), which painted More and Less as dark pills (operator 27/11). */
+.ny-link.ny-link.ny-link { border: 0; background: transparent; }
 /* S6: the translation's own muted line under the card text; it changes the language only. */
 .ny-translated { margin: 0; font-size: 0.8rem; color: var(--modern-muted, #aaaaaa); }
 .ny-translated .ny-link { min-height: 0; font-size: inherit; text-decoration: underline; }
@@ -148,8 +146,63 @@ button.ny-choice-media:focus-visible { outline: 2px solid var(--modern-accent, #
 .ny-group-title + .ny-card.is-row, .ny-card.is-row.is-open, .ny-card.is-row.is-open + .ny-card.is-row { border-top-color: transparent; }
 .ny-card.is-row.is-open { background: var(--modern-surface-raised, #1c1c1c); }
 
+/* Plan clipboard:va__qa_eBMYr (mockup sheets a–d): corners ⋯ + chevron, a live line, numbered answers one per row, the own-words field,
+   one More fold, and the ⋯ menu. */
+.ny-corners { position: relative; display: flex; gap: 2px; }
+.ny-live, .ny-more, .ny-folded { grid-column: 2 / -1; }
+.ny-live { --tone: var(--needs-ok); display: flex; gap: 8px; align-items: flex-start; margin: 0; padding: 8px 10px; border-radius: 10px; font-size: 13px;
+  background: color-mix(in srgb, var(--tone) 10%, transparent); }
+.ny-live svg { flex: 0 0 auto; width: 15px; height: 15px; margin-top: 2px; color: var(--tone); }
+.ny-live.is-warn { --tone: var(--needs-off); }
+.ny-live.is-gone { --tone: var(--needs-urgent); }
+.ny-live.is-info { --tone: var(--needs-ask); }
+.ny-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ny-chips > div { display: flex; gap: 4px; min-width: 0; padding: 2px 9px; border: 1px solid var(--modern-border, #303030); border-radius: 999px; font-size: 12.5px; }
+.ny-opts { display: grid; gap: 8px; }
+.ny-opts, .ny-actions { counter-reset: ny-answer; }
+.ny-actions > .ny-opt { flex: 1 1 100%; }
+.ny-opt { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; min-height: 48px; padding: 8px 14px 8px 10px;
+  box-sizing: border-box; border: 1px solid var(--modern-border, #303030); border-radius: 12px; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; }
+.ny-opt:hover:not(:disabled) { border-color: var(--modern-border-strong, #4a4a4a); background: color-mix(in srgb, var(--modern-text, #f5f5f5) 4%, transparent); }
+.ny-opt:disabled { cursor: default; opacity: 0.6; }
+.ny-opt:focus-visible { outline: 2px solid var(--modern-accent, #82aaff); outline-offset: 2px; }
+.ny-opt::before { counter-increment: ny-answer; content: counter(ny-answer); display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: color-mix(in srgb, var(--modern-text, #f5f5f5) 9%, transparent);
+  font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ny-opt strong { min-width: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.ny-opt > svg { width: 16px; height: 16px; color: var(--modern-muted, #aaaaaa); }
+.ny-opt.is-recommended { border-color: transparent; background: var(--modern-accent, #82aaff); color: var(--modern-on-accent, #0b0b0b); }
+.ny-opt.is-recommended:hover:not(:disabled) { border-color: transparent; background: var(--modern-accent, #82aaff); filter: brightness(1.06); }
+.ny-opt.is-recommended::before { background: color-mix(in srgb, var(--modern-on-accent, #0b0b0b) 16%, transparent); }
+.ny-opt.is-recommended > svg { color: inherit; }
+/* A review's Approve and Decline never look alike (operator 12/11 21:38 BKK, both read «Απόρριψη» and looked the same): green and filled, red and outlined. */
+.ny-opt.is-approve { border-color: transparent; background: var(--needs-ok); color: var(--modern-bg, #090909); }
+.ny-opt.is-approve:hover:not(:disabled) { border-color: transparent; background: var(--needs-ok); filter: brightness(1.06); }
+.ny-opt.is-approve::before { background: rgb(0 0 0 / 0.14); }
+.ny-opt.is-approve > svg { color: inherit; }
+.ny-opt.is-decline { border-color: color-mix(in srgb, var(--needs-urgent) 60%, transparent); color: var(--needs-urgent); }
+.ny-opt.is-decline > svg { color: inherit; }
+.ny-field.ny-own { min-height: 44px; padding: 0 6px 0 4px; border: 1px dashed var(--modern-border-strong, #4a4a4a); border-radius: 12px; }
+.ny-field.ny-own.has-words { border-style: solid; border-color: var(--modern-accent, #82aaff); }
+.ny-field.ny-own input { border: 0; background: transparent; }
+.ny-more { justify-self: start; }
+.ny-folded { display: grid; gap: 12px; padding-top: 10px; border-top: 1px solid var(--modern-border, #303030); font-size: 13px; }
+.ny-folded section { display: grid; gap: 4px; }
+.ny-others { display: flex; flex-wrap: wrap; gap: 8px; }
+.ny-history .inbox-thread-timeline { padding: 0; }
+/* The menu opens from the card's right corner so it stays inside a narrow dock. */
+.ny-menu { position: static; }
+.ny-menu-list { position: absolute; right: 0; top: 36px; z-index: 3; display: grid; min-width: 200px; padding: 6px; border: 1px solid var(--modern-border-strong, #4a4a4a); border-radius: 12px;
+  background: var(--modern-surface-raised, #1c1c1c); box-shadow: 0 14px 36px rgb(0 0 0 / 0.55); }
+.ny-menu-list .ny-link { justify-content: flex-start; min-height: 36px; padding: 0 10px; border-radius: 8px; color: var(--modern-text, #f5f5f5); font-size: 13.5px; text-align: start; }
+.ny-menu-list .ny-link:hover:not(:disabled) { background: color-mix(in srgb, var(--modern-text, #f5f5f5) 7%, transparent); }
+.ny-menu-list .ny-link:disabled { opacity: 0.5; cursor: default; }
+.ny-menu-list hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid var(--modern-border, #303030); }
+.ny-menu-list .ny-link.danger { color: var(--needs-urgent); }
+.ny-card.is-done { opacity: 0.72; }
+
 @media (pointer: coarse) {
   .ny-card .dock-kit-button, .ny-link, .ny-corner.dock-kit-icon-button, .ny-field input, .ny-field textarea { min-height: 44px; }
+  .ny-opt, .ny-field.ny-own, .ny-menu-list .ny-link { min-height: 44px; }
   .ny-corner.dock-kit-icon-button { width: 44px; height: 44px; }
 }
 @media (max-width: 640px) { .ny-peek { max-height: 60vh; } }
@@ -157,7 +210,7 @@ button.ny-choice-media:focus-visible { outline: 2px solid var(--modern-accent, #
 @container ny-card (max-width: 439px) {
   .ny-answers .dock-kit-button { flex: 1 1 100%; }
   /* What follows the title uses the whole card, not only the column right of the icon. */
-  .ny-actions, .ny-answers, .ny-sent, .ny-error, .ny-details, .ny-field, .ny-files { grid-column: 1 / -1; }
+  .ny-actions, .ny-answers, .ny-sent, .ny-error, .ny-details, .ny-field, .ny-files, .ny-live, .ny-more, .ny-folded { grid-column: 1 / -1; }
   /* A closed row keeps one meta line (room · pane · time); its kind and source stay for screen readers, the kind on the tile's hover. */
   .ny-card:not(.is-open) .ny-meta { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
   .ny-card:not(.is-open) .ny-meta > :is(.ny-kind, .ny-source) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }

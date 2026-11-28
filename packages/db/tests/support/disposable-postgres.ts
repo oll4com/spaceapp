@@ -62,15 +62,26 @@ export function trackDisposableContainer(name: string, rootDir?: string): () => 
   };
 }
 
+const RESTARTABLE_LABEL = "space.disposable-test.restartable";
+
+/** A crash restart (`docker kill` then `docker start`) leaves a restartable container exited for a moment, and another
+ * vitest worker's sweep must not remove it then (public CI 27/11: "container is marked for removal"), so an exited
+ * restartable container counts as leaked only after maxAgeMs, like an abandoned running one. */
+export function isSweepableTestContainer({ state, ageMs, restartable, maxAgeMs }: { state: string; ageMs: number; restartable: boolean; maxAgeMs: number }): boolean {
+  if (state === "exited" || state === "dead") return !restartable || ageMs > maxAgeMs;
+  if (state === "created") return ageMs > 60_000;
+  return state === "running" && ageMs > maxAgeMs;
+}
+
 /** Sweeps dead or leaked test containers labeled `space.disposable-test=1`.
- * Exited or dead containers, created containers older than 1 minute, and abandoned
+ * Exited or dead containers (restartable ones only after maxAgeMs), created containers older than 1 minute, and abandoned
  * running containers older than maxAgeMs (default 15 minutes) are force-removed. */
 export function sweepDeadTestContainers({ maxAgeMs = 15 * 60_000, now = Date.now() }: { maxAgeMs?: number; now?: number } = {}): string[] {
   let output: string;
   try {
     output = execFileSync("docker", [
       "ps", "-a", "--filter", "label=space.disposable-test=1",
-      "--format", "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.CreatedAt}}"
+      "--format", `{{.ID}}\t{{.Names}}\t{{.State}}\t{{.CreatedAt}}\t{{.Label "${RESTARTABLE_LABEL}"}}`
     ], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
   } catch {
     return [];
@@ -89,11 +100,7 @@ export function sweepDeadTestContainers({ maxAgeMs = 15 * 60_000, now = Date.now
     const createdAt = new Date(createdAtStr || "").getTime();
     const ageMs = !Number.isNaN(createdAt) ? now - createdAt : Infinity;
 
-    const isExited = state === "exited" || state === "dead";
-    const isStaleCreated = state === "created" && ageMs > 60_000;
-    const isOrphanedRunning = state === "running" && ageMs > maxAgeMs;
-
-    if (isExited || isStaleCreated || isOrphanedRunning) {
+    if (isSweepableTestContainer({ state, ageMs, restartable: parts[4]?.trim() === "1", maxAgeMs })) {
       try {
         execFileSync("docker", ["rm", "--force", "--volumes", id], { timeout: 15_000, stdio: "ignore" });
         removed.push(name || id);
@@ -193,7 +200,7 @@ export async function startDisposablePostgres(label: string, { restartable = fal
   try {
     // 90s, not 30s: parallel suites hit daemon stalls >30s (ETIMEDOUT), killing the CLI between create and start and leaking a "Created" container; fits the usual 120s beforeAll.
     docker([
-      "run", ...(restartable ? ["--env", "POSTGRES_INITDB_ARGS=--no-sync"] : ["--rm", "--tmpfs", "/var/lib/postgresql/data"]), "--detach", "--pull=never", "--name", name, "--label", "space.disposable-test=1", "--network", "none",
+      "run", ...(restartable ? ["--env", "POSTGRES_INITDB_ARGS=--no-sync", "--label", `${RESTARTABLE_LABEL}=1`] : ["--rm", "--tmpfs", "/var/lib/postgresql/data"]), "--detach", "--pull=never", "--name", name, "--label", "space.disposable-test=1", "--network", "none",
       "--mount", `type=bind,source=${socketDir},target=/var/run/postgresql`,
       "--env", "POSTGRES_HOST_AUTH_METHOD=trust", disposablePostgresImage, "-c", "listen_addresses=", "-c", "fsync=off"
     ], 90_000);

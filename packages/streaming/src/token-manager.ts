@@ -123,7 +123,7 @@ export class StreamingTokenManager {
       this.cache.set(credentialRef, token);
       return token;
     }
-    const client = await this.options.credentialStore.readClient(provider);
+    const client = await this.options.credentialStore.clientFor(provider, credentialRef);
     const refreshed = await this.refresh(provider, client, token);
     const refreshedWithSubject = { ...refreshed, grantSubject: refreshed.grantSubject ?? token.grantSubject };
     await this.options.credentialStore.writeCredential(credentialRef, serializeStreamingTokenSet(refreshedWithSubject));

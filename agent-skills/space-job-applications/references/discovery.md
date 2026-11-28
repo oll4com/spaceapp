@@ -3,9 +3,9 @@
 ## `space_job_discover_search` (the copilot's own scanner)
 - `space_job_discover_search {query, sites: ["greenhouse","lever","ashby","himalayas","linkedin","workable"], tokens: ["acme","globex"],
   location?, remote?, exclude?, limit}` scans the public board APIs below through the Space API (no
-  network from the CLI), filters titles by every query word, keeps only fully remote postings
-  (Lever/Ashby `workplaceType`, Ashby `isRemote`, else "remote" in the location; hybrid, on-site and
-  unknown are left out unless you pass `remote: false`), drops every posting whose title or location
+  network from the CLI), filters titles by every query word, keeps every workplace (remote, hybrid,
+  on-site) with fully remote postings first (Lever/Ashby `workplaceType`, Ashby `isRemote`, else "remote"
+  in the location; `remote: true` keeps remote only), drops every posting whose title or location
   has an `exclude` word as a whole word, drops postings older than 30 days and remote postings closed to
   Greece/EU by their own words ("US only", "residents", "Remote (Brazil)"), marks postings already in the
   tracker (`tracked: true`) and returns `scanned` per board (404 = `no board`, normal).
@@ -22,8 +22,9 @@
   remote job API with `country=Greece`, paged until the end or past `limit`. Only jobs whose
   `locationRestrictions` are empty or name Greece/the EU are kept, never by the "Worldwide" label
   (16/11: 54 of 55 such jobs were closed to Greece); expired jobs are dropped.
-- `linkedin` and `workable` are searches by `query` too (`location` defaults to Greece; remote unless
-  `remote: false`). LinkedIn's guest job search covers the last 30 days and answers about 30 postings a
+- `linkedin` and `workable` are searches by `query` too (`location` defaults to Greece; every workplace unless
+  `remote: true`). Operator 27/11: remote is the priority, not a limit: hybrid, on-site and relocation roles
+  (EU/EEA and the relocation countries in the pinned memories) are applied to as well. LinkedIn's guest job search covers the last 30 days and answers about 30 postings a
   search before `HTTP 429`: what it found is kept, so vary the query rather than repeat it. Its URLs are
   `https://www.linkedin.com/jobs/view/<id>` (queue them with ats `linkedin`, Easy Apply only, the LinkedIn
   daily cap; an external-ATS redirect is queued under that ATS's URL). Workable postings

@@ -72,6 +72,32 @@ describe("Load push (13/11)", () => {
     expect(call[2]).toContain("Plans not on a pane");
   });
 
+  // 2026-11-28 REVIEW (27/11: 427 INBOX turns, $112 against $42; Dino·Bob's mail triage finished 63 times, each an urgent turn).
+  it("makes the push urgent once per pane per 10 minutes: a pane that finishes again sooner waits, another pane still goes at once", async () => {
+    const f = fixture([{ pane: andy, state: "working", since: iso(T0 - 5 * MIN) }, { pane: bob, state: "working", since: iso(T0 - 5 * MIN) }], [plan("clipboard:z", "pane:gone0001", ["COMPLETED", "PENDING"])]);
+    const urgent = () => f.notice.mock.calls.filter((call) => call[1] === "utilization-low").map((call) => call[4]);
+    await f.orders.tickOwner(owner);
+    f.advance(2 * MIN);
+    f.panes[0] = { pane: andy, state: "done", since: iso(T0 + MIN) };
+    await f.orders.tickOwner(owner);
+    expect(urgent()).toEqual([false, true]);
+    // Andy runs again and finishes 3 minutes after its urgent push: no new push, it rides the 10-minute one.
+    f.advance(3 * MIN);
+    f.panes[0] = { pane: andy, state: "done", since: iso(T0 + 4 * MIN) };
+    await f.orders.tickOwner(owner);
+    expect(urgent()).toEqual([false, true]);
+    // Bob's first finish is still pushed at once.
+    f.advance(MIN);
+    f.panes[1] = { pane: bob, state: "done", since: iso(T0 + 5 * MIN) };
+    await f.orders.tickOwner(owner);
+    expect(urgent()).toEqual([false, true, true]);
+    // Ten minutes after Andy's urgent push its next finish is urgent again.
+    f.advance(7 * MIN);
+    f.panes[0] = { pane: andy, state: "done", since: iso(T0 + 12 * MIN) };
+    await f.orders.tickOwner(owner);
+    expect(urgent()).toEqual([false, true, true, true]);
+  });
+
   // Score row 19 (14/11 14:54 "Dana is closed and did not reopen"): a closing or closed pane is no free pane and gets no plan step.
   it("leaves out of the push a pane whose closeout is in flight or that closed after it finished, and keeps one reopened since", async () => {
     const closeouts = new InMemoryNousPaneCloseoutsRepository();

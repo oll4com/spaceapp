@@ -14,6 +14,7 @@ const { captured, rec } = vi.hoisted(() => {
 });
 vi.mock("../src/auth-routes.js", async (orig) => ({ ...await orig<object>(), registerAuthRoutes: rec("auth") }));
 vi.mock("../src/app-signin.js", async (orig) => ({ ...await orig<object>(), registerAppSignIn: rec("appSignIn", { appSignIn: true }) }));
+vi.mock("../src/nous-cloud-routes.js", async (orig) => ({ ...await orig<object>(), registerNousCloudRoutes: rec("nousCloud") }));
 vi.mock("../src/admin-user-routes.js", async (orig) => ({ ...await orig<object>(), registerAdminUserRoutes: rec("adminUsers") }));
 vi.mock("../src/gateway/gateway-routes.js", async (orig) => ({ ...await orig<object>(), registerGatewayAdminRoutes: rec("gatewayAdmin") }));
 vi.mock("../src/gateway/gateway-service.js", async (orig) => ({ ...await orig<object>(), createGatewayAdminService: (input: unknown) => { captured.gatewayCreated.push(input); return { created: true }; } }));
@@ -113,7 +114,7 @@ describe("sign-in routes wiring", () => {
 
   it("registers auth with the app sign-in, finds a Nous decision by id and needs a PostgreSQL store for the device store", async () => {
     const { result, deps } = signIn({ decisions: [{ id: "d1", title: "one" }, { id: "d2" }] });
-    expect(captured.order).toEqual(["appSignIn", "auth", "adminUsers"]);
+    expect(captured.order).toEqual(["appSignIn", "auth", "nousCloud", "adminUsers"]);
     expect(captured.deps.auth).toMatchObject({ appSignIn: { appSignIn: true }, googleAccountBrowserStatuses: result.googleAccountBrowserStatuses,
       connectorStateTools: result.connectorStateTools, connectorServiceRef: { current: null }, browserSessionManager: deps.browserSessionManager });
     const appSignIn = captured.deps.appSignIn!;

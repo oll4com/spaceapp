@@ -17,6 +17,9 @@ export function mergeMessages(current: NousMessage[] | null, incoming: NousMessa
   return (older ? [...incoming, ...kept] : [...kept, ...incoming]).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/** The mark only moves forward: a page read before this client's last write never takes it back. */
+const later = (current: string | null | undefined, next: string | null) => current && (!next || current > next) ? current : next;
+
 type Page = Awaited<ReturnType<typeof api.nousMessages>>;
 
 export function useNousHistory() {
@@ -25,6 +28,8 @@ export function useNousHistory() {
   const [hasMore, setHasMore] = useState(false);
   /** The owner's last Clear conversation (the server's mark, null: never): the dock hides the decisions asked before it too. */
   const [clearedAt, setClearedAt] = useState<string | null>(null);
+  /** The Conversation's last-read mark, shared by every client (nous_msg:443bb5d5); undefined until the first latest page brings it. */
+  const [readUpTo, setReadUpTo] = useState<string | null | undefined>(undefined);
   const shown = useRef<NousMessage[]>([]);
   shown.current = messages ?? [];
   /** A page further back is loaded: its hasMore, not the latest page's, says whether older messages remain. */
@@ -48,6 +53,7 @@ export function useNousHistory() {
       cursor.current = page.cursor ? { at: page.cursor, language } : null;
       add(page);
       setClearedAt(page.clearedAt ?? null);
+      setReadUpTo((current) => later(current, page.readUpTo ?? null));
       if (!paged.current) setHasMore(Boolean(page.hasMore));
     }
     return page;
@@ -80,5 +86,11 @@ export function useNousHistory() {
     setClearedAt(new Date().toISOString());
   }, []);
 
-  return { messages, files, hasMore, clearedAt, latest, earlier, cleared };
+  /** Reading moved the mark: shown at once, saved for the other clients (the server keeps the later of the two). */
+  const markRead = useCallback((at: string) => {
+    setReadUpTo((current) => later(current, at));
+    api.nousReadMark(at).then((page) => setReadUpTo((current) => later(current, page.readUpTo)), () => undefined);
+  }, []);
+
+  return { messages, files, hasMore, clearedAt, readUpTo, markRead, latest, earlier, cleared };
 }

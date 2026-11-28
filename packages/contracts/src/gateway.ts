@@ -238,6 +238,13 @@ export const gatewayApiKeyLimitSchema = z.object({
   resetAt: isoSchema
 }).strict();
 
+/**
+ * A key's providers (plan clipboard:yw_pvUb_616N): a Space route in lower case (claude, codex, claude_opencode, bedrock, vertex) or a key-pool
+ * slug (gemini, groq, ...). Empty or absent: every provider. A scoped key reaches nothing else, and /pools/space auto skips the rest.
+ */
+export const GATEWAY_KEY_PROVIDER_PATTERN = /^[a-z0-9][a-z0-9_-]{1,39}$/;
+const gatewayKeyProvidersSchema = z.array(z.string().trim().regex(GATEWAY_KEY_PROVIDER_PATTERN)).max(100);
+
 export const gatewayApiKeySchema = z.object({
   id: gatewayIdSchema,
   name: z.string().min(1).max(120),
@@ -245,6 +252,7 @@ export const gatewayApiKeySchema = z.object({
   isActive: z.boolean(),
   trafficClass: gatewayTrafficClassSchema,
   allowedModels: z.array(z.string().min(1).max(120)).max(100),
+  allowedProviders: gatewayKeyProvidersSchema.optional(),
   enforcedModel: z.string().max(120).nullable(),
   allowedReasoningEfforts: z.array(gatewayReasoningEffortSchema).max(8),
   enforcedReasoningEffort: gatewayReasoningEffortSchema.nullable(),
@@ -263,6 +271,7 @@ export const gatewayApiKeyCreateRequestSchema = z.object({
   name: z.string().trim().min(1).max(120),
   trafficClass: gatewayTrafficClassSchema.default("INTERACTIVE"),
   allowedModels: z.array(z.string().trim().min(1).max(120)).max(100).default([]),
+  allowedProviders: gatewayKeyProvidersSchema.default([]),
   enforcedModel: z.string().trim().min(1).max(120).nullable().default(null),
   allowedReasoningEfforts: z.array(gatewayReasoningEffortSchema).max(8).default([]),
   enforcedReasoningEffort: gatewayReasoningEffortSchema.nullable().default(null),
@@ -295,6 +304,7 @@ export const gatewayApiKeyUpdateRequestSchema = z.object({
   isActive: z.boolean().optional(),
   trafficClass: gatewayTrafficClassSchema.optional(),
   allowedModels: z.array(z.string().trim().min(1).max(120)).max(100).optional(),
+  allowedProviders: gatewayKeyProvidersSchema.optional(),
   enforcedModel: z.string().trim().min(1).max(120).nullable().optional(),
   allowedReasoningEfforts: z.array(gatewayReasoningEffortSchema).max(8).optional(),
   enforcedReasoningEffort: gatewayReasoningEffortSchema.nullable().optional(),

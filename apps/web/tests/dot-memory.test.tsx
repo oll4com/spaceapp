@@ -92,8 +92,12 @@ describe("Connected accounts", () => {
     expect(screen.getByText("Microsoft: not set up on this server yet.")).toBeTruthy();
     expect(screen.getByText("How to set it up").closest("details")?.textContent).toContain("Microsoft needs an app registration");
     expect(screen.getByRole("link", { name: "Connect Google" }).getAttribute("href"))
-      .toBe("/api/connectors/google/start?capabilities=MAIL_READ%2CMAIL_COMPOSE%2CCALENDAR");
+      .toBe("/api/connectors/google/start?capabilities=MAIL_READ%2CMAIL_COMPOSE%2CCALENDAR%2CYOUTUBE");
+    // The account lacks composing, organizing and YouTube: one link asks for exactly those, for that account.
+    expect(screen.getByRole("link", { name: "Grant the missing ones" }).getAttribute("href"))
+      .toBe("/api/connectors/google/start?capabilities=MAIL_COMPOSE%2CMAIL_ORGANIZE%2CYOUTUBE&loginHint=owner%40example.com");
     fireEvent.click(screen.getByRole("button", { name: "Draft and send email" }));
+    fireEvent.click(screen.getByRole("button", { name: "YouTube" }));
     expect(screen.getByRole("link", { name: "Connect Google" }).getAttribute("href")).toBe("/api/connectors/google/start?capabilities=MAIL_READ%2CCALENDAR");
     fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
     expect(disconnect).not.toHaveBeenCalled();
@@ -101,6 +105,16 @@ describe("Connected accounts", () => {
     await waitFor(() => expect(disconnect).toHaveBeenCalledWith(`connector:${"1".repeat(32)}`));
     expect(await screen.findByText("No accounts connected.")).toBeTruthy();
     expect(screen.getByText("Google says “Access blocked”?")).toBeTruthy();
+  });
+  it("offers one tap to grant Gmail, Calendar and YouTube right after a Google sign-in, and Not now clears it (27/11)", async () => {
+    const { GoogleGrantPrompt } = await import("../src/features/agent-pane/DotConnections.js");
+    window.history.replaceState({}, "", "/?googleGrant=owner%40example.com");
+    render(<GoogleGrantPrompt />);
+    expect(screen.getByRole("link", { name: "Grant access" }).getAttribute("href"))
+      .toBe("/api/connectors/google/start?capabilities=MAIL_READ%2CMAIL_COMPOSE%2CCALENDAR%2CMAIL_ORGANIZE%2CYOUTUBE&loginHint=owner%40example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    expect(screen.queryByRole("link", { name: "Grant access" })).toBeNull();
+    expect(window.location.search).toBe("");
   });
   it("explains the result of returning from a provider sign-in", async () => {
     const { connectorResultMessage } = await import("../src/features/agent-pane/connector-result.js");

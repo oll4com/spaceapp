@@ -315,7 +315,8 @@ export function createMicrosoftConnector(input: { clientId: string; clientSecret
   const graph = "https://graph.microsoft.com/v1.0/me";
   const base = `https://login.microsoftonline.com/${encodeURIComponent(input.tenant)}/oauth2/v2.0`;
   const scopesFor = (capabilities: ConnectorCapability[]) => ["openid", "email", "offline_access", "User.Read",
-    ...capabilities.map((capability) => microsoftConnectorScopes[capability])];
+    ...capabilities.map((capability) => microsoftConnectorScopes[capability]
+      ?? (() => { throw new ConnectorError(400, "CONNECTOR_CAPABILITY_UNSUPPORTED", `Microsoft accounts cannot grant ${capability}.`); })())];
   const authed = (token: string, init: RequestInit = {}) => ({ ...init, headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${token}`,
     accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
   /** Every Graph page (@odata.nextLink) up to `limit` rows (until 31/10 one page). */
@@ -429,6 +430,8 @@ export interface ConnectorServiceDeps {
   microsoft?: ConnectorProviderClient | null;
   microsoftReason?: string;
   audit(request: FastifyRequest | null, action: string, metadata: Record<string, unknown>): Promise<void>;
+  /** After a grant is stored (Streaming takes a YouTube grant here); its failure never fails the connection. */
+  onGrant?(input: { request: FastifyRequest | null; provider: ConnectorProvider; tokens: OAuthTokens; redirectUri: string }): Promise<void>;
   now?: () => number;
 }
 type ToolOutcome = { status: "COMPLETED"; result: unknown } | { status: "BLOCKED"; statusReason: string };
@@ -463,6 +466,7 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
       refreshTokenEncrypted: deps.crypto.seal(tokens.refreshToken, connectorSealContext("connector-refresh", owner, provider, email)),
       accessTokenEncrypted: deps.crypto.seal(tokens.accessToken, connectorSealContext("connector-access", owner, provider, email)), accessExpiresAt: tokens.expiresAt });
     await deps.audit(request, "connector.connect", { accountId: account.accountId, provider, capabilities: connectorCapabilities(provider, tokens.scopes) });
+    await deps.onGrant?.({ request, provider, tokens, redirectUri: input.redirectUri }).catch(() => undefined);
     return summary(account);
   }
   async function disconnect(owner: string, accountId: string, request: FastifyRequest | null) {

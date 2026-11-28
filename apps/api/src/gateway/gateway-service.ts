@@ -382,6 +382,7 @@ export function createGatewayAdminService(options: {
         keyPrefix: generated.keyPrefix,
         trafficClass: input.trafficClass,
         allowedModels: input.allowedModels,
+        allowedProviders: input.allowedProviders,
         enforcedModel: input.enforcedModel,
         allowedReasoningEfforts: input.allowedReasoningEfforts,
         enforcedReasoningEffort: input.enforcedReasoningEffort,

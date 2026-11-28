@@ -86,7 +86,7 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
     const latest = before === undefined && cleared === undefined;
     const cursor = new Date().toISOString();
     // The latest page starts at the last Clear conversation; `cleared` and `before` read past it (the rows are never deleted).
-    const { messages, hasMore, clearedAt } = await service.messagePage(owner, limit, before ? { before } : { sinceClear: latest });
+    const { messages, hasMore, clearedAt, readUpTo } = await service.messagePage(owner, limit, before ? { before } : { sinceClear: latest });
     const page = deps.stepTranslations ? await deps.stepTranslations(owner, messages, request.requestIdForSpace) : messages;
     // `since` (latest page, the dock's last `cursor`): only the rows written or translated since then; the dock holds the rest (2 MB a poll before, 10/11).
     const cut = latest && since ? Date.parse(since) - SINCE_OVERLAP_MS : null;
@@ -95,7 +95,8 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
     const operatorIds = sent.filter((message) => message.kind === "OPERATOR").map((message) => message.id);
     // `waiting`: the operator's messages still in Nous's queue (no answer yet); the dock marks them queued or being answered. Only the latest page knows.
     // `clearedAt` (latest page only): the dock leaves the decisions asked before the last Clear out of the conversation (operator 2/11).
-    return { messages: sent, hasMore, ...(latest ? { clearedAt: clearedAt ?? null, cursor } : {}),
+    // `readUpTo` (latest page only): the last-read mark every client's Conversation shows (nous_msg:443bb5d5).
+    return { messages: sent, hasMore, ...(latest ? { clearedAt: clearedAt ?? null, readUpTo: readUpTo ?? null, cursor } : {}),
       waiting: latest ? operatorMessagesToAnswer(messages).map((message) => message.id) : [],
       attachments: deps.attachments ? await deps.attachments.forMessages(owner, operatorIds) : {} };
   });
@@ -224,6 +225,12 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
 
   // Operator 31/10: clears what the dock shows, never the database: a mark the latest page starts after; rows and files stay.
   app.delete("/api/nous/messages", routeOptions, async (request) => ({ cleared: await service.clear(await deps.owner(request)) }));
+
+  // The last-read mark (nous_msg:443bb5d5): reading on one client moves it on the others; it never moves back.
+  app.put("/api/nous/read-mark", routeOptions, async (request) => {
+    const { at } = parseBody(z.object({ at: z.string().datetime({ offset: true }) }).strict(), request.body);
+    return { readUpTo: await service.markRead(await deps.owner(request), at) };
+  });
 
   app.post("/api/nous/stop", routeOptions, async (request) => ({ stopped: service.stop(await deps.owner(request)) }));
 

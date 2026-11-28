@@ -121,6 +121,8 @@ describe("Space provider: ids, classes and efforts", () => {
     expect(classifySpaceFailure("gemini-3.8-flash-high · Gemini 3.8 Flash (Antigravity): Gemini returned HTTP 403.")).toBe("unavailable");
     expect(classifySpaceFailure("Claude: 403 Forbidden")).toBe("auth");
     expect(classifySpaceFailure("OpenCode requested a tool outside Nous.")).toBe("unavailable");
+    // 27/11 06:43/06:51Z: OpenCode that never started fails over instead of ending the turn.
+    expect(classifySpaceFailure("Claude Opus 5.5 · Claude via OpenCode: OpenCode did not start its server.")).toBe("unavailable");
     // 23/11: the worker's first-reply stop (apps/worker/src/nous-turn.ts NOUS_FIRST_REPLY_MS) fails over, unlike the 20-minute stop.
     expect(classifySpaceFailure("Claude sent no reply within 5 minutes of the start: the route was unavailable.")).toBe("unavailable");
     // 4/11 09:42Z: the gateway's fill-first refusal, before and after its text named each account, is a pool without room, not a throttle.

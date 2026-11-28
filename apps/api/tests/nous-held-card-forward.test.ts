@@ -59,4 +59,27 @@ describe("Nous forwarding a pane agent's card held for it", () => {
     expect(await nous.execute("space_focus_pane", { room: "Felix", pane: "Bob", reason: "Turn on both spaceapp-hz switches, left first", ref: card.id, checked: ["pane: the wiring is done"] }, ctx))
       .toMatchObject({ ok: true, display: "Showed the pane's held card to the operator" });
   });
+
+  // 27/11 NBG Business (lesson vault-username-anonymous-field, 1029-vault-origin): a card blaming a Vault fill gap stays held; the fix is code.
+  it("keeps a card whose Vault fill missed its field held until ruleDiffers says why the operator must act", async () => {
+    const service = createNotificationService({ repository: new InMemorySpaceNotificationsRepository(), eventBus: new SpaceEventBus(), userSettings: async () => ({ notifications: null }) as never,
+      recordRoomEvent: async (input) => eventSchema.parse({ ...input, id: makeSpaceId("event"), workflowId: null, createdAt: new Date().toISOString() }),
+      nous: { held: async () => true, raised: () => undefined, holdsCopilotQuestions: async () => true } });
+    const card = await service.raise({ ownerUserId: owner, roomId: room.id, paneId: pane.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION", title: "Bob needs you",
+      body: "NBG Business: please sign in yourself in the browser pane. The Vault cannot fill NBG's username box.", link: { roomId: room.id, paneId: pane.id },
+      dedupeKey: `agent:needs-you:${pane.id}`, telegram: false, payload: { ask: { question: "Sign in to NBG Business in Bob's browser", options: ["Done"], answer: { kind: "PANE" } } } });
+    const nous = createNousTools({ rooms: async () => [room], listPanes: async () => [pane], notifications: service,
+      paneNotices: createNousPaneNotices({ notifications: service }) } as unknown as NousToolDeps);
+    const forward = { room: "Felix", pane: "Bob", reason: "Sign in to NBG Business as INTRAT239800002 in Bob's browser", ref: card.id, checked: ["Vault: ibank item has USERNAME+PASSWORD"] };
+    const held = await nous.execute("space_focus_pane", forward, ctx);
+    expect(held).toMatchObject({ ok: false, refused: true, display: "The pane's held card stays held" });
+    expect(held.result).toMatch(/Vault fill gap.*sealed-fill\.ts/);
+    expect((await service.get(owner, card.id))!.payload.heldForNous).toBeTruthy();
+    // Nous's own words meet it too, in Greek and as sealed-fill's code.
+    for (const reason of ["Το Vault δεν συμπληρώνει το πεδίο Username, μπες εσύ", "Vault fill answered FIELD_NOT_FOUND on Username: sign in yourself"]) {
+      expect(await nous.execute("space_focus_pane", { ...forward, reason }, ctx), reason).toMatchObject({ ok: false, display: "The pane's held card stays held" });
+    }
+    expect(await nous.execute("space_focus_pane", { ...forward, ruleDiffers: "the fix shipped and failed again; the bank locks after one more try" }, ctx))
+      .toMatchObject({ ok: true, display: "Showed the pane's held card to the operator" });
+  });
 });

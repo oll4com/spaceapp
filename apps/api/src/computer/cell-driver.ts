@@ -1,9 +1,7 @@
 // What a cells host must do for one tenant's microVM (plan clipboard:ZGz1LnD51ELH §2.3-2.5, K3 lab
 // ~/agent-workspace/active/20261101-nous-computer/k3-lab). The orchestrator in cells.ts drives it; the fake below
 // stands in until a host with /dev/kvm runs the real one.
-// shortcut: no Firecracker-backed CellDriver yet: it needs the host-side runner (jailer chroot per cell, tap in a
-// per-VM netns, the per-user egress proxy, NVMe paths, B2/R2 upload) that K3's fc-vm.sh does by hand; write it on
-// the first KVM cells host, using firecracker-client.ts for the API calls.
+// The Firecracker half is firecracker-cell-driver.ts; its host half is cell-host.ts (its own shortcut: no cell network yet).
 
 export interface CellRef {
   tenantId: string;

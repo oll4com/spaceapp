@@ -26,6 +26,7 @@
 .nous-inbox-alerts > summary { min-height: 32px; padding-block: 0.4rem; color: var(--dock-muted); font-size: 0.8rem; cursor: pointer; }
 .inbox-thread-report { margin: 0; font-size: 0.85rem; line-height: 1.45; white-space: pre-line; }
 .inbox-thread { display: grid; gap: 0.45rem; min-width: 0; padding: 0.55rem 0.7rem; border: 1px solid var(--dock-border); border-left: 3px solid var(--dock-muted); border-radius: 6px; overflow-wrap: anywhere; }
+.inbox-thread.is-card { gap: 0; padding: 0; } /* A Thread whose one ask is a needs-you card: the card is the row (plan clipboard:va__qa_eBMYr). */
 .inbox-thread.is-operator { border-left-color: var(--dock-warning); }
 .inbox-thread.is-new { border-left-color: var(--dock-accent); }
 .inbox-thread.is-working { border-left-color: var(--dock-success); }
@@ -42,6 +43,8 @@
 .nous-inbox-held ul { display: grid; gap: 0.2rem; margin: 0; padding: 0; list-style: none; }
 .nous-inbox-held li { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .nous-inbox-held li > span { color: var(--dock-text); font-weight: 600; }
+.nous-inbox-held li > details { white-space: normal; }
+.nous-inbox-held li > details > summary { cursor: pointer; }
 .inbox-thread-progress { width: 100%; height: 4px; accent-color: var(--dock-success); }
 .inbox-thread-error { color: var(--dock-danger); font-size: 0.8rem; }
 .inbox-ask { display: grid; gap: 0.4rem; padding-block: 0.3rem; }

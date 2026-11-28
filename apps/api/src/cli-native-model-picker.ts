@@ -768,7 +768,7 @@ async function applyClaudeSessionModel(input: {
   let seekDown = true;
   // A pane too small for the menu box never shows its rows together with its key hints.
   const tooSmall = () => new SpaceConflictError("The Claude model menu does not fit this pane. Enlarge the pane, then choose the model again.");
-  let chosen: { withEffort: boolean; answers: number } | null = null;
+  let chosen: { answers: number } | null = null;
   // A pane too small for the menu is widened once for the pick (the menu redraws), then given back its own size.
   let restore: (() => Promise<unknown>) | null = null;
   const widened = async () => {
@@ -785,7 +785,7 @@ async function applyClaudeSessionModel(input: {
     const after = await input.read();
     if (after.revision === before.revision || after.revision === actedOn) continue;
     if (chosen) {
-      if (applied(after.text, chosen.withEffort)) return;
+      if (applied(after.text, false)) return;
       // "1" answers Yes; a question still drawn after it gets Enter on the highlighted Yes, then Esc below.
       if (claudeSwitchModelQuestion(after.text)) {
         if (chosen.answers >= 2) break;
@@ -836,8 +836,9 @@ async function applyClaudeSessionModel(input: {
       key = levels.indexOf(effort) > levels.indexOf(menu.effort!) ? "\u001b[C" : "\u001b[D";
     } else {
       key = "s";
-      // 21/11 PTY: a pick at the model's default effort is confirmed with no effort ("Set model to Haiku 5.5 for this session only").
-      chosen = { withEffort: menu.effortSupported && !menu.effortDefault, answers: 0 };
+      // The menu shows the requested effort here, so only the model needs confirming: Claude names no effort for a default one
+      // (21/11 PTY), nor for one the session already had (27/11 PTY, 2.1.332 --effort high), and a long pane shows no banner or effort footer.
+      chosen = { answers: 0 };
     }
     if (++steps > 24) throw new SpaceConflictError("The Claude model menu did not follow the selection. Check its terminal.");
     actedOn = after.revision;

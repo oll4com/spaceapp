@@ -66,6 +66,8 @@ export interface GatewayApiKeyInsert {
   keyPrefix: string;
   trafficClass: GatewayTrafficClass;
   allowedModels: string[];
+  /** Empty or absent: every provider (migration 0421). */
+  allowedProviders?: string[];
   enforcedModel: string | null;
   allowedReasoningEfforts: GatewayReasoningEffort[];
   enforcedReasoningEffort: GatewayReasoningEffort | null;
@@ -121,6 +123,7 @@ export interface GatewayApiKeyPatch {
   isActive?: boolean;
   trafficClass?: GatewayTrafficClass;
   allowedModels?: string[];
+  allowedProviders?: string[];
   enforcedModel?: string | null;
   allowedReasoningEfforts?: GatewayReasoningEffort[];
   enforcedReasoningEffort?: GatewayReasoningEffort | null;
@@ -654,6 +657,8 @@ function apiKeyRecord(row: Record<string, unknown>, accounts: Record<string, unk
     isActive: Boolean(row.is_active),
     trafficClass: row.traffic_class as GatewayTrafficClass,
     allowedModels: (row.allowed_models as string[] | null) ?? [],
+    // A database without migration 0421 has no column: every provider.
+    allowedProviders: (row.allowed_providers as string[] | null) ?? [],
     enforcedModel: (row.enforced_model as string | null) ?? null,
     allowedReasoningEfforts: ((row.allowed_reasoning_efforts as string[] | null) ?? []) as GatewayReasoningEffort[],
     enforcedReasoningEffort: (row.enforced_reasoning_effort as GatewayReasoningEffort | null) ?? null,
@@ -987,13 +992,16 @@ export class PostgresGatewayRepository implements GatewayRepository {
     try {
       await client.query("BEGIN");
       // The output policy column (migration 0185) is written only when set, so a key can be created before the migration ran.
-      const policy = input.outputPolicyOverride ?? null;
+      // Likewise the providers column (migration 0421), written only when the key names providers.
+      const optional: Array<[string, unknown]> = [];
+      if (input.outputPolicyOverride) optional.push(["output_policy_override", input.outputPolicyOverride]);
+      if (input.allowedProviders?.length) optional.push(["allowed_providers", input.allowedProviders]);
       await client.query(`INSERT INTO space_gateway_api_keys(key_id,name,key_hash,key_prefix,traffic_class,allowed_models,enforced_model,
-          allowed_reasoning_efforts,enforced_reasoning_effort,account_scope_enabled,compression_override,expires_at,created_by${policy ? ",output_policy_override" : ""})
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${policy ? ",$14" : ""})`,
+          allowed_reasoning_efforts,enforced_reasoning_effort,account_scope_enabled,compression_override,expires_at,created_by${optional.map(([column]) => `,${column}`).join("")})
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${optional.map((_, index) => `,$${14 + index}`).join("")})`,
         [input.keyId, input.name, input.keyHash, input.keyPrefix, input.trafficClass, input.allowedModels, input.enforcedModel,
           input.allowedReasoningEfforts, input.enforcedReasoningEffort, input.accountIds.length > 0, input.compressionOverride,
-          input.expiresAt, input.createdBy, ...(policy ? [policy] : [])]);
+          input.expiresAt, input.createdBy, ...optional.map(([, value]) => value)]);
       for (const accountId of input.accountIds) {
         await client.query(`INSERT INTO space_gateway_api_key_accounts(key_id,account_id) VALUES ($1,$2)`, [input.keyId, accountId]);
       }
@@ -1027,14 +1035,14 @@ export class PostgresGatewayRepository implements GatewayRepository {
           enforced_reasoning_effort=CASE WHEN $9::boolean THEN $10 ELSE enforced_reasoning_effort END,
           compression_override=CASE WHEN $11::boolean THEN $12 ELSE compression_override END,
           expires_at=CASE WHEN $13::boolean THEN $14::timestamptz ELSE expires_at END,
-          account_scope_enabled=CASE WHEN $15::boolean THEN $16 ELSE account_scope_enabled END,${has("outputPolicyOverride") ? " output_policy_override=$17," : ""}
+          account_scope_enabled=CASE WHEN $15::boolean THEN $16 ELSE account_scope_enabled END,${has("outputPolicyOverride") ? " output_policy_override=$17," : ""}${has("allowedProviders") ? ` allowed_providers=$${has("outputPolicyOverride") ? 18 : 17},` : ""}
           updated_at=now()
         WHERE key_id=$1`,
         [keyId, patch.name ?? null, patch.isActive ?? null, patch.trafficClass ?? null, patch.allowedModels ?? null,
           has("enforcedModel"), patch.enforcedModel ?? null, patch.allowedReasoningEfforts ?? null,
           has("enforcedReasoningEffort"), patch.enforcedReasoningEffort ?? null, has("compressionOverride"), patch.compressionOverride ?? null,
           has("expiresAt"), patch.expiresAt ?? null, has("accountIds"), (patch.accountIds ?? []).length > 0,
-          ...(has("outputPolicyOverride") ? [patch.outputPolicyOverride ?? null] : [])]);
+          ...(has("outputPolicyOverride") ? [patch.outputPolicyOverride ?? null] : []), ...(has("allowedProviders") ? [patch.allowedProviders] : [])]);
       if (patch.accountIds) {
         await client.query(`DELETE FROM space_gateway_api_key_accounts WHERE key_id=$1`, [keyId]);
         for (const accountId of patch.accountIds) {
@@ -1706,7 +1714,7 @@ export class InMemoryGatewayRepository implements GatewayRepository {
     if (this.keys.some((key) => key.keyHash === input.keyHash)) throw new Error("duplicate key hash");
     const record: GatewayApiKeyRecord = {
       id: input.keyId, name: input.name, keyPrefix: input.keyPrefix, keyHash: input.keyHash, isActive: true, trafficClass: input.trafficClass,
-      allowedModels: [...input.allowedModels], enforcedModel: input.enforcedModel, allowedReasoningEfforts: [...input.allowedReasoningEfforts],
+      allowedModels: [...input.allowedModels], allowedProviders: [...input.allowedProviders ?? []], enforcedModel: input.enforcedModel, allowedReasoningEfforts: [...input.allowedReasoningEfforts],
       enforcedReasoningEffort: input.enforcedReasoningEffort, accountScopeEnabled: input.accountIds.length > 0, accountIds: [...input.accountIds],
       compressionOverride: input.compressionOverride, outputPolicyOverride: input.outputPolicyOverride ?? null,
       limits: input.limits.map((limit) => ({ ...limit, currentValue: 0 })),
@@ -1722,6 +1730,7 @@ export class InMemoryGatewayRepository implements GatewayRepository {
     if (patch.isActive !== undefined) key.isActive = patch.isActive;
     if (patch.trafficClass !== undefined) key.trafficClass = patch.trafficClass;
     if (patch.allowedModels !== undefined) key.allowedModels = [...patch.allowedModels];
+    if (patch.allowedProviders !== undefined) key.allowedProviders = [...patch.allowedProviders];
     if (patch.enforcedModel !== undefined) key.enforcedModel = patch.enforcedModel;
     if (patch.allowedReasoningEfforts !== undefined) key.allowedReasoningEfforts = [...patch.allowedReasoningEfforts];
     if (patch.enforcedReasoningEffort !== undefined) key.enforcedReasoningEffort = patch.enforcedReasoningEffort;

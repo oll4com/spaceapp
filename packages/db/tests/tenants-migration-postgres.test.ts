@@ -57,7 +57,8 @@ describe.skipIf(unavailable !== null)(`Tenants M0-M6 0359-0409${unavailable ? ` 
     expect(nullable.rows).toEqual([]);
     const empty = await pool.query(`SELECT c.table_name FROM information_schema.columns c
       JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE'
-      WHERE c.table_schema = current_schema() AND c.column_name = 'tenant_id' AND c.column_default IS NULL`);
+      WHERE c.table_schema = current_schema() AND c.column_name = 'tenant_id' AND c.column_default IS NULL
+        AND c.table_name <> 'nous_computer_cells'`); // 0415: GLOBAL_PLATFORM (tenant-scope.test.mjs), tenant_id is its key, always named
     expect(empty.rows).toEqual([]);
     await new PostgresSpaceStore(pool).createRoom({ name: "After M2" }, undefined, "user:operator");
     const client = await pool.connect();

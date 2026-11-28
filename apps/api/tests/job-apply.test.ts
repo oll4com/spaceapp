@@ -774,17 +774,19 @@ describe("job copilot discovery", () => {
     await service.createApplication("user:a", { company: "Globex", role: "Backend", ats: "lever", url: "https://jobs.lever.co/globex/a" });
     await service.rememberMemory("user:a", { kind: "SITE", text: "ashby:initech", tags: ["board-token"], source: "AGENT" });
     const result = await service.discover("user:a", { query: "backend engineer", tokens: ["acme", "globex", "nothere"], sites: ["greenhouse", "lever", "ashby"], limit: 50 });
-    // Fully remote by default: the hybrid Lever role (Wrocław) and the on-site Ashby role are never offered for the queue.
+    // Operator 27/11: every workplace by default, fully remote postings first (remote is a priority, not a limit).
     expect(result.postings.map((posting) => [posting.company, posting.role, posting.remote, posting.tracked])).toEqual([
       ["Acme", "Senior Backend Engineer", true, false],
-      ["Globex", "Backend Engineer (Platform)", true, true]
+      ["Globex", "Backend Engineer (Platform)", true, true],
+      ["Initech", "Staff Backend Engineer", false, false],
+      ["Globex", "Backend Engineer (Chat)", false, false]
     ]);
     const everyWorkplace = await service.discover("user:a", { query: "backend engineer", tokens: ["acme", "globex"], sites: ["greenhouse", "lever", "ashby"], remote: false, limit: 50 });
     expect(everyWorkplace.postings.map((posting) => [posting.role, posting.remote])).toEqual([
-      ["Staff Backend Engineer", false],
       ["Senior Backend Engineer", true],
-      ["Backend Engineer (Chat)", false],
-      ["Backend Engineer (Platform)", true]
+      ["Backend Engineer (Platform)", true],
+      ["Staff Backend Engineer", false],
+      ["Backend Engineer (Chat)", false]
     ]);
     expect(result.scanned.filter((entry) => entry.error === "no board").map((entry) => `${entry.ats}:${entry.board}`).sort()).toEqual(["ashby:acme", "ashby:globex", "ashby:nothere", "greenhouse:globex", "greenhouse:nothere", "lever:acme", "lever:nothere"]);
     expect(result.scanned.filter((entry) => entry.error === null).map((entry) => `${entry.ats}:${entry.board}`).sort()).toEqual(["ashby:initech", "greenhouse:acme", "lever:globex"]);
@@ -794,7 +796,8 @@ describe("job copilot discovery", () => {
     expect(remoteOnly.postings.map((posting) => posting.company)).toEqual(["Acme", "Globex"]);
     expect(parseBoardPayload("greenhouse", "acme", { jobs: [{ title: "x" }] })).toEqual([]);
     expect(matchesQuery({ url: "https://x", ats: "lever", board: "b", company: "B", role: "Backend Engineer", location: "Athens, Greece", remote: null, postedAt: null }, { query: "engineer", location: "greece", remote: false })).toBe(true);
-    expect(matchesQuery({ url: "https://x", ats: "lever", board: "b", company: "B", role: "Backend Engineer", location: "Athens, Greece", remote: null, postedAt: null }, { query: "engineer", location: "greece" })).toBe(false);
+    expect(matchesQuery({ url: "https://x", ats: "lever", board: "b", company: "B", role: "Backend Engineer", location: "Athens, Greece", remote: null, postedAt: null }, { query: "engineer", location: "greece" })).toBe(true);
+    expect(matchesQuery({ url: "https://x", ats: "lever", board: "b", company: "B", role: "Backend Engineer", location: "Athens, Greece", remote: null, postedAt: null }, { query: "engineer", location: "greece", remote: true })).toBe(false);
     expect(parseBoardPayload("greenhouse", "acme", { jobs: [
       { title: "A", absolute_url: "https://x/1", location: { name: "Remote or Hybrid - Wrocław" } },
       { title: "B", absolute_url: "https://x/2", location: { name: "London (On-site)" } },
@@ -900,7 +903,7 @@ describe("job copilot discovery", () => {
       const cursor = url.searchParams.get("pageToken");
       return new Response(JSON.stringify(cursor ? { jobs: [workable(3, "remote")] } : { jobs: [workable(1, "remote"), workable(2, "hybrid")], nextPageToken: "next" }), { status: 200 });
     }) as typeof fetch;
-    const result = await createDiscovery({ fetchImpl, timeoutMs: 2000 }).search({ query: "backend engineer", sites: ["linkedin", "workable"], limit: 50 } as never, [], async () => false);
+    const result = await createDiscovery({ fetchImpl, timeoutMs: 2000 }).search({ query: "backend engineer", sites: ["linkedin", "workable"], remote: true, limit: 50 } as never, [], async () => false);
     expect(urls.sort()).toEqual([
       "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=backend%20engineer&location=Greece&f_WT=2&f_TPR=r2592000&start=0",
       "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=backend%20engineer&location=Greece&f_WT=2&f_TPR=r2592000&start=10",

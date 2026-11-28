@@ -20,6 +20,8 @@ export interface OwnedResourceRefusal {
 // Nous stays denied except its team-scoped shared-memory routes, whose writes require an ADMIN person.
 const userRoutes: ReadonlyArray<{ prefix: string; methods?: readonly string[]; namesRoom?: true }> = [
   { prefix: "/api/nous/shared-memory" },
+  // Nous Computer account (K4): registered only headless; the route acts on the user's own tenant only.
+  { prefix: "/api/account" },
   { prefix: "/api/auth" }, { prefix: "/api/app", methods: ["GET"] }, { prefix: "/api/client-errors", methods: ["POST"] },
   { prefix: "/api/rooms" }, { prefix: "/api/panes" }, { prefix: "/api/artifacts" }, { prefix: "/api/events" },
   // The turn list names its room (it lists every room's prompts otherwise; 1.1.9 review S2); a new turn names its room in the body.

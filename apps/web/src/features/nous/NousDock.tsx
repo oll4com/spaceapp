@@ -24,7 +24,7 @@ import { NousLiveStats } from "./NousLiveStats.js";
 import { openAgentsDashboard, type AgentsDashboardPreset } from "../agents-dashboard/dashboard-model.js";
 import { useDoneView } from "./NousDone.js";
 import { useUpdatesView } from "./NousUpdates.js";
-import { INBOX_TAB_KEY, InboxThreadCard, isInboxTabChoice, NousInbox as InboxView, useInboxView } from "./NousInbox.js";
+import { INBOX_TAB_KEY, InboxThreadCard, type InboxTabChoice, isInboxTabChoice, NousInbox as InboxView, useInboxView } from "./NousInbox.js";
 import { NousInboxQueue } from "./NousInboxQueue.js";
 import { NousShared, useSharedFiles } from "./NousShared.js";
 import { decisionMarkdown, needsYouMarkdown, PlanNeedsYou, useNeedsYouRequests } from "./NousNeedsYou.js";
@@ -32,6 +32,7 @@ import { NeedsYouFiles } from "../needs-you/NeedsYouFiles.js";
 import { useNeedsYouView } from "../needs-you/needs-you-view.js";
 import { consumePlanView, NOUS_DONE_OPEN_EVENT } from "./nous-done-events.js";
 import { scrollWithin } from "./nous-scroll.js";
+import { nextReadMark, readRows } from "./nous-read-mark.js";
 import { goToNeedsYouPane, inboxBadge, peekNotificationStore, refreshNotifications, useNotificationStore } from "../notifications/notification-store.js";
 import { NousPaneBoard } from "./NousPaneBoard.js";
 import { ClosedPlanDetail, NousPlanMap } from "./NousPlanMap.js";
@@ -147,6 +148,15 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   /** "Go to my last message" waits for the page that brings its target; "Load earlier" keeps the row that was on top in place. */
   const pendingJumpRef = useRef<string | null>(null);
   const anchorRef = useRef<{ row: Element; top: number } | null>(null);
+  /** The last-read band on the scrollbar (nous-read-mark.ts): the server's mark, the rows' newest times, the rows after them. */
+  const { readUpTo, markRead } = history;
+  const readRef = useRef(readUpTo);
+  readRef.current = readUpTo;
+  const readAtsRef = useRef<string[]>([]);
+  const readTrailRef = useRef(0);
+  const readSeenRef = useRef(new Set<string>());
+  const bandRef = useRef<HTMLDivElement | null>(null);
+  const readFrameRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   /** Find in the conversation (operator nous_msg:a44eacc4): the query (null while closed), how many matches back from the newest, how many there are. */
   const [search, setSearch] = useState<string | null>(null);
@@ -174,7 +184,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   const openDecisionIds = decisions.filter((decision) => decision.status === "OPEN" && !decision.runsWhen).map((decision) => decision.id).join();
   useEffect(() => { if (canRun) void refreshNotifications({ ifChanged: true }); }, [canRun, openDecisionIds]);
   // Plan clipboard:JD8EbQgQdRls: a toast, pop-up or push opens its own Inbox tab; the bell opens the first tab with something (null).
-  const [, setInboxTab] = useNousUiState<InboxTab | null>(INBOX_TAB_KEY, null, isInboxTabChoice);
+  const [, setInboxTab] = useNousUiState<InboxTabChoice | null>(INBOX_TAB_KEY, null, isInboxTabChoice);
   const openInbox = (inboxTab: InboxTab | null = null) => { setPlanView(null); setTab("inbox"); setInboxTab(inboxTab); };
   useInboxView(() => openInbox());
   useDoneView(() => openInbox("DONE"));
@@ -308,6 +318,25 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   const planCard = (id: string, key: string) => <NousPlanCard key={key} plan={plans[id]} open={false} onToggle={() => openPlan(id)} />;
 
   const count = messages?.length ?? 0;
+  const measureRead = useCallback(() => {
+    readFrameRef.current = 0;
+    const list = listRef.current, band = bandRef.current, ats = readAtsRef.current;
+    const first = (list?.children.length ?? 0) - readTrailRef.current - ats.length;
+    // Before the server's mark arrives nothing is marked: a guess would move the shared mark for every client.
+    if (!list || !band || !list.clientHeight || first < 0 || readRef.current === undefined) return;
+    const box = (index: number) => list.children[first + index]!.getBoundingClientRect();
+    const view = list.getBoundingClientRect();
+    const mark = nextReadMark(ats, box, readRef.current, view, readSeenRef.current);
+    if (mark !== null && mark !== readRef.current) { readRef.current = mark; markRead(mark); }
+    const read = readRows(ats, mark);
+    const bottom = read ? box(read - 1).bottom - view.top + list.scrollTop : 0;
+    band.style.top = `${list.offsetTop}px`;
+    band.style.left = `${list.offsetLeft + list.offsetWidth}px`;
+    band.style.height = `${Math.min(1, bottom / list.scrollHeight) * list.clientHeight}px`;
+  }, [markRead]);
+  const scheduleRead = useCallback(() => { if (!readFrameRef.current) readFrameRef.current = window.requestAnimationFrame(measureRead); }, [measureRead]);
+  useEffect(() => scheduleRead());
+  useEffect(() => () => window.cancelAnimationFrame(readFrameRef.current), []);
   const toLatest = useCallback(() => { const list = listRef.current; if (list) list.scrollTop = list.scrollHeight; }, []);
   useEffect(() => { stickRef.current = true; toLatest(); }, [tab, fullscreen, isActive, toLatest]);
   useEffect(() => { if (stickRef.current) toLatest(); }, [count, toLatest]);
@@ -324,14 +353,16 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
       if (visible && !shown) stickRef.current = true;
       shown = visible;
       if (stickRef.current) toLatest();
+      scheduleRead();
     });
     const watch = () => { resize.observe(listEl); for (const row of listEl.children) resize.observe(row); };
     watch();
     const rows = new MutationObserver(watch);
     rows.observe(listEl, { childList: true });
     return () => { resize.disconnect(); rows.disconnect(); };
-  }, [listEl, toLatest]);
+  }, [listEl, toLatest, scheduleRead]);
   const onScroll = () => {
+    scheduleRead();
     const list = listRef.current;
     if (!list || (jumpTopRef.current !== null && Math.abs(list.scrollTop - jumpTopRef.current) < 2)) return;
     jumpTopRef.current = null;
@@ -365,8 +396,13 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
     const mine = [...list.querySelectorAll<HTMLElement>(".nous-message.is-operator")];
     const jumped = list.querySelector<HTMLElement>("[data-jumped]");
     const listTop = list.getBoundingClientRect().top;
-    // Not scrolled since the last press: the one before it; at the end: the newest; scrolled by hand: the nearest one above the view.
-    const index = !mine.length ? -1 : jumped && jumpTopRef.current !== null ? mine.indexOf(jumped) - 1
+    const chain = jumped !== null && jumpTopRef.current !== null;
+    // Operator 27/11: a first press goes where the yellow read band ends (the first unread row), the next ones to their messages above it.
+    const ats = readAtsRef.current, read = readRows(ats, readRef.current ?? null);
+    const unread = read > 0 && read < ats.length ? list.children[list.children.length - readTrailRef.current - ats.length + read] as HTMLElement | undefined : undefined;
+    if (!chain && unread && Math.abs(unread.getBoundingClientRect().top - listTop) > 4) { readSeenRef.current.add(ats[read]!); jumpTo(unread); return; }
+    // Not scrolled since the last press: the one before it; at the end: the newest; scrolled by hand or from the read band: the nearest one above the view.
+    const index = !mine.length ? -1 : chain && mine.includes(jumped!) ? mine.indexOf(jumped!) - 1
       : stickRef.current ? mine.length - 1
       : mine.findLastIndex((row) => row.getBoundingClientRect().top - listTop < -4);
     if (index >= 0) { jumpTo(mine[index]!); return; }
@@ -621,6 +657,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
         {items}
         {trailing}
       </div>
+      <div className="nous-read-band" ref={bandRef} aria-hidden="true" />
       {search !== null ? (
         <div className="nous-search" role="search">
           <input type="search" value={search} autoFocus aria-label={t("Search the conversation")} placeholder={t("Search the conversation")}
@@ -655,7 +692,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
             <DockIconButton label={t("Stop")} icon={CircleStop} onClick={() => void act(() => api.stopNous(), "Nous could not be stopped.")} />
           ) : null}
           <span className="nous-composer-jump">
-            <DockIconButton label={t("Go to my last message (press again for the one before)")} icon={ChevronsUp} disabled={!count} onClick={jumpToMine} />
+            <DockIconButton label={t("Go to where I stopped reading (press again for my messages before it)")} icon={ChevronsUp} disabled={!count} onClick={jumpToMine} />
             <DockIconButton label={t("Go to the latest message")} icon={ChevronsDown} disabled={!count} onClick={jumpToLatest} />
             <DockIconButton label={t("Search the conversation")} icon={Search} aria-pressed={search !== null} data-nous-search-toggle
               onClick={() => search === null ? setSearch("") : closeSearch()} />
@@ -668,7 +705,7 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
       {dragging ? <div className="nous-drop-hint" aria-hidden="true">{t("Drop files to send them to Nous")}</div> : null}
     </div>
   ) : tab === "inbox" ? (
-    <InboxView active={isActive && canRun} sources={inboxSources} focus={needsFocus} trailing={<>{state?.inboxItems?.length ? <NousInboxQueue items={state.inboxItems} /> : null}<LinkedNousDecisions /></>} />
+    <InboxView active={isActive && canRun} sources={inboxSources} focus={needsFocus} trailing={<LinkedNousDecisions />} queue={<NousInboxQueue items={state?.inboxItems ?? []} />} />
   ) : tab === "shared" ? (
     <NousShared files={shared.files} error={shared.error} onRetry={() => void shared.retry()} onRemoved={shared.removed} />
   ) : tab === "startup" ? (
@@ -705,13 +742,18 @@ function NousDockContent({ canRun = false, isAdmin = false }: { canRun?: boolean
   // Only the dialogue stays open (operator request 2026-10-21, every dock size): each run of tool steps, its helpers' included,
   // folds into one line that opens to the whole list; so does each run of news from the rooms (operator 16/11 05:24Z: 25 rows in a row).
   const folded: ReactNode[] = [];
+  const foldedAts: string[] = [];
   for (let index = 0; index < entries.length;) {
     const kind = entries[index]!.fold?.kind;
-    if (!kind) { folded.push(entries[index++]!.node); continue; }
+    if (!kind) { foldedAts.push(entries[index]!.at); folded.push(entries[index++]!.node); continue; }
     const run: NousMessage[] = [];
     while (entries[index]?.fold?.kind === kind) run.push(entries[index++]!.fold!);
+    foldedAts.push(entries[index - 1]!.at);
     folded.push(kind === "TOOL" ? <NousSteps key={run[0]!.id} steps={run} /> : <NousInbox key={run[0]!.id} messages={run} />);
   }
+  // Each folded item is one row of the list, after "Load earlier" and before the draft answer (measureRead maps them from the end).
+  readAtsRef.current = foldedAts;
+  readTrailRef.current = draftNode ? 1 : 0;
 
   if (fullscreen) {
     // Maximized (operator request 2026-10-17): a command center for the whole day. Nous on the left, the work in the middle,

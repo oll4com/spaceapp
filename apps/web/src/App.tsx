@@ -1106,6 +1106,7 @@ export function App() {
   const [workspaceUserLink, setWorkspaceUserLink] = useState<UserLink | null>(null);
   const [workspaceStickyItem, setWorkspaceStickyItem] = useState<ClipboardItem | null>(null);
   const roomDeleteConfirm = useDockConfirm();
+  const paneCloseConfirm = useDockConfirm();
   useEffect(() => {
     if (workspaceNavigationDetail !== "link-preview") setWorkspaceUserLink(null);
   }, [workspaceNavigationDetail]);
@@ -3330,7 +3331,7 @@ export function App() {
       for (const roomId of roomIds) removeRoomRuntime(roomId);
     }
     try {
-      const results = await Promise.allSettled(roomIds.map((roomId) => closeOrConfirm((force) => api.deleteRoom(roomId, force))));
+      const results = await Promise.allSettled(roomIds.map((roomId) => closeOrConfirm((force) => api.deleteRoom(roomId, force), paneCloseConfirm.confirm)));
       const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failure) {
         // Only the rooms the server refused come back.
@@ -3638,7 +3639,7 @@ export function App() {
     setPanes((current) => current.filter((pane) => pane.id !== paneId));
     setSelectedPaneId((current) => (current === paneId ? null : current));
     try {
-      await closeOrConfirm((force) => api.closePane(paneId, force));
+      await closeOrConfirm((force) => api.closePane(paneId, force), paneCloseConfirm.confirm);
     } catch (err) {
       if (closingPane) {
         setPanes((current) => {
@@ -6716,7 +6717,7 @@ export function App() {
 
   async function closeDetachedPane(paneId: string) {
     try {
-      await closeOrConfirm((force) => api.closePane(paneId, force));
+      await closeOrConfirm((force) => api.closePane(paneId, force), paneCloseConfirm.confirm);
       setPanes((current) => current.filter((pane) => pane.id !== paneId));
       refreshToolbarSystemState();
     } catch (err) {
@@ -6795,7 +6796,7 @@ export function App() {
       content = <WorkspaceRoomSettings actions={workspaceNavigationActions} detailActionIds={workspaceDetailActionIds} onNavigate={onNavigate} />;
     } else if (id === "resources" || id === "system-resources" || id === "surface-health") {
       content = <SystemHealth userId={auth?.user?.id ?? ""} railVisible={false} environment={codexEnvironmentSummary}
-        allowChanges={isAdminMode} onClose={onBack} onReopenPane={reopenPane} onReopenAllDetached={reopenAllDetachedPanes}
+        allowChanges={isAdminMode} isAdmin={auth?.user?.role === "ADMIN"} onClose={onBack} onReopenPane={reopenPane} onReopenAllDetached={reopenAllDetachedPanes}
         onCloseSession={closeDetachedPane} />;
     } else if (id.startsWith("surface-")) {
       const surface = id.slice(8) as SideSurface;
@@ -7137,7 +7138,7 @@ export function App() {
             currentRoomId={activeRoom?.id ?? selectedRoomId ?? null} selectedPaneId={selectedPaneId} preset={agentsDashboardPreset} />
         </RecoverableSurface>
       ) : null}
-      {auth.user && <SystemHealth key={auth.user.id} userId={auth.user.id} allowChanges={shellMode !== "desktop" || isAdminMode}
+      {auth.user && <SystemHealth key={auth.user.id} userId={auth.user.id} allowChanges={shellMode !== "desktop" || isAdminMode} isAdmin={auth.user.role === "ADMIN"}
         onOpenAgentsDashboard={() => setIsAgentsDashboardOpen(true)}
         agentsSummary={agentsDashboardSummary}
         railVisible={showResourceIndicatorRail}
@@ -7417,6 +7418,7 @@ export function App() {
         ) : null}
 
       </section>
+      {paneCloseConfirm.confirmDialog}
       {isMemoryWorkspaceOpen ? <div className="workspace-cover">
         <MemoryWorkspaceErrorBoundary onClose={() => setIsMemoryWorkspaceOpen(false)}>
           <RecoverableSurface fallback={<div className="memory-workspace-loading" role="status">Loading memory workspace…</div>}>

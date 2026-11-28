@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
-  gatewayPooledRemaining, type GatewayAccount, type GatewayApiKey, type GatewayApiKeyCreatedResponse, type GatewayApiKeyDetail, type GatewayCompressionMode,
+  GATEWAY_KEY_PROVIDER_PATTERN, gatewayPooledRemaining, type GatewayAccount, type GatewayApiKey, type GatewayApiKeyCreatedResponse, type GatewayApiKeyDetail, type GatewayCompressionMode,
   type GatewayLimitType, type GatewayLimitWindow, type GatewayOutputPolicy, type GatewayReasoningEffort, type GatewaySettings, type GatewayTrafficClass
 } from "@space/contracts";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
@@ -23,12 +23,12 @@ const limitUsed = (limit: GatewayApiKey["limits"][number], now: number) => (Date
 
 interface LimitDraft { type: GatewayLimitType; window: GatewayLimitWindow; max: string; model: string }
 interface KeyDraft {
-  name: string; trafficClass: GatewayTrafficClass; allowedModels: string; enforcedModel: string; efforts: GatewayReasoningEffort[];
+  name: string; trafficClass: GatewayTrafficClass; allowedModels: string; allowedProviders: string; enforcedModel: string; efforts: GatewayReasoningEffort[];
   enforcedEffort: string; accountIds: string[]; limits: LimitDraft[]; expiresAt: string; compression: "" | GatewayCompressionMode;
   outputPolicy: "" | GatewayOutputPolicy;
 }
 
-const emptyDraft: KeyDraft = { name: "", trafficClass: "INTERACTIVE", allowedModels: "", enforcedModel: "", efforts: [], enforcedEffort: "", accountIds: [],
+const emptyDraft: KeyDraft = { name: "", trafficClass: "INTERACTIVE", allowedModels: "", allowedProviders: "", enforcedModel: "", efforts: [], enforcedEffort: "", accountIds: [],
   limits: [], expiresAt: "", compression: "", outputPolicy: "" };
 
 /** A datetime-local value in the browser's time zone. */
@@ -40,7 +40,8 @@ function toLocalInput(iso: string | null) {
 
 function draftOf(key: GatewayApiKey): KeyDraft {
   return {
-    name: key.name, trafficClass: key.trafficClass, allowedModels: key.allowedModels.join(", "), enforcedModel: key.enforcedModel ?? "",
+    name: key.name, trafficClass: key.trafficClass, allowedModels: key.allowedModels.join(", "),
+    allowedProviders: (key.allowedProviders ?? []).join(", "), enforcedModel: key.enforcedModel ?? "",
     efforts: [...key.allowedReasoningEfforts], enforcedEffort: key.enforcedReasoningEffort ?? "", accountIds: [...key.accountIds],
     limits: key.limits.map((limit) => ({ type: limit.limitType, window: limit.limitWindow, max: String(limit.limitType === "COST_USD" ? limit.maxValue / 1e6 : limit.maxValue),
       model: limit.modelFilter ?? "" })),
@@ -50,13 +51,15 @@ function draftOf(key: GatewayApiKey): KeyDraft {
 
 /** The request body for a draft, or an error message. */
 function payloadOf(draft: KeyDraft): { error: string } | { body: {
-  name: string; trafficClass: GatewayTrafficClass; allowedModels: string[]; enforcedModel: string | null; allowedReasoningEfforts: GatewayReasoningEffort[];
+  name: string; trafficClass: GatewayTrafficClass; allowedModels: string[]; allowedProviders: string[]; enforcedModel: string | null; allowedReasoningEfforts: GatewayReasoningEffort[];
   enforcedReasoningEffort: GatewayReasoningEffort | null; accountIds: string[]; compressionOverride: GatewayCompressionMode | null;
   outputPolicyOverride: GatewayOutputPolicy | null; expiresAt: string | null;
   limits: { limitType: GatewayLimitType; limitWindow: GatewayLimitWindow; maxValue: number; modelFilter: string | null }[];
 } } {
   if (!draft.name.trim()) return { error: "Give the key a name." };
   const allowedModels = draft.allowedModels.split(",").map((model) => model.trim()).filter(Boolean);
+  const allowedProviders = draft.allowedProviders.split(",").map((provider) => provider.trim().toLowerCase()).filter(Boolean);
+  if (allowedProviders.some((provider) => !GATEWAY_KEY_PROVIDER_PATTERN.test(provider))) return { error: "Name providers like codex, claude or gemini, separated by commas." };
   const enforcedModel = draft.enforcedModel.trim() || null;
   if (enforcedModel && allowedModels.length > 0 && !allowedModels.includes(enforcedModel)) return { error: "The enforced model must be one of the allowed models." };
   const enforcedEffort = (draft.enforcedEffort || null) as GatewayReasoningEffort | null;
@@ -71,7 +74,7 @@ function payloadOf(draft: KeyDraft): { error: string } | { body: {
     limits.push({ limitType: limit.type, limitWindow: limit.window, maxValue, modelFilter: limit.model.trim() || null });
   }
   const expiresAt = draft.expiresAt ? new Date(draft.expiresAt).toISOString() : null;
-  return { body: { name: draft.name.trim(), trafficClass: draft.trafficClass, allowedModels, enforcedModel, allowedReasoningEfforts: draft.efforts,
+  return { body: { name: draft.name.trim(), trafficClass: draft.trafficClass, allowedModels, allowedProviders, enforcedModel, allowedReasoningEfforts: draft.efforts,
     enforcedReasoningEffort: enforcedEffort, accountIds: draft.accountIds, compressionOverride: draft.compression || null,
     outputPolicyOverride: draft.outputPolicy || null, expiresAt, limits } };
 }
@@ -93,6 +96,8 @@ function KeyForm({ initial, accounts, submitLabel, busy, onSubmit, onCancel }: {
           </select>
         </label>
         <label>Allowed models<input value={draft.allowedModels} placeholder="All models" onChange={(event) => set("allowedModels", event.target.value)} /></label>
+        <label>Allowed providers<input value={draft.allowedProviders} placeholder="All providers" title="Space routes (codex, claude, claude_opencode, bedrock, vertex) or key pools (gemini, groq, ...)"
+          onChange={(event) => set("allowedProviders", event.target.value)} /></label>
         <label>Enforced model<input value={draft.enforcedModel} placeholder="As requested" onChange={(event) => set("enforcedModel", event.target.value)} /></label>
         <label>Enforced reasoning effort
           <select value={draft.enforcedEffort} onChange={(event) => set("enforcedEffort", event.target.value)}>
@@ -229,6 +234,7 @@ function KeyDetail({ apiKey, accounts, client, settings, now, onChanged }: {
       <dl className="gw-facts" aria-label="Key settings">
         <dt>Traffic class</dt><dd>{trafficClassOptions.find((option) => option.value === apiKey.trafficClass)?.label}</dd>
         <dt>Models</dt><dd>{apiKey.allowedModels.length ? apiKey.allowedModels.join(", ") : "All models"}{apiKey.enforcedModel ? ` · always ${apiKey.enforcedModel}` : ""}</dd>
+        <dt>Providers</dt><dd>{apiKey.allowedProviders?.length ? apiKey.allowedProviders.join(", ") : "All providers"}</dd>
         <dt>Reasoning effort</dt><dd>{apiKey.allowedReasoningEfforts.length ? apiKey.allowedReasoningEfforts.join(", ") : "Any"}{apiKey.enforcedReasoningEffort ? ` · always ${apiKey.enforcedReasoningEffort}` : ""}</dd>
         <dt>Accounts</dt><dd>{apiKey.accountScopeEnabled ? apiKey.accountIds.map((id) => { const account = accountById.get(id); return account ? accountName(account) : "Removed account"; }).join(", ") : "Every account"}</dd>
         <dt>Compression</dt><dd>{apiKey.compressionOverride ? { OFF: "Off", ON: "On" }[apiKey.compressionOverride] : "Global setting"}</dd>

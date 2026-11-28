@@ -16,6 +16,21 @@ export const INBOX_NEWS = ["REPORT", "UPDATE", "PROGRESS", "ALERT"] as const;
 export type InboxNews = typeof INBOX_NEWS[number];
 export type InboxTab = "NEEDS" | "DONE" | "UPDATES" | "REQUESTS";
 
+/**
+ * Operator 27/11 (plan clipboard:va__qa_eBMYr §3; an agent's sign-in card offered "Go now" for 69 minutes after its browser handoff ran out): what a
+ * hands ask's place looks like at this read, from what Space already holds (the pane, the live browsers, the handoff, the pane's reports). Never stored.
+ */
+export type InboxAskLiveState = "READY" | "EXPIRED" | "PAGE_GONE" | "PANE_CLOSED" | "MOVED_ON";
+export interface InboxAskLive {
+  state: InboxAskLiveState;
+  /** One plain English line; MOVED_ON: the agent's own later report. A client says the state in its own language. */
+  line: string;
+  /** When it became so, where Space knows (the handoff ran out, the agent reported). */
+  at?: string;
+  /** READY under a browser handoff: when that runs out. */
+  until?: string;
+}
+
 export interface InboxAsk {
   /** As written; whether it is still open is derived (`inboxThreadState`): no later ANSWER or CLOSED for its ref. */
   open: boolean;
@@ -30,6 +45,8 @@ export interface InboxAsk {
   checked?: string;
   goToPane?: { roomId: string; paneId: string; target?: string };
   category?: "RELEASE" | "DESTRUCTIVE" | "EXTERNAL" | "DIRECTION";
+  /** An open hands ask of the operator's, on the Threads read only. */
+  live?: InboxAskLive;
 }
 
 export interface InboxThreadRefs {

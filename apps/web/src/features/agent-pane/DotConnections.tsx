@@ -1,14 +1,38 @@
 import { useEffect, useState } from "react";
-import type { ConnectorCapability, ConnectorsStatus } from "@space/contracts";
+import { connectorCapabilitySchema, missingGoogleCapabilities, type ConnectorCapability, type ConnectorsStatus } from "@space/contracts";
 import { api } from "../../api.js";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 
-/** What a Dot can ask Google for; organizing mail belongs to Job Copilot, so Dots do not offer it. */
-const dotCapabilities: ConnectorCapability[] = ["MAIL_READ", "MAIL_COMPOSE", "CALENDAR"];
-const capabilityLabels: Record<ConnectorCapability, string> = { MAIL_READ: "Read email", MAIL_COMPOSE: "Draft and send email", CALENDAR: "Calendar", MAIL_ORGANIZE: "Label and archive email" };
+/** What a Dot can ask for; organizing mail belongs to Job Copilot, so Dots do not offer it. YouTube (Streaming) is Google only. */
+const dotCapabilities: ConnectorCapability[] = ["MAIL_READ", "MAIL_COMPOSE", "CALENDAR", "YOUTUBE"];
+const capabilityLabels: Record<ConnectorCapability, string> = { MAIL_READ: "Read email", MAIL_COMPOSE: "Draft and send email", CALENDAR: "Calendar", MAIL_ORGANIZE: "Label and archive email",
+  YOUTUBE: "YouTube" };
 const providerLabels = { GOOGLE: "Google", MICROSOFT: "Microsoft" } as const;
-export function connectorStartUrl(provider: "GOOGLE" | "MICROSOFT", capabilities: ConnectorCapability[]): string {
-  return `/api/connectors/${provider.toLowerCase()}/start?capabilities=${encodeURIComponent(capabilities.join(","))}`;
+export function connectorStartUrl(provider: "GOOGLE" | "MICROSOFT", capabilities: ConnectorCapability[], loginHint?: string): string {
+  const asked = provider === "MICROSOFT" ? capabilities.filter((capability) => capability !== "YOUTUBE") : capabilities;
+  return `/api/connectors/${provider.toLowerCase()}/start?capabilities=${encodeURIComponent(asked.join(","))}${loginHint ? `&loginHint=${encodeURIComponent(loginHint)}` : ""}`;
+}
+
+/** Right after a Google sign-in that lacks some of Space's access (`/?googleGrant=<email>`): one tap grants Gmail, Calendar and YouTube. */
+export function GoogleGrantPrompt() {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  const [email, setEmail] = useState(() => new URLSearchParams(window.location.search).get("googleGrant"));
+  if (!email) return null;
+  const dismiss = () => {
+    const params = new URLSearchParams(window.location.search);
+    params.delete("googleGrant");
+    const query = params.toString();
+    window.history.replaceState({}, document.title, `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+    setEmail(null);
+  };
+  return <div className="banner ok" role="status">
+    <div className="notice-row">
+      <span>{t("Let Space use Gmail, Calendar and YouTube for {email}? You can change this later in Settings → Connected accounts.", { email })}</span>
+      <a className="dots-connect-link" href={connectorStartUrl("GOOGLE", [...connectorCapabilitySchema.options], email)}>{t("Grant access")}</a>
+      <button type="button" onClick={dismiss}>{t("Not now")}</button>
+    </div>
+  </div>;
 }
 
 /** A service the server is not set up for: a plain sentence, the admin's setup steps folded below. */
@@ -30,7 +54,7 @@ export function DotConnections({ read = api.connectors, disconnect = api.disconn
   const [status, setStatus] = useState<ConnectorsStatus | null>(null);
   const [failed, setFailed] = useState(false);
   const [revision, setRevision] = useState(0);
-  const [chosen, setChosen] = useState<ConnectorCapability[]>(["MAIL_READ", "MAIL_COMPOSE", "CALENDAR"]);
+  const [chosen, setChosen] = useState<ConnectorCapability[]>(dotCapabilities);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   useEffect(() => {
@@ -54,6 +78,9 @@ export function DotConnections({ read = api.connectors, disconnect = api.disconn
     {status.accounts.length ? <ul className="dots-records">{status.accounts.map((account) => <li key={account.accountId}>
       <strong>{account.email}</strong>
       <span>{providerLabels[account.provider]} · {account.capabilities.length ? account.capabilities.map((capability) => t(capabilityLabels[capability])).join(", ") : t("No permissions granted")}</span>
+      {account.provider === "GOOGLE" && missingGoogleCapabilities(account.capabilities).length ? <a className="dots-connect-link"
+        href={connectorStartUrl("GOOGLE", missingGoogleCapabilities(account.capabilities), account.email)}
+        title={missingGoogleCapabilities(account.capabilities).map((capability) => t(capabilityLabels[capability])).join(", ")}>{t("Grant the missing ones")}</a> : null}
       {confirming === account.accountId ? <div className="dots-memory-actions" role="group" aria-label={t("Confirm disconnecting")}>
         <span>{t("Disconnect {email}? Space deletes its stored access.", { email: account.email })}</span>
         <button type="button" className="dots-memory-forget" onClick={() => void remove(account.accountId)}>{t("Disconnect")}</button>
@@ -74,7 +101,7 @@ export function DotConnections({ read = api.connectors, disconnect = api.disconn
     </div>
     {status.providers.some((provider) => provider.provider === "GOOGLE" && provider.configured) ? <details className="dots-connect-help">
       <summary>{t("Google says “Access blocked”?")}</summary>
-      <p>{t("While the server's Google Cloud app is in Testing, only its test users can connect. In Google Cloud Console open Google Auth Platform → Audience and add the account under Test users, or publish the app. Enable the Gmail API and Google Calendar API for the same project. Access granted in Testing ends after seven days; Space then asks you to reconnect.")}</p>
+      <p>{t("While the server's Google Cloud app is in Testing, only its test users can connect. In Google Cloud Console open Google Auth Platform → Audience and add the account under Test users, or publish the app. Enable the Gmail API, Google Calendar API, YouTube Data API v3 and YouTube Analytics API for the same project. Access granted in Testing ends after seven days; Space then asks you to reconnect.")}</p>
     </details> : null}
     {notice ? <p role="status">{notice}</p> : null}
   </section>;

@@ -12,6 +12,10 @@ import { agentThread, type MailCopilotService } from "./service.js";
 // room owner; the agent gets mail as text, memories, work items and decisions, never a token.
 export const cliMailCopilotPathPrefix = "/api/cli/mail-copilot/";
 const ruleIdSchema = z.string().regex(/^mailrule:[A-Za-z0-9_-]{6,80}$/);
+// A draft's local file as standard padded base64. Checked by a linear round trip, not /^[A-Za-z0-9+/]+=*$/: that regex threw
+// RangeError "Maximum call stack size exceeded" inside zod on a 3.3 MB attachment (stable req:I6Vm4b7SK-k0, 27/11), a 500 for the draft.
+export const mailDraftFileSchema = z.object({ filename: z.string().trim().min(1).max(255).regex(/^[^\r\n/\\]+$/), mimeType: z.string().trim().regex(/^[\w.+-]+\/[\w.+-]+$/),
+  data: z.string().min(1).refine((data) => Buffer.from(data, "base64").toString("base64") === data, "Standard base64 without line breaks.") }).strict();
 
 export interface CliBridgeClaims { roomId: string; paneId: string; cliSessionId: string }
 export interface MailCopilotAgentRouteDependencies {
@@ -120,8 +124,7 @@ export function registerMailCopilotAgentRoutes(app: FastifyInstance, service: Ma
   app.post(route("draft"), { ...routeOptions, bodyLimit: 36 * 1024 * 1024 }, async (request, reply) => {
     const bridge = await context(request, reply, true);
     if (!bridge) return reply;
-    const file = z.object({ filename: z.string().trim().min(1).max(255).regex(/^[^\r\n/\\]+$/), mimeType: z.string().trim().regex(/^[\w.+-]+\/[\w.+-]+$/), data: z.string().min(1).regex(/^[A-Za-z0-9+/]+=*$/) }).strict();
-    const { files = [], ...input } = parseBody(mailComposeInputSchema.extend({ files: z.array(file).optional() }), request.body ?? {});
+    const { files = [], ...input } = parseBody(mailComposeInputSchema.extend({ files: z.array(mailDraftFileSchema).optional() }), request.body ?? {});
     const attachments = files.map((entry) => ({ filename: entry.filename, mimeType: entry.mimeType, data: Buffer.from(entry.data, "base64") }));
     const draft = await service.draft(bridge.owner, bridge.pane, input, attachments);
     await service.record(bridge.owner, { paneId: bridge.pane.id, type: "DRAFTED", accountEmail: input.account, threadId: input.threadId ?? null, message: `The copilot drafted: ${input.subject || "(no subject)"} → ${input.to.join(", ")}${files.length ? ` [attachments: ${files.map((entry) => entry.filename).join(", ")}]` : ""}`,

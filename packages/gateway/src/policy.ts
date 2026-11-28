@@ -71,6 +71,20 @@ export function applyRequestPolicy(input: Body, key: GatewayApiKeyRecord | null,
   return { body, model, reasoningEffort: requestedEffort, requestedServiceTier: rawTier, serviceTier };
 }
 
+/**
+ * The provider a request reaches, as a key's allowedProviders names it (plan clipboard:yw_pvUb_616N): a key-pool slug, or a Space route in
+ * lower case. Null for a path no provider list covers (images, embeddings, transcription), which a scoped key may not use.
+ * keyOnlyClaude: the loopback /pools/space hand-off to the paid Claude API key (header plus the internal token).
+ */
+export function requestProvider(path: string, anthropicVersion: boolean, keyOnlyClaude: boolean): string | null {
+  const pool = /^\/pools\/([a-z0-9_-]+)\//.exec(path)?.[1];
+  if (pool) return pool;
+  if (/^\/v1\/messages(?:\/|$)/.test(path)) return keyOnlyClaude ? "claude_opencode" : "claude";
+  if (path === "/v1/models") return anthropicVersion ? "claude" : "codex";
+  if (/^\/(?:v1\/(?:responses|chat\/completions)|backend-api\/codex)(?:\/|$)/.test(path)) return "codex";
+  return null;
+}
+
 /** A key with a model allowlist serves only those models; a request that names no model is not an exception. */
 export function assertModelAllowed(key: GatewayApiKeyRecord | null, model: string | null): void {
   if (key && key.allowedModels.length > 0 && (model === null || !key.allowedModels.includes(model))) {

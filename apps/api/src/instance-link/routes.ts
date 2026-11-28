@@ -549,9 +549,10 @@ export function registerInstanceLinks(app: FastifyInstance, options: {
     // Its AI key stops too (security review 15/11): lending is on only while that key is active, and records are never deleted.
     const aiKey = synced ? keyOf(await aiKeys().catch(() => []), synced.id) : undefined;
     if (aiKey?.isActive) await options.gateway!.service().updateApiKey(aiKey.id, { isActive: false });
+    // Only after the owner check: another person's id must not wipe this link's lent key or lending (review 27/11, REV1127-001).
+    if (!(await repository.remove(owner, request.params.id))) return sendApiError(reply, 404, "NOT_FOUND", "No such linked SpaceApp.");
     plainKeys.delete(request.params.id);
     lendingTo.delete(request.params.id);
-    if (!(await repository.remove(owner, request.params.id))) return sendApiError(reply, 404, "NOT_FOUND", "No such linked SpaceApp.");
     sessions.delete(request.params.id);
     readings.delete(request.params.id);
     versions.delete(request.params.id);

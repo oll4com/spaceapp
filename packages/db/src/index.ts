@@ -2,6 +2,7 @@ export { loadMigrations, migrationDirectory } from "./migrations.js";
 export * from "./system-health-repository.js";
 export { PostgresSpaceStore, createSpacePgPool, queryLabel, takeQueryRowCounts, type PgClientLike, type PgPoolLike, type PostgresSpaceStoreOptions } from "./space-store.js";
 export { TENANT_LOCAL, currentTenantId, tenancyEnabled, tenantScopedPool, withTenant } from "./tenant-context.js";
+export { rollbackKeepingError } from "./rollback.js";
 export { CanonicalMemoryEmbeddings, type CanonicalEmbeddingRow } from "./canonical-memory-embeddings.js";
 export { PostgresTelegramPersistence } from "./telegram-persistence.js";
 export {

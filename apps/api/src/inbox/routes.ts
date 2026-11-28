@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { z } from "zod";
 import {
-  inboxActInputSchema, inboxBadge, inboxDoneAllInputSchema, inboxPlainLine, inboxQuerySchema, inboxRequestNews, inboxTabOf, inboxThreadCounts, inboxThreadState, type InboxActInput, type InboxActResult, type InboxEvent, type InboxPage,
+  inboxActInputSchema, inboxBadge, inboxDoneAllInputSchema, inboxPlainLine, inboxQuerySchema, inboxRequestNews, inboxTabOf, inboxThreadCounts, inboxThreadState, type InboxActInput, type InboxActResult, type InboxAskLive, type InboxEvent, type InboxPage,
   type InboxThread, type InboxThreadView, type NotificationAnswerResult, type NotificationStatus, type NousDecision, type NousDecisionAnswerInput, type SpaceNotification
 } from "@space/contracts";
 import type { InboxRepository } from "@space/db";
@@ -28,6 +28,25 @@ export interface InboxRoutesDeps {
   answerNeedsYou(request: FastifyRequest, id: string, input: { option?: string; text?: string; always?: boolean }): Promise<NotificationAnswerResult>;
   answerDecision(owner: string, id: string, input: NousDecisionAnswerInput): Promise<NousDecision>;
   dismissDecision(owner: string, id: string): Promise<NousDecision | null>;
+  /** ask-live.ts: the live state of the open hands cards among these notification ids. */
+  askLive?(owner: string, refs: string[]): Promise<Map<string, InboxAskLive>>;
+  /** The operator's time zone: a date in the search is his day (UTC without it). */
+  timeZone?(owner: string): Promise<string>;
+}
+
+// A date in the search is a day, not words (operator 27/11): d/m[/yyyy], d.m.yyyy, d-m-yyyy or yyyy-mm-dd, day first as the Inbox shows it.
+const DATE = /\b(?:(\d{4})-(\d{1,2})-(\d{1,2})|(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{4}|\d{2}))?)\b/g;
+export const dayIn = (at: string | Date, timeZone: string) => new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(at));
+export function searchDays(q: string, now: Date, timeZone: string): { days: Set<string>; words: string } {
+  const days = new Set<string>();
+  const words = q.replace(DATE, (match, isoYear?: string, isoMonth?: string, isoDay?: string, day?: string, month?: string, year?: string) => {
+    const y = Number(isoYear ?? (year ? (year.length === 2 ? `20${year}` : year) : dayIn(now, timeZone).slice(0, 4)));
+    const [m, d] = [Number(isoMonth ?? month), Number(isoDay ?? day)];
+    if (m < 1 || m > 12 || d < 1 || d > 31) return match;
+    days.add(`${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
+    return " ";
+  }).replace(/\s+/g, " ").trim();
+  return { days, words };
 }
 
 const RANK = { URGENT: 2, ATTENTION: 1, INFO: 0 } as const;
@@ -56,11 +75,19 @@ export function registerInboxRoutes(app: FastifyInstance, deps: InboxRoutesDeps)
   async function load(owner: string, thread: InboxThread) {
     return viewFrom(thread, await repository.events(owner, thread.id));
   }
-  const view = async (owner: string, thread: InboxThread) => { const loaded = await load(owner, thread); return loaded.view(loaded.state.openAsks); };
+  /** Plan clipboard:va__qa_eBMYr §3: each open hands ask of the operator's says what its place looks like now (read here, never stored). */
+  async function withLive(owner: string, list: InboxThreadView[]): Promise<InboxThreadView[]> {
+    const hands = (event: InboxEvent) => Boolean(event.ask?.forOperator && event.ask.kind === "HANDS" && event.ref?.startsWith("notification:"));
+    const refs = list.flatMap((thread) => thread.openAsks.filter(hands).map((event) => event.ref!));
+    const live = deps.askLive && refs.length ? await deps.askLive(owner, refs).catch(() => null) : null;
+    if (!live?.size) return list;
+    return list.map((thread) => ({ ...thread, openAsks: thread.openAsks.map((event) => event.ask && live.has(event.ref ?? "") ? { ...event, ask: { ...event.ask, live: live.get(event.ref!)! } } : event) }));
+  }
+  const view = async (owner: string, thread: InboxThread) => { const loaded = await load(owner, thread); return (await withLive(owner, [loaded.view(loaded.state.openAsks)]))[0]!; };
   async function views(owner: string, threads: readonly InboxThread[]): Promise<InboxThreadView[]> {
     if (!threads.length) return [];
     const byThread = await repository.eventsOfThreads(owner, threads.map((thread) => thread.id));
-    return threads.map((thread) => { const loaded = viewFrom(thread, byThread.get(thread.id) ?? []); return loaded.view(loaded.state.openAsks); });
+    return withLive(owner, threads.map((thread) => { const loaded = viewFrom(thread, byThread.get(thread.id) ?? []); return loaded.view(loaded.state.openAsks); }));
   }
   async function found(owner: string, id: string) {
     const thread = await repository.thread(owner, id);
@@ -82,9 +109,14 @@ export function registerInboxRoutes(app: FastifyInstance, deps: InboxRoutesDeps)
     const summary = { operator: operator.length, unseen: unseen.length, working: working.length, held: held.length,
       tabs: { needs: operator.length, done: counted("DONE"), updates: counted("UPDATES") + open.filter((thread) => thread.requestNews).length, requests: working.length } };
     if (q?.trim()) {
-      // Every Thread's words, ranked; no count cuts it (closed Threads inside the History period).
-      const ranked = rankByWords(await repository.threadTexts(owner, since), (entry) => entry.text, q);
-      return { ...badge, summary, cursor: null, threads: await views(owner, ranked.map(({ doc }) => doc.thread)) };
+      // Every Thread's words, ranked; no count cuts it (closed Threads inside the History period). A date keeps that day's Threads.
+      const zone = await deps.timeZone?.(owner) ?? "UTC";
+      const { days, words } = searchDays(q, new Date(), zone);
+      const texts = await repository.threadTexts(owner, since);
+      const found = words ? rankByWords(texts, (entry) => entry.text, words).map(({ doc }) => doc.thread) : texts.map((entry) => entry.thread).sort(newest);
+      // shortcut: a Thread's day is when it began or last moved, not each event's; read event times if a day in between is asked for.
+      const onDay = (thread: InboxThread) => !days.size || [thread.createdAt, thread.lastEventAt].some((at) => days.has(dayIn(at, zone)));
+      return { ...badge, summary, cursor: null, threads: await views(owner, found.filter(onDay)) };
     }
     const firstAsk = (thread: InboxThreadView) => thread.openAsks.find((ask) => ask.ask?.forOperator)?.at ?? thread.lastEventAt;
     operator.sort((left, right) => RANK[right.priority] - RANK[left.priority] || firstAsk(left).localeCompare(firstAsk(right)));
@@ -99,7 +131,7 @@ export function registerInboxRoutes(app: FastifyInstance, deps: InboxRoutesDeps)
   app.get("/api/inbox/threads/:id", routeOptions, async (request) => {
     const owner = await deps.owner(request);
     const { events, state, view: of } = await load(owner, await found(owner, String((request.params as { id?: unknown }).id ?? "")));
-    return { thread: of(state.openAsks), events };
+    return { thread: (await withLive(owner, [of(state.openAsks)]))[0]!, events };
   });
 
   /** One verb on one Thread; the refs it wrote to, to sync. */

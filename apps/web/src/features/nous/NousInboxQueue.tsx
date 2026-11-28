@@ -1,23 +1,25 @@
-import type { NousState } from "@space/contracts";
+import { inboxPlainLine, type NousState } from "@space/contracts";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
-import { DockState } from "../dock-kit/DockKit.js";
-import { Nous } from "../ui-theme/app-icons.js";
 import { useUiLanguage, uiText } from "../ui-language/ui-language.js";
 import { FileMentionText } from "../terminal-pane/AgentFileLinks.js";
 import "./nous-done.css";
 
 const ABOUT = "Pane and copilot notices waiting for Nous's next round. Nous reads them all together, then the list empties.";
 
-/** Nous › Inbox (nous_msg:eb36261e): what the rail's Inbox count is, oldest first. */
+/**
+ * Nous's own queue (nous_msg:eb36261e), oldest first. Operator 27/11: it asks nothing of him, so it is one fold under Requests, never in
+ * Needs you; each notice is one plain line, its whole text behind it.
+ */
 export function NousInboxQueue({ items }: { items: NonNullable<NousState["inboxItems"]> }) {
   const language = useUiLanguage();
-  const t = (text: string) => uiText(language, text);
-  return <div className="nous-decisions nous-done" data-nous-inbox>
-    {items.length ? <p className="nous-muted">{t(ABOUT)}</p>
-      : <DockState kind="empty" icon={Nous} title={t("Nothing waits for Nous")} detail={t(ABOUT)} />}
-    {items.map((item) => <article key={item.key} className="nous-done-entry" data-inbox-key={item.key}>
-      <div className="nous-done-meta"><span>{item.key}</span>{item.at ? <time dateTime={item.at}>{formatUserTime(item.at)}</time> : null}</div>
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  if (!items.length) return null;
+  return <details className="nous-inbox-held" data-nous-inbox>
+    <summary>{t("Waiting for Nous's next round ({count})", { count: items.length })}</summary>
+    <p>{t(ABOUT)}</p>
+    <ul>{items.map((item) => <li key={item.key} data-inbox-key={item.key}><details>
+      <summary>{item.at ? <time dateTime={item.at}>{formatUserTime(item.at)}</time> : null} {inboxPlainLine(item.text)}</summary>
       <p className="nous-done-summary"><FileMentionText text={item.text} /></p>
-    </article>)}
-  </div>;
+    </details></li>)}</ul>
+  </details>;
 }

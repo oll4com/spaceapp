@@ -16,7 +16,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { browserHostStaleToldStore, createBrowserHostStaleWatch, onBrowserHostInternalError, paneSchemasChangedAt } from "../browser-host-errors.js";
 import { onCodexTurnInterrupted } from "../codex-rollout-diagnostics.js";
 import { onNeedsYouEnded, type NotificationService } from "../notifications/service.js";
-import { createCodePageOpen, createNeedsYouBrowserPages, createNeedsYouPlaces } from "../needs-you-browser-page.js";
+import { createCodePageOpen, createNeedsYouBrowserPages, createNeedsYouPlaceReads, createNeedsYouPlaces } from "../needs-you-browser-page.js";
 import { browserAgentOf, type BrowserControlActivity } from "../browser-control-activity.js";
 import { BROWSER_REAPED_ACTION, browserInUse, browserLastUse, scheduledPanes, unusedBrowsers } from "../browser-reaper.js";
 import { dirname, join } from "node:path";
@@ -27,7 +27,7 @@ import {
   eventSchema, inboxThreadState, type InboxEvent, reasoningEffortSchema, notificationIdSchema, freelanceLeadDecisionSchema, listMemoryQuerySchema, freelanceMessageReviewDecisionSchema, jobApplyReviewDecideSchema, mailCopilotReviewDecideSchema,
   COPILOT_QUESTION_SOURCES, NOUS_FIRST_SOURCES, mergeNousSettings, copilotQuestionItemId, heldForNous, heldUnderAllowance, isCopilotQuestion, isNousApproval, isNousFirstCard, mailRuleDecisionSchema, marketingPostReviewDecisionSchema, needsYou, waitsOnOperator, NOUS_CLAUDE_MODELS, nousDecisionRunsWhen, nousModelLabel, nousProvider, nousModelMatchesProvider, nousSettingsWithProvider, nousSettingsSchema, ownerWorkingTimeZone, withNousPublicDefaults,
   NOUS_PROMPT_MAX_CHARS, NOUS_SPACE_ROUTES, nousSpaceModel, isGeminiModel, type NousRunProvider, type ApiProviderAccountList, type AuthUser, type ClaudeUsageAccountList, type ClipboardItem, type ManagedPlanExecution, type NousCopilot, type NousGlobalHold, type PaneCliSession, type NousDecision, type NousOverview, type NousSettings,
-  historySince, planIsParked, nousTestTargetSchema, agentLanguageOf, type GatewayAccount, type DeployQueueReport, type DeployQueueTicket, type FreelanceEgressRoute, type NousTurnReason, type Pane, type TokenUsagePeriod, type RoomAgentEvent, type SpaceNotification, type MonitoringCollectorConfig, type NeedsYouBrowserPage, type NotificationRaiseInput,
+  historySince, planIsParked, nousTestTargetSchema, agentLanguageOf, agentWritingLanguageOf, type GatewayAccount, type DeployQueueReport, type DeployQueueTicket, type FreelanceEgressRoute, type NousTurnReason, type Pane, type TokenUsagePeriod, type RoomAgentEvent, type SpaceNotification, type MonitoringCollectorConfig, type NeedsYouBrowserPage, type NotificationRaiseInput,
   appointmentHoursRule, ownerAppointmentHours, type Room
 } from "@space/contracts";
 import type { LiveHistoryRepository, NousNote, RailAnswerBy } from "@space/db";
@@ -104,7 +104,7 @@ import { noteOperatorActive, ownerClockLine, ownerQuietNow, ownerTimeHeader, set
 import { operatorLanguageRule } from "../agent-bootstrap.js";
 import { createNousPaneWatch, paneCheckedText, paneRoundLine, paneWatchEntries, paneWatchOverview, renderPanesNotChecked } from "./pane-watch.js";
 import { nousScorecard, NOUS_SCORECARD_WINDOW_DAYS } from "./progress.js";
-import { createPaneLastAnswer, type PaneLastAnswerDeps } from "./last-answer.js";
+import { createPaneLastAnswer, createPaneSaves, createPaneSaveTurn, type PaneLastAnswerDeps } from "./last-answer.js";
 import { alwaysApproveCounts, createNousService, nousTraceId, NousUnavailableError, type NousRunner, type NousRunResult, type NousService, type NousTurnTextListener } from "./service.js";
 import type { NousSelectedModel } from "./model-choice.js";
 import { createNousProviderCatalog } from "./providers.js";
@@ -112,7 +112,7 @@ import { classifySpaceFailure, createSpaceRouter, SpaceRouteError, type SpaceAtt
 import { createNousSubagents, NOUS_HELPER_SLOTS_SCALE, type NousSubagentDeps } from "./subagents.js";
 import { createNousLoad, goalPieces, registerNousLoadRoute, registryOpen, renderNousUtilization, renderUtilizationLow, upgradeQueueOpen, upgradeQueueOpenLines, utilizationPushOn } from "./utilization.js";
 import { cachedTokenUsage, registerTokenUsageRoute, tokenUsageBreakdown, tokenUsageWorldLines } from "./token-usage.js";
-import { createNousScore, nousScoreErrors, goalProgressDays, nousScoreLine, NOUS_SCORE_RESET_NOTE, NOUS_SCORE_PERIOD_DAYS, NOUS_SCORE_WINDOW_DAYS, parseScoreReset, registerNousScoreRoutes } from "./score.js";
+import { createNousScore, nousScoreErrors, goalProgressDays, nousScoreLine, NOUS_SCORE_RESET_NOTE, NOUS_SCORE_PERIOD_DAYS, parseScoreReset, registerNousScoreRoutes } from "./score.js";
 import { approvalStates } from "./approvals.js";
 import type { HealthCollectorSample } from "../system-health-collector.js";
 import { accountHold, botCheckHold, cardEntryStepsHold, FAILED_ANSWER, failedRepeatHold, vpnRouteHold, phoneSliderHold, physicalAskHold, vaultReadBackHold, workingSigninHold, confirmedControlBatch, createNousTools, failedFirst, NOUS_MEMORY_PAGE, nousToolDefinitions, pendingNousBriefOf, type CopilotBriefEvent, type NousCopilotDeps, type NousCopilotItem, type NousToolDeps } from "./tools.js";
@@ -196,6 +196,8 @@ export interface NousWiringOptions {
   config: { databaseUrl?: string | null; installRoot?: string; instance: string; spaceMemoryIndexPath?: string; spaceMemoryMonthlyPath?: string; spaceMemoryLockPath?: string; browserEvidenceArtifactRoot?: string;
     /** A public install (plan clipboard:1NF6u6gcCwtj): turns run in its CLI container, whose MCP calls come back to cliApiBaseUrl. */
     publicDistribution?: boolean; multiUserEnabled?: boolean; cliEnabled?: boolean; cliHostSocketPath?: string; cliApiBaseUrl?: string | null; cliWorkspaceRoot?: string;
+    /** A Nous Cloud box's Space Gateway entry and its per-account key file (plan clipboard:yw_pvUb_616N): set, Nous runs on Auto with no provider text. */
+    nousCloudGatewayUrl?: string | null; nousCloudGatewayKeyFile?: string | null;
     /** R11-1: Space Gateway's address, whose /health the gateway hold's minute probe reads (stable and dev only). */
     gatewayUrl?: string;
     /** The monitoring collector, whose Prometheus gives the physical host's swap (server-load.ts); none: this machine's. */
@@ -301,6 +303,10 @@ export interface NousWiringOptions {
 
 // 80 steps: a sweep over every pane (operator request 2026-10-17) hit error_max_turns at 40; TURN_MS still bounds the cost.
 const TURN_MS = 20 * 60_000;
+// Nous Cloud Auto: the free model's share of a turn the steps before it never take, and how long the Gateway may take to answer at all.
+const NOUS_CLOUD_FREE_RESERVE_MS = 5 * 60_000;
+const NOUS_CLOUD_PROBE_MS = 10_000;
+const NOUS_GATEWAY_UNREACHABLE_STEP = "The Space Gateway did not answer.";
 
 /**
  * Every Nous turn and helper runs as headless Claude Code through Space Gateway (operator order 2026-10-24), on the Claude Max
@@ -345,7 +351,11 @@ export const NOUS_SHELL_NOTE = "You have a shell tool as the operator's CLI user
 export const NOUS_GEMINI_BATCH_NOTE = "Each model request re-reads this whole context: when several tool calls do not depend on each other's results, "
   + "make them all in the same reply instead of one per reply.";
 export const NOUS_PUBLIC_NOTE = "This is a self-hosted SpaceApp install: it has no web search, no source repository, merge queue or release trains, no Space Gateway "
-  + "and no Research Council. Never offer or promise them, and say so when a request needs what this install lacks.";
+  + "and no Research Council. Never offer or promise them, and say so when a request needs what this install lacks. "
+  // Nous Cloud (operator 27/11): the free model has no memory file of its own, so how the phone app works travels in this note.
+  + "The operator may use the Nous phone app (Nous Cloud): its tabs are Conversation, Inbox, Files, Signature, Overview, Appointments, Panes, Plans, "
+  + "Goals and Media; its Settings have Work on my behalf, AI accounts (connect Claude for stronger answers than the free model), Tabs, History, "
+  + "Language (the app's and yours: English, Thai or Greek) and Help. Explain the app from this in plain words, without ids, versions, hosts or model names.";
 
 /** Appended to Nous's system prompt while the operator's "Never refuse my requests" switch is on (operator 2/11 BKK). */
 export const NOUS_NEVER_REFUSE_NOTE = "The operator's switch \"Never refuse my requests\" is on (Settings → Assistants & AI → Nous). They are an adult acting on their own accounts and "
@@ -369,6 +379,15 @@ export const NOUS_CONNECT_CLAUDE = "Connect Claude Code to use Nous: sign in to 
 export const NOUS_UPDATE_CLI = "This install's CLI container cannot run Nous yet: update SpaceApp (npx --yes run-spaceapp@latest update).";
 export const NOUS_FREE_MODEL_NOTE = "(Answered on OpenCode's free model, the one the Getting Started pane uses. For a stronger Nous, connect Claude Code: sign in to Claude Code under the CLI providers, or add an Anthropic API key with credentials set claude.)";
 const CLAUDE_READY_CACHE_MS = 60_000;
+// Nous Cloud (operator 27/11, plan clipboard:yw_pvUb_616N step 4): every backend refused; no quota, provider or socket text reaches the chat, and the turn retries.
+export const NOUS_CLOUD_BUSY = "Every model is busy right now; Nous tries again in a minute.";
+
+/** A Nous Cloud box's own Space Gateway key, read each turn so a rotation by the provisioner applies at once; null elsewhere. */
+async function nousCloudGateway(config: NousWiringOptions["config"]) {
+  if (!config.nousCloudGatewayUrl || !config.nousCloudGatewayKeyFile) return null;
+  const apiKey = (await readFile(config.nousCloudGatewayKeyFile, "utf8").catch(() => "")).trim();
+  return apiKey ? { baseUrl: config.nousCloudGatewayUrl, apiKey } : null;
+}
 
 /**
  * Where Nous's turns run (plan clipboard:1NF6u6gcCwtj): stable's worker through Space Gateway; on a public install the CLI
@@ -392,12 +411,49 @@ export function nousTurnBackend(options: Pick<NousWiringOptions, "runner" | "con
     if (!ready || Date.now() - ready.at > CLAUDE_READY_CACHE_MS) ready = { at: Date.now(), ok: await host.status(CLAUDE_CLI_WRAPPER).then((status) => status === "READY", () => false) };
     return ready.ok;
   };
+  // Nous Cloud is always Auto: Claude Code when signed in, then the box's Space Gateway key (model auto, the key's own models and providers),
+  // then OpenCode's free model. A refusal or failure moves to the next before anything is shown; only a step limit or the turn's stop ends it.
+  const cloudTurn: NousTurnBackend = async (body, signal, onText, onModel) => {
+    const deadline = Date.now() + body.timeoutMs;
+    const tools = { system: body.system, prompt: body.prompt, maxTurns: body.maxTurns, shell: body.shell === true, stream: Boolean(onText), mcpUrl: body.mcpUrl, mcpToken: body.mcpToken };
+    const gateway = await nousCloudGateway(options.config);
+    const attempts: Array<{ label: string | null; run: (step: AbortSignal) => Promise<NousRunResult> }> = [
+      // The runner already named the picked Claude model.
+      ...(await claudeReady() ? [{ label: null, run: async (step: AbortSignal) => host.claudeAgentTools({ ...tools, model: body.model, effort: body.effort, fallbackModel: body.fallbackModel ?? null }, step, onText) }] : []),
+      // A CLI container from before the Gateway turn (run-spaceapp 1.2.4 and older) reads no `gateway` and answers on the free model.
+      ...(gateway ? [{ label: "auto", run: async (step: AbortSignal) => {
+        // An unreachable Gateway (no route, blackholed) would hang the step to its end: any HTTP answer within the probe's time means it is there.
+        const reached = await fetch(`${gateway.baseUrl.replace(/\/$/, "")}/models`, { headers: { authorization: `Bearer ${gateway.apiKey}` }, signal: AbortSignal.any([step, AbortSignal.timeout(NOUS_CLOUD_PROBE_MS)]) })
+          .then(async (answer) => { await answer.body?.cancel(); return true; }, () => false);
+        if (!reached) throw new Error(NOUS_GATEWAY_UNREACHABLE_STEP);
+        const r = await host.openCodeAgentTools({ ...tools, gateway }, step, onText); return { ...r, model: Object.keys(r.tokens ?? {})[0] ?? "auto" };
+      } }] : []),
+      { label: "opencode", run: async (step: AbortSignal) => { const r = await host.openCodeAgentTools(tools, step, onText); return { ...r, model: Object.keys(r.tokens ?? {})[0] ?? "opencode" }; } }
+    ];
+    let last: unknown = null;
+    let shown = false;
+    for (const [index, attempt] of attempts.entries()) {
+      // Each step stops on its own time; the free model (the last step) keeps its reserve of the turn whatever the steps before it took.
+      const left = deadline - Date.now() - (index === attempts.length - 1 ? 0 : Math.min(NOUS_CLOUD_FREE_RESERVE_MS, body.timeoutMs / 2));
+      if (left <= 0) continue;
+      if (shown) onText?.({ start: true });
+      if (attempt.label) onModel?.(attempt.label);
+      shown = true;
+      const result = await attempt.run(AbortSignal.any([signal, AbortSignal.timeout(left)])).catch((error: unknown) => { last = error; return null; });
+      if (result && (!result.isError || NOUS_STEP_LIMIT.test(result.text))) return { text: result.text, isError: result.isError, model: result.model, costUsd: result.costUsd, tokens: result.tokens };
+      if (result) last = new Error(result.text);
+      if (signal.aborted) throw last;
+    }
+    throw new Error(NOUS_CLOUD_BUSY, { cause: last });
+  };
   // A CLI container older than its core (run-spaceapp 1.1.9 and before) refuses agent-tools: Nous stays unavailable until the update restarts it.
   let outdated = false;
   // One older than the free-model turn (run-spaceapp 1.2.0) refuses opencode-nous: without Claude, Nous asks for it as before.
   let noOpenCode = false;
+  const cloud = Boolean(options.config.nousCloudGatewayUrl && options.config.nousCloudGatewayKeyFile);
   return {
     run: async (body, signal, onText, onModel) => {
+      if (cloud) return cloudTurn(body, signal, onText, onModel);
       if (body.provider && body.provider !== "claude") throw new NousUnavailableError("This install’s CLI container currently supports Claude Code for Nous. Select Anthropic in Nous settings.");
       // The CLI container stops the turn when its connection ends: a helper's own time limit ends it here.
       const turnSignal = AbortSignal.any([signal, AbortSignal.timeout(body.timeoutMs)]);
@@ -420,6 +476,7 @@ export function nousTurnBackend(options: Pick<NousWiringOptions, "runner" | "con
       return { text: result.text, isError: result.isError, costUsd: result.costUsd, tokens: result.tokens };
     },
     async unavailable() {
+      if (cloud) return null;
       if (outdated) return NOUS_UPDATE_CLI;
       return noOpenCode && !await claudeReady() ? NOUS_CONNECT_CLAUDE : null;
     }
@@ -1374,7 +1431,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       userSettingsPromise.catch(() => null),
       // First line: the operator's local time and whether it is their night (plan clipboard:9XSwTPyxXP1W).
       timed("clock", userSettingsPromise.then(async (user) => [ownerTimeHeader(await ownerQuietNow(user, owner)), await ownerClockLine(store, owner), appointmentHoursRule(ownerAppointmentHours(user)),
-        operatorLanguageRule(agentLanguageOf(user))].filter(Boolean).join("\n")).catch(() => null)),
+        operatorLanguageRule(agentWritingLanguageOf(user))].filter(Boolean).join("\n")).catch(() => null)),
       held ? timed("held", held.summary(owner).catch(() => null)) : null,
       timed("reports", paneReports.latest(owner).catch(() => [])),
       timed("planReports", paneReports.latestPlans(owner).catch(() => [])),
@@ -1725,6 +1782,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       const report = (await paneReports.list(owner, paneId, 10)).find((entry) => entry.at >= since && (entry.status === "DONE" || entry.status === "FAILED"));
       return report ? `${paneId} reported ${report.status.toLowerCase()} ${report.at.slice(11, 16)} UTC: ${report.summary}` : null;
     },
+    paneLastReport: async (owner, paneId) => { const [report] = await paneReports.list(owner, paneId, 1); return report ? { at: report.at, status: report.status } : null; },
     paneOpen: async (paneId) => { try { return !(await store.getPane(paneId)).isClosed; } catch (error) { return error instanceof SpaceNotFoundError ? false : null; } },
     sessionPane: async (paneId) => (await store.getPaneCliSession(paneId.replace(/^pane:/, "cli_session:")))?.paneId ?? null,
     ticketOnStable: async (id) => { const ticket = await readTicket(id); return ticket ? ticketOnStable(ticket) : ticketMergedOnMain(id, SPACE_INSTALL_ROOT); } });
@@ -2008,10 +2066,10 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
         }),
         completedPlans: plans.filter((plan) => plan.isCompleted && !planIsParked(plan)).map((plan) => ({ id: plan.id, title: plan.title ?? plan.text.slice(0, 80), at: plan.lastProgressAt ?? plan.lastUsedAt })),
         // Not done counts as open (operator 6/11 nous_msg:2c610048), once per message.
-        requests: ((open) => [...open.map((request) => ({ id: request.messageId, summary: request.summary, openedAt: request.openedAt })),
-          // The last 7 days' as before the 30-day reads (14/11): an open request is now, the same in every range.
-          ...messages.filter((message) => message.status === "NOT_DONE" && Date.parse(message.createdAt) >= now - NOUS_SCORE_WINDOW_DAYS * 86_400_000
-            && !open.some((request) => request.messageId === message.messageId))
+        requests: await (async (open) => [...open.map((request) => ({ id: request.messageId, summary: request.summary, openedAt: request.openedAt })),
+          // Every Not done, whatever its age (operator 27/11 nous_msg:583c7629: a stuck one costs more each day, no 7-day cutoff); the same in every range.
+          // The Requests tab's whole Not done list (one cached derive), not the 30-day messages read above.
+          ...(await nousRequests.page(owner, { status: "NOT_DONE", limit: Number.MAX_SAFE_INTEGER })).requests.filter((message) => !open.some((request) => request.messageId === message.messageId))
             .map((message) => ({ id: message.messageId, summary: message.text.slice(0, 300) || "Files only", openedAt: message.createdAt }))])(openRequestsOf(notes)),
         done: done.map((record) => ({ id: record.id, title: record.title, at: record.createdAt })),
         utilization: average === null ? null : { value: average, target: utilization!.target, what: utilization!.averages.today.value !== null ? "Today's average" : "Now" },
@@ -2197,6 +2255,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
         ? await options.notifications.setStatus(owner, id, "RESOLVED", { resolvedReason: reason, resolvedBy: "nous" }, `Nous: ${reason}`)
         : await options.notifications.setStatus(owner, id, "RESOLVED")),
       get: (owner, id) => options.notifications.get(owner, id),
+      releaseHeldForNous: (owner, id) => options.notifications.releaseHeldForNous(owner, id),
       closedQuestions: async (owner, source) => (await allNotifications(options.notifications.list, owner, { status: "ALL", source }))
         .filter((item) => isCopilotQuestion(item) && (item.status === "RESOLVED" || item.status === "ACKED")),
       ...(nousDb ? { elsewhere: nousDb.notificationElsewhere } : {})
@@ -2293,6 +2352,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     requestsNamed: (owner, requests, replyTo) => requestDone.named(owner, requests, replyTo),
     // shortcut: only Mail reviews have requiresReview memories (Marketing, Freelance and Job pass no review flag yet); add theirs when they do.
     reviewRequiredBy: async (owner, action) => action.copilot === "MAIL" && options.copilots.mail ? options.copilots.mail.reviewRequiredBy(owner, action.itemId) : null,
+    reviewUnsendable: async (owner, action) => action.copilot === "MAIL" && options.copilots.mail ? options.copilots.mail.reviewUnsendable(owner, action.itemId) : null,
     planTitle: async (owner, id) => { const plan = await store.getClipboardItem(owner, id); return plan ? planTitleOf(plan) : null; },
     selectModel: pickModel,
     // Transitions enqueue a notice while monitor.read is still completing: use its freshly stored state here.
@@ -2535,6 +2595,9 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     planMap: (owner, plans) => planMapOf(owner, plans),
     parked: (owner) => allPages((page) => store.listClipboardItems(owner, { source: "PLAN", parked: true, page, pageSize: 100 })),
     ...(lastAnswer ? { lastAnswer } : {}),
+    // Plan clipboard:u78xLyqRp6kD: space-memory-save stamps SPACE_PANE_ID into the provenance line of the canonical entry's body.
+    ...(memory ? { paneSaves: createPaneSaves({ store, entries: async () => await memory.list(listMemoryQuerySchema.parse({})) }) } : {}),
+    ...(options.activeSessionPids ? { saveTurn: createPaneSaveTurn({ store, activeSessionPids: options.activeSessionPids }) } : {}),
     // Plan clipboard:qH5emwVaV6yO step 10: the close space_close_pane makes, behind its needs-you guard.
     lastWorkReport,
     closePane: async (owner, roomId, paneId) => {
@@ -2642,7 +2705,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     sweepGit: createSweepGit(process.cwd()),
     backlog: async (owner) => upgradeQueueOpenLines(await readFile(join(ownRoot, "upgrades", "queue.md"), "utf8").catch(() => "")).reverse()
       .map((line) => ({ key: `upgrade:${line.slice(7).split("; evidence:")[0]!.trim()}`, text: "Daily-improvement fix from Nous's queue (nous/upgrades/queue.md, OPEN; newest first). "
-        + `Check on dev whether it is still open; if so fix the root cause in your own worktree from dev with a test, submit to the dev merge queue and report the ticket with space-progress done; if it is already fixed or is not a code change, report that with space-progress done so Nous marks the line. The line: ${line.slice(2)}` }))
+        + `Check on dev whether it is still open; if so fix the root cause in your own worktree from dev with a test, submit to the dev merge queue and report the ticket with space-progress done; when done, or when it is already fixed or not a code change, mark the line yourself by adding " [DONE <date> <ticket or commit>]" at its end in nous/upgrades/queue.md and report with space-progress done. The line: ${line.slice(2)}` }))
       // 22/11 (operator nous_msg:0e499daa, 3 of 12 CLI panes working with every plan parked and the queue empty): the registry's unfixed findings too.
       // 22/11 04:02-04:20Z: the ledger's path made every finding one send-guard key (Hugo's held the rest); named without it, `given` keeps each finding to one pane.
       .concat((await openFindings()).map(({ id, severity }) => ({ key: `registry:${id}`, text: `Quality-registry finding ${id} (${severity}) in the quality registry (review-findings.json under docs/quality) `
@@ -2730,7 +2793,8 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
               const observed = await options.inspectPane(pane).catch(() => null);
               queued ??= await queuedOf(owner).catch(() => new Map<string, QueuedText>());
               if (observed?.text != null) stuckPanes.observe({ owner, paneId: pane.id, label: `${room.name}/${paneLabel(pane)}`, screen: observed.text, state, queuedAt: queued.get(pane.id)?.at ?? null,
-                waiting: observed.state === "WAITING_FOR_INPUT" || Boolean(observed.usageLimited) || sample!.activity[pane.id] === "waiting" }, now);
+                waiting: observed.state === "WAITING_FOR_INPUT" || Boolean(observed.usageLimited) || sample!.activity[pane.id] === "waiting",
+                working: sample!.activity[pane.id] === "working" }, now);
             }
           }
           if (!pane.isClosed && sample!.details[pane.id]?.reason === "Run failed" && since) {
@@ -3204,8 +3268,9 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     inbox: (owner, key, line) => service.notice(owner, key, line),
     unblockPlan: (owner, planId) => unblockPlanWait(store, owner, planId),
     planWait: (owner, record) => planNeedsYou.waitOf(owner, record),
+    // 2026-11-28 REVIEW (Andy, Bob, Finn 27/11): the operator's answer on a pane's card is the answer to its open question, so the open-question guard lets it through.
     sendToPane: (owner, room, pane, text) => tools.execute("space_send_to_pane", { room: room.id, panes: [pane.id], text },
-      { owner, turnId: "needs-you", callId: makeSpaceId("call"), traceId: makeSpaceId("trace") }),
+      { owner, turnId: "needs-you", callId: makeSpaceId("call"), traceId: makeSpaceId("trace"), answering: true }),
     typeCode: async (_owner, _room, pane, text) => options.pressKeys
       ? typeCodeNow({ inspect: options.inspectPane, pressKeys: options.pressKeys }, pane, text, makeSpaceId("trace")) : "typing into panes is unavailable here",
     decideCopilot: (owner, action) => executeAction({ id: `needs-you:${action.itemId}`, ownerUserId: owner, action } as NousDecision),
@@ -3241,7 +3306,10 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   registerInboxRoutes(app, { routeOptions: options.routeOptions, owner: (request) => nousOwner(options, request), assertPerson: (request) => assertPerson(options, request),
     parseBody: options.parseBody, parseQuery: options.parseQuery, repository: inboxRepository, inbox, notifications: options.notifications,
     answerNeedsYou: (request, id, input) => needsYouAnswers.operatorAnswer(request, id, input), answerDecision: (owner, id, input) => service.answer(owner, id, input),
-    dismissDecision: (owner, id) => service.dismiss(owner, id) });
+    dismissDecision: (owner, id) => service.dismiss(owner, id), timeZone: async (owner) => ownerWorkingTimeZone(await store.getUserSettings(owner)),
+    askLive: createAskLive({ notifications: options.notifications, paneOpen: async (paneId) => { try { return !(await store.getPane(paneId)).isClosed; } catch (error) { if (error instanceof SpaceNotFoundError) return false; throw error; } },
+      places: createNeedsYouPlaceReads({ store, ...(options.browserAgents ? { agents: options.browserAgents } : {}) }),
+      handoffs: async (roomId) => store.listBrowserHandoffRequests(roomId), reports: (owner) => paneReports.latest(owner) }) });
   // A click on a workspace path in any of Space's texts: its Agent File (the one with its content, or filed now), opened as the preview.
   app.post("/api/nous/files/agent-file", options.routeOptions, async (request) => {
     const owner = await nousOwner(options, request);
@@ -3359,6 +3427,7 @@ import { registerSharedMemoryRoutes } from "./shared-memory-routes.js";
 import { registerUnifiedInboxRoutes } from "./unified-inbox-routes.js";
 import { createInboxService } from "../inbox/service.js";
 import { registerInboxRoutes } from "../inbox/routes.js";
+import { createAskLive } from "../inbox/ask-live.js";
 import { InMemoryInboxRepository, PostgresInboxRepository } from "@space/db";
 import { CLI_PANE_TYPES, SPACE_INSTALL_ROOT } from "@space/contracts";
 import { readSiteVisits } from "../site-visits.js";

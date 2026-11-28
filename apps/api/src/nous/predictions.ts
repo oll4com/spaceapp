@@ -76,11 +76,14 @@ const YES_NO = new Set(["yes", "ναι", "οχι"]);
 // Daily Nous errors 23/11 (833f6705 «στειλε το εμαιλ με ενεργοποιηση της παρακολουθησης» on «Ναι, στείλ' την όπως είναι» / «Όχι ακόμα» scored MISS):
 // for scoring only, an answer that opens with "send"/"go on" and sets no condition or asks nothing for the operator first chose the yes.
 const ACT_LEAD = new Set(["στειλε", "στειλ", "στειλτε", "προχωρα", "προχωρησε", "send", "proceed"]);
-const ACT_HELD = /(?<!\p{L})(?:μου|πρωτα|αν|εαν|μονο|οταν|μετα|αυριο|αργοτερα|οχι|μην|δεν|me|first|if|only|when|after|tomorrow|later|not|don)(?!\p{L})/u;
+// A time or a condition holds the send wherever it stands; a "not"/"only"/"me" holds it only in the clause that sends.
+// Daily Nous errors 26/11 (61db5eaf «προχωρησε … !!! προσοχη δεν την αναφέρεις πουθενα !!! … μονο την Exampleco» scored MISS): later clauses set what the send says.
+const ACT_WAIT = /(?<!\p{L})(?:πρωτα|αν|εαν|οταν|μετα|αφου|αυριο|αργοτερα|ακομα|first|if|when|after|tomorrow|later|yet)(?!\p{L})/u;
+const ACT_BUT = /(?<!\p{L})(?:μου|μονο|οχι|μην|δεν|me|only|not|don)(?!\p{L})/u;
 const lead = (text: string): "APPROVE" | "DECLINE" | null => {
   const folded = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
   const word = folded.match(/\p{L}+/u)?.[0];
-  if (word && ACT_LEAD.has(word) && !ACT_HELD.test(folded)) return "APPROVE";
+  if (word && ACT_LEAD.has(word) && !ACT_WAIT.test(folded) && !ACT_BUT.test(folded.split(/[.,;:!?\n]/u)[0]!)) return "APPROVE";
   return word === "yes" || word === "ναι" || word === "ok" || word === "οκ" ? "APPROVE" : word === "no" || word === "οχι" ? "DECLINE" : null;
 };
 // What the operator said: the button, else their words read as a bare yes or no, else the yes or no their words lead with.

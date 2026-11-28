@@ -7,7 +7,7 @@ import { migrateNgw } from "../src/nous/migrate.js";
 import { ngwAppGrantsSql } from "../src/nous/schema.js";
 import { billingConfig, checkoutBody, createCheckoutSession, PLAN_ALLOWANCE_MICROS, registerCheckoutRoute, registerStripeWebhook,
   verifyStripeSignature } from "../src/nous/subscriptions.js";
-import { issueTenantKey } from "../src/nous/tenant-keys.js";
+import { issueTenantKey, setTenantKeyStatus } from "../src/nous/tenant-keys.js";
 import { openTenantPeriod } from "../src/nous/ledger.js";
 
 // K4-billing (test mode): signature, the live-key refusal and the Checkout body as pure checks; the webhook on a disposable PostgreSQL as
@@ -126,6 +126,26 @@ describe.skipIf(unavailable)("Nous billing webhook", () => {
     expect((await keys()).map((key) => key.status)).toEqual(["ACTIVE"]);
   });
 
+  it("billing and staff each hold their own freeze: a resume by one never unfreezes the other's (step 12)", async () => {
+    const statuses = async () => (await keys()).map((key) => key.status);
+    const staff = (status: "ACTIVE" | "FROZEN") => setTenantKeyStatus(app, "acme", status, "service:k4", "account suspended or resumed");
+    // Billing first: the staff resume after a staff suspension leaves billing's freeze, the payment then opens the keys.
+    await post(subscription("evt_due2", "customer.subscription.updated", "past_due", "price_pro"));
+    await staff("FROZEN");
+    expect(await staff("ACTIVE")).toBe(0);
+    expect(await statuses()).toEqual(["FROZEN"]);
+    expect((await ops.query("SELECT detail->>'heldBy' AS h FROM ngw_audit WHERE tenant_id = 'acme' AND action = 'key.active' ORDER BY id DESC LIMIT 1")).rows[0].h).toBe("billing");
+    await post(subscription("evt_paid2", "customer.subscription.updated", "active", "price_pro"));
+    expect(await statuses()).toEqual(["ACTIVE"]);
+    // Staff first: billing still records its freeze on the frozen keys, and a payment during the suspension leaves them frozen.
+    await staff("FROZEN");
+    await post(subscription("evt_due3", "customer.subscription.updated", "unpaid", "price_pro"));
+    await post(subscription("evt_paid3", "customer.subscription.updated", "active", "price_pro"));
+    expect(await statuses()).toEqual(["FROZEN"]);
+    expect(await staff("ACTIVE")).toBe(1);
+    expect(await statuses()).toEqual(["ACTIVE"]);
+  });
+
   it("opens the next period on invoice.paid", async () => {
     const event = { id: "evt_inv", type: "invoice.paid", created: ++created, data: { object: { billing_reason: "subscription_cycle",
       parent: { subscription_details: { metadata: { tenant_id: "acme" } } },
@@ -141,7 +161,7 @@ describe.skipIf(unavailable)("Nous billing webhook", () => {
     expect([unknown.statusCode, unknown.json().outcome]).toEqual([200, "ignored"]);
     expect((await post(subscription("evt_del", "customer.subscription.deleted", "canceled", "price_pro"))).json()).toMatchObject({ outcome: "ended" });
     expect((await keys()).map((key) => [key.plan, key.status])).toEqual([["TRIAL", "FROZEN"]]);
-    expect((await ops.query("SELECT count(*)::int AS n FROM ngw_stripe_events")).rows[0].n).toBe(8);
+    expect((await ops.query("SELECT count(*)::int AS n FROM ngw_stripe_events")).rows[0].n).toBe(12);
   });
 
   it("creates a Checkout session for a tenant through the admin route", async () => {

@@ -106,7 +106,15 @@ describe("Room Agent autopilot", () => {
     expect((await off.autopilot.handle(await off.waiting()))?.decision).toBe("Needs you: auto-answer is off in this room.");
     const busy = await setup('{"action":"ANSWER","answer":"1","reason":"ok"}');
     busy.inspect.mockResolvedValue(observation("", { state: "RUNNING" }));
-    expect((await busy.autopilot.handle(await busy.waiting()))?.decision).toBe("Needs you: the Room Agent could not read the question.");
+    // 2026-11-27 REVIEW (Andy 15:51 UTC "Needs input"): an unreadable wait stays open for the next sweeps, then is the operator's.
+    const unread = await busy.waiting();
+    expect(await busy.autopilot.handle(unread)).toBeNull();
+    busy.advance(30_000);
+    await busy.autopilot.sweep([pane.roomId]);
+    expect((await busy.repository.getEvent(unread.eventId))?.status).toBe("OPEN");
+    expect(busy.onEvent).not.toHaveBeenCalled();
+    busy.advance(CONTINUE_RETRY_MS);
+    expect((await busy.autopilot.handle(unread))?.decision).toBe("Needs you: the Room Agent could not read the question.");
     const limit = await setup(null);
     const event = await limit.repository.addEvent({ roomId: pane.roomId, paneId: pane.id, paneName: "Bob", kind: "USAGE_LIMIT", severity: "ATTENTION", title: "Bob hit a usage limit", detail: null });
     expect((await limit.autopilot.handle(event))?.decision).toBe("Needs you: Switch the model or account, or wait for the limit to reset.");

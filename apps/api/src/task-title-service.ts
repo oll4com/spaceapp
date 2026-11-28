@@ -143,6 +143,20 @@ export function extractReferencedPlanId(request: string): string | null {
   const id = match?.[1]?.replace(/[.:]+$/, "");
   return id && id.length >= 8 ? id : null;
 }
+/** Operator 27/11: a title line whose prompt Nous sent shows the Nous icon. Fingerprints of the prompts Space typed for Nous, by pane. */
+// shortcut: in memory for a day (a line is written seconds after its prompt), so a prompt typed just before an API restart gets no icon; persist it if that shows up.
+const NOUS_PROMPT_KEEP_MS = 24 * 60 * 60_000;
+const nousPrompts = new Map<string, Array<{ fingerprint: string; at: number }>>();
+export function noteNousPrompt(paneId: string, text: string, at = Date.now()): void {
+  const fingerprint = taskRequestFingerprint(text);
+  if (!fingerprint) return;
+  nousPrompts.set(paneId, [...(nousPrompts.get(paneId) ?? []).filter((entry) => at - entry.at < NOUS_PROMPT_KEEP_MS), { fingerprint, at }]);
+}
+/** The CLI may wrap a prompt (reminders, envelopes), so its request holds the text Nous sent. */
+export function isNousPrompt(paneId: string, request: string, now = Date.now()): boolean {
+  const fingerprint = taskRequestFingerprint(request);
+  return Boolean(fingerprint) && (nousPrompts.get(paneId) ?? []).some((entry) => now - entry.at < NOUS_PROMPT_KEEP_MS && fingerprint.includes(entry.fingerprint));
+}
 /** Images change the request: "fix this" with another screenshot is new work. */
 export function taskRequestHash(text: string, images: readonly string[] = []) {
   const digest = createHash("sha256").update(taskRequestFingerprint(text));
@@ -1217,12 +1231,14 @@ export class TaskTitleService {
     const topics = [...(state.metadata.topics ?? [])];
     const requests = state.pendingRequests?.length ? state.pendingRequests : [state.request];
     const at = this.now().toISOString();
+    const fromNous = isNousPrompt(state.paneId, requests.at(-1) ?? "");
     const line = (title: string, source: TaskTopic["source"]): TaskTopic => ({
       title,
       summary: parsed?.summary ?? "",
       source,
       at,
       ...(hasImages ? { hasImages: true } : {}),
+      ...(fromNous ? { fromNous: true } : {}),
     });
     const fallback = shortTaskTitle(requests.at(-1) ?? "", "Task");
     let earlierWork = state.metadata.earlierWork;
@@ -1232,7 +1248,8 @@ export class TaskTitleService {
       topics.push(native ? line(native, "native") : parsed ? line(parsed.title, "ai") : line(fallback, "local"));
     } else if (parsed && (state.regenerateLatest || last.source === "local")) {
       // Regenerate, or replace a local placeholder line once a model answers.
-      topics[topics.length - 1] = { ...line(parsed.title, "ai"), at: last.at };
+      const { fromNous: _latest, ...replaced } = line(parsed.title, "ai");
+      topics[topics.length - 1] = { ...replaced, at: last.at, ...(last.fromNous ? { fromNous: true } : {}) };
     } else if (parsed?.sameTopic && !last.summary) {
       // A line named by the CLI before any model answered gets its summary now.
       topics[topics.length - 1] = { ...last, summary: parsed.summary };

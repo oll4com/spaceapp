@@ -759,6 +759,16 @@ describe("U4: the top tool failures of 19/10", () => {
     // Two unknown keys, or nothing missing, stay as they are: the error names them.
     expect(renamedArgs(schema, { a: "[]", b: 1 }, schema.safeParse({ a: "[]", b: 1 }).error!.issues)).toBeNull();
     expect(renamedArgs(schema, { requests: "x", b: 1 }, schema.safeParse({ requests: "x", b: 1 }).error!.issues)).toBeNull();
+    // 27/11 02:35Z: space_stop_pane {room, panes: "[\"Kate\"]"} failed "pane: expected string, received array"; a list of one fits a one-value field,
+    // one value or JSON text fits a list field.
+    const stop = z.object({ room: z.string(), pane: z.string() });
+    const asked = { room: "Alex", panes: '["Kate"]' };
+    expect(renamedArgs(stop, asked, stop.safeParse(asked).error!.issues)).toEqual({ room: "Alex", pane: "Kate" });
+    const two = { room: "Alex", panes: '["Kate","Bob"]' };
+    expect(stop.safeParse(renamedArgs(stop, two, stop.safeParse(two).error!.issues)).success).toBe(false);
+    const restart = z.object({ room: z.string(), panes: z.array(z.string()).min(1) });
+    for (const panes of ['["Kate"]', "Kate"]) expect(renamedArgs(restart, { room: "Alex", panes }, restart.safeParse({ room: "Alex", panes }).error!.issues)).toEqual({ room: "Alex", panes: ["Kate"] });
+    expect(renamedArgs(restart, { room: "Alex", pane: "Kate" }, restart.safeParse({ room: "Alex", pane: "Kate" }).error!.issues)).toEqual({ room: "Alex", panes: ["Kate"] });
     const f = tools({ rooms: async () => [room("room:main0001", "Main")] });
     expect(await f.tools.execute("space_room_status", { name: "Main" }, ctx)).toMatchObject({ ok: true, display: "Looked at Main" });
   });

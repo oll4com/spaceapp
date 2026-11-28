@@ -130,8 +130,8 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
     return updated;
   }
 
-  /** A missed continue stays open for the next sweep until CONTINUE_RETRY_MS after its first miss; once escalated it is retried silently. */
-  async function continueMissed(event: RoomAgentEvent, decision: string) {
+  /** A missed continue, or a wait whose question could not be read, stays open for the next sweep until CONTINUE_RETRY_MS after its first miss; an escalated continue is retried silently. */
+  async function retryThenEscalate(event: RoomAgentEvent, decision: string) {
     if (event.status === "ESCALATED") return null;
     for (const [id, at] of continueMisses) if (now() - at > 2 * CONTINUE_RETRY_MS) continueMisses.delete(id);
     const first = continueMisses.get(event.eventId) ?? now();
@@ -150,14 +150,14 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
     // An escalated stop that runs again was not the Room Agent's doing: the monitor resolves it when the pane moves on.
     if (observed?.state === "RUNNING") return event.status === "ESCALATED" ? null : settle(event, "HANDLED", "The pane continued on its own.");
     if (!observed || !atEmptyPrompt(observed)) {
-      return continueMissed(event, "Needs you: the Room Agent could not find the pane's empty prompt to continue the task.");
+      return retryThenEscalate(event, "Needs you: the Room Agent could not find the pane's empty prompt to continue the task.");
     }
     const recent = (continues.get(pane.id) ?? []).filter((at) => at > now() - 60 * 60 * 1000);
     if (recent.length >= CONTINUES_PER_HOUR) return settle(event, "ESCALATED", `Needs you: the pane stopped on an API error ${CONTINUES_PER_HOUR} times this hour.`);
     try {
       await options.answer(pane, { expectedSessionId: observed.sessionId, answer: AUTOPILOT_CONTINUE_PROMPT, submit: true, expectedPromptFingerprint: observed.promptFingerprint });
     } catch (error) {
-      return continueMissed(event, `Needs you: the Room Agent could not tell the pane to continue (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"}).`);
+      return retryThenEscalate(event, `Needs you: the Room Agent could not tell the pane to continue (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"}).`);
     }
     continueMisses.delete(event.eventId);
     continues.set(pane.id, [...recent, now()]);
@@ -185,7 +185,8 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
     const observed = await options.inspect(pane);
     const screen = (observed.text ?? "").split("\n").slice(-SCREEN_LINES).join("\n");
     if (!observed.sessionId || !observed.promptFingerprint || !screen.trim() || observed.state === "RUNNING" || observed.state === "EXITED" || observed.state === "ERROR") {
-      return settle(event, "ESCALATED", "Needs you: the Room Agent could not read the question.");
+      // 2026-11-27 REVIEW (Cody 17 s, Andy 55 s at a Gemini usage limit): one unreadable look sent the operator an empty card for a wait that cleared on its own.
+      return retryThenEscalate(event, "Needs you: the Room Agent could not read the question.");
     }
     // The operator reads the question in the feed, so a decision on it carries the question itself.
     const question = promptExcerpt(screen);

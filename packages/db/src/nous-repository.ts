@@ -53,6 +53,10 @@ export interface NousRepository {
   clearMessages(owner: string): Promise<number>;
   /** When the owner last cleared the conversation (null: never); the dock hides the decisions asked before it too. */
   conversationClearedAt(owner: string): Promise<string | null>;
+  /** The owner's last-read mark (nous_msg:443bb5d5, shared by the web dock and the Nous app; null: never read). */
+  conversationReadUpTo(owner: string): Promise<string | null>;
+  /** Moves the last-read mark forward to `at` (never back); answers the mark now. */
+  markConversationRead(owner: string, at: string): Promise<string>;
   createDecision(decision: NewNousDecision): Promise<NousDecision>;
   getDecision(owner: string, id: string): Promise<NousDecision | null>;
   /** Newest first; without `limit` every match (the dock lists every OPEN decision, however old). */
@@ -146,6 +150,7 @@ export class InMemoryNousRepository implements NousRepository {
   /** Clear conversation: per owner, how many rows (of every owner, in order) came before it. */
   private readonly cleared = new Map<string, number>();
   private readonly clearedTimes = new Map<string, string>();
+  private readonly readMarks = new Map<string, string>();
   private shares: NousFileShare[] = [];
   private loadMinutes: Array<{ ownerUserId: string; at: string; overall: number }> = [];
   private readonly loadSums = new Map<string, NousLoadBucket>();
@@ -210,6 +215,14 @@ export class InMemoryNousRepository implements NousRepository {
   }
   async conversationClearedAt(owner: string) {
     return this.clearedTimes.get(owner) ?? null;
+  }
+  async conversationReadUpTo(owner: string) {
+    return this.readMarks.get(owner) ?? null;
+  }
+  async markConversationRead(owner: string, at: string) {
+    const mark = [this.readMarks.get(owner) ?? at, at].sort().at(-1)!;
+    this.readMarks.set(owner, mark);
+    return mark;
   }
   async createDecision(input: NewNousDecision) {
     const decision = nousDecisionSchema.parse({ ...input, id: newId("nous_decision"), status: "OPEN", answer: null, outcome: null, createdAt: now(), answeredAt: null, couldHaveDecided: false });
@@ -541,8 +554,19 @@ export class PostgresNousRepository implements NousRepository {
     return result.rows[0]?.count ?? 0;
   }
   async conversationClearedAt(owner: string) {
-    const result = await this.pool.query<{ clearedAt: Date | string }>(`SELECT cleared_at AS "clearedAt" FROM nous_conversation_marks WHERE owner_user_id = $1`, [owner]);
-    return result.rows[0] ? iso(result.rows[0].clearedAt) : null;
+    const result = await this.pool.query<{ clearedAt: Date | string | null }>(`SELECT cleared_at AS "clearedAt" FROM nous_conversation_marks WHERE owner_user_id = $1`, [owner]);
+    return result.rows[0]?.clearedAt ? iso(result.rows[0].clearedAt) : null;
+  }
+  async conversationReadUpTo(owner: string) {
+    const result = await this.pool.query<{ at: Date | string | null }>(`SELECT read_up_to AS at FROM nous_conversation_marks WHERE owner_user_id = $1`, [owner]);
+    return result.rows[0]?.at ? iso(result.rows[0].at) : null;
+  }
+  async markConversationRead(owner: string, at: string) {
+    // A row made here has no Clear (cleared_at NULL, migration 0420); GREATEST ignores the NULL of a row that was never read.
+    const result = await this.pool.query<{ at: Date | string }>(`INSERT INTO nous_conversation_marks (owner_user_id, cleared_at, read_up_to)
+      VALUES ($1, NULL, $2) ON CONFLICT (owner_user_id) DO UPDATE SET read_up_to = GREATEST(nous_conversation_marks.read_up_to, EXCLUDED.read_up_to)
+      RETURNING read_up_to AS at`, [owner, at]);
+    return iso(result.rows[0]!.at);
   }
   async createDecision(input: NewNousDecision) {
     const result = await this.wrote(`decisions\n${input.ownerUserId}\n`, this.pool.query<DecisionRow>(`INSERT INTO nous_decisions (id, owner_user_id, category, title, body, options, recommendation, refs, action, status)

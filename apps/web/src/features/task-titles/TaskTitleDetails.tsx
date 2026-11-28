@@ -5,6 +5,9 @@ import {
   type TaskTitleCandidateStatus,
 } from "@space/contracts";
 import { api } from "../../api.js";
+import { sideSurfaceMeta } from "../docks/side-surface-meta.js";
+
+const NousIcon = sideSurfaceMeta.nous.icon;
 
 const genericPlaceholderTitle =
   /^(?:(?:cli|terminal|bash|zsh|task|untitled|new session|child session|Job Copilot|Mail Copilot|Marketing Copilot|Freelance Copilot|Monitoring Copilot|Security Copilot|App Studio|Video|Design|Browser|Code|Review|Swarm|YouTube|VNC|Harness|Live|Files|Databases|Demo Projects|T3 Code|Appointments|Chat)(?:\s+\d+)?)$/i;
@@ -287,6 +290,11 @@ export function TaskTitleDetails({
                     aria-current={index === topics.length - 1 ? "step" : undefined}
                   >
                     <span className="task-title-line-title">
+                      {topic.fromNous ? (
+                        <NousIcon className="task-title-line-nous" size={14} role="img" aria-hidden={false} aria-label="Sent by Nous">
+                          <title>Sent by Nous</title>
+                        </NousIcon>
+                      ) : null}
                       {topic.title}
                       {topic.hasImages ? (
                         <span className="task-title-line-badge">Image</span>

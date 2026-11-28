@@ -37,6 +37,13 @@ describe("decision ledger: option predictions and the copilot rails (R11-3)", ()
     expect(optionPredictionMatched(moonstone.options[0]!, moonstone, "ANSWERED", "στείλε μου πρώτα το κείμενο")).toBe(false);
     expect(optionPredictionMatched(moonstone.options[0]!, moonstone, "ANSWERED", "Οχι σου ζήτησα μια επιπλέον προσθήκη κανε και αυτήν")).toBe(false);
     expect(yesNoPredictionMatched("APPROVE", "ANSWERED", "send it with tracking on")).toBe(true);
+    // Daily Nous errors 26/11 (61db5eaf): rules for what the send says, in later clauses, are no hold; a "not yet" or a "not" in the sending clause still is.
+    const Exampleco = "προχωρησε το αλλ με μεγαλη προσοχη ν αμην φανει πουθενα οτι υπαρχει και αλλη δικη μας εταρεια η intratrade !!! προσοχη δεν την αναφέρεις πουθενα !!! τα παντα αφορουν μονο την Exampleco!!! και μονο το nousapp";
+    expect(yesNoPredictionMatched("APPROVE", "ANSWERED", Exampleco)).toBe(true);
+    expect(optionPredictionMatched("Ναι, υποβολή του αιτήματος", { recommendation: null, options: ["Ναι, υποβολή του αιτήματος", "Όχι, ακύρωση"] }, "ANSWERED", Exampleco)).toBe(true);
+    expect(yesNoPredictionMatched("APPROVE", "ANSWERED", "προχώρα, αλλά όχι ακόμα")).toBe(false);
+    expect(yesNoPredictionMatched("APPROVE", "ANSWERED", "στείλε μόνο το πρώτο")).toBe(false);
+    expect(yesNoPredictionMatched("APPROVE", "ANSWERED", "send it. Do not cc Anna")).toBe(true);
     // Two options leading with yes: the yes alone does not tell which.
     const twoYes = { recommendation: null, options: ["Ναι, τώρα αμέσως", "Ναι, αλλά αύριο το πρωί"] };
     expect(optionPredictionMatched(twoYes.options[0]!, twoYes, "ANSWERED", "ναι βέβαια")).toBe(false);

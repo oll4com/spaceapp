@@ -1,4 +1,4 @@
-import { JOB_APPLY_MAIL_LABELS, JOB_APPLY_MAIL_LEGACY_OTHER_LABEL, JOB_APPLY_MAIL_ROOT_LABEL, type JobApplyMailCategory } from "@space/contracts";
+import { JOB_APPLY_INTERVIEW_LABEL, JOB_APPLY_MAIL_LABELS, JOB_APPLY_MAIL_LEGACY_OTHER_LABEL, JOB_APPLY_MAIL_ROOT_LABEL, JOB_APPLY_OLD_INTERVIEW_LABEL, type JobApplyMailCategory } from "@space/contracts";
 import { messageText } from "../dot-connectors.js";
 import { GmailMailboxError } from "./gmail-mailbox.js";
 import { maskPasswordResetJson } from "../password-reset-mask.js";
@@ -81,7 +81,10 @@ export function gmailHeader(headers: unknown, name: string): string {
 
 export interface JobApplyLabelIds {
   ids: Record<JobApplyMailCategory, string>;
-  /** Every label under "Job Applications/" (the legacy Other and any the operator made there too): exclusive on a thread. */
+  /** "Interview" (a scheduled interview) and "Old Interview" (over, or its process closed). */
+  interview: string;
+  oldInterview: string;
+  /** Every label under "Job Applications/" (the legacy Other and any the operator made there too) and the two interview labels: exclusive on a thread. */
   all: string[];
   /** "Job Applications/Other" while it still exists (filed before 3/11). */
   legacyOther: string | null;
@@ -110,7 +113,7 @@ export async function ensureJobApplyLabels(input: { accessToken: string; fetchIm
   const listed = ((await call("/labels")).labels as Array<{ id?: string; name?: string }> | undefined ?? []).filter((label) => label.id && label.name);
   const existing = new Map(listed.map((label) => [label.name!.toLowerCase(), label.id!]));
   const ids = new Map<string, string>();
-  for (const name of [JOB_APPLY_MAIL_ROOT_LABEL, ...Object.values(JOB_APPLY_MAIL_LABELS)]) {
+  for (const name of [JOB_APPLY_MAIL_ROOT_LABEL, ...Object.values(JOB_APPLY_MAIL_LABELS), JOB_APPLY_INTERVIEW_LABEL, JOB_APPLY_OLD_INTERVIEW_LABEL]) {
     let id = existing.get(name.toLowerCase());
     if (!id) {
       const created = await call("/labels", { method: "POST", body: { name, labelListVisibility: "labelShow", messageListVisibility: "show" } });
@@ -121,7 +124,8 @@ export async function ensureJobApplyLabels(input: { accessToken: string; fetchIm
     ids.set(name, id);
   }
   return { ids: { CONFIRMATION: ids.get(JOB_APPLY_MAIL_LABELS.CONFIRMATION)!, REJECTION: ids.get(JOB_APPLY_MAIL_LABELS.REJECTION)!, ACTION_NEEDED: ids.get(JOB_APPLY_MAIL_LABELS.ACTION_NEEDED)! },
-    all: jobLabelIdsOf(listed), legacyOther: existing.get(JOB_APPLY_MAIL_LEGACY_OTHER_LABEL.toLowerCase()) ?? null };
+    interview: ids.get(JOB_APPLY_INTERVIEW_LABEL)!, oldInterview: ids.get(JOB_APPLY_OLD_INTERVIEW_LABEL)!,
+    all: [...jobLabelIdsOf(listed), ids.get(JOB_APPLY_INTERVIEW_LABEL)!, ids.get(JOB_APPLY_OLD_INTERVIEW_LABEL)!], legacyOther: existing.get(JOB_APPLY_MAIL_LEGACY_OTHER_LABEL.toLowerCase()) ?? null };
 }
 
 /**
@@ -137,6 +141,24 @@ export async function fileGmailThreads(input: { accessToken: string; fetchImpl?:
     // No empty arrays: the body carries only what changes.
     await call(`/threads/${encodeURIComponent(threadId)}/modify`, { method: "POST", body: { ...(change.addLabelIds.length ? { addLabelIds: change.addLabelIds } : {}), ...(change.removeLabelIds.length ? { removeLabelIds: change.removeLabelIds } : {}) } });
   }
+}
+
+/** Every thread under a label (all pages). */
+export async function gmailLabelThreads(input: { accessToken: string; fetchImpl?: typeof fetch; labelId: string }): Promise<string[]> {
+  const call = jobGmailCall(input.accessToken, input.fetchImpl);
+  const ids: string[] = [];
+  for (let pageToken: string | undefined; ;) {
+    const page = await call(`/threads?${new URLSearchParams({ labelIds: input.labelId, maxResults: "500", ...(pageToken ? { pageToken } : {}) })}`);
+    for (const thread of (page.threads as Array<{ id?: unknown }> | undefined) ?? []) if (typeof thread.id === "string") ids.push(thread.id);
+    pageToken = typeof page.nextPageToken === "string" ? page.nextPageToken : undefined;
+    if (!pageToken) return [...new Set(ids)];
+  }
+}
+
+/** When the thread's newest mail arrived (ms), 0 when Gmail names none. */
+export async function gmailThreadNewestAt(input: { accessToken: string; fetchImpl?: typeof fetch; threadId: string }): Promise<number> {
+  const thread = await jobGmailCall(input.accessToken, input.fetchImpl)(`/threads/${encodeURIComponent(input.threadId)}?format=minimal`);
+  return Math.max(0, ...((thread.messages as Array<{ internalDate?: unknown }> | undefined) ?? []).map((message) => Number(message.internalDate)).filter(Number.isFinite));
 }
 
 /** The thread of each message (the copilot names messages; labels go on threads). */

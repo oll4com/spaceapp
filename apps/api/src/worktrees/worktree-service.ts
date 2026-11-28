@@ -1178,10 +1178,9 @@ export class WorktreeService {
         let isOnlyChmod = false;
         if (isManagedWorktree) {
           try {
-            const diffStat = await execGit(wt.worktreePath, ["diff", "--stat"]);
-            if (diffStat.code === 0 && diffStat.stdout.includes("0 insertions(+), 0 deletions(-)")) {
-              isOnlyChmod = true;
-            }
+            // Mode bits ignored, nothing else may show: untracked, staged and binary changes all keep it (REV1127-002; --stat missed them).
+            const status = await execGit(wt.worktreePath, ["-c", "core.fileMode=false", "status", "--porcelain"]);
+            isOnlyChmod = status.code === 0 && status.stdout.trim() === "";
           } catch { /* not proven chmod-only: the dirty worktree is kept */ }
         }
         if (!isOnlyChmod) {

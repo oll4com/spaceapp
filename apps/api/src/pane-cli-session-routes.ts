@@ -15,7 +15,7 @@ import { CLAUDE_COPILOT_DEFAULTS, claudePaneModelFamily, geminiLaunchModel, type
 import {
   createPaneCliSessionRequestSchema, type Pane, paneCliInterruptInputSchema, type PaneCliSession,
   paneCliUploadMaxBytes, paneCliUploadMaxCount, paneCliUploadResponseSchema, paneCliUploadSourceSchema,
-  reasoningEffortSchema, resumePaneCliSessionRequestSchema, type ResumePaneCliSessionResponse, type UiLanguage, agentLanguageOf
+  reasoningEffortSchema, resumePaneCliSessionRequestSchema, type ResumePaneCliSessionResponse, type AgentLanguage, agentWritingLanguageOf
 } from "@space/contracts";
 import {
   abortOpenCodeSession, fetchOpenCodeSessionIsTurnActive, type OpenCodeServerControl
@@ -198,7 +198,7 @@ function buildCliWorkspacePath(input: { workspaceRoot: string; roomId: string; p
 async function writeCliWorkspaceBootstrap(
   sessionCwd: string,
   input: { roomId: string; paneId: string; sessionId: string; runtimeId: string; paneMode?: Pane["mode"] | null;
-    publicMemoryFiles?: { indexPath: string; monthlyPath: string } | null; language?: UiLanguage }
+    publicMemoryFiles?: { indexPath: string; monthlyPath: string } | null; language?: AgentLanguage }
 ): Promise<void> {
   await writeFile(
     join(sessionCwd, "AGENTS.md"),
@@ -702,7 +702,7 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     }
     const nextSessionId = reusableSession?.sessionId ?? makeSpaceId("cli_session");
     // Whoever starts the session: the operator, or on a shared room the pane's own opener (only they type into it).
-    const operatorLanguage = async () => request.user?.id ? agentLanguageOf(await Promise.resolve(store.getUserSettings(request.user.id)).catch(() => null)) : "en" as const;
+    const operatorLanguage = async () => request.user?.id ? agentWritingLanguageOf(await Promise.resolve(store.getUserSettings(request.user.id)).catch(() => null)) : "en" as const;
     let sessionCwd = railTabCarriedCwd ?? (directOperatorParity && !railTabWorkspace
       ? resolveDirectOperatorParityCwd(requestedCwd, config.cliWorkspaceRoot)
       : requestedManagedWorkspace

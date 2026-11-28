@@ -46,6 +46,7 @@ import { gatewayKeyJoiner, gatewayVaultKeyReconciler, type GatewayAdminService }
 import { apiLoggerOptions } from "./request-logging.js";
 export { redactRequestUrlForLog } from "./request-logging.js";
 import { apiErrorText, sendApiError } from "./http-errors.js";
+import { restrictToHeadlessSurface } from "./headless-surface.js";
 import { internalErrorText, registerApiErrorHandler } from "./api-error-handler.js";
 import { localArtifactFilePath } from "./artifact-storage.js";
 export { sweepExpiredBrowserArtifacts, type BrowserArtifactRetentionSweepResult } from "./artifact-storage.js";
@@ -1460,6 +1461,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     trustProxy: ["127.0.0.1", "::1", "::ffff:127.0.0.1", ...config.trustedProxies],
     logger: apiLoggerOptions(options.logStream)
   });
+  if (config.headless) restrictToHeadlessSurface(app); // K2 §3: only the reviewed headless routes keep a handler (headless-surface.ts).
   // SEC-011: logouts and "log out everywhere" survive API restarts. Until the persisted revocations load,
   // every session is refused (fail closed, review 2026-10-16); loading is retried until it succeeds.
   const sessionRevocationRepository = store instanceof PostgresSpaceStore && config.databaseUrl
@@ -1588,7 +1590,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     (_request, body, done) => done(null, body)
   );
 
-  const sessionAccess = createSessionAccess({ store });
+  const sessionAccess = createSessionAccess({ store, durableUsers: store instanceof PostgresSpaceStore });
   // Connector tokens and copilot mailbox passwords: sealed with the dedicated connector key; older values open with the
   // secrets they were sealed with (SPACE_CONNECTOR_SECRET, else the session secret).
   if (config.publicDistribution) ensureConnectorKey(config.connectorKeyFile);
@@ -1855,7 +1857,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const { setupOwnerVoiceRuntime, setupVoiceCredentials } = await registerPlatformRoutes(app, { apiStartedAt, config, appVersionReader, store, appDiagnosticsService,
     browserSessionManager, workerReadinessChecker, cliTerminalManager, defaultRouteRateLimitOptions, observability, auth, userRoleCache, options, publicCredentialHost,
     setupConnections, setupConnectionCheckRuns, streamingService, sourceControlService, visibleCliRuntimeIds, agentSessionHistoryService, healthMonitor,
-    toolbarUsageProvider, antigravityUsageProvider, apiProviderAccountsProvider, installTelemetry, activityLogService });
+    toolbarUsageProvider, antigravityUsageProvider, apiProviderAccountsProvider, installTelemetry, activityLogService, accountLifecycle: options.accountLifecycle });
 
   // The workspace tool routes: demo projects, T3 Code, games, Dots and Dot Home, plugins, source control, worktrees, Harness, files, databases (workspace-routes-wiring.ts).
   const { demoProjectsService } = await registerWorkspaceRoutes(app, { store, config, auth, options, appDiagnosticsService, claudeUsageProvider, cliChatRuntimeState,
@@ -1954,7 +1956,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const { sweepStrandedChatRuns, dotEvalsRepository } = registerDotRoutes(app, { config, store, options, auth, eventBus, cookieName, defaultRouteRateLimitOptions,
     dotsAuthenticatedOwner, dotsRepository, dotGoalsRepository, dotHomeRepository, dotGoalService, dotMemoryService, dotAtCapacity, autoRouteFactsLoader,
     browserSessionManager, browserAccountStore, youtubeAccountOwner, cliRuntimeVisibility, connectorCrypto, connectorServiceRef, connectorStateTools, roomPaneCommands,
-    spaceAgentAdapter, spaceControl, controlUser, spaceControlRoutes, vault, designService, videoService,
+    spaceAgentAdapter, spaceControl, controlUser, spaceControlRoutes, vault, designService, videoService, streamingService,
     // Declared further down; read only when a Dot runs an MCP tool.
     executeMcpToolWithPolicy: (input, request) => executeMcpToolWithPolicy(input, request) });
   app.post("/api/control/v1/grant", defaultRouteRateLimitOptions, async request=>{
@@ -2009,6 +2011,5 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   registerAdminRoutes(app, { config, store, spaceCapabilityInventoryCollector, defaultRouteRateLimitOptions, memoryGraphService, memoryConsolidationCoordinator,
     memoryMutationCoordinator, apiStartedAt, auth, observability, workerReadinessChecker, storageReadinessChecker, cliRuntimeVisibility, healthMonitor,
     systemTopologyService, serviceRestarter, serviceRestartCooldownPath });
-
   return app;
 }

@@ -435,7 +435,11 @@ export class InMemoryMailCampaignsRepository implements MailCampaignsRepository 
   private trackedMail = new Map<string, MailTrackRecord & { createdAt: string; hits: Array<MailOpenHit & { id: string }> }>();
   private hitIds = 0;
   async trackMessage(input: MailTrackRecord) {
-    if (this.trackedMail.has(input.token)) return;
+    const known = this.trackedMail.get(input.token);
+    if (known) {
+      if (known.ownerUserId === input.ownerUserId) Object.assign(known, { recipientName: input.recipientName, subject: input.subject, links: [...input.links] });
+      return;
+    }
     this.trackedMail.set(input.token, { ...copy(input), createdAt: this.now(), hits: [] });
   }
   async recordOpen(token: string, hit: MailHitRecord) {
@@ -790,7 +794,8 @@ export class PostgresMailCampaignsRepository implements MailCampaignsRepository 
   }
   async trackMessage(input: MailTrackRecord) {
     await this.rows(`INSERT INTO mail_open_messages(token,owner_user_id,recipient,recipient_name,subject,links,campaign_id,contact_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
-      ON CONFLICT (token) DO NOTHING`, [input.token, input.ownerUserId, input.recipient, input.recipientName, input.subject, JSON.stringify(input.links), input.campaignId ?? null, input.contactId ?? null]);
+      ON CONFLICT (token) DO UPDATE SET recipient_name=EXCLUDED.recipient_name, subject=EXCLUDED.subject, links=EXCLUDED.links
+      WHERE mail_open_messages.owner_user_id=EXCLUDED.owner_user_id`, [input.token, input.ownerUserId, input.recipient, input.recipientName, input.subject, JSON.stringify(input.links), input.campaignId ?? null, input.contactId ?? null]);
   }
   async recordOpen(token: string, hit: MailHitRecord) {
     const link = hit.link ?? null;

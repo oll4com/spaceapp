@@ -56,6 +56,8 @@ export const NOUS_SCORE_WEIGHTS = {
   toolFailure: -2, lesson: -5, decisionDeclined: -5, predictionMiss: -3, chatError: -1, decisionFailed: -3,
   /** Each open operator request, and more once it is past 1 hour, 6 hours and 24 hours open (each step adds to the one before). */
   openRequest: -2, requestPast1h: -2, requestPast6h: -4, requestPast24h: -8,
+  /** Stuck requests (operator 27/11 nous_msg:583c7629): each full day an open or Not done request stays past its first 24 hours, no cap. */
+  requestStuckDay: -4,
   /** Each plan completed and each request recorded Done (space_request_done) in the window. */
   planCompleted: 5, requestDone: 3,
   /** Per point of today's average utilization above (+) or below (−) its target. */
@@ -528,11 +530,15 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
     return sum;
   }, emptyDay(today));
   dailyErrors.push({ id: null, label: `${span === 1 ? "24-hour" : `${span}-day`} totals`, points: 0, detail: errorCounts(totals) });
+  const stuckDays = (age: number) => Math.max(0, Math.floor((age - DAY_MS) / DAY_MS));
+  const requestPoints = (age: number) => w.openRequest + (age > HOUR_MS ? w.requestPast1h : 0) + (age > 6 * HOUR_MS ? w.requestPast6h : 0) + (age > DAY_MS ? w.requestPast24h : 0)
+    + stuckDays(age) * w.requestStuckDay;
   const requests = input.requests.map((request): NousScoreItem => {
     const age = Math.max(0, input.now - from(request.openedAt));
-    const points = w.openRequest + (age > HOUR_MS ? w.requestPast1h : 0) + (age > 6 * HOUR_MS ? w.requestPast6h : 0) + (age > DAY_MS ? w.requestPast24h : 0);
-    return { id: request.id, label: request.summary, points, detail: `open ${ageText(age)}` };
+    const stuck = stuckDays(age);
+    return { id: request.id, label: request.summary, points: requestPoints(age), detail: `open ${ageText(age)}${stuck ? ` · stuck ${stuck} d (${w.requestStuckDay} a day)` : ""}` };
   });
+  const stuckRequests = input.requests.filter((request) => input.now - from(request.openedAt) > DAY_MS).length;
   const completed = input.completedPlans.filter((plan) => inWindow(plan.at))
     .map((plan): NousScoreItem => ({ id: plan.id, label: plan.title, points: w.planCompleted, detail: `completed ${plan.at.slice(0, 10)}` }));
   const done = input.done.filter((record) => inWindow(record.at))
@@ -644,7 +650,7 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
     tile("response", "Response time", response, (todayResponse ? `Today ${signed(todayResponse.points)}: ${todayResponse.detail}` : `No operator message today · first answer within ${durationText(NOUS_SCORE_REPLY_TARGET_MS)}`)
       + (response.some((item) => item !== todayResponse && item.points) ? ` · earlier days ${signed(response.reduce((sum, item) => sum + (item === todayResponse ? 0 : item.points), 0))}, past: they leave as the window moves` : "")),
     tile("dailyErrors", "Daily Nous errors", dailyErrors, `Today: ${errorCount(todaysErrors)} · ${period}: ${errorCount(totals)}`),
-    tile("requests", "Open requests", requests, `${requests.length} open`),
+    tile("requests", "Open requests", requests, `${requests.length} open${stuckRequests ? ` · ${stuckRequests} stuck past 24 h, ${w.requestStuckDay} each more day` : ""}`),
     tile("approvedNotDone", "Approved but not done", approved, `${approved.length} not done · ${approved.filter((item) => item.points < 0).length} past the ${w.approvedNotDoneGraceHours} h grace`),
     tile("completed", "Plans completed", completed, `${completed.length} in ${period}`),
     tile("done", "Requests done", done, `${done.length} in ${period}`),
@@ -726,7 +732,6 @@ export function nousScore(input: NousScoreInput): Pick<NousScore, "score" | "til
     label: `${entry.label} (${entry.share}% of the negative)`, points: entry.points,
     perDay: entry.key === "dailyErrors" ? round(entry.points / windowDays) : entry.key === "response" ? todayResponse!.points : 0, action: `${prefix}${variableMoves[entry.key]!}` });
   // Levers: every open item a move of Nous's removes or stops growing, costliest by tomorrow first (no count: No Arbitrary Limits).
-  const requestPoints = (age: number) => w.openRequest + (age > HOUR_MS ? w.requestPast1h : 0) + (age > 6 * HOUR_MS ? w.requestPast6h : 0) + (age > DAY_MS ? w.requestPast24h : 0);
   const levers: NousScoreLever[] = [
     ...input.plans.map((plan, index): NousScoreLever => {
       const days = Math.floor(Math.max(0, input.now - from(plan.createdAt)) / DAY_MS);
@@ -821,7 +826,7 @@ export function nousScoreLine(score: NousScore): string {
     + score.tiles.filter((tile) => ["panes", "idlePanes", "browsers", "goals", "dailyErrors", "dailyTasks", "response", "projects", "marketing", "lostTokens", "approvedNotDone", "parked"].includes(tile.key))
       .map((tile) => `, ${tile.label}: ${tile.detail} (${signed(tile.points)})`).join("")
     + (score.breakdown.length ? `. Negative by variable: ${score.breakdown.map((entry) => `${entry.label} ${signed(entry.points)} (${entry.share} %)`).join(", ")}` : "")
-    + ". Open panes (now and each past day's average), each started hour a pane sits idle past 60 min, browsers kept open unused past 30 min (per hour, and each Space had to close) and requests cost points; plan age grows quadratically. Unmet goals cost per day, more without progress or past deadline. Daily errors count failed tools, failed or timed-out turns and declined, mispredicted or failed decisions."
+    + ". Open panes (now and each past day's average), each started hour a pane sits idle past 60 min, browsers kept open unused past 30 min (per hour, and each Space had to close) and requests cost points (more each full day one stays stuck past 24 h); plan age grows quadratically. Unmet goals cost per day, more without progress or past deadline. Daily errors count failed tools, failed or timed-out turns and declined, mispredicted or failed decisions."
     + " Each missed day of a daily task costs points, so does a first answer slower than 2 min or a Done slower than 6 h, and the big projects' (funding, jobs, crypto, freelance) low success, more each day without it, and marketing below its target (failed and no-reach posts, days without a result)."
     + ` Lost tokens (a subscription week left unused at its reset) cost ${-NOUS_SCORE_WEIGHTS.lostAtResetPerPoint} a point.`
     + ` EXTERNAL decisions approved and not confirmed done (their copilot item's final state or its replacement post's, not before an approved post's scheduled date, one done settles its duplicates, a send of ours to their recipients or in any thread of any account with no bounce for them after it, else an outcome that ran; space_settle_decision marks one done with proof or void) cost points past a ${NOUS_SCORE_WEIGHTS.approvedNotDoneGraceHours} h grace, more each hour.`;

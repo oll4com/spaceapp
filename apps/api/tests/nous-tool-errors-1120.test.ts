@@ -184,4 +184,44 @@ describe("Daily Nous errors 20/11", () => {
     expect(update).toHaveBeenCalledTimes(2);
   });
 
+  // 2026-11-27 REVIEW (plan m9Bq 26/11: its wait came back after its decision was answered, Space's card re-raised twice): such a wait is held.
+  it("holds an operator wait whose named decisions are none of them open, and passes one naming an open decision", async () => {
+    const plan = { id: "clipboard:abcdefgh", kind: "PLAN", title: "Tokens", text: "", steps: [], parked: null, waitsOn: null, dependsOn: [] };
+    const update = vi.fn(async () => plan);
+    const decisions = vi.fn(async () => [{ id: decision, status: "OPEN" }]);
+    const run = (what: string) => tools({ plans: { get: async () => plan, list: async () => [plan], update }, decisions } as never)
+      .execute("space_plan_update", { plan: plan.id, waitsOn: { kind: "OPERATOR", what } }, ctx);
+    expect(await run("Answer decision nous_decision:3c4a83465d7944dba6775258")).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("None of nous_decision:3c4a8346") });
+    expect(update).not.toHaveBeenCalled();
+    expect((await run(`Answer ${decision.slice(0, 22)} and nous_decision:3c4a83465d7944dba6775258`)).refused).toBeFalsy();
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+});
+
+describe("Corrections 24/11 + 27/11: a freeze on a plan is the operator's alone", () => {
+  const plan = { id: "clipboard:bxrJ-oNb9sJp", kind: "PLAN", title: "Coupons apart from products", text: "", steps: [{ id: "s22", order: 22, title: "Go live", status: "PENDING" }], parked: null, waitsOn: null, dependsOn: [] };
+  const run = (args: Record<string, unknown>, conversation: unknown[] = []) => {
+    const update = vi.fn(async () => plan);
+    const deps = { plans: { get: async () => plan, list: async () => [plan], update }, listConversation: async () => conversation };
+    return tools(deps as never).execute("space_plan_update", { plan: plan.id, ...args }, ctx).then((result) => ({ result, update }));
+  };
+  const park = { reason: "Steps 18-21 built and staged; go-live waits on the 2/12 freeze.", conditions: [{ who: "DATE", what: "Weekly SEO check Mon 30/11", check: { kind: "DATE", at: "2026-11-30T02:00:00Z" } }] };
+
+  it("holds a park or wait on a freeze no operator message set", async () => {
+    const parked = await run({ executionStatus: "COMPLETED", park });
+    expect(parked.result).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("is not their order") });
+    expect(parked.update).not.toHaveBeenCalled();
+    const waits = await run({ waitsOn: { kind: "THIRD_PARTY", what: "Phase 1 goes live only after the BF/CM freeze" } });
+    expect(waits.result).toMatchObject({ ok: false, refused: true });
+    // A Nous-cited message that is not the operator's own does not count.
+    expect((await run({ park, order: "nous_msg:nous0001" }, [{ id: "nous_msg:nous0001", ownerUserId: owner, kind: "ANSWER", meta: {} }])).result).toMatchObject({ refused: true });
+  });
+
+  it("lets the operator's own freeze, an OPERATOR ask and a UI-freeze bug through", async () => {
+    const order = "nous_msg:op000001";
+    expect((await run({ executionStatus: "COMPLETED", park, order }, [{ id: order, ownerUserId: owner, kind: "OPERATOR", meta: { person: true } }])).update).toHaveBeenCalled();
+    expect((await run({ waitsOn: { kind: "OPERATOR", what: "Go live during the 2/12 freeze or after it?" } })).result).not.toMatchObject({ result: expect.stringContaining("is not their order") });
+    expect((await run({ park: { reason: "Πάγωμα 1-2 s στο Windows app: waits on the WebGL fix ticket", conditions: [{ who: "PROMOTE", what: "the fix reaches stable" }] }, executionStatus: "COMPLETED" })).update).toHaveBeenCalled();
+  });
 });

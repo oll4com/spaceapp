@@ -12,6 +12,7 @@ import {
   submittedTaskEntries,
   extractReferencedPlanId,
   parseTaskSummary,
+  noteNousPrompt,
   titleSummaryPrompt,
   titlePromptMaxBytes,
   type TaskTitleContext,
@@ -801,6 +802,24 @@ describe("summarized task title lines", () => {
     expect(pane.taskMetadata?.topics?.map((topic) => topic.title)).toEqual(["Workspace menu layout", "Login 500 error fix"]);
     expect(pane.taskMetadata?.steps).toEqual(["Workspace menu layout", "Login 500 error fix"]);
     expect(pane.taskMetadata?.description).toBe("Repair the failing login.");
+    await f.service.close();
+  });
+
+  it("marks a line whose prompt Nous sent, and only that line", async () => {
+    const f = fixture();
+    f.setRequests(["Improve the workspace menu layout"]);
+    f.generate.mockResolvedValueOnce(reply({ sameTopic: false, title: "Workspace menu layout", summary: "Improve the menu." }));
+    await f.service.observe(f.pane.id);
+    await f.service.tick();
+    // The CLI wraps the typed text; the line still belongs to Nous.
+    noteNousPrompt(f.pane.id, "Fix the login 500 error!");
+    noteNousPrompt("pane:other", "Improve the workspace menu layout");
+    f.setRequests(["Improve the workspace menu layout", "<system-reminder>x</system-reminder> Fix the login 500 error"]);
+    f.generate.mockResolvedValueOnce(reply({ sameTopic: false, title: "Login 500 error fix", summary: "Repair the failing login." }));
+    await f.service.observe(f.pane.id);
+    f.advance(61);
+    await f.service.tick();
+    expect(f.store.getPane(f.pane.id).taskMetadata?.topics?.map((topic) => topic.fromNous ?? false)).toEqual([false, true]);
     await f.service.close();
   });
 

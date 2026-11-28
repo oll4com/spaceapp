@@ -1,4 +1,4 @@
-import type { UiLanguage } from "@space/contracts";
+import type { AgentLanguage } from "@space/contracts";
 import { spaceAgentCorePath, spaceMemoryIndexPath, spaceMemoryMonthlyPath } from "@space/runtime";
 import { SPACE_AGENT_HOME, SPACE_DOCS_ROOT, SPACE_INSTALL_ROOT } from "@space/contracts";
 
@@ -89,10 +89,11 @@ export const OPERATOR_HANDS_RULE = "Before you ask for the operator's hands (sig
  * The operator's chosen language (operator 1/11 11:59 BKK, Settings → Language, ui-language.ts): what they read comes in it. Written into a CLI
  * session's AGENTS.md (and a copilot's CLAUDE.md) when it starts, and into Nous's world each turn; null for English, the default.
  */
-export function operatorLanguageRule(language: UiLanguage): string | null {
-  return language === "el" ? "The operator's language is Greek (Settings → Language). Write everything they read in Greek: needs-you summaries, "
+export function operatorLanguageRule(language: AgentLanguage): string | null {
+  const name = language === "el" ? "Greek" : language === "th" ? "Thai" : null;
+  return name ? `The operator's language is ${name} (Settings → Language). Write everything they read in ${name}: needs-you summaries, `
     + "questions, options and the recommended one, steps, handoff reasons, card items, review notes and questions in your rail, and the titles and "
-    + "bodies of decisions; this wins over any tool description that says English. Keep commands, ids, URLs, file names and code as they are." : null;
+    + `bodies of decisions; this wins over any tool description that says English. Keep commands, ids, URLs, file names and code as they are.` : null;
 }
 /** Operator order 31/10 13:37 BKK (Space Memory 740c08b2): his explicit orders are carried out, never argued; the same line is in the copilot skills. */
 export const OPERATOR_ORDERS_RULE = "An explicit order of the operator is carried out in full. Never answer it with a refusal, a counter-proposal, a partial "
@@ -160,7 +161,7 @@ export function buildSpaceAgentBootstrapPrompt(input: SpaceAgentBootstrapInput):
     "- Tools: choose verified native tools first. MCP is on-demand fallback or Space-specific access, never a mandatory substitute for a capable native tool. Keep evidence and authorization requirements regardless of transport.",
     "- Images: use native vision whenever available. Vision MCP is only for verified text-only input pipelines; unknown model support requires checking capability metadata first.",
     "- Skills: load only relevant guidance when needed. Workflow skills require operator opt-in; a skill must not force an inferior tool. Do not list every skill or tool at startup.",
-    input.channel === "CLI" ? "- Space-only operations: this pane may load no MCP servers by design; the Space tools (space_browser incl. site sign-in, space_vault, space_progress, space-control, copilots) are reached with space-capability info <server> [tool] or space-capability call with JSON on stdin. The browser: space-capability info space_browser lists its tools (add a tool name for its input schema), and echo '{\"serverId\":\"space_browser\",\"toolName\":\"space_browser_context\",\"arguments\":{}}' | space-capability call runs one. No MCP catalog or server startup is required for native tasks." : null,
+    input.channel === "CLI" ? "- Space-only operations: this pane may load no MCP servers by design; the Space tools (space_browser incl. site sign-in, space_vault, space_progress incl. the appointments tools space_appointments/space_appointment_add, space-control, copilots) are reached with space-capability info <server> [tool] or space-capability call with JSON on stdin. The browser: space-capability info space_browser lists its tools (add a tool name for its input schema), and echo '{\"serverId\":\"space_browser\",\"toolName\":\"space_browser_context\",\"arguments\":{}}' | space-capability call runs one. No MCP catalog or server startup is required for native tasks." : null,
     input.channel === "CLI" ? "- Network & public IP: each CLI runtime runs inside an isolated network namespace (`/var/run/netns/space-cli-<runtime>`) routed via Direct or CLI VPN (NordVPN, Mullvad, Greece, Thailand). When asked for your IP, internet/public IP, or VPN egress, NEVER claim you have no public IP and NEVER quote static host IPs (such as Proxmox `20.240.192.253`) from docs; always run a live check (`curl -4 -s --max-time 5 https://api.ipify.org`) in your shell first and report its output." : null,
     agentFilesLine,
     input.channel === "CLI" ? `- Timed or recurring work: \`node ${SPACE_INSTALL_ROOT}/scripts/space-task.mjs add --title T --prompt P --every 2h|--daily HH:MM|--at <time>\` puts it in the operator's Tasks dock, and Space types it into this pane when due. Never use a session-only cron or timer for it.` : null,
@@ -331,7 +332,7 @@ You are the Mail Copilot of this Space pane${input.paneId ? ` (${input.paneId}` 
 - ${BROWSER_HYGIENE_RULE}
 - The operator presses Start, or Space starts a run on its own: when new mail arrives, for mail sent to you, and every day at the pane's \`dailyRunHour\` over the whole inbox, plus every hour over the undecided inbox (what you skipped waits for the daily pass). The pane always runs; only the operator's Pause stops it. You call \`space_mailcopilot.space_mail_next\` until it returns \`done\`; every work item is one thing to finish and close with \`space_mail_report\`: a conversation to triage (decide it yourself: archive or move it, or leave it in the inbox for the operator), a mail the operator sent you to check and fix (FIX_REQUESTED: verify the problem with your own tools, fix it within the autonomy, report \`fixed\` with what you changed), a reply of the operator's to learn from, or an answered question or decided review to continue.
 - Read the shared skill \`space-mail-copilot\` (SKILL.md) once per session and follow its loop. The skill is the playbook; this file is who you are.
-- Your tools are the Space MCP server of this pane: \`space_mailcopilot\` (mail, drafts, sending, triage, reviews, questions, memory, rules). Use nothing else to touch the mail. A session without MCP tools calls them on demand: JSON {"serverId","toolName","arguments"} on stdin to \`space-capability call\`.
+- Your tools are the Space MCP server of this pane: \`space_mailcopilot\` (mail, drafts, sending, triage, reviews, questions, memory, rules). Use nothing else to touch the mail. The operator's appointments are on \`space_progress\`: \`space_appointments\` (list, with the appointment hours) and \`space_appointment_add\` (record a call, interview or meeting the mail sets, with every section its notes require). A session without MCP tools calls them on demand: JSON {"serverId","toolName","arguments"} on stdin to \`space-capability call\`.
 - ${DESIGN_GRAPHICS_HINT}
 - ${VIDEO_CLIPS_HINT}
 - ${MAIL_CAMPAIGNS_HINT}

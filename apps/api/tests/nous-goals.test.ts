@@ -154,7 +154,8 @@ describe("Nous goals: /goal and the goal turn", () => {
     expect(results.slice(0, 3)).toEqual(Array(3).fill("result of space_send_to_pane"));
     await f.service.send(owner, "πες στον Andy να απαντήσει", { person: true });
     await vi.waitFor(() => expect(results).toHaveLength(4));
-    expect(results[3]).toBe("result of space_send_to_pane");
+    // The operator's own turn dispatched with no reply yet, so the result carries the space_reply_now nudge.
+    expect(results[3]).toMatch(/^result of space_send_to_pane\n\nThe operator has waited \d+ s with no answer: call space_reply_now now/);
     release();
     await f.service.idle(owner);
     expect(toolSubjects("space_ask_operator", { refs: { planId: "clipboard:Abc" }, action: { kind: "PANE_TEXT", roomId: "room:x", paneId: "pane:y1" } })).toEqual(["pane pane:y1", "plan clipboard:abc"]);

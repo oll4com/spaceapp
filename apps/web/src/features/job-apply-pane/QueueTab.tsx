@@ -48,7 +48,7 @@ function DiscoverPanel({ paneId, onQueued }: { paneId: string; onQueued(): void 
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const [tokens, setTokens] = useState("");
   const [query, setQuery] = useState("");
-  const [remote, setRemote] = useState(true);
+  const [remote, setRemote] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<JobApplyDiscoverResult | null>(null);
   const [error, setError] = useState<string | null>(null);

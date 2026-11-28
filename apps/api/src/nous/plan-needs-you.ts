@@ -59,8 +59,8 @@ const plansOf = (card: SpaceNotification) => [card.payload.planId, ...(Array.isA
 // The web's `asksPlan` (NousNeedsYou.tsx): the card names the plan, sits on its pane, or what the plan waits on names the card.
 const ties = (plan: ClipboardItem, ask: { id: string; planIds: string[]; paneId: string | null }) => ask.planIds.includes(plan.id)
   || Boolean(plan.paneId && ask.paneId === plan.paneId) || Boolean(plan.waitsOn?.what.includes(ask.id))
-  // A wait names a card by its short id too («Card e13f3e9c …», 16/11).
-  || Boolean(ask.id.startsWith("notification:") && plan.waitsOn?.what.includes(ask.id.slice("notification:".length, "notification:".length + 8)));
+  // A wait names a card or a decision by its short id too («Card e13f3e9c …» 16/11; 2026-11-27 REVIEW: «Απόφαση 61db5eaf …» got a second card beside its decision).
+  || Boolean(/^(?:notification|nous_decision):/.test(ask.id) && plan.waitsOn?.what.includes(ask.id.split(":")[1]!.slice(0, 8)));
 const askOf = (card: SpaceNotification) => ({ id: card.id, paneId: card.paneId,
   planIds: [...plansOf(card), ...(card.dedupeKey?.startsWith(PLAN_NOTICE_PREFIX) ? [card.dedupeKey.slice(PLAN_NOTICE_PREFIX.length)] : [])] });
 /** The plan wait a card the operator acted on ended for them: the one recorded with the answer, else a derived card's own (not after Done); null when none. */

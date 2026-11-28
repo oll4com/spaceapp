@@ -3,6 +3,7 @@ import { isCliBridgeRoutePath } from "./cli-bridge-paths.js";
 import { isHarnessRootHttpPath } from "./harness-proxy.js";
 import { requestPathname, requestRoutePath } from "./request-helpers.js";
 import { MAKE_APP_PATHS } from "./make-app-routes.js";
+import { NOUS_CLOUD_GATEWAY_PATHS } from "./nous-cloud-routes.js";
 
 // How the API's request hooks classify a request: routes that need no session, the internal API and its token header,
 // the CLI bridge, the mutations app-diagnostics automation may make, and which requests need a CSRF token.
@@ -56,6 +57,8 @@ export const publicPaths = new Set([
   // Slack and Teams deliveries: verified by their signatures inside the routes.
   "/api/channels/slack/events",
   "/api/channels/teams/messages",
+  // Nous Cloud boxes' model calls (nous-cloud-routes.ts): a "Nous Cloud" Gateway key is checked inside the routes.
+  ...NOUS_CLOUD_GATEWAY_PATHS,
   // The SpaceApp app in Make: its Bearer key is checked inside the routes (make-app-routes.ts).
   ...MAKE_APP_PATHS
 ]);

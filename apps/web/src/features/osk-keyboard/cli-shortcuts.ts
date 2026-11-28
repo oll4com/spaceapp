@@ -22,7 +22,7 @@ export const OSK_CLI_COMMANDS: readonly OskCliCommand[] = [
   { id: "memory", label: "Save to memory", text: "save to memory", enter: true, icon: "Save" },
   { id: "test", label: "test", text: "test", enter: true, icon: "Terminal" },
   { id: "deploy", label: "Deploy", text: "Deploy the project to Gitea and GitHub.", enter: true, icon: "Rocket" },
-  { id: "promote", label: "Promote", text: "Promote the verified dev version to stable (space-queue promote --wait).", enter: true, icon: "ArrowUpCircle" },
+  { id: "promote", label: "Promote", text: "Promote the verified dev version to stable (space-queue promote --urgent --wait).", enter: true, icon: "ArrowUpCircle" },
   {
     id: "clean_worktree",
     label: "Clean worktree",

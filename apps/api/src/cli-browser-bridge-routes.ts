@@ -1,5 +1,5 @@
 import { registerSiteSigninAgentRoutes, siteSigninFor, signinHandoffRecipe } from "./site-signins.js";
-import { checkSiteAccount, moveTabToWantedAccount, runsIn, signinTarget, siteAccountLine, tabGoogleAccounts } from "./site-signin-account.js";
+import { canMoveTab, checkSiteAccount, moveTabToWantedAccount, runsIn, signinTarget, siteAccountLine, tabGoogleAccounts } from "./site-signin-account.js";
 import { handoffTtlSeconds, ownerHandsAnswer, ownerQuietNow } from "./owner-clock.js";
 import { closedNightHandoff, nightHandoffLine } from "./notifications/browser-handoff.js";
 import { BROWSER_CONTROL_AGENT_RECLAIM_IDLE_MS, BROWSER_CONTROL_PRESENCE_HOLD_MAX_MS, createBrowserControlActivity, ownBrowserPane, releaseBrowserControlLease, settleEndedOperatorLease, type BrowserControlActivity } from "./browser-control-activity.js";
@@ -988,6 +988,13 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
           if (site.check.matches && site.check.wanted.signedIn && input.command.kind === "LOGIN" && !input.command.triedStored) {
             result = {status: "ALREADY_SIGNED_IN", account: site.check.wanted.email, siteAccount: accountLine,
               message: `This tab already runs in ${site.check.wanted.email}'s browser, which is signed in: continue the sign-in yourself ("Sign in with Google" picks it). Request the handoff again with triedStored: true only if it still fails.`};
+            break;
+          }
+          // 2026-11-27 REVIEW (4 of 11 handoffs on 26/11): the site has sign-ins in several accounts and the tab in none; picking one is the
+          // agent's, never the operator's. A pane that cannot move tabs, or a browser the operator holds, still gets the card.
+          if (!site.check.matches && !move.moved && site.check.accounts.length > 1 && !held && canMoveTab(pane)) {
+            result = {status: "PICK_ACCOUNT", accounts: site.check.accounts.map((account) => account.email), siteAccount: accountLine,
+              message: `${site.check.site} has sign-ins in ${site.check.accounts.map((account) => account.email).join(", ")}; this tab is in none of them. Move it into the account this task needs (space_browser_select_account or a new tab of that account), then sign in there; request the handoff again only if that account's sign-in still needs the operator.`};
             break;
           }
         }

@@ -285,6 +285,37 @@ export async function closeInterviewTask(store: InterviewTaskStore, owner: strin
   return store.updateTaskItem(owner, task.id, { status: "DONE" });
 }
 
+export type InterviewStage = "ACTION_NEEDED" | "INTERVIEW" | "OLD_INTERVIEW";
+/** A thread without a task or an appointment that Action needed held this long has no ask left (an old reminder, a step taken elsewhere). */
+export const STALE_ASK_MS = 14 * DAY_MS;
+
+/** The appointments of a thread: sourced from its Gmail thread or its task (rows made before 2/11 carried "task:" twice). */
+export function threadAppointments(appointments: readonly Appointment[], account: string, threadId: string, task: TaskItem | null): Appointment[] {
+  return appointments.filter((item) => {
+    const ref = (item.sourceRef ?? "").split("#")[0]!;
+    return ref === `gmail:${account}:${threadId}` || Boolean(task && (ref === task.id || ref === `task:${task.id}` || ref === `task:task:${task.id}`));
+  });
+}
+
+/**
+ * Where a test or interview thread belongs now (operator 27/11): Action needed only while we owe a step (reply, book, take a test);
+ * "Interview" once an appointment of the thread is ahead; "Old Interview" once its task is closed or its appointments are over. An open
+ * task wins over an old appointment, so a new round asked in an old thread is never filed away.
+ */
+export function interviewStage(input: { task: TaskItem | null; appointments: readonly Appointment[]; newestAt: number | null; nowMs: number;
+  filed?: "ACTION_NEEDED" | "INTERVIEW" }): InterviewStage {
+  const live = input.appointments.filter((item) => item.status !== "CANCELLED");
+  const ahead = live.find((item) => item.status === "UPCOMING" && Date.parse(item.startsAt) > input.nowMs);
+  if (ahead) return ahead.kind === "DEADLINE" ? "ACTION_NEEDED" : "INTERVIEW";
+  const task = input.task;
+  // Under Interview with its time passed it is over; a later ask in the thread comes back through the triage as Action needed.
+  if (input.filed === "INTERVIEW") return live.length || (task && task.status !== "OPEN") ? "OLD_INTERVIEW" : "INTERVIEW";
+  // An open task is a step we owe (a parsed date may be a "book by" or a quoted old one): only a booked appointment ahead moves it.
+  if (task?.status === "OPEN") return "ACTION_NEEDED";
+  if (task || live.length) return "OLD_INTERVIEW";
+  return input.newestAt !== null && input.newestAt < input.nowMs - STALE_ASK_MS ? "OLD_INTERVIEW" : "ACTION_NEEDED";
+}
+
 export interface AppointmentDoneDeps {
   store: InterviewTaskStore & Pick<SpaceStore, "getTaskItem">;
   /** The triage's MAIL events name a thread's application; the event log records the step. */
@@ -328,17 +359,27 @@ export async function completeAppointment(deps: AppointmentDoneDeps, owner: stri
   return { taskId: task?.id ?? null, applicationId, closed };
 }
 
-/** The daily list: open ones soonest first ("not stated" last), "due in <24 h" marked, and deadlines passed in the last day once. */
+/** An open request with no date this long is flagged first in the daily list (Trust Wallet waited 11 days unanswered, 16-27/11). */
+const UNDATED_ESCALATION_MS = 2 * DAY_MS;
+
+/**
+ * The daily list of open tests and interviews: requests with no date for 2+ days first (oldest first: someone must reply, book or record
+ * the date), then the dated ones soonest first ("due in <24 h" marked), then passed deadlines, listed every day until the task is closed
+ * (its thread stays in Action needed until then).
+ */
 export function renderInterviewReminder(tasks: readonly TaskItem[], nowMs: number): { title: string; body: string; taskIds: string[] } | null {
   const rows = tasks.filter((task) => task.status === "OPEN").map((task) => ({ task, due: taskDeadline(task) }))
     .filter((row): row is { task: TaskItem; due: string | null } => row.due !== undefined).map((row) => ({ ...row, at: row.due === null ? null : Date.parse(row.due) }));
-  const open = rows.filter((row) => row.at === null || row.at > nowMs).sort((left, right) => (left.at ?? Infinity) - (right.at ?? Infinity));
-  // shortcut: "in the last day" counts from now, so a deadline within the timer's 15 minutes of 10:00 may show twice or not at all; keep the last reminder's time if that matters.
-  const passed = rows.filter((row) => row.at !== null && row.at <= nowMs && row.at > nowMs - DAY_MS);
-  if (!open.length && !passed.length) return null;
-  const lines = [...open.map((row) => `- ${row.task.title}${row.at !== null && row.at - nowMs < DAY_MS ? " (due in <24 h)" : ""}`),
-    ...passed.map((row) => `- ${row.task.title} (deadline passed)`)];
-  return { title: `Tests and interviews: ${open.length} open`, body: clip(lines.join("\n"), 2000), taskIds: [...open, ...passed].map((row) => row.task.id) };
+  const age = (task: TaskItem) => nowMs - Date.parse(task.createdAt);
+  const waiting = rows.filter((row) => row.at === null && age(row.task) >= UNDATED_ESCALATION_MS).sort((left, right) => age(right.task) - age(left.task));
+  const open = rows.filter((row) => (row.at === null || row.at > nowMs) && !waiting.includes(row)).sort((left, right) => (left.at ?? Infinity) - (right.at ?? Infinity));
+  const passed = rows.filter((row) => row.at !== null && row.at <= nowMs);
+  if (!rows.length) return null;
+  const lines = [...waiting.map((row) => `- ${row.task.title} (NO DATE FOR ${Math.floor(age(row.task) / DAY_MS)} DAYS: reply, book or record the date)`),
+    ...open.map((row) => `- ${row.task.title}${row.at !== null && row.at - nowMs < DAY_MS ? " (due in <24 h)" : ""}`),
+    ...passed.map((row) => `- ${row.task.title} (deadline passed: close the task or get a new date)`)];
+  return { title: `Tests and interviews: ${waiting.length + open.length} open${waiting.length ? `, ${waiting.length} with no date for 2+ days` : ""}`,
+    body: clip(lines.join("\n"), 2000), taskIds: [...waiting, ...open, ...passed].map((row) => row.task.id) };
 }
 
 /**

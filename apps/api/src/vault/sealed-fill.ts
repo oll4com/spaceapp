@@ -95,8 +95,15 @@ export function vaultFieldScript(role: Role, action: FieldAction, expectLength =
     return /subscription.?key|api.?key|secret|passcode/i.test(names) && !/user|mail|login|vat|otp|mfa|2fa|one.?time/i.test(names); });
     return found.length === 1 ? found[0] : null; };
   let el = null;
-  if (role === "USERNAME") el = pick('input[autocomplete~="username"],input[autocomplete~="email"],input[type="email"]')[0]
-    || pick('input[type="text"],input:not([type])').find((candidate) => named(candidate, /user|email|login/i)) || null;
+  if (role === "USERNAME") { const texts = pick('input[type="text"],input:not([type])').filter((candidate) => !passwords.includes(candidate));
+    // NBG Business e-banking's Username box has no name, id or autocomplete (FIELD_NOT_FOUND 27/11): its label or placeholder names it,
+    // else it is the one text box before the password in its form or dialog. "κωδικός" alone stays out: it also means password.
+    const pw = passwords[0], scope = pw && (formOf(pw) || dialogOf(pw));
+    const before = pw ? texts.filter((candidate) => (!scope || scope.contains(candidate)) && (candidate.compareDocumentPosition(pw) & Node.DOCUMENT_POSITION_FOLLOWING)) : [];
+    el = pick('input[autocomplete~="username"],input[autocomplete~="email"],input[type="email"]')[0]
+      || texts.find((candidate) => named(candidate, /user|email|login/i))
+      || texts.find((candidate) => /user|e-?mail|login|χρ[ήη]στ/i.test(described(candidate)))
+      || (before.length === 1 ? before[0] : null); }
   // A login's only password field whatever its autocomplete (Skimlinks marks it new-password, 14/11); with 2+ the new/confirm pair stays out.
   else if (role === "PASSWORD") el = passwords.find((candidate) => !/\\bnew-password\\b/.test(candidate.autocomplete)) || (passwords.length === 1 ? passwords[0] : passwords.length ? null : secretText());
   else if (role === "NEW_PASSWORD") el = fresh[0] || passwords[0] || null;

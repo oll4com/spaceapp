@@ -46,7 +46,7 @@ export const NOUS_ITEM_HOLDS = 2;
 /** A follow-up about idle capacity: the same words datedHolds reads to keep the next push quiet until it fires. */
 const UTILIZATION_NOTE = /\butili[sz]ation\b/i;
 const DISPATCH = new Set(["space_send_to_pane", "space_copilot_brief", "space_open_panes", "space_execute"]);
-const dispatches = (act: NousTurnAct) => DISPATCH.has(act.name)
+export const dispatches = (act: Pick<NousTurnAct, "name" | "args">) => DISPATCH.has(act.name)
   && (act.name !== "space_execute" || /"operation":"(?:prompt|open|reopen|start|resume)"/.test(JSON.stringify(act.args)));
 function counts(act: NousTurnAct): boolean {
   if (!act.ok) return false;
@@ -119,8 +119,3 @@ export function renderItemsHold(reason: string, items: readonly NousTurnItem[], 
     + `If something blocks an item, write it in words instead of NOTHING_NEW.${question}`;
 }
 
-/** What the chat gets once the holds are spent: the items Nous left without an act. */
-export function renderItemsLeft(items: readonly NousTurnItem[]): string {
-  return `I left ${items.length === 1 ? "this item" : `these ${items.length} items`} without an act after ${NOUS_ITEM_HOLDS} reminders:\n`
-    + items.map((item) => `- ${item.line.replace(/\s+/g, " ").trim().slice(0, 300)}`).join("\n");
-}

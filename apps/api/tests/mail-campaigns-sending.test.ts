@@ -271,6 +271,14 @@ describe("the campaign gate and the sender job", () => {
     expect(await service.webVersion(unsubscribeToken(key, campaign.id, alice.id))).toBe("<p>stored</p>");
     expect(await service.webVersion(unsubscribeToken(Buffer.alloc(32, 1), campaign.id, alice.id))).toBeNull();
     expect(await service.webVersion(unsubscribeToken(key, campaign.id, "mcontact:nobody00"))).toBeNull();
+    // A send from before the stored copy, whose contact lacks a field the template needs now, has no page rather than an error (REV1127-005).
+    const version = repository.getTemplateVersion.bind(repository);
+    repository.webCopy = async () => null;
+    repository.getTemplateVersion = async (...args) => { const found = await version(...args);
+      return found && { ...found, variables: found.variables.map((variable) => variable.name === "firstName" ? { ...variable, default: null, required: true } : variable) }; };
+    const bob = (await service.contact(owner, "bob@shop.gr")).contact; // imported with no name: no firstName
+    expect(sent.some((entry) => entry.to === "bob@shop.gr")).toBe(true);
+    expect(await service.webVersion(unsubscribeToken(key, campaign.id, bob.id))).toBeNull();
   });
   it("wraps a tracked mail's https links through the relay by position; head links, mailto and the footer stay as they are (plan 2wiBJQwRzN8X step 5)", () => {
     const { html, links } = trackLinks(`<head><link href="https://fonts.example/a.css"></head><a class="b" href="https://shop.example/p/1/?a=1&amp;b=2">x</a>`

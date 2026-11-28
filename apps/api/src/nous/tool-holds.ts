@@ -34,7 +34,12 @@ export function historicalToolHold(name: string, error: string): boolean {
     case "space_copilot_answer":
       return /^The question was not found\.$|has no open question\.$|is neither the id nor the words of an open (?:MAIL|MARKETING|FREELANCE|JOB|DESIGN|APP_STUDIO|VIDEO|SECURITY|MONITORING) question\./.test(error);
     case "space_answer_pane":
-      return /is not waiting for an answer \(state (?:IDLE|RUNNING|EXITED)\)|^The pane's question changed since it was inspected;|is a copilot pane with no question and no CLI prompt waiting now/.test(error);
+      return /is not waiting for an answer \(state (?:IDLE|RUNNING|EXITED)\)|^The pane's question changed since it was inspected;|is a copilot pane with no question and no CLI prompt waiting now/.test(error)
+        // 27/11: a pane without a CLI (23/11 19:46Z Work/Iris) goes to its card or its page since 19730513ca, else the answer naming its tools is held.
+        || / pane without a CLI: there is no prompt to answer\./.test(error);
+    // 27/11: the release train's conflicts (26/11 07:33Z "join it instead of cutting your own version") are held in tools.ts since.
+    case "space_release":
+      return /: join (?:it|\S+) instead of cutting your own version\.$|^No \S+ release is open\. Open one with op open\.$|^Only the captain|^Give the |^Name the (?:captain|new captain) pane|^Name the pane that leaves/.test(error);
     case "space_send_to_pane":
       return /^Not sent: [^\n]+: The CLI (?:has not opened its input yet|kept the text as an unsent draft after Enter)/.test(error)
         // 20/11: a pane that stays closed is a refusal (slice 19 r2); one closed between read and send takes that path, and Space Control's no-match
@@ -88,12 +93,17 @@ export function historicalToolHold(name: string, error: string): boolean {
     // 15/11: a scope the link lacks, an older build, a name no link has; tools.ts holds them since. 20/11: samples before f7b2a09147 are the
     // link's line (no status shown); their calls (15/11 01:24-06:18) were 403 for a scope and MOBILE_BODY, VALIDATION_ERROR, an unknown room,
     // which f7b2a09147 refuses before sending and f44f4583b4 leads with the scope; the line leads no result since.
-    case "space_remote": return /^Needs the \w+ scope: |^Not open to a link on |^No linked SpaceApp is |^\d+ linked SpaceApps are named |^Acting on a linked SpaceApp is unavailable to this turn$|^POST \/api\/version-sync answered 400 INVALID_INPUT/.test(error)
+    // 27/11: a route the link does not serve ("A linked SpaceApp answers only …", 26/11 11:05Z) is a held "Not sent:" since ebcaa3f413.
+    case "space_remote": return /^A linked SpaceApp answers only |^Needs the \w+ scope: |^Not open to a link on |^No linked SpaceApp is |^\d+ linked SpaceApps are named |^Acting on a linked SpaceApp is unavailable to this turn$|^POST \/api\/version-sync answered 400 INVALID_INPUT/.test(error)
       || /^- .+ \(link:[A-Za-z0-9_-]+\) at \S+: may [^;]*; (?:last answered \S+(?:, connected)?|never connected yet)$/.test(error);
     // Slice 23: helpers' link calls are holds with guidance; an ended host session is a done stop; a pane one room holds names its room.
     // 23/11: a name no link has answers with the linked ones in every link tool (tools.ts linkError), as space_remote's since 15/11.
     // 25/11 REVIEW: a remote folder returns its listing (ok:true), and 400/404 invalid or missing remote paths are held with guidance.
     case "space_remote_file": return /^Files with a linked SpaceApp are unavailable to this turn$|^No linked SpaceApp is |^\d+ linked SpaceApps are named | is a folder there; give one of its files: |^It answered 400: \{"error":\{"code":"(?:MOBILE_BAD_PATH|INVALID_INPUT)"|^It answered 404: \{"error":\{"code":"NOT_FOUND"/.test(error);
+    // 27/11 Daily Nous errors (23/11 ×4): Kimi's desktop release read as its CLI (b77fa171da), a rolled-back CLI failing the whole run (a100c3a384)
+    // and cli:harness missing from the result's enum (e03c918045) are fixed; another CLI's rollback or invalid value still counts.
+    case "space_cli_update": return /^CLI update of every managed CLI: FAIL \(\d+ checked\): Kimi Code CLI UPDATE_FAILED_ROLLED_BACK: Kimi Code CLI update failed \(Kimi Code stable release asset ids are invalid\.\)/.test(error)
+      || /^The update of (?:every managed CLI|cli:harness) failed: \[ \{ "code": "invalid_value", "values": \[ "cli:codex", (?![^\]]*"cli:harness")/.test(error);
     case "space_link_parity": return /^Syncing a linked SpaceApp is unavailable to this turn$|^No linked SpaceApp is |^\d+ linked SpaceApps are named /.test(error);
     case "space_link_lend": return /^No linked SpaceApp is |^\d+ linked SpaceApps are named /.test(error);
     case "space_stop_pane": return /^CLI host session \S+ is EXITED\.$/.test(error);
@@ -125,6 +135,8 @@ export function historicalToolHold(name: string, error: string): boolean {
     case "space_codex_reset_redeem": return /a credit now would be wasted\. Nothing spent\.|^No Codex account is named/.test(error);
     case "space_mail_read":
     case "space_mail_search":
+      // 27/11: a messageId of another thread, or of none, reads a thread since 794f0c9a2b/de1e04d56a (24/11 07:20Z "No message … in thread").
+      if (name === "space_mail_read" && /^No message \S+ in thread \S+\. Its messages: /.test(error)) return true;
       return /is not a mail account of this pane\.|: Gmail no longer has that message or thread\.|Attachment was not found\./.test(error);
     case "space_look":
       return /has no live browser session: nothing to look at\.$|^The Browser Host is unavailable\.$|^No Xvfb display is available for a headed browser session\.$|^BROWSER_ROUTE: another pane uses this browser account on another network route;|, not an image \(PNG, JPEG, WebP or GIF\):/.test(error);
@@ -149,7 +161,8 @@ export function historicalToolHold(name: string, error: string): boolean {
       return /exists: replace it \(mode replace\) or add to it|is not writable by Space: |is not a regular file: choose another name|^EACCES: permission denied, open '\/proc\/self\/fd\//.test(error);
     case "space_files_read":
     case "space_files_list":
-      return /looks like a secret \(keys, tokens|is private to the agent that wrote it|a folder the agent that made it keeps private|^Only files under .* can be read\.|leads outside the agent workspace|(?:^|: )No file or folder .* under the agent workspace\.|^No Agent Files or Media artifact \S+ in your rooms\.| is a folder; name its files one by one| is a binary(?: file|…)| is \d+(?:\.\d+)? MB; files up to \d+ MB are read\./.test(error);
+      // 27/11: another key name for the file (22/11 13:46Z {artifact}) is read since tools.ts maps it to path or artifactId.
+      return /^Give a path or an artifactId \(Ignored (?:artifact|artifact_id|id|file|filePath|file_path|filename|name): /.test(error) || /looks like a secret \(keys, tokens|is private to the agent that wrote it|a folder the agent that made it keeps private|^Only files under .* can be read\.|leads outside the agent workspace|(?:^|: )No file or folder .* under the agent workspace\.|^No Agent Files or Media artifact \S+ in your rooms\.| is a folder; name its files one by one| is a binary(?: file|…)| is \d+(?:\.\d+)? MB; files up to \d+ MB are read\./.test(error);
     // 20/11: a restarted CLI still starting is read again for 30 s (tools.ts); its answer adds what the reads showed, so the bare line no longer occurs.
     case "space_restart_pane": return /^UNKNOWN [^\n]+: CLI readiness has not been confirmed\.(?:\n|$)/.test(error);
     default: return false;

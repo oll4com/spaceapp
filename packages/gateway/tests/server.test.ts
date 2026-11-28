@@ -113,6 +113,32 @@ describe("gateway server", () => {
     expect((await server.app.inject({ url: "/v1/models", headers: { authorization: `Bearer ${plainKey}` } })).json().error.message).toMatch(/expired/);
   });
 
+  it("admits a key with a provider list only to its providers (plan clipboard:yw_pvUb_616N)", async () => {
+    const { server, repository, plainKey } = await setup();
+    repository.keys[0]!.allowedProviders = ["codex", "claude_opencode"];
+    const call = (url: string, headers: Record<string, string> = {}) => server.app.inject({ method: url === "/v1/models" ? "GET" : "POST", url,
+      headers: { authorization: `Bearer ${plainKey}`, ...headers }, ...(url === "/v1/models" ? {} : { payload: {} }) });
+    expect((await call("/v1/responses")).json().error.code).toBe("no_accounts");
+    expect((await call("/backend-api/codex/responses")).json().error.code).toBe("no_accounts");
+    expect((await call("/v1/models")).json().error.code).toBe("no_accounts");
+    const claude = await call("/v1/messages");
+    expect(claude.statusCode).toBe(403);
+    expect(claude.json().error).toMatchObject({ code: "provider_not_allowed", message: expect.stringContaining("'claude'") });
+    expect((await call("/v1/models", { "anthropic-version": "2023-06-01" })).statusCode).toBe(403);
+    // A path no provider list covers is closed to a scoped key.
+    expect((await call("/v1/embeddings")).json().error.code).toBe("provider_not_allowed");
+    // The paid Claude API key only through the loopback hand-off with the internal token; a client's own header is plain Claude.
+    expect((await call("/v1/messages", { "x-space-gateway-route": "CLAUDE_API_KEY", "x-space-internal-token": "wrong" })).statusCode).toBe(403);
+    const internal = createGatewayServer({ repository, version: "test", credentialKeyPresent: () => false, internalToken: "internal-secret" });
+    const handedOff = await internal.app.inject({ method: "POST", url: "/v1/messages", payload: {},
+      headers: { authorization: `Bearer ${plainKey}`, "x-space-gateway-route": "CLAUDE_API_KEY", "x-space-internal-token": "internal-secret" } });
+    expect(handedOff.json().error.code).toBe("no_accounts");
+    // An empty list keeps every provider.
+    repository.keys[0]!.allowedProviders = [];
+    const open = createGatewayServer({ repository, version: "test", credentialKeyPresent: () => false });
+    expect((await open.app.inject({ method: "POST", url: "/v1/messages", payload: {}, headers: { authorization: `Bearer ${plainKey}` } })).json().error.code).toBe("no_accounts");
+  });
+
   it("keeps admitting a key it already knows while the database fails (23/11: a 1143 s Postgres fsync stopped every model request)", async () => {
     const { server, repository, plainKey } = await setup();
     const call = (key: string) => server.app.inject({ method: "POST", url: "/v1/responses", headers: { authorization: `Bearer ${key}` }, payload: {} });

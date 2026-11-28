@@ -1,24 +1,25 @@
-import { Fragment, useEffect, useState } from "react";
-import { artifactIdsIn, NEEDS_YOU_DONE_ANSWERS, NEEDS_YOU_GO_NOW, NEEDS_YOU_QUESTION_MORE, needsYouAnswerKind, needsYouAsk, needsYouCompletedAnswer, needsYouGroup, needsYouHasPlace, needsYouLayout, needsYouMail, needsYouMailTranslation, needsYouPlace, needsYouTranslation, needsYouFiles, FREELANCE_CHANNEL_LABELS, MARKETING_CHANNEL_LABELS,
-  type MailComposeInput, type MailCopilotEvent, type MailParticipant, type MailThread, type NotificationAnswerInput, type NousOverview, type NousPaneBoardPane, type SpaceNotification, type UiLanguage } from "@space/contracts";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { artifactIdsIn, NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_DONE_ANSWERS, NEEDS_YOU_GO_NOW, NEEDS_YOU_LATER_TODAY, NEEDS_YOU_QUESTION_MORE, needsYouAnswerKind, needsYouAsk, needsYouCompletedAnswer, needsYouGroup, needsYouHasPlace, needsYouLayout, needsYouMail, needsYouMailTranslation, needsYouPlace, needsYouTranslation, needsYouFiles, FREELANCE_CHANNEL_LABELS, MARKETING_CHANNEL_LABELS,
+  type InboxAskLive, type MailComposeInput, type MailCopilotEvent, type MailParticipant, type MailThread, type NotificationAnswerInput, type NousOverview, type NousPaneBoardPane, type SpaceNotification, type UiLanguage } from "@space/contracts";
 import { api } from "../../api.js";
 import { ChatMarkdown } from "../agent-pane/ChatMarkdown.js";
 import { browserTimeZone, formatUserTime, readDateTimeSettings } from "../date-time-settings/date-time-settings.js";
-import { DockButton, DockIconButton } from "../dock-kit/DockKit.js";
-import { ackNotification, goToNeedsYouPane, refreshNotifications } from "../notifications/notification-store.js";
+import { DockButton, DockIconButton, useDockConfirm } from "../dock-kit/DockKit.js";
+import { goToNeedsYouPane, refreshNotifications } from "../notifications/notification-store.js";
 import { labelIds } from "../nous/needs-you-ids.js";
 import { useNousUiIds } from "../nous/nous-ui-state.js";
-import { AlertTriangle, ArrowUpRight, Check, ChevronDown, ChevronUp, CircleHelp, ClipboardCheck, Clock, KeyRound, Mail, MousePointer2, Send, Smartphone, X } from "../ui-theme/app-icons.js";
+import { AlertTriangle, ArrowUpRight, Check, ChevronDown, ChevronUp, CircleHelp, ClipboardCheck, Clock, KeyRound, Mail, MoreHorizontal, MousePointer2, Send, Smartphone, X } from "../ui-theme/app-icons.js";
 import { useAgentLanguage, useUiLanguage, uiServerText, uiSourceLabel, uiText } from "../ui-language/ui-language.js";
 import { NeedsYouChoices, RecommendedBadge, choiceCaption, type NeedsYouChoice, type NeedsYouStudio } from "./NeedsYouChoices.js";
 import { NeedsYouFiles } from "./NeedsYouFiles.js";
 import "./needs-you.css";
 
 /**
- * One Needs you card everywhere (plan clipboard:ytwWl09xNH0Z, mockups approved by the operator 3/11 ~19:53 BKK): closed it is a title, one
- * line (kind · who · when), ONE answer and Details; open it says each part once, in a fixed order (what it needs, steps, about, what was
- * checked, the answers). What it offers follows where the work is (needsYouPlace): off Space "Done, all good" / "There is a problem", here the
- * card's answers, in a pane Go (only on the operator's click). Nothing here moves the screen by itself.
+ * One Needs you card everywhere (plans clipboard:ytwWl09xNH0Z, clipboard:va__qa_eBMYr): closed it is a title, one line, its live line, ONE
+ * answer (the recommended one), "N more answers" and Details. Open, in this order: what it needs, chips, numbered answers (in agentLanguage),
+ * its own words (Send shows once typed), then one "More" fold (steps, mail/draft, links, since then, checked, original, other answers, history).
+ * The ⋯ menu holds Completed, Always answer like this, the opens and "Close without answering" (confirmed). A pane's hands card answers Go,
+ * then "I already did it". Nothing here moves the screen by itself.
  */
 export type NeedsYouBoardPane = NousPaneBoardPane & { roomName: string; lineLanguage: UiLanguage };
 type Kind = "off" | "ask" | "review" | "pane";
@@ -175,16 +176,29 @@ export interface NeedsYouCardProps {
   onAnswered?(): void;
   /** A plan's card with no pane (the API's plan-needs-you.ts) opens its plan. */
   onOpenPlan?(id: string): void;
+  /** A hands card's place now (the Inbox's InboxAsk.live): its first answer follows it. */
+  live?: InboxAskLive;
+  /** Close without answering in the Inbox closes its Thread (DISMISS); false: it did not work. Without it the card is dismissed on its own. */
+  onDismiss?(): Promise<boolean>;
+  /** The Thread's history, under More (a Thread whose one ask is this card). */
+  history?: ReactNode;
+  /** The pane board's panes by id: a pane id in the card's text reads as the pane's name. */
+  panes?: ReadonlyMap<string, { name: string }>;
 }
 
-export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openProp, onOpenChange, onLater, onAnswered, onOpenPlan }: NeedsYouCardProps) {
+// Plan clipboard:va__qa_eBMYr: the generic answers fold under More → Other answers; the card's own answers are numbered.
+const GENERIC = new Set<string>([NEEDS_YOU_GO_NOW, "Failed", "Need links/steps", NEEDS_YOU_LATER_TODAY, NEEDS_YOU_CHECK_AGAIN]);
+const LIVE_TONE: Record<InboxAskLive["state"], string> = { READY: "", EXPIRED: " is-warn", PAGE_GONE: " is-gone", PANE_CLOSED: " is-gone", MOVED_ON: " is-info" };
+interface Answer { key: string; label: string; tone?: "recommended" | "approve" | "decline"; badge?: boolean; icon?: typeof Check; run(): void }
+interface MenuItem { key: string; label: string; title?: string; disabled?: boolean; run(): void }
+
+export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openProp, onOpenChange, onLater, onAnswered, onOpenPlan, live, onDismiss, history, panes }: NeedsYouCardProps) {
   const [ownOpen, setOwnOpen] = useState(false);
   const open = openProp ?? ownOpen;
   const setOpen = (next: boolean) => { if (onOpenChange) onOpenChange(next); else setOwnOpen(next); };
   const about = useAbout(item, open);
   const ask = needsYouAsk(item);
   const [text, setText] = useState("");
-  const [problem, setProblem] = useState(false);
   const [allSteps, setAllSteps] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState<string | null>(null);
@@ -192,15 +206,20 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const [original, setOriginal] = useState(false);
   const [wholeMail, setWholeMail] = useState(false);
   const [studio, setStudio] = useState<NeedsYouStudio | null>(null);
+  const [more, setMore] = useState(false);
+  const [menu, setMenu] = useState(false);
+  const { confirm, confirmDialog } = useDockConfirm();
   const checkedOpen = useNousUiIds("needs.checkedOpen");
   const language = useUiLanguage();
   const t = (words: string, vars?: Record<string, string | number>) => uiText(language, words, vars);
-  // Labels and buttons are the interface language; the card's own words (and its answers) the agents' language (operator 2/11 09:51 BKK).
+  // Labels and menus are the interface language; the card's own words and its answer zone the agents' language (operator 2/11 09:51, 27/11 B).
   const agents = useAgentLanguage();
+  const say = (words: string) => uiText(agents, words);
+  const ids = (words: string) => labelIds(words, agents, panes);
   const translation = needsYouTranslation(item, agents);
   const shown = translation && !original ? translation : null;
   // "Show original" changes the language only: Space's ids read as what they name in both (plan clipboard:T2uboz26Oh3q S6).
-  const question = labelIds(shown?.question ?? ask.question, agents);
+  const question = ids(shown?.question ?? ask.question);
   // Space's own answer words (Approve, Decline…) read from the one table, never the model's guess (12/11: a shifted translation made both buttons «Απόρριψη»).
   const optionLabel = (option: string) => (uiText(agents, option) !== option ? uiText(agents, option) : shown?.options[(ask.options ?? []).indexOf(option)]) || option;
   const place = needsYouPlace(item, pane?.mode);
@@ -210,9 +229,11 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const decision = ask.answer.kind === "COPILOT_DECISION";
   // Operator 4/11 18:42 BKK («δεν μου δινει θεση να γραφω το τηλεφωνο»): a value to type (a phone, a name) leads with its field, closed or open.
   const typed = !ask.code && !decision && ask.answerKind === "text";
+  // Hands in a pane: 1 is Go, 2 «I already did it» (operator 27/11 A), then the agent's own answers.
+  const hands = place === "PANE" && !ask.code && !typed && !decision;
   // Go now is the pane's Go button, never one of the answers.
   const options = (ask.options ?? []).filter((option) => option !== NEEDS_YOU_GO_NOW);
-  // Off Space with the default hands options (or none): "Done, all good" / "There is a problem" (operator 3/11 19:30 BKK).
+  // Off Space with the default hands options (or none): "Done, all good", a problem in words (operator 3/11 19:30 BKK).
   const offDefault = place === "OFF_SPACE" && (!(ask.options ?? []).length || (ask.options ?? []).includes(NEEDS_YOU_GO_NOW));
   const answers = offDefault ? [...NEEDS_YOU_DONE_ANSWERS] : options;
   const recommended = offDefault ? DONE_OK : ask.recommended && ask.recommended !== NEEDS_YOU_GO_NOW ? ask.recommended : null;
@@ -220,17 +241,18 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const completedAnswer = needsYouCompletedAnswer(item);
   const completed = completedAnswer !== null && !answers.includes(DONE_OK);
 
-  const answer = async (input: NotificationAnswerInput) => {
+  const answer = async (input: NotificationAnswerInput): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
       setSent((await api.answerNotification(item.id, input)).display);
       setText("");
-      setProblem(false);
       onAnswered?.();
       await refreshNotifications();
+      return true;
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -239,10 +261,26 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   const pick = (option: string, words?: string) => (ask.options ?? []).includes(option)
     ? answer({ option, ...(words ? { text: words } : {}) })
     : answer({ text: words ? `${option}: ${words}` : option });
-  const choose = (option: string) => { if (option === PROBLEM) setProblem(true); else void pick(option, text.trim() || undefined); };
+  const choose = (option: string) => void pick(option, text.trim() || undefined);
+  const pickCompleted = () => void pick(completedAnswer && "option" in completedAnswer ? completedAnswer.option : DONE_OK, text.trim() || undefined);
+  // Operator 27/11 C: one way to close a card unanswered, confirmed first; it cancels the ask like the Inbox's Not relevant.
+  const close = async () => {
+    setMenu(false);
+    if (!(await confirm({ title: t("Close without answering?"), message: t("What it asks is cancelled without an answer."), confirmLabel: t("Close without answering") }))) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (onDismiss) { if (!(await onDismiss())) return; } else { await api.dismissNotification(item.id); onAnswered?.(); await refreshNotifications(); }
+      setSent(t("Closed without answering"));
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   // The body: Space's ids read as what they name. What Nous checked folds below.
-  const body = labelIds(shown?.body ?? item.body, agents);
+  const body = ids(shown?.body ?? item.body);
   const split = body.lastIndexOf("\n\nChecked first:\n");
   const details = (split < 0 ? body : body.slice(0, split)).trim();
   const checked = split < 0 ? "" : body.slice(split + "\n\nChecked first:\n".length).trim();
@@ -278,7 +316,8 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
   if (leads && asked !== ask.question && STEP_LINE.test(ownRows[from] ?? "")) while (to < ownRows.length && STEP_LINE.test(ownRows[to]!)) to += 1;
   const heading = leads ? lines.slice(from, to).join(" ").trim() : question;
   const rest = lines.join("\n").trim();
-  const { why, steps } = splitSteps(leads ? [...lines.slice(0, from), ...lines.slice(to)].join("\n").trim() : rest === question ? "" : rest);
+  // A body the question already holds whole (a lead-in + the body) says nothing more.
+  const { why, steps } = splitSteps(leads ? [...lines.slice(0, from), ...lines.slice(to)].join("\n").trim() : question.includes(rest) ? "" : rest);
   const stepsShown = allSteps ? steps : steps.slice(0, STEPS_SHOWN);
 
   const where = [pane?.roomName, pane?.name].filter(Boolean).join(" · ");
@@ -323,35 +362,90 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
     : opensPane ? t("Open {name}", { name: opensPane.name }) : needsYouHasPlace(item, pane?.mode) ? t("Go to pane") : null;
   const Icon = kind === "off" ? Smartphone : kind === "review" ? ClipboardCheck : kind === "pane" ? MousePointer2
     : ask.code ? KeyRound : needsYouMail(item) ? Mail : CircleHelp;
+  // Go happens only on the operator's click, never by itself.
+  const goWord = planOnly ? "Open plan" : item.link?.surface && item.link.target ? "Open" : /^(?:url|tab):/.test(item.link?.target ?? "") ? "Go to the page" : "Go to pane";
+  const go = () => goToNeedsYouPane(item);
+
+  // The numbered answers: the card's own (recommended first), the generic ones under More unless they are all it has.
+  const ownAnswers = answers.filter((option) => option !== PROBLEM && !tiled.has(option) && !(hands && option === DONE_OK)).sort((a, b) => Number(starred(b)) - Number(starred(a)));
+  const plain = ownAnswers.filter((option) => !GENERIC.has(option));
+  const numbered = hands || plain.length ? plain : ownAnswers;
+  const others = numbered === plain ? ownAnswers.filter((option) => GENERIC.has(option)) : [];
+  const optionAnswer = (option: string): Answer => {
+    // A review's two answers never look alike, vouched or not (operator 12/11 21:38 BKK): Approve filled with a tick, Decline outlined with a cross.
+    const side = decision && (option === "Approve" || option === "Decline") ? option : null;
+    return { key: option, label: optionLabel(option), tone: side === "Approve" ? "approve" : side === "Decline" ? "decline" : option === recommended ? "recommended" : undefined,
+      badge: starred(option), icon: side === "Approve" || option === DONE_OK ? Check : side === "Decline" ? X : undefined, run: () => choose(option) };
+  };
+  // Phase 2 (plan clipboard:va__qa_eBMYr §3): a hands card's first answer follows what its place looks like now.
+  const first = ((): Answer => {
+    switch (live?.state) {
+      case "EXPIRED": return { key: "again", label: say("Go and ask for it again"), tone: "recommended", icon: ArrowUpRight,
+        run: () => void answer({ text: "I am here now: offer the browser handoff again." }).then((done) => { if (done) go(); }) };
+      case "PAGE_GONE": return about.page ? { key: "again", label: say("Open it again"), tone: "recommended", icon: ArrowUpRight, run: go }
+        : { key: "tell", label: say("Tell the agent"), tone: "recommended", icon: Send, run: () => void answer({ text: "The page is no longer open: open it again and tell me when it is ready." }) };
+      case "PANE_CLOSED": return { key: "close", label: say("Close without answering"), run: () => void close() };
+      case "MOVED_ON": return { key: "close", label: say("It no longer needs me"), run: () => void close() };
+      default: return { key: "go", label: say(goWord), tone: "recommended", badge: ask.recommended === NEEDS_YOU_GO_NOW, icon: ArrowUpRight, run: go };
+    }
+  })();
+  const numberedAnswers: Answer[] = hands
+    ? [first, ...(completedAnswer ? [{ key: "done", label: say("I already did it"), icon: Check, run: pickCompleted }] : []), ...numbered.map(optionAnswer)]
+    : ask.code ? [] : numbered.map(optionAnswer);
+  // Numbered by a CSS counter (.ny-opt::before), so an answer's name stays its words.
+  const answerButton = (entry: Answer) => (
+    <button key={entry.key} type="button" className={`ny-opt${entry.tone ? ` is-${entry.tone}` : ""}`} disabled={busy} onClick={entry.run}>
+      <strong>{entry.label}{entry.badge ? <RecommendedBadge /> : null}</strong>
+      {entry.icon ? <entry.icon aria-hidden="true" /> : null}
+    </button>
+  );
+
+  const menuItems: MenuItem[] = [
+    ...(completed && !hands ? [{ key: "completed", label: t("Completed"), disabled: busy, run: pickCompleted }] : []),
+    ...(!offDefault && ask.recommended && needsYouAnswerKind(item) ? [{ key: "always", label: t("Always answer like this"), disabled: busy || Boolean(text.trim()),
+      title: t("From now on, Space answers \"{answer}\" to cards like this one without asking you (Settings → Assistants & AI → Nous: Ask me again)", { answer: optionLabel(ask.recommended) }),
+      run: () => void answer({ option: ask.recommended!, always: true }) }] : []),
+    ...(onOpenPlan && !item.paneId && typeof item.payload.planId === "string" ? [{ key: "plan", label: t("Open plan"), run: () => onOpenPlan(item.payload.planId as string) }] : []),
+    ...(studio ? [{ key: "studio", label: t(studio.source === "DESIGN" ? "Open in Design" : "Open in Video"), run: () => toPane(studio.roomId, studio.paneId, studio.target) }] : []),
+    ...(opens && !(studio && opensPane?.paneId === studio.paneId) ? [{ key: "opens", label: opens, run: () => opensPane && item.roomId && item.paneId ? toPane(item.roomId, item.paneId) : go() }] : []),
+    // A code, a value or a review in a pane: its field or answers lead, Go waits here.
+    ...(place === "PANE" && !hands && live?.state !== "PANE_CLOSED" ? [{ key: "go", label: t(goWord), run: go }] : []),
+  ];
 
   const codeForm = (
     <form className="ny-field" onSubmit={(event) => { event.preventDefault(); if (text.trim()) void answer({ text: text.trim() }); }}>
-      {/* R27-3: a one-time code goes straight into the pane; the browser may offer the code it just received. */}
-      <input value={text} onChange={(event) => setText(event.target.value)} maxLength={2_000} aria-label={t("One-time code")} autoComplete="one-time-code" placeholder={t("Type the code")} data-sensitive-masked="manual" />
-      <DockButton type="submit" tone="primary" disabled={busy || !text.trim()}>{t("Send")}</DockButton>
+      {/* R27-3: a one-time code goes straight into the pane; the browser may offer the code it just received. Never stored here. */}
+      <input value={text} onChange={(event) => setText(event.target.value)} maxLength={2_000} aria-label={t("One-time code")} autoComplete="one-time-code" placeholder={say("Type the code")} data-sensitive-masked="manual" />
+      <DockButton type="submit" tone="primary" disabled={busy || !text.trim()}>{say("Send")}</DockButton>
     </form>
   );
+  // A problem in words: off Space and on a card that lists it, sent as that answer with the words (operator 27/11).
+  const problemWords = answers.includes(PROBLEM);
   // His words on every card (operator 4/11 18:42 BKK: off Space too): the answer itself on a value ask, else a note with a pick or an answer of its own.
   const wordsForm = (
-    <form className="ny-field" onSubmit={(event) => { event.preventDefault(); if (text.trim() && !decision) void answer({ text: text.trim() }); }}>
-      <input value={text} onChange={(event) => setText(event.target.value)} maxLength={2_000} aria-label={t("Your answer")}
-        placeholder={t(decision ? "Note (optional)" : typed ? "Type your answer" : answers.length ? "Or answer in your words" : "Your answer")} />
-      {decision ? null : <DockButton type="submit" tone={typed ? "primary" : "default"} icon={Send} disabled={busy || !text.trim()}>{t("Send")}</DockButton>}
+    <form className={`ny-field${decision || typed ? "" : ` ny-own${text.trim() ? " has-words" : ""}`}`}
+      onSubmit={(event) => { event.preventDefault(); if (text.trim() && !decision) void (problemWords ? pick(PROBLEM, text.trim()) : answer({ text: text.trim() })); }}>
+      <input value={text} onChange={(event) => setText(event.target.value)} maxLength={2_000} aria-label={t(problemWords || hands ? "What went wrong?" : "Your answer")}
+        placeholder={say(decision ? "Note (optional)" : typed ? "Type your answer" : hands ? "Problem? write it to the agent" : problemWords ? "Is there a problem? write it" : answers.length ? "Or answer in your words" : "Your answer")} />
+      {decision ? null : typed || text.trim() ? <DockButton type="submit" tone={typed ? "primary" : "default"} icon={Send} disabled={busy || !text.trim()}>{say("Send")}</DockButton> : null}
     </form>
   );
-  // The closed card's one answer.
-  // A one-time code goes in here even when its card is about a pane: the field leads, Go waits under Details.
-  const go = <DockButton tone={ask.code ? "default" : "primary"} onClick={() => goToNeedsYouPane(item)}>{t(planOnly ? "Open plan" : item.link?.surface && item.link.target ? "Open" : /^(?:url|tab):/.test(item.link?.target ?? "") ? "Go now" : "Go to pane")}<ArrowUpRight aria-hidden="true" /></DockButton>;
-  const primary = ask.code ? codeForm
-    : typed ? wordsForm
-    : place === "PANE" ? go
-    : decision ? <DockButton tone="primary" onClick={() => setOpen(true)}>{t("Review and approve")}</DockButton>
-    : recommended ? <DockButton tone="primary" icon={offDefault ? Check : undefined} disabled={busy} onClick={() => void pick(recommended)}>{choiceCaption(optionLabel(recommended)) || optionLabel(recommended)}</DockButton>
-    : <DockButton tone="primary" onClick={() => setOpen(true)}>{t("Answer")}</DockButton>;
+  const field = ask.code ? codeForm : typed ? wordsForm : null;
+  // Closed, the one answer is the recommended one (a tile's too), without its badge (mockup sheet b).
+  const lead = !hands && recommended && tiled.has(recommended) && answers.includes(recommended)
+    ? { ...optionAnswer(recommended), label: choices.find((choice) => choice.option === recommended)?.caption || optionLabel(recommended) } : numberedAnswers[0];
+  const moreAnswers = numberedAnswers.length + (lead === numberedAnswers[0] ? 0 : choices.filter((choice) => choice.option).length) - 1;
+
+  const liveLine = !live ? null : live.state === "READY" && live.until ? t("The page is open and waits for you until {time}.", { time: formatUserTime(live.until) })
+    : live.state === "EXPIRED" && live.at ? t("The handoff ran out at {time}.", { time: formatUserTime(live.at) })
+    : live.state === "MOVED_ON" ? `${t("The agent moved on:")} ${ids(live.line)}` : t(live.line);
+  const LiveIcon = live?.state === "READY" ? Check : live?.state === "EXPIRED" || live?.state === "MOVED_ON" ? Clock : AlertTriangle;
+  const folded = Boolean(translation || mailTranslation || steps.length || about.mail || draft || links.length || movedOn || answeredSince || checked || others.length || history);
+  const moreButton = folded ? <button type="button" className="ny-link ny-more" aria-expanded={more} onClick={() => setMore(!more)}>{t("More")}{more ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button> : null;
 
   return (
     // nous-decision: the proofs find (and their captures hide) every card by it (space-needs-you-target-proof.mjs CAPTURE_HIDDEN).
-    <article className={`nous-decision ny-card is-${variant} kind-${kind} layout-${layout.toLowerCase()}${open ? " is-open" : ""}`} aria-label={shown?.title ?? item.title} data-notification-id={item.id} data-needs-you-place={place}
+    <article className={`nous-decision ny-card is-${variant} kind-${kind} layout-${layout.toLowerCase()}${open ? " is-open" : ""}${sent ? " is-done" : ""}`} aria-label={shown?.title ?? item.title} data-notification-id={item.id} data-needs-you-place={place}
       data-needs-you-layout={layout}>
       {/* The kind word on hover too: a narrow closed row keeps only its meta line's room · pane · time in sight. */}
       <span className="ny-tile" aria-hidden="true" title={t(KIND_LABEL[kind])}><Icon /></span>
@@ -367,99 +461,99 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
           <span>{formatUserTime(needsYouAskedAt(item))}</span>
         </p>
       </div>
-      {variant === "peek"
-        ? <DockIconButton className="ny-corner" label={t("Later")} icon={X} onClick={() => onLater?.()} />
-        : <DockIconButton className="ny-corner" label={t(open ? "Less" : "Details")} icon={open ? ChevronUp : ChevronDown} aria-expanded={open} onClick={() => setOpen(!open)} />}
+      <div className="ny-corners">
+        {open && !sent ? (
+          <div className="ny-menu" onKeyDown={(event) => { if (event.key === "Escape" && menu) { event.stopPropagation(); setMenu(false); } }}
+            onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setMenu(false); }}>
+            <DockIconButton className="ny-corner" label={t("More actions")} icon={MoreHorizontal} aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(!menu)} />
+            {menu ? (
+              <div className="ny-menu-list" role="menu">
+                {menuItems.map((entry) => <button key={entry.key} type="button" role="menuitem" className="ny-link" title={entry.title} disabled={entry.disabled} onClick={() => { setMenu(false); entry.run(); }}>{entry.label}</button>)}
+                {menuItems.length ? <hr /> : null}
+                <button type="button" role="menuitem" className="ny-link danger" disabled={busy} onClick={() => void close()}>{t("Close without answering")}</button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {variant === "peek"
+          ? <DockIconButton className="ny-corner" label={t("Later")} icon={X} onClick={() => onLater?.()} />
+          : <DockIconButton className="ny-corner" label={t(open ? "Less" : "Details")} icon={open ? ChevronUp : ChevronDown} aria-expanded={open} onClick={() => setOpen(!open)} />}
+      </div>
       <NeedsYouFiles item={item} fold={!open} />
+      {liveLine && live && !sent ? <p className={`ny-live${LIVE_TONE[live.state]}`}><LiveIcon aria-hidden="true" />{liveLine}</p> : null}
       {sent ? <p className="ny-sent" role="status"><Check aria-hidden="true" />{sent}</p> : !open ? (
         <div className="ny-actions">
-          {primary}
+          {field ?? (decision ? <button type="button" className="ny-opt is-recommended" onClick={() => setOpen(true)}><strong>{t("Review and approve")}</strong><ChevronDown aria-hidden="true" /></button>
+            : lead ? answerButton({ ...lead, badge: false })
+            : <DockButton tone="primary" onClick={() => setOpen(true)}>{t("Answer")}</DockButton>)}
+          {!field && !decision && moreAnswers > 0 ? <button type="button" className="ny-link" onClick={() => setOpen(true)}>{t(moreAnswers === 1 ? "1 more answer" : "{count} more answers", { count: moreAnswers })}</button> : null}
           {/* A list row opens on its chevron; the window has a Details button of its own (its corner is Later). */}
           {variant === "peek" ? <DockButton tone="ghost" aria-expanded={false} onClick={() => setOpen(true)}>{t("Details")}<ChevronDown aria-hidden="true" /></DockButton> : null}
         </div>
       ) : (
         <div className="ny-details">
-          {why ? <section><h4>{t("What it needs")}</h4><div className="ny-text"><ChatMarkdown content={needsYouMarkdown(uiServerText(agents, why))} /></div></section> : null}
-          {translation || mailTranslation ? <p className="ny-translated">{t(original ? "Original" : "Translated")} · <button type="button" className="ny-link" onClick={() => setOriginal(!original)}>{t(original ? "Show translation" : "Show original")}</button></p> : null}
-          {stepsShown.length ? (
-            <section><h4>{t("Steps")}</h4>
-              <div className="ny-text"><ChatMarkdown content={needsYouMarkdown(uiServerText(agents, stepsShown.join("\n")))} /></div>
-              {steps.length > STEPS_SHOWN ? <button type="button" className="ny-link" onClick={() => setAllSteps(!allSteps)}>{allSteps ? t("Fewer steps") : t("{count} more steps", { count: steps.length - STEPS_SHOWN })}</button> : null}
-            </section>
-          ) : null}
-          {about.mail ? (
-            <section className="ny-mail" aria-label={t("Mail")}>
-              <h4>{t("Mail")}</h4>
-              <dl className="ny-facts">
-                <dt>{t("From")}</dt><dd>{about.mail.from}</dd>
-                <dt>{t("To")}</dt><dd>{about.mail.to}</dd>
-                {about.mail.cc ? <><dt>{t("Cc")}</dt><dd>{about.mail.cc}</dd></> : null}
-                <dt>{t("Subject")}</dt><dd>{mailShown!.subject || t("(no subject)")}</dd>
-                {about.mail.at ? <><dt>{t("Received")}</dt><dd>{formatUserTime(about.mail.at, { withDate: true })}</dd></> : null}
-                {about.mail.attachments.length ? <><dt>{t("Attachments")}</dt><dd>{about.mail.attachments.join(" · ")}</dd></> : null}
-              </dl>
-              <div className={`ny-mail-body${longMail && !wholeMail ? " is-folded" : ""}`}><MailText parts={readParts} /></div>
-              {longMail ? <button type="button" className="ny-link" aria-expanded={wholeMail} onClick={() => setWholeMail(!wholeMail)}>{t(wholeMail ? "Show less" : "Show more")}</button> : null}
-            </section>
-          ) : draft ? (
-            <section className="ny-mail" aria-label={t("Draft")}>
-              <h4>{t("Draft")}{draft.channel ? ` · ${draft.channel}` : ""}</h4>
-              <div className={`ny-mail-body${longMail && !wholeMail ? " is-folded" : ""}`}><MailText parts={readParts} /></div>
-              {longMail ? <button type="button" className="ny-link" aria-expanded={wholeMail} onClick={() => setWholeMail(!wholeMail)}>{t(wholeMail ? "Show less" : "Show more")}</button> : null}
-            </section>
-          ) : null}
-          <dl className="ny-facts">
-            {about.page ? <><dt>{t("Page")}</dt><dd><a href={about.page} target="_blank" rel="noopener noreferrer">{linkLabel(about.page)}</a></dd></> : null}
-            {about.site && !about.page ? <><dt>{t("Site")}</dt><dd>{about.site}</dd></> : null}
-            {unblocks.length ? <><dt>{t("Unblocks")}</dt><dd>{unblocks.map((plan) => plan.title).join(" · ")}</dd></> : null}
-            {due ? <><dt>{t("Deadline")}</dt><dd>{formatUserTime(due.dueAt!, { withDate: true })}{due.overdue ? `, ${t("overdue")}` : ""}{unblocks.length > 1 ? ` (${due.title})` : ""}</dd></> : null}
-            {links.length ? <><dt>{t("Links")}</dt><dd>{links.map((url, index) => <Fragment key={url}>{index ? " · " : ""}<a href={url} target="_blank" rel="noopener noreferrer">{linkLabel(url)}</a></Fragment>)}</dd></> : null}
-            {movedOn || answeredSince ? <><dt>{t("Since then")}</dt><dd className="ny-wrap">{answeredSince ? labelIds(answeredSince, agents) : null}{movedOn && answeredSince ? <br /> : null}{movedOn ? `${formatUserTime(movedOn.at)}: ${labelIds(since, agents)}` : null}</dd></> : null}
+          {why ? <section className="ny-what"><h4>{t("What it needs")}</h4><div className="ny-text"><ChatMarkdown content={needsYouMarkdown(uiServerText(agents, why))} /></div></section> : null}
+          <dl className="ny-facts ny-chips">
+            {about.page ? <div><dt>{t("Page")}</dt><dd><a href={about.page} target="_blank" rel="noopener noreferrer">{linkLabel(about.page)}</a></dd></div> : null}
+            {about.site && !about.page ? <div><dt>{t("Site")}</dt><dd>{about.site}</dd></div> : null}
+            {unblocks.length ? <div><dt>{t("Unblocks")}</dt><dd>{unblocks.map((plan) => plan.title).join(" · ")}</dd></div> : null}
+            {due ? <div><dt>{t("Deadline")}</dt><dd>{formatUserTime(due.dueAt!, { withDate: true })}{due.overdue ? `, ${t("overdue")}` : ""}{unblocks.length > 1 ? ` (${due.title})` : ""}</dd></div> : null}
           </dl>
           {choices.length ? <NeedsYouChoices choices={choices} recommended={recommended} busy={busy} onChoose={choose} onStudio={setStudio} /> : null}
-          {checked ? <details className="ny-checked" open={checkedOpen.has(item.id)} onToggle={(event) => checkedOpen.setOpen(item.id, event.currentTarget.open)}><summary>{t(item.source === "AGENT" ? "What the agent checked" : "What Nous checked")}</summary><div className="ny-text"><ChatMarkdown content={needsYouMarkdown(checked)} /></div></details> : null}
           {/* A review's note comes before its Approve or Decline, which sends it. */}
           {decision ? wordsForm : null}
-          <div className="ny-answers">
-            {place === "PANE" ? go : null}
-            {ask.code ? codeForm : null}
-            {/* The recommended answer first, its own full row with a badge (S7); off Space the default answers keep their order. */}
-            {!ask.code ? answers.filter((option) => !tiled.has(option)).sort((a, b) => Number(starred(b)) - Number(starred(a))).map((option) => {
-              // A review's two answers never look alike, vouched or not (operator 12/11 21:38 BKK): Approve filled with a tick, Decline outlined with a cross.
-              const side = decision && (option === "Approve" || option === "Decline") ? option : null;
-              return (
-                <DockButton key={option} className={[side ? `ny-${side.toLowerCase()}` : "", starred(option) ? "is-recommended" : ""].filter(Boolean).join(" ") || undefined} disabled={busy}
-                  tone={side ? (side === "Approve" ? "primary" : "default") : option === recommended || (option === PROBLEM && problem) ? "primary" : "default"}
-                  icon={side === "Approve" || option === DONE_OK ? Check : side === "Decline" ? X : option === PROBLEM ? AlertTriangle : undefined} aria-pressed={option === PROBLEM ? problem : undefined} onClick={() => choose(option)}>
-                  {optionLabel(option)}{starred(option) ? <RecommendedBadge /> : null}
-                </DockButton>
-              );
-            }) : null}
-            {completed ? <DockButton icon={Check} disabled={busy} onClick={() => void pick(completedAnswer && "option" in completedAnswer ? completedAnswer.option : DONE_OK, text.trim() || undefined)}>{t("Completed")}</DockButton> : null}
-            {!offDefault && ask.recommended && needsYouAnswerKind(item) ? (
-              <DockButton tone="ghost" disabled={busy || Boolean(text.trim())} title={t("From now on, Space answers \"{answer}\" to cards like this one without asking you (Settings → Assistants & AI → Nous: Ask me again)", { answer: optionLabel(ask.recommended) })}
-                onClick={() => void answer({ option: ask.recommended!, always: true })}>{t("Always answer like this")}</DockButton>
-            ) : null}
-          </div>
-          {problem ? (
-            <form className="ny-field" onSubmit={(event) => { event.preventDefault(); if (text.trim()) void pick(PROBLEM, text.trim()); }}>
-              <textarea value={text} onChange={(event) => setText(event.target.value)} maxLength={2_000} rows={3} aria-label={t("What went wrong?")} placeholder={t("What went wrong?")} />
-              <DockButton type="submit" tone="primary" icon={Send} disabled={busy || !text.trim()}>{t("Send")}</DockButton>
-            </form>
-          ) : !ask.code && !decision ? wordsForm : null}
-          <div className="ny-footer">
-            {variant === "peek" ? <button type="button" className="ny-link" onClick={() => setOpen(false)}>{t("Less")}<ChevronUp aria-hidden="true" /></button> : null}
-            {onOpenPlan && !item.paneId && typeof item.payload.planId === "string" ? <button type="button" className="ny-link" onClick={() => onOpenPlan(item.payload.planId as string)}>{t("Open plan")}<ArrowUpRight aria-hidden="true" /></button> : null}
-            {studio ? <button type="button" className="ny-link" onClick={() => toPane(studio.roomId, studio.paneId, studio.target)}>{t(studio.source === "DESIGN" ? "Open in Design" : "Open in Video")}<ArrowUpRight aria-hidden="true" /></button> : null}
-            {opens && !(studio && opensPane?.paneId === studio.paneId) ? <button type="button" className="ny-link"
-              onClick={() => opensPane && item.roomId && item.paneId ? toPane(item.roomId, item.paneId) : goToNeedsYouPane(item)}>{opens}<ArrowUpRight aria-hidden="true" /></button> : null}
-            <button type="button" className="ny-link" title={t("It no longer needs you: remove it")} onClick={() => void ackNotification(item.id)}>{t("It no longer needs me")}</button>
-          </div>
+          {ask.code ? codeForm : null}
+          {numberedAnswers.length ? <div className="ny-answers ny-opts">{numberedAnswers.map(answerButton)}</div> : null}
+          {!ask.code && !decision ? wordsForm : null}
+          {/* The window's More and Less share one footer row (operator 27/11: two stacked toggles at its bottom). */}
+          {variant === "peek" ? <div className="ny-footer">{moreButton}<button type="button" className="ny-link" onClick={() => setOpen(false)}>{t("Less")}<ChevronUp aria-hidden="true" /></button></div> : moreButton}
+          {folded && more ? (
+            <div className="ny-folded">
+              {translation || mailTranslation ? <p className="ny-translated">{t(original ? "Original" : "Translated")} · <button type="button" className="ny-link" onClick={() => setOriginal(!original)}>{t(original ? "Show translation" : "Show original")}</button></p> : null}
+              {stepsShown.length ? (
+                <section><h4>{t("Steps")}</h4>
+                  <div className="ny-text"><ChatMarkdown content={needsYouMarkdown(uiServerText(agents, stepsShown.join("\n")))} /></div>
+                  {steps.length > STEPS_SHOWN ? <button type="button" className="ny-link" onClick={() => setAllSteps(!allSteps)}>{allSteps ? t("Fewer steps") : t("{count} more steps", { count: steps.length - STEPS_SHOWN })}</button> : null}
+                </section>
+              ) : null}
+              {about.mail ? (
+                <section className="ny-mail" aria-label={t("Mail")}>
+                  <h4>{t("Mail")}</h4>
+                  <dl className="ny-facts">
+                    <dt>{t("From")}</dt><dd>{about.mail.from}</dd>
+                    <dt>{t("To")}</dt><dd>{about.mail.to}</dd>
+                    {about.mail.cc ? <><dt>{t("Cc")}</dt><dd>{about.mail.cc}</dd></> : null}
+                    <dt>{t("Subject")}</dt><dd>{mailShown!.subject || t("(no subject)")}</dd>
+                    {about.mail.at ? <><dt>{t("Received")}</dt><dd>{formatUserTime(about.mail.at, { withDate: true })}</dd></> : null}
+                    {about.mail.attachments.length ? <><dt>{t("Attachments")}</dt><dd>{about.mail.attachments.join(" · ")}</dd></> : null}
+                  </dl>
+                  <div className={`ny-mail-body${longMail && !wholeMail ? " is-folded" : ""}`}><MailText parts={readParts} /></div>
+                  {longMail ? <button type="button" className="ny-link" aria-expanded={wholeMail} onClick={() => setWholeMail(!wholeMail)}>{t(wholeMail ? "Show less" : "Show more")}</button> : null}
+                </section>
+              ) : draft ? (
+                <section className="ny-mail" aria-label={t("Draft")}>
+                  <h4>{t("Draft")}{draft.channel ? ` · ${draft.channel}` : ""}</h4>
+                  <div className={`ny-mail-body${longMail && !wholeMail ? " is-folded" : ""}`}><MailText parts={readParts} /></div>
+                  {longMail ? <button type="button" className="ny-link" aria-expanded={wholeMail} onClick={() => setWholeMail(!wholeMail)}>{t(wholeMail ? "Show less" : "Show more")}</button> : null}
+                </section>
+              ) : null}
+              {links.length || movedOn || answeredSince ? (
+                <dl className="ny-facts">
+                  {links.length ? <><dt>{t("Links")}</dt><dd>{links.map((url, index) => <Fragment key={url}>{index ? " · " : ""}<a href={url} target="_blank" rel="noopener noreferrer">{linkLabel(url)}</a></Fragment>)}</dd></> : null}
+                  {movedOn || answeredSince ? <><dt>{t("Since then")}</dt><dd className="ny-wrap">{answeredSince ? ids(answeredSince) : null}{movedOn && answeredSince ? <br /> : null}{movedOn ? `${formatUserTime(movedOn.at)}: ${ids(since)}` : null}</dd></> : null}
+                </dl>
+              ) : null}
+              {checked ? <details className="ny-checked" open={checkedOpen.has(item.id)} onToggle={(event) => checkedOpen.setOpen(item.id, event.currentTarget.open)}><summary>{t(item.source === "AGENT" ? "What the agent checked" : "What Nous checked")}</summary><div className="ny-text"><ChatMarkdown content={needsYouMarkdown(checked)} /></div></details> : null}
+              {others.length ? <section aria-label={t("Other answers")}><h4>{t("Other answers")}</h4><div className="ny-others">{others.map((option) => <DockButton key={option} disabled={busy} onClick={() => choose(option)}>{optionLabel(option)}</DockButton>)}</div></section> : null}
+              {history ? <section className="ny-history"><h4>{t("History")}</h4>{history}</section> : null}
+            </div>
+          ) : null}
         </div>
       )}
       {/* R13-6: an answer that failed keeps the card waiting and says why, closed or open. */}
       {lastFailure && !error && !sent ? <p className="ny-error" role="alert"><AlertTriangle aria-hidden="true" />{t("Last try failed")}: {lastFailure}</p> : null}
       {error ? <p className="ny-error" role="alert"><AlertTriangle aria-hidden="true" />{t("Not sent: {reason}", { reason: error })}</p> : null}
+      {confirmDialog}
     </article>
   );
 }

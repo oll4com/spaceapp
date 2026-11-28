@@ -47,6 +47,8 @@ export interface NousOpenRequest {
   actedAt?: string;
   /** R21-5: the closed or gone pane whose line Nous handled: the same pane comes once. */
   paneGone?: string;
+  /** The silence start (newest pane report or send) whose "pane silent" line Nous handled: the same silence comes once. */
+  silentFrom?: string;
   /** Closed requests keep their note (nous_notes is class A): when and why it closed. */
   closedAt?: string; closedReason?: string;
   /** space_open_requests reopen: this close no longer counts; the note stays as the audit line. */
@@ -57,6 +59,8 @@ export interface NousOpenRequest {
   reopens?: boolean;
   /** Opened by a correction (20/11): a later complaint while it is open names it in repeats (space_nous_outcome's hold). */
   correction?: boolean;
+  /** 27/11 (nous_msg:583c7629): a SELF/HELPER outcome reported with no Done record ("SELF at <iso>"): it stays open and comes back to Nous. */
+  reportedDone?: string;
 }
 /** space_open_requests' close: one request a call (operator 9/11 nous_msg:a45dfd55: 35 closed in one call, 7 of the 20 "done" were not). */
 export interface NousOpenRequestClose { key?: string; messageId?: string; outcome: "SELF" | "HELPER" | "OPERATOR" | "DROPPED"; note: string; done?: boolean; where?: RequestDonePayload["where"]; verified?: string }
@@ -65,6 +69,10 @@ export interface NousCloseCounts { closed: number; alreadyDone: number; notOpen:
 /** An outcome as space_nous_outcome reports it, with the operator message it answers. */
 export type NousReportedOutcome = NousRequestOutcome & { id?: string; plan?: string; pane?: string; tickets?: string[]; release?: string; answerOnly?: boolean; messageIds?: string[] };
 export const OPEN_REQUEST_PREFIX = `${REQUEST_DONE_NOTE_PREFIX}open:`;
+/** A plan's pane silent this long is stalled (stalled-plans.ts NOUS_STALLED_SILENT_HOURS); an open request's is the same. */
+const PANE_SILENT_MS = 2 * 3_600_000;
+/** Pane report statuses that wait on someone or end the work: such a pane is not silent. */
+const PANE_HOLDS = new Set(["BLOCKED", "NEEDS_DECISION", "NEEDS_YOU", "WAITING", "QUESTION", "DONE", "FAILED"]);
 const OPEN_DAILY_KEY = `${REQUEST_DONE_NOTE_PREFIX}open-daily`;
 const OPEN_BACKFILL_KEY = `${REQUEST_DONE_NOTE_PREFIX}open-backfill`;
 const OPEN_CLEANUP_KEY = `${REQUEST_DONE_NOTE_PREFIX}open-cleanup`;
@@ -221,6 +229,8 @@ export function createNousRequestDone(deps: {
   paneFinished?(owner: string, paneId: string, since: string): Promise<string | null>;
   /** R21-5: false when the pane is closed or gone, null when it cannot be read now. */
   paneOpen?(paneId: string): Promise<boolean | null>;
+  /** The pane's newest report (any source, heartbeats too), null when it has none. */
+  paneLastReport?(owner: string, paneId: string): Promise<{ at: string; status: string } | null>;
   /** The real pane of a CLI session whose id was bound as "pane:<session id>" (15/11 false "lost its pane"), else null. */
   sessionPane?(paneId: string): Promise<string | null>;
   /** The ticket deployed and its commit is on stable's main. */
@@ -304,7 +314,7 @@ export function createNousRequestDone(deps: {
     const named = pane && !entry.plan ? pane.match(new RegExp(TICKET_IN_WORDS.source, "g")) ?? [] : [];
     for (const ticket of new Set([...(entry.tickets ?? []), ...named])) if (await deps.ticketOnStable?.(ticket).catch(() => false)) return `ticket ${ticket} is live on stable`;
     const shipped = entry.release ? await deps.releaseShipped?.(owner, entry.release, entry.openedAt).catch(() => null) : null;
-    return shipped ?? pane;
+    return shipped ?? pane ?? (entry.reportedDone ? `you reported it ${entry.reportedDone} but no Done record names it: check it and record its Done` : null);
   }
   /** Once: every operator turn's PENDING outcome of the last 7 days with no Done record opens, bound to its turn's operator message; later outcomes close as today. */
   async function backfill(owner: string): Promise<void> {
@@ -473,10 +483,29 @@ export function createNousRequestDone(deps: {
       await serial(owner, async () => {
         const open = openRequestsOf(await deps.notes.listNotes(owner));
         const at = new Date(now()).toISOString();
+        let records: SpaceNotification[] | undefined;
         for (const item of outcomes) {
           const change = apply(open, item, turnId, at, reason === "OPERATOR");
           if (change.write) await save(owner, change.write);
-          if (change.remove) await close(owner, change.remove, `outcome ${item.outcome}`);
+          const entry = change.remove;
+          if (!entry) continue;
+          // 27/11 (nous_msg:583c7629): a SELF/HELPER outcome closed its request with no Done, so its message read Not done forever.
+          // With a matching Done record its message gets a receipt (reads Done); without one the request stays open and comes back.
+          if ((item.outcome === "SELF" || item.outcome === "HELPER") && !item.answerOnly) {
+            records ??= await recent(owner);
+            const own = { summary: entry.summary, ...(entry.requestId ?? entry.messageId ? { id: (entry.requestId ?? entry.messageId)! } : {}), ...(entry.plan ? { plan: entry.plan } : {}) };
+            const record = records.find((candidate) => doneMatches(candidate, item) || doneMatches(candidate, own));
+            if (!record) {
+              const kept = { ...entry, reportedAt: at, reportedDone: `${item.outcome} at ${at}` };
+              open.push(kept);
+              await save(owner, kept);
+              continue;
+            }
+            if (entry.messageId) await deps.notes.setNote(owner, receiptKey(entry.messageId), `recorded in Done ${record.id} (outcome ${item.outcome} at ${at})`);
+            await close(owner, entry, "recorded in Done");
+            continue;
+          }
+          await close(owner, entry, `outcome ${item.outcome}`);
         }
       });
     },
@@ -505,11 +534,13 @@ export function createNousRequestDone(deps: {
         const unopened = items.flatMap((item) => item.messageId && !open.some((entry) => entry.closedAt === undefined && entry.messageId === item.messageId) ? [item.messageId] : []);
         const statuses = unopened.length && deps.requestStatus ? await deps.requestStatus(owner, [...new Set(unopened)]) : new Map<string, NousRequestStatus>();
         const superiors = deps.superiorCommands && items.some((item) => item.outcome === "DROPPED") ? await deps.superiorCommands(owner) : new Set<string>();
-        for (const item of items) {
+        for (const given of items) {
+          // 27/11 (nous_msg:583c7629): a SELF/HELPER close without done left its message Not done forever; it always records its Done now.
+          const item = given.outcome === "SELF" || given.outcome === "HELPER" ? { ...given, done: true } : given;
           const ref = item.key ?? item.messageId ?? "?";
           if (Boolean(item.key) === Boolean(item.messageId)) { refused(`${ref}: give its key or its messageId (one of them)`); continue; }
           if (item.done && (item.outcome === "OPERATOR" || item.outcome === "DROPPED")) { refused(`${ref}: done takes SELF or HELPER`); continue; }
-          if (item.done && !item.where) { refused(`${ref}: done needs where (stable, dev or no code)`); continue; }
+          if (item.done && !item.where) { refused(`${ref}: done (every SELF or HELPER close records its Done) needs where (stable, dev or no code); nothing was closed`); continue; }
           if (item.done && (item.verified?.trim().length ?? 0) < CLOSE_EVIDENCE_MIN) { refused(`${ref}: done needs verified: what you checked in this turn on the real surface and what it showed (${CLOSE_EVIDENCE_MIN}+ characters); nothing was closed`); continue; }
           if (item.outcome === "DROPPED" && item.note.trim().length < CLOSE_EVIDENCE_MIN) { refused(`${ref}: DROPPED needs a note naming why it is no longer wanted (${CLOSE_EVIDENCE_MIN}+ characters); nothing was closed`); continue; }
           const short = item.key?.replace(OPEN_REQUEST_PREFIX, "");
@@ -637,8 +668,9 @@ export function createNousRequestDone(deps: {
           const refs = [entry.messageId?.slice(0, "nous_msg:".length + 8), entry.requestId, entry.plan].filter((ref): ref is string => Boolean(ref));
           const named = sends.filter((send) => refs.some((ref) => send.text.includes(ref)));
           if (!named.length) continue;
-          const to = entry.pane ? named.find((send) => send.paneId !== entry.pane) : undefined;
-          const moved = to && await deps.paneOpen?.(entry.pane!).catch(() => null) === false;
+          // Operator 28/11 (nous_msg:ed0d7106, 6522fbcf sat "no pane" after a send named them): a request with no pane follows the first pane a send reached.
+          const to = entry.pane ? named.find((send) => send.paneId !== entry.pane) : named[0];
+          const moved = to && (!entry.pane || await deps.paneOpen?.(entry.pane).catch(() => null) === false);
           await save(owner, { ...entry, sentAt: new Date(now()).toISOString(), ...(moved ? { pane: to.paneId, paneGone: undefined } : {}) });
         }
       });
@@ -683,17 +715,31 @@ export function createNousRequestDone(deps: {
         for (const entry of open) evidences.set(entry.key, await evidenceOf(owner, entry));
         const refsOf = (entry: NousOpenRequest) => [entry.messageId, entry.plan].filter((ref): ref is string => Boolean(ref));
         const toldFinished = new Set(open.flatMap((entry) => evidences.get(entry.key) && evidences.get(entry.key) !== entry.evidence ? refsOf(entry) : []));
+        // 27/11 Response time (nous_msg:c2f90bd0, bank orders): Kate's Gemini stopped after 18:25 UTC with its session still RUNNING, and the request
+        // waited 8 h for the 6 h daily quiet line; a request's pane silent 2 h since its last send or report, not waiting or finished, is an item.
+        const silentSince = async (entry: NousOpenRequest) => {
+          if (!entry.pane || !deps.paneLastReport || await deps.paneOpen?.(entry.pane).catch(() => null) === false) return null;
+          const report = await deps.paneLastReport(owner, entry.pane).catch(() => null);
+          // A pane that never reported (a browser pane makes no reports) is not judged by its silence.
+          if (!report) return null;
+          const sent = entry.sentAt ?? entry.openedAt;
+          if (report.at >= sent && PANE_HOLDS.has(report.status)) return null;
+          const from = report.at > sent ? report.at : sent;
+          return from !== entry.silentFrom && now() - Date.parse(from) >= PANE_SILENT_MS ? { from, report } : null;
+        };
         for (const entry of open) {
           const evidence = evidences.get(entry.key) ?? null;
           const ref = entry.requestId ?? entry.messageId;
+          let silent: Awaited<ReturnType<typeof silentSince>>;
           if (evidence && evidence !== entry.evidence) {
             const line = `Request "${clipWords(entry.summary, 140)}"${ref ? ` (${ref})` : ""} looks finished: ${clipWords(evidence, 140)}; `
               + "record it with space_request_done or keep it PENDING with a reason (space_nous_outcome). A Done record needs no pane: low mode or a follow-up never holds it.";
             // Hold A: the turn that carries this line acts on it before it may answer NOTHING_NEW (31/10 11:18 UTC: consumed with nothing done).
+            // `always`: or before it may end in words (27/11 be63e69c, 850b9678: turns answered about other work, or their Done was refused, and the line was spent).
             await nudge(owner, `request-open:${entry.key.slice(OPEN_REQUEST_PREFIX.length)}`, line, async () => {
               const current = openRequestsOf(await deps.notes.listNotes(owner)).find((item) => item.key === entry.key);
               if (current) await save(owner, { ...current, evidence });
-            }, [{ key: `request:${entry.key}`, kind: "REQUEST", line, requestKey: entry.key, finished: true, ...(entry.messageId ? { messageId: entry.messageId } : {}),
+            }, [{ key: `request:${entry.key}`, kind: "REQUEST", line, requestKey: entry.key, finished: true, always: true, ...(entry.messageId ? { messageId: entry.messageId } : {}),
               ...(entry.plan ? { plan: entry.plan } : {}), ...(entry.pane ? { pane: entry.pane } : {}) }]);
           } else if (!evidence && !refsOf(entry).some((item) => toldFinished.has(item)) && entry.pane && entry.paneGone !== entry.pane
             && await deps.paneOpen?.(entry.pane).catch(() => null) === false && !await healed(owner, entry)) {
@@ -705,6 +751,17 @@ export function createNousRequestDone(deps: {
             await nudge(owner, `request-pane:${entry.key.slice(OPEN_REQUEST_PREFIX.length)}`, line, async () => {
               const current = openRequestsOf(await deps.notes.listNotes(owner)).find((item) => item.key === entry.key);
               if (current) await save(owner, { ...current, paneGone: pane });
+            }, [{ key: `request:${entry.key}`, kind: "REQUEST", line, requestKey: entry.key, ...(entry.messageId ? { messageId: entry.messageId } : {}),
+              ...(entry.plan ? { plan: entry.plan } : {}), pane }]);
+          } else if (!evidence && entry.pane && (silent = await silentSince(entry))) {
+            const pane = entry.pane, from = silent.from;
+            const last = `its last report ${silent.report.at.slice(11, 16)} UTC (${silent.report.status})`;
+            const line = `Request "${clipWords(entry.summary, 140)}"${ref ? ` (${ref})` : ""}: ${pane} has been silent since ${from.slice(0, 16).replace("T", " ")} UTC (${last}); `
+              + "its CLI may have stopped. Read the pane (space_read_pane) and resend its step naming the request (space_send_to_pane), "
+              + "or record it done or what it waits on (space_request_done, space_nous_outcome).";
+            await nudge(owner, `request-silent:${entry.key.slice(OPEN_REQUEST_PREFIX.length)}`, line, async () => {
+              const current = openRequestsOf(await deps.notes.listNotes(owner)).find((item) => item.key === entry.key);
+              if (current) await save(owner, { ...current, silentFrom: from });
             }, [{ key: `request:${entry.key}`, kind: "REQUEST", line, requestKey: entry.key, ...(entry.messageId ? { messageId: entry.messageId } : {}),
               ...(entry.plan ? { plan: entry.plan } : {}), pane }]);
           } else if (now() - Date.parse(entry.reportedAt) >= OPEN_QUIET_MS) quiet.push(entry);

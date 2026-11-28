@@ -17,13 +17,13 @@ export function registerDotRoutes(app: FastifyInstance, deps: DotRoutesDeps) {
   const { config, store, options, auth, eventBus, cookieName, defaultRouteRateLimitOptions, dotsAuthenticatedOwner, dotsRepository, dotGoalsRepository, dotHomeRepository,
     dotGoalService, dotMemoryService, dotAtCapacity, autoRouteFactsLoader, browserSessionManager, browserAccountStore, youtubeAccountOwner, cliRuntimeVisibility,
     connectorCrypto, connectorServiceRef, connectorStateTools, roomPaneCommands, spaceAgentAdapter, spaceControl, controlUser, spaceControlRoutes, vault, designService,
-    videoService, executeMcpToolWithPolicy } = deps;
+    videoService, executeMcpToolWithPolicy, streamingService } = deps;
   const { sweepStrandedChatRuns } = createStrandedChatRunSweep(app, { config, store, dotsRepository });
   // The Dot services: schedules, the Dot computer, deliverables, connectors, memory and auto-routing routes, delegations.
   const { dotScheduleService, dotComputerService, dotDeliverablesService, connectorService, dotDelegationService } = registerDotServices(app, { store, config, options,
     auth, eventBus, defaultRouteRateLimitOptions, dotsAuthenticatedOwner, dotsRepository, dotGoalsRepository, dotGoalService, dotMemoryService, dotAtCapacity,
     autoRouteFactsLoader, browserSessionManager, browserAccountStore, youtubeAccountOwner, cliRuntimeVisibility, connectorCrypto, connectorServiceRef,
-    connectorStateTools, roomPaneCommands, spaceAgentAdapter });
+    connectorStateTools, roomPaneCommands, spaceAgentAdapter, streamingService });
   // Dots stages 6-8: Slack and Teams, Live and evaluations, the computer routes, proactive notices and the Dot timers.
   const { dotChannelService, dotEvalsRepository } = registerDotChannelsAndProactive(app, { store, config, options, auth, eventBus, defaultRouteRateLimitOptions,
     dotsAuthenticatedOwner, dotsRepository, dotGoalsRepository, dotHomeRepository, dotGoalService, dotDelegationService, dotScheduleService, connectorService,

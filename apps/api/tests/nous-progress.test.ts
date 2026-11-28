@@ -342,7 +342,8 @@ describe("Brief tool-error-samples (8/11): error texts per tool in the turn fact
       card({ source: "MAIL_COPILOT", kind: "QUESTION", payload: { heldForNous: { until: "x" }, releasedFromNous: "y" } }), card({ source: "NOUS", kind: "NEEDS_HANDS" }),
       card({ source: "BROWSER_HANDOFF", kind: "HANDOFF", payload: { repeat: true } }), card({ payload: { answer: { by: "ALWAYS" } } }), card({ createdAt: "2026-11-01T00:00:00.000Z" })];
     const decisions = [decision("Asked", "2026-11-12T04:00:00.000Z", {}), decision("Allowance", "2026-11-12T04:00:00.000Z", { answer: "Approved by allowance x" }),
-      decision("Withdrawn", "2026-11-12T04:00:00.000Z", { answer: "Withdrawn by Space: gone" })];
+      decision("Withdrawn", "2026-11-12T04:00:00.000Z", { answer: "Withdrawn by Space: gone" }),
+      decision("Replaced", "2026-11-12T04:00:00.000Z", { status: "CANCELLED", answer: "Replaced by nous_decision:x (Nous): reworded" })];
     expect(operatorAsksByDay(records, decisions, "2026-11-10T00:00:00.000Z", (iso) => iso.slice(0, 10))).toEqual([
       { day: "2026-11-12", decisions: 1, nous: 1, agents: 1, copilots: 1, total: 4 }, { day: "2026-11-13", decisions: 0, nous: 0, agents: 1, copilots: 0, total: 1 }]);
     const review = renderDailyReview({ facts: [], decisions, needsYou: records, since: "2026-11-12T00:00:00.000Z", day: "2026-11-12", hour: 3 });

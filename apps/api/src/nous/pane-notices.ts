@@ -293,6 +293,14 @@ const PRINCIPLES: Array<{ name: string; rule: RegExp; greek?: RegExp; against: (
   { name: "a free option first", rule: /\bfree\b[^.\n]*\b(?:first|over|before|instead of|rather than)\b|\bfree (?:solution|option|tier|alternative)s?\b/i,
     against: (pick, context) => affirms(pick, /\b(?:paid|pay(?:ing)?|buy(?:ing)?|purchas(?:e|ing)|subscri(?:be|bing|ption)|premium|upgrad(?:e|ing))\b|[$€£]\s?\d/)
       && affirms(context, /\bfree\b|\bopen[- ]source\b|\bself[- ]host/) },
+  // Operator 27/11 (nous_msg:865bdcbe, rule space_memory:11beca47 «ποτε … λυση αγορας οταν διαθετουμε δωρεαν»; eb2e9d84 «δεν εχουμε το e2b;»): card
+  // 279efb10 asked which server to order and named no free option, so the principle above never fired. Any buy/rent/order ask goes against this one.
+  { name: "what we already own before a purchase (servers, credits, free tiers in Space Memory)",
+    rule: /\bnever\b[^.\n]*\b(?:buy|purchas|pay|rent)\w*\b[^.\n]*\b(?:free|already (?:have|own))\b/i,
+    greek: /αγορ\p{L}*[^\n]*(?:οταν|αφου|εφοσον)[^\n]*(?:δωρεαν|διαθετουμε|ηδη εχουμε)/u,
+    against: (pick, context) => !/^(?:no|skip|not now|later|wait|οχι|αργοτερα)(?!\p{L})/u.test(foldText(pick).trim())
+      && !affirms(pick, /\bfree\b|\bcredits?\b|\balready (?:have|own)\b|\bour own\b|(?<!\p{L})(?:δωρεαν|ηδη|δικ\p{L}* μας)(?!\p{L})/u)
+      && affirms(`${pick}\n${context}`, /\b(?:buy(?:ing)?|purchas(?:e|ing)|rent(?:ing)?|subscrib(?:e|ing)|(?:new |recurring )?monthly cost|per month|order (?:the |a |an |one )?(?:[\w-]+ ){0,3}(?:server|host|vps|instance|machine|plan))\b|(?<!\p{L})(?:αγορασ|αγοραζ|νοικιαζ|νοικιασ|ενοικιασ|μηνιαιο κοστος|νεο κοστος)/u) },
   { name: "the operator reads funding mail before it is sent", rule: /\bfunding\b[^\n]*\b(?:mail|e-?mail)s?\b[^\n]*\bbefore\b[^\n]*\bsen[dt]\b/i,
     against: (pick, context) => /\b(?:funding|grant|investor|fundrais\w*|accelerator)s?\b/i.test(`${pick}\n${context}`) && affirms(pick, /\bsend(?:ing)?\b/)
       && !/\b(?:review|read|draft|approv\w*|show)\b/i.test(pick) },
@@ -548,6 +556,16 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
           result: `${id} is no artifact of your rooms (deleted, mistyped, or another owner's): Needs you shows each artifact a card names. Name it by its exact id `
             + "(space_files_list artifacts) or leave it out. Nothing raised." };
       }
+      // Operator 27/11 (card 279efb10 «Which server do you order?»: «δεν επριεχει τα αρχεια … δεν περιεχει το πλανο»): an item saying something is in
+      // Agent Files or attached carries those files, and a question with options names its pane or its plan, so the card opens the why.
+      const unattached = args.items.find((item) => !item.files?.length && /\bagent files\b|\battach(?:ed|ments?)\b/i.test(`${item.text} ${item.question ?? ""}`)
+        && !artifactIdsIn(`${item.text} ${item.question ?? ""}`).length);
+      if (unattached) return { ok: false, refused: true, display: "Attach the files it names", result: `"${unattached.text.slice(0, 120)}" names files in Agent Files `
+        + "but carries none: give the item `files` with each one's artifact:<id> (space_files_list artifacts), so the card shows them. Nothing raised." };
+      const planless = !pane && !args.plan ? args.items.find((item) => item.options?.length) : undefined;
+      if (planless) return { ok: false, refused: true, display: "Name the plan the question comes from", result: `"${(planless.question ?? planless.text).slice(0, 120)}": `
+        + "a question with options on a card with no pane names its `plan` (clipboard:<id>), so the operator can open why it is asked; a choice that is a decision "
+        + "goes through space_ask_operator. Nothing raised." };
       const bare = handsItemsMissingLink(args.items);
       if (bare.length) return { ok: false, refused: true, display: "A hands card needs its link", result: `"${bare[0]!.text.slice(0, 120)}": ${NOUS_HANDS_RULE} Nothing raised.` };
       const unlinked = actItemsMissingLink(args.items, Boolean(pane));

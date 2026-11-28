@@ -45,19 +45,32 @@ describe("NeedsYouCard", () => {
     expect(await screen.findByRole("dialog", { name: "Preview YC W27 founder video script.md" })).toBeTruthy();
   });
 
-  it("off Space: one answer, no Go anywhere, and «There is a problem» sends his words with it", async () => {
+  it("off Space: one answer, no Go anywhere, the steps under More, and his words in the field go as «There is a problem»", async () => {
     render(<NeedsYouCard variant="peek" item={card({})} />);
     expect(closedButtons()).toEqual(["Later", "Done, all good", "Details"]);
     expect(screen.queryByText("Open the Play Store.")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(screen.queryByText("Open the Play Store.")).toBeNull();
+    // Operator 27/11: the window's More and Less share one footer row instead of two stacked toggles.
+    expect([...document.querySelector(".ny-footer")!.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["More", "Less"]);
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
     expect(screen.getByText("Open the Play Store.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Go/ })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "There is a problem" }));
+    // Plan clipboard:va__qa_eBMYr: Send shows once he has typed.
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
     const words = screen.getByRole("textbox", { name: "What went wrong?" });
     fireEvent.change(words, { target: { value: "The Play Store still shows 0.2.12" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(answers).toEqual([{ text: "There is a problem: The Play Store still shows 0.2.12" }]));
     expect(await screen.findByText("Sent to Iris.")).toBeTruthy();
+  });
+
+  it("plan clipboard:va__qa_eBMYr: a question that holds its whole body (a lead-in + the body) says it once, with no What it needs", () => {
+    render(<NeedsYouCard variant="row" item={card({ body: "Should the release wait for the phone test?", payload: { paneMode: "TERMINAL",
+      ask: { question: "Release 0.2.13 is ready. Should the release wait for the phone test?", options: ["Yes", "No"], answer: { kind: "PANE" } } } })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(screen.queryByText("What it needs")).toBeNull();
+    expect(screen.getAllByText(/Should the release wait/)).toHaveLength(1);
   });
 
   it("operator 4/11 18:42 BKK: a card asking for a value leads with a text field and Send, closed or open, never focused by itself; every card takes his words", async () => {
@@ -79,16 +92,16 @@ describe("NeedsYouCard", () => {
     expect(screen.getAllByRole("textbox", { name: "Your answer" })).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Done, all good" })).toBeNull();
     cleanup();
-    // Off Space too: Done or a problem, and his own words beside them.
+    // Off Space too: Done, or his own words, sent as the problem.
     render(<NeedsYouCard variant="row" item={card({})} open />);
-    fireEvent.change(screen.getByRole("textbox", { name: "Your answer" }), { target: { value: "Installed 0.2.14 instead" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "What went wrong?" }), { target: { value: "Installed 0.2.14 instead" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(answers.at(-1)).toEqual({ text: "Installed 0.2.14 instead" }));
+    await waitFor(() => expect(answers.at(-1)).toEqual({ text: "There is a problem: Installed 0.2.14 instead" }));
   });
 
   it("here: the recommended answer is the one button, sent as the card's option; in a pane: Go to pane, only on his click", async () => {
     render(<NeedsYouCard variant="row" item={card({ payload: { paneMode: "TERMINAL", ask: { question: "Which colour?", options: ["Red", "Blue"], recommended: "Blue", answer: { kind: "PANE" } } } })} />);
-    expect(closedButtons()).toEqual(["Details", "Blue"]);
+    expect(closedButtons()).toEqual(["Details", "Blue", "1 more answer"]);
     fireEvent.click(screen.getByRole("button", { name: "Blue" }));
     await waitFor(() => expect(answers).toEqual([{ option: "Blue" }]));
     cleanup();
@@ -106,31 +119,36 @@ describe("NeedsYouCard", () => {
     }
   });
 
-  it("operator 20/11 18:24 BKK (nous_msg:e519138e): a card in a pane closes with one tap, Completed, sent as «Done, all good», beside its own answers and Go", async () => {
+  it("operator 20/11 18:24 BKK (nous_msg:e519138e), 27/11 A: a card in a pane closes with one tap, answer 2 «I already did it», sent as «Done, all good»; generic answers under More", async () => {
     render(<NeedsYouCard variant="row" open item={card({ title: "Cody needs you", payload: { paneMode: "BROWSER", ask: { question: "Start now?", options: ["Go now", "Later today"], recommended: "Go now", answer: { kind: "PANE" } } } })} />);
     expect(screen.getByRole("article").dataset.needsYouPlace).toBe("PANE");
-    expect(screen.getByRole("button", { name: "Go to pane" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Later today" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Completed" }));
+    const opts = [...screen.getByRole("article").querySelectorAll(".ny-answers > button")].map((button) => button.textContent);
+    expect(opts).toEqual(["Go to pane Recommended", "I already did it"]);
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(within(screen.getByRole("region", { name: "Other answers" })).getByRole("button", { name: "Later today" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "I already did it" }));
     // Not one of the ask's options, so it goes as his words, like a typed answer.
     await waitFor(() => expect(answers).toEqual([{ text: "Done, all good" }]));
     cleanup();
     // Off Space keeps its own «Done, all good», never both.
     render(<NeedsYouCard variant="row" open item={card({})} />);
-    expect(screen.queryByRole("button", { name: "Completed" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "I already did it" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    expect(screen.queryByRole("menuitem", { name: "Completed" })).toBeNull();
   });
 
-  it("22/11 review of e8ff210efc: Completed on a Mail Copilot flag closes it as «I handled it», never as words that start the copilot on the mail; a typed note goes with it", async () => {
+  it("22/11 review of e8ff210efc: Completed (⋯ menu) on a Mail Copilot flag closes it as «I handled it», never as words that start the copilot on the mail; a typed note goes with it", async () => {
     const mail = card({ source: "MAIL_COPILOT", kind: "NEEDS_USER", paneId: null, link: undefined, payload: { ask: { question: "What should Mail Copilot do with this mail?",
       options: ["I handled it", "Ignore it"], answer: { kind: "MAIL_FIX", account: "op@example.com", threadId: "thread-1" } } } });
     render(<NeedsYouCard variant="row" open item={mail} />);
-    fireEvent.click(screen.getByRole("button", { name: "Completed" }));
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Completed" }));
     await waitFor(() => expect(answers).toEqual([{ option: "I handled it" }]));
     cleanup();
     answers = [];
     render(<NeedsYouCard variant="row" open item={card({ title: "Cody needs you", payload: { paneMode: "BROWSER", ask: { question: "Start now?", options: ["Go now"], recommended: "Go now", answer: { kind: "PANE" } } } })} />);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "shipped at 3pm" } });
-    fireEvent.click(screen.getByRole("button", { name: "Completed" }));
+    fireEvent.click(screen.getByRole("button", { name: "I already did it" }));
     await waitFor(() => expect(answers).toEqual([{ text: "Done, all good: shipped at 3pm" }]));
   });
 
@@ -168,7 +186,7 @@ describe("NeedsYouCard", () => {
     }
   });
 
-  it("operator nous_msg:4b36b80e: a browser handoff card is one short question and a big Go now to its own tab, the agent's steps behind Details", () => {
+  it("operator nous_msg:4b36b80e: a browser handoff card is one short question and a big Go to the page, to its own tab, the agent's steps behind Details", () => {
     const seen: unknown[] = [];
     const onFocus = (event: Event) => seen.push((event as CustomEvent).detail);
     window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
@@ -180,11 +198,12 @@ describe("NeedsYouCard", () => {
       expect(screen.getByRole("article").dataset.needsYouPlace).toBe("PANE");
       expect(screen.getByText("Sign in to google.com")).toBeTruthy();
       expect(screen.queryByText(/Pick the job account/)).toBeNull();
-      expect(closedButtons()).toEqual(["Details", "Go now"]);
+      expect(closedButtons()).toEqual(["Details", "Go to the page", "1 more answer"]);
       expect(seen).toEqual([]);
-      fireEvent.click(screen.getByRole("button", { name: "Go now" }));
+      fireEvent.click(screen.getByRole("button", { name: "Go to the page" }));
       expect(seen).toEqual([expect.objectContaining({ roomId: "room:work000001", paneId: "pane:iris0000001", immediate: true })]);
       fireEvent.click(screen.getByRole("button", { name: "Details" }));
+      fireEvent.click(screen.getByRole("button", { name: "More" }));
       expect(screen.getByText(/Pick the job account/)).toBeTruthy();
     } finally {
       window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
@@ -200,12 +219,13 @@ describe("NeedsYouCard", () => {
     expect(screen.getByRole("article").dataset.needsYouPlace).toBe("PANE");
     expect(screen.getByText("Sign in to google.com")).toBeTruthy();
     expect(screen.queryByText(/accounts\.google\.com/)).toBeNull();
-    expect(closedButtons()).toEqual(["Details", "Go now"]);
+    expect(closedButtons()).toEqual(["Details", "Go to the page", "1 more answer"]);
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
     expect(screen.getByText(/Sign in as the job account/)).toBeTruthy();
   });
 
-  it("a card answered here keeps its pane one click away in Details; a one-time code's field leads even on a pane card", () => {
+  it("a card answered here keeps its pane one click away in the ⋯ menu; a one-time code's field leads even on a pane card", () => {
     const seen: unknown[] = [];
     const onFocus = (event: Event) => seen.push((event as CustomEvent).detail);
     window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
@@ -217,7 +237,8 @@ describe("NeedsYouCard", () => {
       expect(closedButtons()).toEqual(["Details", "Review and approve"]);
       fireEvent.click(screen.getByRole("button", { name: "Review and approve" }));
       expect(seen).toEqual([]);
-      fireEvent.click(screen.getByRole("button", { name: "Go to pane" }));
+      fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Go to pane" }));
       expect(seen).toEqual([expect.objectContaining({ paneId: "pane:iris0000001", immediate: true })]);
       cleanup();
       render(<NeedsYouCard variant="row" item={card({ source: "JOB_COPILOT", kind: "SIGN_IN", payload: { ask: { question: "The code from the mail", code: true, answer: { kind: "PANE" } } } })} />);
@@ -226,7 +247,8 @@ describe("NeedsYouCard", () => {
       expect(screen.queryByRole("button", { name: "Go to pane" })).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "Details" }));
       expect(screen.getAllByRole("textbox", { name: "One-time code" })).toHaveLength(1);
-      expect(screen.getByRole("button", { name: "Go to pane" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+      expect(screen.getByRole("menuitem", { name: "Go to pane" })).toBeTruthy();
     } finally {
       window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
     }
@@ -242,10 +264,11 @@ describe("NeedsYouCard", () => {
       const pane = { paneId: "pane:iris0000001", name: "Bruno", mode: "TERMINAL", roomName: "Work", lineLanguage: "en" } as NeedsYouBoardPane;
       render(<NeedsYouCard variant="row" item={relay} pane={pane} />);
       expect(screen.getByRole("article").dataset.needsYouPlace).toBe("HERE");
-      expect(closedButtons()).toEqual(["Details", "Logo B"]);
+      expect(closedButtons()).toEqual(["Details", "Logo B", "1 more answer"]);
       fireEvent.click(screen.getByRole("button", { name: "Details" }));
       expect(screen.queryByRole("button", { name: /Go/ })).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: "Open Bruno" }));
+      fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Open Bruno" }));
       expect(seen).toEqual([expect.objectContaining({ roomId: "room:work000001", paneId: "pane:iris0000001", immediate: true })]);
       // NousFocus goes only where the card has a place: without a target a Nous card about a CLI pane had none, and the click only showed the peek.
       const sent = (seen[0] as { notification: SpaceNotification }).notification;
@@ -271,7 +294,7 @@ describe("NeedsYouCard", () => {
         payload: { paneMode: "TERMINAL", ask: { question: "Which banner?", options: ["Variant A (artifact:varA000001)", "Variant B: artifact:cutB000001", "Neither"],
           recommended: "Variant B: artifact:cutB000001", answer: { kind: "NOUS" } } } });
       render(<NeedsYouCard variant="row" item={pick} pane={{ paneId: "pane:iris0000001", name: "Bruno", mode: "TERMINAL", roomName: "Work", lineLanguage: "en" } as NeedsYouBoardPane} />);
-      expect(closedButtons()).toEqual(["Details", "Variant B"]);
+      expect(closedButtons()).toEqual(["Details", "Variant B", "2 more answers"]);
       fireEvent.click(screen.getByRole("button", { name: "Details" }));
       const previewA = await screen.findByRole("button", { name: "Preview Variant A" });
       expect((await screen.findByRole("button", { name: "Preview Variant B" })).querySelector("video")).toBeTruthy();
@@ -279,9 +302,12 @@ describe("NeedsYouCard", () => {
       expect(screen.getByRole("article").textContent).not.toMatch(/artifact:/);
       expect(screen.getAllByRole("button", { name: /^(?:Variant [AB]|Neither)/ }).map((button) => button.textContent)).toEqual(["Variant A", "Variant B Recommended", "Neither"]);
 
-      fireEvent.click(await screen.findByRole("button", { name: "Open in Design" }));
+      fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Open in Design" }));
       expect(seen.at(-1)).toMatchObject({ roomId: "room:studio00001", paneId: "pane:design00001", notification: { link: { target: "request:dreq:banner0001" } } });
-      expect(screen.getByRole("button", { name: "Open Bruno" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+      expect(screen.getByRole("menuitem", { name: "Open Bruno" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "More actions" }));
 
       previewA.focus();
       fireEvent.click(previewA);
@@ -304,7 +330,7 @@ describe("NeedsYouCard", () => {
     }
   });
 
-  it("plan clipboard:T2uboz26Oh3q S9: an open card tabs header → tiles → answers → footer; the preview opens on Choose this, a held Enter does not answer, ←/→ is announced", async () => {
+  it("plan clipboard:T2uboz26Oh3q S9: an open card tabs header (⋯, Less) → tiles → answers → his words; the preview opens on Choose this, a held Enter does not answer, ←/→ is announced", async () => {
     vi.spyOn(liveRuntime.api, "artifactMetadata").mockImplementation(async (id: string) => ({ artifact: { id, filename: `${id.slice(9)}.png`, mimeType: "image/png", byteSize: 1,
       sha256: "a".repeat(64), createdAt: at, roomId: null, paneId: null, metadata: {} }, image: null, embedded: {}, design: null }));
     const pick = card({ source: "NOUS", kind: "NEEDS_HANDS", title: "Pick a banner", body: "Two banners are ready.",
@@ -317,7 +343,7 @@ describe("NeedsYouCard", () => {
     // Document order (jsdom answers a selector list grouped by selector): the order Tab walks.
     const order = [...screen.getByRole("article").querySelectorAll<HTMLElement>("*")].filter((node) => node.matches("button:not(:disabled), a[href], input, textarea, summary"))
       .map((control) => control.getAttribute("aria-label") ?? control.textContent);
-    expect(order).toEqual(["Less", "Preview Variant A", "Variant A", "Preview Variant B", "Variant B Recommended", "Neither", "Completed", "Your answer", "It no longer needs me"]);
+    expect(order).toEqual(["More actions", "Less", "Preview Variant A", "Variant A", "Preview Variant B", "Variant B Recommended", "Neither", "Your answer"]);
 
     previewA.focus();
     fireEvent.click(previewA);
@@ -341,9 +367,9 @@ describe("NeedsYouCard", () => {
       payload: { paneMode: "TERMINAL", ask: { question: "Release tonight or tomorrow?", options: ["Tomorrow", "Tonight", "Never"], recommended: "Tonight", answer: { kind: "NOUS" } } } });
     render(<NeedsYouCard variant="row" item={ask} />);
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
-    const buttons = [...screen.getByRole("article").querySelectorAll(".ny-answers > button")].filter((button) => button.textContent !== "Always answer like this");
-    expect(buttons.map((button) => button.textContent)).toEqual(["Tonight Recommended", "Tomorrow", "Never", "Completed"]);
-    expect([buttons[0]!.classList.contains("is-recommended"), buttons[0]!.classList.contains("is-primary"), Boolean(buttons[0]!.querySelector(".ny-badge svg"))]).toEqual([true, true, true]);
+    const buttons = [...screen.getByRole("article").querySelectorAll(".ny-answers > button")];
+    expect(buttons.map((button) => button.textContent)).toEqual(["Tonight Recommended", "Tomorrow", "Never"]);
+    expect([buttons[0]!.classList.contains("is-recommended"), Boolean(buttons[0]!.querySelector(".ny-badge svg"))]).toEqual([true, true]);
     expect(screen.getByRole("button", { name: "Tonight Recommended" })).toBe(buttons[0]);
     expect(screen.getByRole("article").textContent).not.toContain("(Recommended)");
   });
@@ -354,6 +380,7 @@ describe("NeedsYouCard", () => {
       payload: { ask: decide, review: { id: "mkrev:post000001", channel: "LINKEDIN", text: "SpaceApp 1.0 is out." } } })} />);
     const review = screen.getByRole("article");
     expect(review.getAttribute("data-needs-you-layout")).toBe("REVIEW");
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
     expect(within(screen.getByRole("region", { name: "Draft" })).getByRole("heading").textContent).toBe("Draft · LinkedIn");
     expect(screen.getByRole("region", { name: "Draft" }).textContent).toContain("SpaceApp 1.0 is out.");
     cleanup();
@@ -371,6 +398,7 @@ describe("NeedsYouCard", () => {
     render(<NeedsYouCard variant="row" open item={card({ source: "NOUS", kind: "NEEDS_HANDS", title: "Allowances", body: "• The allowance switches.\n\nChecked first:\n• Settings: two are off",
       payload: { items: [{ text: "The allowance switches.", since: "two switches are still off after the reload" }],
         ask: { question: "Turn them on now?", options: ["Yes", "No"], recommended: "Yes", answer: { kind: "NOUS" } } } })} />);
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
     expect(screen.getByText("Since then").nextElementSibling?.textContent).toBe("two switches are still off after the reload");
   });
 
@@ -379,6 +407,7 @@ describe("NeedsYouCard", () => {
       report: { at: "2099-01-01T00:00:00.000Z", status: "PROGRESS", summary: "Moved on to the other plan", planId } }) as unknown as NeedsYouBoardPane;
     const item = card({ payload: { ...card({}).payload, planId: "clipboard:planOne00001" } });
     const { rerender } = render(<NeedsYouCard variant="row" open item={item} pane={pane("clipboard:planTwo00001")} />);
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
     expect(screen.queryByText("Since then")).toBeNull();
     for (const planId of ["clipboard:planOne00001", null]) {
       rerender(<NeedsYouCard variant="row" open item={item} pane={pane(planId)} />);
@@ -404,6 +433,7 @@ describe("NeedsYouCard", () => {
     try {
       render(<NeedsYouCard variant="row" open item={card({ source: "NOUS", kind: "NEEDS_HANDS", title: "Dino needs you", body: `• Send the reply to Turso? (Mail Copilot review ${reviewId})`,
         payload: { ask: { question: "Send the reply to Turso?", options: ["Go now", "Failed", "Need links/steps"], recommended: "Go now", answer: { kind: "NOUS" } } } })} />);
+      fireEvent.click(await screen.findByRole("button", { name: "More" }));
       const mail = await screen.findByRole("region", { name: "Mail" });
       expect(asked).toContain(`/api/mail-copilot/events?reviewId=${encodeURIComponent(reviewId)}`);
       expect(within(mail).getByText("From").nextElementSibling?.textContent).toBe("spaceappdv@gmail.com");
@@ -415,11 +445,60 @@ describe("NeedsYouCard", () => {
       fireEvent.click(within(mail).getByRole("button", { name: "Show more" }));
       expect(mail.querySelector(".ny-mail-body.is-folded")).toBeNull();
       expect(within(mail).getByRole("button", { name: "Show less" }).getAttribute("aria-expanded")).toBe("true");
-      fireEvent.click(screen.getAllByRole("button", { name: /^Go (now|to pane)$/ })[0]!);
+      fireEvent.click(screen.getByRole("button", { name: /^Go to pane/ }));
       expect(seen.at(-1)?.notification?.link?.target).toBe(`review:${reviewId}`);
     } finally {
       window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
     }
+  });
+
+  it("plan clipboard:va__qa_eBMYr §3: a hands card's first answer follows its place now: ran out asks again then goes, a closed page is told, a closed pane or a moved-on agent closes", async () => {
+    const seen: unknown[] = [];
+    const onFocus = (event: Event) => seen.push((event as CustomEvent).detail);
+    window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
+    const hands = card({ title: "Cody needs you", body: "Sign in", payload: { paneMode: "BROWSER", ask: { question: "Sign in?", options: ["Go now"], recommended: "Go now", answer: { kind: "PANE" } } } });
+    try {
+      render(<NeedsYouCard variant="row" item={hands} live={{ state: "EXPIRED", line: "The handoff ran out.", at }} />);
+      expect(screen.getByRole("article").querySelector(".ny-live.is-warn")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Go and ask for it again" }));
+      await waitFor(() => expect(answers).toEqual([{ text: "I am here now: offer the browser handoff again." }]));
+      await waitFor(() => expect(seen).toEqual([expect.objectContaining({ paneId: "pane:iris0000001", immediate: true })]));
+      cleanup();
+      render(<NeedsYouCard variant="row" item={hands} live={{ state: "PAGE_GONE", line: "The page is no longer open." }} />);
+      expect(screen.getByText("The page is no longer open.")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Tell the agent" }));
+      await waitFor(() => expect(answers.at(-1)).toEqual({ text: "The page is no longer open: open it again and tell me when it is ready." }));
+      cleanup();
+      for (const [state, label] of [["PANE_CLOSED", "Close without answering"], ["MOVED_ON", "It no longer needs me"]] as const) {
+        const onDismiss = vi.fn(async () => true);
+        render(<NeedsYouCard variant="row" item={hands} onDismiss={onDismiss} live={{ state, line: "pane:iris0000001 reported done" }}
+          panes={new Map([["pane:iris0000001", { name: "Cody" }]])} />);
+        if (state === "MOVED_ON") expect(screen.getByText("The agent moved on: Cody reported done")).toBeTruthy();
+        fireEvent.click(screen.getByRole("button", { name: label }));
+        fireEvent.click(within(await screen.findByRole("alertdialog", { name: "Close without answering?" })).getByRole("button", { name: "Close without answering" }));
+        expect(await screen.findByText("Closed without answering")).toBeTruthy();
+        expect(onDismiss).toHaveBeenCalledTimes(1);
+        cleanup();
+      }
+      expect(seen).toHaveLength(1);
+    } finally {
+      window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
+    }
+  });
+
+  it("operator 27/11 C: the ⋯ menu's Close without answering confirms first, then dismisses the card's notification; Cancel leaves it waiting", async () => {
+    const dismissed: string[] = [];
+    vi.spyOn(liveRuntime.api, "dismissNotification").mockImplementation(async (id: string) => { dismissed.push(id); return {} as never; });
+    render(<NeedsYouCard variant="row" open item={card({ payload: { paneMode: "TERMINAL", ask: { question: "Which colour?", options: ["Red", "Blue"], answer: { kind: "PANE" } } } })} />);
+    const close = () => { fireEvent.click(screen.getByRole("button", { name: "More actions" })); fireEvent.click(screen.getByRole("menuitem", { name: "Close without answering" })); };
+    close();
+    fireEvent.click(within(await screen.findByRole("alertdialog", { name: "Close without answering?" })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(dismissed).toEqual([]);
+    close();
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Close without answering" }));
+    expect(await screen.findByText("Closed without answering")).toBeTruthy();
+    expect([dismissed, answers]).toEqual([["notification:card00000001"], []]);
   });
 
   it("nous_msg:5bcbe4b0: a mail's \"label ( tracking URL )\" links read as their labels, bare URLs as short hosts, and blank runs collapse", async () => {
@@ -430,6 +509,7 @@ describe("NeedsYouCard", () => {
       subject: "You have unread messages", receivedAt: at, rfcMessageId: null, references: null, labelIds: [], unread: true, starred: false, text, html: null, blockedImages: false, attachments: [] };
     vi.spyOn(liveRuntime.api, "mailThread").mockResolvedValue({ thread: { account: "spaceappdv@gmail.com", threadId: "1a1f09f7711a8773", subject: message.subject, messages: [message] } } as never);
     render(<NeedsYouCard variant="row" open item={card({ source: "NOUS", title: "Bob needs you", body: "Accept the paid 1h Upwork trial?", link: { roomId: "room:work000001", paneId: "pane:iris0000001", target: "thread:spaceappdv@gmail.com:1a1f09f7711a8773" } })} />);
+    fireEvent.click(await screen.findByRole("button", { name: "More" }));
     const body = (await screen.findByRole("region", { name: "Mail" })).querySelector(".ny-mail-body")!;
     expect(body.textContent!.match(/\S{61,}/g)).toBeNull();
     expect(body.textContent).toBe("View your message and send a reply.\n\nFind Work\n\nUnread message from Israel G. about Rate AI code-review answers\n\nUma\u2122 | Ad Products\nOr open link.email.upwork.com/ls/click.");
@@ -465,6 +545,7 @@ describe("NeedsYouCard", () => {
       html: `<style>p{color:red}</style><table><tr><td><p>Unread   message from\n  Israel G.</p><p><a href="${url}">Reply now</a></p><img src="x.png"></td></tr></table>` };
     vi.spyOn(liveRuntime.api, "mailThread").mockResolvedValue({ thread: { account: "a@b.co", threadId: "t1", subject: "Unread", messages: [message] } } as never);
     render(<NeedsYouCard variant="row" open item={card({ source: "NOUS", link: { roomId: "room:work000001", paneId: "pane:iris0000001", target: "thread:a@b.co:t1" } })} />);
+    fireEvent.click(await screen.findByRole("button", { name: "More" }));
     const body = (await screen.findByRole("region", { name: "Mail" })).querySelector(".ny-mail-body")!;
     expect(body.textContent).toBe("Unread message from Israel G.\nReply now");
     expect(within(body as HTMLElement).getByRole("link", { name: "Reply now" }).getAttribute("href")).toBe(url);
@@ -480,6 +561,7 @@ describe("needs-you mail translated when raised", () => {
     vi.spyOn(liveRuntime.api, "mailThread").mockResolvedValue({ thread: { account: "a@b.co", threadId: "t1", subject: original.subject, messages: [message] } } as never);
     render(<NeedsYouCard variant="row" open item={card({ source: "MAIL_COPILOT", link: { roomId: "room:work000001", paneId: "pane:iris0000001", target: "thread:a@b.co:t1" },
       payload: { mailTranslated: { language: "en", original, subject: "You are invited to the candidate portal", text: "Hello, open your candidate space." } } })} />);
+    fireEvent.click(await screen.findByRole("button", { name: "More" }));
     const mail = await screen.findByRole("region", { name: "Mail" });
     await waitFor(() => expect(mail.textContent).toContain("You are invited to the candidate portal"));
     expect(mail.querySelector(".ny-mail-body")?.textContent).toBe("Hello, open your candidate space.");

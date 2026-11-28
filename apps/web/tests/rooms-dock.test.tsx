@@ -243,6 +243,20 @@ describe("RoomsDockPanel", () => {
     expect(screen.queryByPlaceholderText("e.g. /opt/spaceapp")).toBeNull();
   });
 
+  it("renames a room from its settings", async () => {
+    api.updateRoom.mockReset();
+    api.updateRoom.mockImplementation(async (id: string, body: { name: string }) => room(id, 0, { name: body.name }));
+    render(<Panel />);
+    fireEvent.click(screen.getByRole("button", { name: "Configure project for Room a" }));
+    const input = screen.getByRole("textbox", { name: "Name of Room a" }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "   " } });
+    expect((screen.getByRole("button", { name: "Save room name" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(input, { target: { value: "  My room " } });
+    await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
+    expect(api.updateRoom).toHaveBeenCalledWith("a", { name: "My room" });
+    expect(screen.getByRole("textbox", { name: "Name of My room" })).toBeTruthy();
+  });
+
   it("deletes a room from its settings and renders the confirmation at the end of the dock", () => {
     const requestRoomDelete = vi.fn(async () => undefined);
     const { container } = render(<Panel overrides={{ requestRoomDelete, roomDeleteConfirmDialog: <div data-testid="room-delete-confirm" /> }} />);

@@ -4,7 +4,8 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type pg from "pg";
 import { z } from "zod";
 import { TENANT_ID, type AdminAudit, type AdminCaller } from "./admin.js";
-import { changeTenantPlan, setTenantKeyStatus, withTenant, type TenantPlan } from "./tenant-keys.js";
+import { BILLING_ACTOR, changeTenantPlan, keyFreezeHolds, setTenantKeyStatus, withTenant, type TenantPlan } from "./tenant-keys.js";
+export { BILLING_ACTOR };
 
 /**
  * K4-billing (plan clipboard:ZGz1LnD51ELH; decision 400c6404): subscriptions through Stripe Checkout on the web only, TEST MODE ONLY.
@@ -16,7 +17,6 @@ import { changeTenantPlan, setTenantKeyStatus, withTenant, type TenantPlan } fro
 const USD = 1_000_000; // micros
 export const PLAN_ALLOWANCE_MICROS: Record<TenantPlan, number> = { TRIAL: 20 * USD, PERSONAL: 100 * USD, PRO: 400 * USD, ULTRA: 1_200 * USD };
 export const TRIAL_DAYS = 7;
-export const BILLING_ACTOR = "stripe:webhook";
 export const SIGNATURE_TOLERANCE_SECONDS = 300;
 type PaidPlan = Exclude<TenantPlan, "TRIAL">;
 const PAID_PLANS = ["PERSONAL", "PRO", "ULTRA"] as const;
@@ -104,9 +104,8 @@ async function linkCustomer(db: pg.Pool, tenantId: string, customer: string, sub
 async function keyState(db: pg.Pool, tenantId: string) {
   return withTenant(db, tenantId, async (client) => {
     const keys = (await client.query("SELECT plan, status FROM ngw_tenant_keys WHERE tenant_id = $1 AND status <> 'REVOKED'", [tenantId])).rows;
-    const frozenBy = (await client.query("SELECT actor FROM ngw_audit WHERE tenant_id = $1 AND action = 'key.frozen' ORDER BY id DESC LIMIT 1", [tenantId])).rows[0]?.actor;
-    return { plans: new Set(keys.map((row) => row.plan as TenantPlan)), active: keys.some((row) => row.status === "ACTIVE"),
-      frozenByBilling: keys.some((row) => row.status === "FROZEN") && frozenBy === BILLING_ACTOR, storedSubscription: (await client.query(
+    // Billing records its freeze even on keys staff already froze, so a later staff resume leaves them frozen (tenant-keys.ts).
+    return { plans: new Set(keys.map((row) => row.plan as TenantPlan)), billingHeld: (await keyFreezeHolds(client, tenantId)).billing, storedSubscription: (await client.query(
         "SELECT stripe_subscription_id FROM ngw_tenant_billing WHERE tenant_id = $1", [tenantId])).rows[0]?.stripe_subscription_id as string | undefined };
   });
 }
@@ -119,7 +118,7 @@ async function onSubscription(db: pg.Pool, config: BillingConfig, event: StripeE
   const state = await keyState(db, tenantId);
   if (event.type === "customer.subscription.deleted") {
     if (state.storedSubscription && state.storedSubscription !== sub.id) return "other_subscription"; // an older subscription ended after a new one began
-    if (state.active) await setTenantKeyStatus(db, tenantId, "FROZEN", BILLING_ACTOR, "subscription ended");
+    if (!state.billingHeld) await setTenantKeyStatus(db, tenantId, "FROZEN", BILLING_ACTOR, "subscription ended");
     // The plan column has no "none": the tenant goes back to the trial pool with no allowance until a new subscription.
     await changeTenantPlan(db, { tenantId, plan: "TRIAL", allowanceMicros: 0, actor: BILLING_ACTOR, now });
     return "ended";
@@ -129,13 +128,13 @@ async function onSubscription(db: pg.Pool, config: BillingConfig, event: StripeE
   const plan = planOf(config, sub.items?.data?.[0]?.price?.id);
   if (!plan) return "unknown_price";
   if (sub.status === "past_due" || sub.status === "unpaid") {
-    if (state.active) await setTenantKeyStatus(db, tenantId, "FROZEN", BILLING_ACTOR, `subscription ${sub.status}`);
+    if (!state.billingHeld) await setTenantKeyStatus(db, tenantId, "FROZEN", BILLING_ACTOR, `subscription ${sub.status}`);
     return "frozen";
   }
   if (sub.status !== "active" && sub.status !== "trialing") return `status_${String(sub.status).replace(/[^a-z_]/g, "")}`; // incomplete: not paid yet
   // A plan change never rotates the key (changeTenantPlan); the current period's allowance follows the plan.
   if (state.plans.size !== 1 || !state.plans.has(plan)) await changeTenantPlan(db, { tenantId, plan, allowanceMicros: PLAN_ALLOWANCE_MICROS[plan], actor: BILLING_ACTOR, now });
-  if (state.frozenByBilling) await setTenantKeyStatus(db, tenantId, "ACTIVE", BILLING_ACTOR, "subscription active");
+  if (state.billingHeld) await setTenantKeyStatus(db, tenantId, "ACTIVE", BILLING_ACTOR, "subscription active");
   return `plan_${plan}`;
 }
 

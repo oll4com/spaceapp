@@ -2246,6 +2246,7 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
 .task-title-line-title { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .35rem; font-weight: 600; font-size: .875rem; }
 .task-title-line:not([aria-current="step"]) { opacity: .78; }
 .task-title-line-summary { display: block; font-size: .8125rem; line-height: 1.5; opacity: .85; }
+.task-title-line-nous { flex: none; }
 .task-title-line-badge { font-size: .625rem; font-weight: 600; padding: .05rem .35rem; border-radius: 999px; border: 1px solid currentColor; opacity: .7; }
 .task-title-earlier, .task-title-status { font-size: .75rem; opacity: .75; }
 .task-title-actions { display: flex; flex-wrap: wrap; gap: .4rem; }

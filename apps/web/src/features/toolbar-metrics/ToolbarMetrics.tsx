@@ -65,6 +65,7 @@ import { buildQuotaOverview, type QuotaProvider } from "../desktop-widgets/quota
 import { ProviderSummary } from "../desktop-widgets/AiQuotaWidget.js";
 import { configuredApiProviders } from "../desktop-widgets/quota-aggregates.js";
 import { ConfirmationDialog, MetricPopover } from "./MetricLayers.js";
+import { useDockConfirm } from "../dock-kit/DockKit.js";
 import {
   QUOTA_EXHAUSTION_THRESHOLD_PERCENT,
   QUOTA_WARNING_THRESHOLD_PERCENT,
@@ -551,6 +552,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const [reopeningSessionId, setReopeningSessionId] = useState<string | null>(null);
   const [reopeningAll, setReopeningAll] = useState(false);
   const [closingSessionId, setClosingSessionId] = useState<string | null>(null);
+  const paneCloseConfirm = useDockConfirm();
   const snapshot = getToolbarMetricsSnapshot(environment);
   const providerCode = isCodexEnabled ? snapshot.provider : "OFF";
   const rtt = getToolbarRttPresentation(rttMs, rttFailed);
@@ -809,7 +811,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       if (onCloseSession) {
         await onCloseSession(paneId);
       } else {
-        await closeOrConfirm((force) => api.closePane(paneId, force));
+        await closeOrConfirm((force) => api.closePane(paneId, force), paneCloseConfirm.confirm);
       }
       void cli.load(true);
       void analyticsSessions.load(true);
@@ -1526,6 +1528,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       onCancelClose={cancelClose}
       onRequestClose={requestClose}
     >{panelContent()}</MetricPopover> : null}
+    {paneCloseConfirm.confirmDialog}
     {confirmation === "cli" ? <ConfirmationDialog
       busy={actionBusy}
       label="Clean detached CLI sessions"

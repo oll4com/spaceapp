@@ -24,11 +24,11 @@ describe("NOUS_SCORE_WEIGHTS", () => {
   it("is the one table of weights: open work costs, finished work gives", () => {
     // A changed weight is a decision of the operator: this table and the docs change together.
     expect(NOUS_SCORE_WEIGHTS).toEqual({ openPlan: -2, openPlanPerDay: -2, planAgeExponent: 2, parkedPlanPerDay: -2, openPane: -1, paneDay: -0.2, idlePanePerHour: -2, goalPerDay: -2, goalNoProgressDay: -3, goalOverdueDay: -20, toolFailure: -2, lesson: -5, decisionDeclined: -5, predictionMiss: -3, chatError: -1, decisionFailed: -3, planNoWorkingPane: -3, planStalled: -5, openRequest: -2, requestPast1h: -2,
-      requestPast6h: -4, requestPast24h: -8, planCompleted: 5, requestDone: 3, utilizationPerPoint: 0.5, lostAtResetPerPoint: -95, correction: -5, couldHaveDecided: -3, scorecardPerPoint: 0.5,
+      requestPast6h: -4, requestPast24h: -8, requestStuckDay: -4, planCompleted: 5, requestDone: 3, utilizationPerPoint: 0.5, lostAtResetPerPoint: -95, correction: -5, couldHaveDecided: -3, scorecardPerPoint: 0.5,
       dailyTaskMissed: -5, slowReply: -2, slowReplyPast10x: -2, slowDone: -2, slowDonePast24h: -4, projectShortfallPerPoint: -0.2, projectDay: -1, programOpen: -1, programNotApplied: -0.2,
       marketingPerPoint: -0.2, marketingDayBelowTarget: -1, marketingFailed: -2, marketingZeroReach: -0.5, marketingDayWithoutResult: -1, idleBrowserPerHour: -2, browserReaped: -2,
       approvedNotDone: -5, approvedNotDonePerHour: -0.25, approvedNotDoneAgeExponent: 2, approvedNotDoneGraceHours: 2 });
-    for (const key of ["openPlan", "openPlanPerDay", "planNoWorkingPane", "planStalled", "openRequest", "requestPast1h", "requestPast6h", "requestPast24h", "correction", "couldHaveDecided"] as const) {
+    for (const key of ["openPlan", "openPlanPerDay", "planNoWorkingPane", "planStalled", "openRequest", "requestPast1h", "requestPast6h", "requestPast24h", "requestStuckDay", "correction", "couldHaveDecided"] as const) {
       expect(NOUS_SCORE_WEIGHTS[key]).toBeLessThan(0);
     }
     for (const key of ["planCompleted", "requestDone", "utilizationPerPoint", "scorecardPerPoint"] as const) expect(NOUS_SCORE_WEIGHTS[key]).toBeGreaterThan(0);
@@ -85,9 +85,18 @@ describe("nousScore", () => {
     expect(plans.items.map((item) => [item.id, item.points])).toEqual([["clipboard:b", -28], ["clipboard:a", -2]]);
     expect(plans.items[0]!.detail).toBe("open 3 d · no working pane · STALLED: unchanged 30 h");
     const requests = tiles.find((tile) => tile.key === "requests")!;
-    expect(requests.items.map((item) => item.points)).toEqual([-16, -8, -4, -2]);
-    expect(requests.points).toBe(-30);
-    expect(score).toBe(-60);
+    // 27/11 (nous_msg:583c7629): the 2-day request is 1 full day past its first 24 h: −16 −4.
+    expect(requests.items.map((item) => item.points)).toEqual([-20, -8, -4, -2]);
+    expect(requests.points).toBe(-34);
+    expect(requests.detail).toBe("4 open · 1 stuck past 24 h, -4 each more day");
+    expect(score).toBe(-64);
+  });
+
+  it("a stuck request costs 4 more each full day past its first 24 h, no cap (operator 27/11 nous_msg:583c7629)", () => {
+    const { tiles, levers } = nousScore(input({ requests: [{ id: "nous_msg:old", summary: "account will lock", openedAt: at(10 * 24 * HOUR + HOUR) }] }));
+    const [item] = tiles.find((tile) => tile.key === "requests")!.items;
+    expect(item).toMatchObject({ points: -16 - 9 * 4, detail: "open 10 d · stuck 9 d (-4 a day)" });
+    expect(levers.find((lever) => lever.id === "nous_msg:old")).toMatchObject({ points: -52, perDay: -4 });
   });
 
   // Plan clipboard:nLYbDf3TqBPm step 1 (W47 audit, Open plans −105): SzUQxpr8eu8z and NdUqdzgGp_BR waited on dates and were charged "no working pane".
@@ -121,7 +130,7 @@ describe("nousScore", () => {
     // A 9-day plan: −2 −2×81 −3 now, −2×(100−81) more tomorrow; a request 7 h old crosses 24 h (−8); the goal −2 and −3 without progress today.
     expect(levers.map((lever) => [lever.id ?? lever.label, lever.points, lever.perDay])).toEqual([
       ["clipboard:a", -167, -38], ["2 panes idle past 60 min (Done 1 [pane:1] idle or finished 2 h, Done 2 [pane:2] idle or finished 2 h)", -6, -96.4],
-      ["nous_goal:g", -15, -5], ["nous_msg:3", -8, -8], ["nous_msg:4", -16, 0],
+      ["nous_msg:4", -20, -4], ["nous_goal:g", -15, -5], ["nous_msg:3", -8, -8],
       ["Utilization 70% against 90%", -10, 0], ["Daily Nous errors (2.6% of the negative)", -6, -0.9], ["clipboard:b", -2, -2]]);
     expect(levers[0]!.action).toContain("complete it with its proof");
     expect(levers.at(-1)!.action).toBe("Alex works on it: send the next step the moment it reports");
@@ -572,7 +581,8 @@ describe("nousScore", () => {
       'gemini-4-argon-high · Gemini Argon (Antigravity): Gemini needs a new sign-in.', 'gemini-4-argon-high · Gemini Argon (Antigravity): Gemini returned HTTP 404.',
       // 18/11 and 23/11: route faults the router fails over on, failing only when every route had one.
       'gemini-3.8-flash-high · Gemini 3.8 Flash (Antigravity): Gemini returned HTTP 403.', 'Gemini returned an empty answer.',
-      'Claude Sonnet 5.5 · Claude via OpenCode: OpenCode requested a tool outside Nous.', 'Claude sent no reply within 5 minutes of the start: the route was unavailable.'];
+      'Claude Sonnet 5.5 · Claude via OpenCode: OpenCode requested a tool outside Nous.', 'Claude sent no reply within 5 minutes of the start: the route was unavailable.',
+      'Claude Opus 5.5 · Claude via OpenCode: OpenCode did not start its server. (earlier: Claude Opus 5.5 · Claude: Claude sent no reply within 5 minutes of the start: the route was unavailable.)'];
     const charged = ['401 invalid_api_key (earlier: Codex: 429 Too Many Requests)', 'An unexpected bug (earlier: no available tokens)',
       'Claude Opus 5.5 · Claude: No answer within 20 minutes.'];
     const facts = [...held, ...charged].map((error, i) => nousTurnFactsSchema.parse({ turnId: `turn:${i}`, ownerUserId: owner, reason: 'OPERATOR', status: 'FAILED', startedAt: at(HOUR), endedAt: at(HOUR), planPoints: 0, tools: {}, outcomes: [], error }));

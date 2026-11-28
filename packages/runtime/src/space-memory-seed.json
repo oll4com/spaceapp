@@ -1,0 +1,450 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-27T00:00:00.000Z",
+  "entries": [
+    {
+      "key": "what-is-spaceapp",
+      "revision": 1,
+      "title": "SpaceApp help: what SpaceApp is",
+      "body": "SpaceApp is a workspace where AI agents, browsers, terminals and copilots work side by side. Work is grouped in rooms; each room holds panes (one work surface each), tasks, media and clipboard history. Nous is the assistant that sees every room, pane, plan and goal and brings the user only the decisions that need them.",
+      "tags": [
+        "getting-started"
+      ]
+    },
+    {
+      "key": "what-is-nous",
+      "revision": 1,
+      "title": "SpaceApp help: what Nous does",
+      "body": "Nous is SpaceApp's own assistant. It reads every pane's progress, plans and goals, does routine coordination, and asks the user only for decisions, sign-ins or answers that are theirs. Nous never edits code or drives a browser itself: it sends that work to a pane and checks the result.",
+      "tags": [
+        "nous",
+        "getting-started"
+      ]
+    },
+    {
+      "key": "nous-on-off",
+      "revision": 1,
+      "title": "SpaceApp help: turning Nous on",
+      "body": "Nous is off on a new install. Turn it on with Work on my behalf (Nous dock in the web app, Settings in the Nous phone app). Stop ends the current turn; switching Work on my behalf off stops all of its work.",
+      "tags": [
+        "nous",
+        "settings"
+      ]
+    },
+    {
+      "key": "nous-dock",
+      "revision": 1,
+      "title": "SpaceApp help: the Nous dock",
+      "body": "The Nous dock has three views. Me: Conversation, Inbox (Needs you), Decisions, Done, Requests, Shared. Work: Overview, Panes, Plans, Goals. System: Quotas, Load, Task runs.",
+      "tags": [
+        "nous",
+        "navigation"
+      ]
+    },
+    {
+      "key": "phone-app",
+      "revision": 1,
+      "title": "SpaceApp help: the Nous phone app",
+      "body": "The Nous phone app (Nous Cloud) has the tabs Conversation, Inbox, Files, Signature, Overview, Appointments, Panes, Plans, Goals and Media. Its Settings hold Work on my behalf, AI accounts, Tabs, History, Language and Help.",
+      "tags": [
+        "phone-app",
+        "nous"
+      ]
+    },
+    {
+      "key": "rooms",
+      "revision": 1,
+      "title": "SpaceApp help: rooms",
+      "body": "A room is a lasting work area. Create one with Rooms dock, New room. Click a room's title to rename it, drag the handle in the Rooms dock to reorder, and use Previous and Next beside the title to step between rooms. Deleting a room asks first, names any running CLI sessions and cannot be undone.",
+      "tags": [
+        "rooms"
+      ]
+    },
+    {
+      "key": "panes",
+      "revision": 1,
+      "title": "SpaceApp help: panes",
+      "body": "A pane is one work surface: a CLI agent, Chat, Browser, Files, Appointments, or a copilot or studio pane. Add a CLI agent with Room toolbar, Add CLI pane; a browser with Add browser pane; File Manager browses and previews workspace files. Drag a pane's header onto another room in the Rooms dock to move it; a running task keeps running.",
+      "tags": [
+        "panes"
+      ]
+    },
+    {
+      "key": "minimize",
+      "revision": 1,
+      "title": "SpaceApp help: minimized panes",
+      "body": "Minimize pane hides a pane while its session keeps running, also after a refresh or a room switch. The Minimized panes bar button shows how many are hidden; each chip shows a spinner while its agent works and an amber dot when it waits for the user. Minimize all hides every pane in the room.",
+      "tags": [
+        "panes",
+        "navigation"
+      ]
+    },
+    {
+      "key": "layout",
+      "revision": 1,
+      "title": "SpaceApp help: pane layout",
+      "body": "Room toolbar, Pane layout offers Automatic, Fullscreen or one to four columns. Maximize room hides the rest of the app around the panes. On phones a bottom bar switches panes; the other panes keep running.",
+      "tags": [
+        "panes",
+        "layout"
+      ]
+    },
+    {
+      "key": "docks",
+      "revision": 1,
+      "title": "SpaceApp help: docks",
+      "body": "Docks are side panels: Rooms, Nous, Clipboard, Tasks, Agent Files, Media, Settings, Health, CLI, Links and Notifications. Every dock has a summary, search as you type, filter chips, and asks before deleting anything. The lower rail's dock buttons can be reordered or hidden.",
+      "tags": [
+        "navigation"
+      ]
+    },
+    {
+      "key": "sleeping-panes",
+      "revision": 1,
+      "title": "SpaceApp help: sleeping panes",
+      "body": "Idle CLI panes go to sleep to free memory and resume their own conversation on the next message. Settings, Sleeping panes sets the idle time (30 minutes by default) or turns it off.",
+      "tags": [
+        "panes",
+        "settings"
+      ]
+    },
+    {
+      "key": "help-button",
+      "revision": 1,
+      "title": "SpaceApp help: the Help button",
+      "body": "The Help (?) button in the room controls opens a full guide to every control on its own page; Back to Space returns to the room. Every Settings field has a short help icon: hover or focus opens it, tap or Enter pins it, Esc closes it. In the Nous phone app, Help is in Settings.",
+      "tags": [
+        "help"
+      ]
+    },
+    {
+      "key": "settings",
+      "revision": 1,
+      "title": "SpaceApp help: finding a setting",
+      "body": "Settings has five groups: Workspace, Personal, Assistants and AI, Accounts and connections, Maintenance. The search field at the top finds any setting by name.",
+      "tags": [
+        "settings",
+        "help"
+      ]
+    },
+    {
+      "key": "language",
+      "revision": 1,
+      "title": "SpaceApp help: language",
+      "body": "Settings, Personal, Language has two choices. Interface language is the app's own labels and menus (English or Greek in the web app; the Nous phone app also offers Thai). Agent language is what Nous, agents and copilots write in: English, Greek or Thai. A running pane picks up a changed agent language the next time it starts.",
+      "tags": [
+        "language",
+        "settings"
+      ]
+    },
+    {
+      "key": "themes",
+      "revision": 1,
+      "title": "SpaceApp help: themes and text size",
+      "body": "Settings, Appearance chooses the theme, light or dark mode, icon packs and backgrounds. Room toolbar, Room theme gives one room its own look. Workspace text size changes the text of every chat and CLI pane. Hide sensitive data blurs addresses and similar details on screen.",
+      "tags": [
+        "appearance",
+        "settings"
+      ]
+    },
+    {
+      "key": "connect-google",
+      "revision": 1,
+      "title": "SpaceApp help: connecting Google (Gmail, Calendar, YouTube)",
+      "body": "When this install has Google sign-in set up, signing in with Google is followed by one banner, Grant access or Not now, that asks once for Gmail, Calendar and YouTube together. Access can be granted later in Settings, Connected accounts (search Settings for it): each Google account there has Grant the missing ones. Google keys stay sealed on the server and never reach the browser. Until the install's Google app is verified, Google may show an unverified app screen: Advanced, then continue.",
+      "tags": [
+        "accounts",
+        "google"
+      ]
+    },
+    {
+      "key": "google-devices",
+      "revision": 1,
+      "title": "SpaceApp help: signed-in devices",
+      "body": "Settings, Accounts and connections, Account and Google lists the signed-in devices; Revoke ends a phone app session there. Phone app sessions last 30 days.",
+      "tags": [
+        "accounts",
+        "security"
+      ]
+    },
+    {
+      "key": "ai-accounts",
+      "revision": 1,
+      "title": "SpaceApp help: connecting AI accounts",
+      "body": "A new install starts on a free model. For stronger answers connect an AI account: in the Nous phone app, Settings, AI accounts (connect Claude); in the web app, an admin signs each CLI in to its provider with Room toolbar, Setup wizard, which checks for a real answer. Settings, CLI providers chooses which providers the CLI tools may use. A CLI that says it needs a sign-in is signed in from a pane that uses that account.",
+      "tags": [
+        "accounts",
+        "models"
+      ]
+    },
+    {
+      "key": "models",
+      "revision": 1,
+      "title": "SpaceApp help: choosing a model",
+      "body": "A CLI pane's floating controls change the model and reasoning effort without restarting it; Chat has its own Model and reasoning menu. In an OpenCode pane, type /models to pick another model when the free one does not answer. Without a Claude account Nous runs on the free model and its limits; after signing in to Claude its next turn moves to Claude.",
+      "tags": [
+        "models"
+      ]
+    },
+    {
+      "key": "quotas",
+      "revision": 1,
+      "title": "SpaceApp help: quotas and usage",
+      "body": "Nous dock, Quotas shows one page per connected provider, or says that no AI accounts or keys are connected. This install cannot read a Claude plan's remaining quota: when the plan runs low, set Low-spend mode to Always on or switch Nous off. When a provider refuses for quota, wait until the time it names and use another account meanwhile.",
+      "tags": [
+        "models",
+        "quotas"
+      ]
+    },
+    {
+      "key": "copilots",
+      "revision": 1,
+      "title": "SpaceApp help: copilots",
+      "body": "Copilots are panes that pair a full client with an agent: Mail, Job, Marketing, Design, Video, App Studio, Security and Monitoring among them. On a self-hosted install they are off until the person who runs the install turns them on. Then open one from the Create menu; Settings, Assistants and AI, then the copilot's name, sets the agent and account new panes of that kind use. The agent chip in a copilot pane switches its agent; Set as default keeps it.",
+      "tags": [
+        "copilots"
+      ]
+    },
+    {
+      "key": "mail-copilot",
+      "revision": 1,
+      "title": "SpaceApp help: Mail Copilot",
+      "body": "Mail Copilot is a mail client over the connected Google accounts; full access needs Allow full Gmail access once per account. Autonomy: Assist (default: the agent drafts and the user sends), Rules (acts alone only under approved rules), Full (acts alone). In Assist every reply is a review to approve, edit or reject before anything is sent, and edits are learned. The bot icon hands one mail to the agent; Check for new mail syncs at once.",
+      "tags": [
+        "copilots",
+        "mail"
+      ]
+    },
+    {
+      "key": "mail-campaigns",
+      "revision": 1,
+      "title": "SpaceApp help: bulk mail",
+      "body": "Newsletters and bulk mail are never sent from a plain mailbox. Mail campaigns builds them, and nothing goes out until the user reads every recipient's mail in Mail Copilot, Campaigns and approves there. Any change after approval sends the campaign back for review, and test copies go only to the user's own mailboxes.",
+      "tags": [
+        "copilots",
+        "mail"
+      ]
+    },
+    {
+      "key": "job-copilot",
+      "revision": 1,
+      "title": "SpaceApp help: Job Copilot",
+      "body": "Job Copilot has a browser and an agent: queue postings (paste links or import a list), press Start and answer its questions in Activity. An application counts only once there is a confirmation. Setup holds the CV, profile, Google account, limits and agent.",
+      "tags": [
+        "copilots"
+      ]
+    },
+    {
+      "key": "studios",
+      "revision": 1,
+      "title": "SpaceApp help: Design, Video and App Studio",
+      "body": "Design makes social graphics, banners and motion; Video cuts clips with captions, narration and music in social formats; App Studio builds phone apps with a preview per device. Deliveries arrive automatically, or wait for approval when the pane is set to Needs my approval.",
+      "tags": [
+        "copilots",
+        "media"
+      ]
+    },
+    {
+      "key": "goals",
+      "revision": 1,
+      "title": "SpaceApp help: goals",
+      "body": "Type /goal followed by what you want in the Nous conversation to give Nous a goal, or /goals to open the list. Nous gives each goal success criteria, a plan and panes, and works on it in turns until it is done with evidence. Only the user creates, edits, pauses, reorders or deletes goals; Nous only records progress.",
+      "tags": [
+        "goals",
+        "nous"
+      ]
+    },
+    {
+      "key": "plans",
+      "revision": 1,
+      "title": "SpaceApp help: plans",
+      "body": "The Plans tab lists every open plan, what each waits on, its dates and Unblock first. For bigger work, ask a pane for a plan before it starts (Plan mode in the pane header or the Add context menu), read it, then let it run step by step.",
+      "tags": [
+        "plans"
+      ]
+    },
+    {
+      "key": "tasks",
+      "revision": 1,
+      "title": "SpaceApp help: tasks and repeating tasks",
+      "body": "The Tasks dock lists every task with its time. Add a task there or drag one onto a CLI pane to start it. A task can run once, daily, weekly or every N minutes (at least 15); when due, SpaceApp types it into its pane at an empty prompt. If the pane is busy the run waits, then is skipped and recorded. A task with no pane is a reminder.",
+      "tags": [
+        "tasks"
+      ]
+    },
+    {
+      "key": "clipboard",
+      "revision": 1,
+      "title": "SpaceApp help: clipboard and notes",
+      "body": "The Clipboard dock keeps a private history of copies plus notes and plans across all rooms. Add a note, search, drag an item, or insert it into the active pane. Type a hash sign and a saved name in any CLI or chat to expand text saved under Settings, Prompt variables.",
+      "tags": [
+        "clipboard"
+      ]
+    },
+    {
+      "key": "agent-files",
+      "revision": 1,
+      "title": "SpaceApp help: Agent Files",
+      "body": "Agent Files are the finished files agents publish, in folders per room, to preview, download or delete. Ask an agent for a file when you want one: agents publish only on request, and a file opens in one click instead of a server path. Nous can also show a file in the phone app for a while so it can be approved there.",
+      "tags": [
+        "files"
+      ]
+    },
+    {
+      "key": "media",
+      "revision": 1,
+      "title": "SpaceApp help: Media dock",
+      "body": "The Media dock holds room images, recordings, uploads and browser evidence. Pinned items stay; unpinned temporary items expire.",
+      "tags": [
+        "media",
+        "files"
+      ]
+    },
+    {
+      "key": "inbox",
+      "revision": 1,
+      "title": "SpaceApp help: Inbox and Needs you cards",
+      "body": "The Inbox in the Nous dock (and the phone app) has the filters All, Action, Completed, Updates and alerts, In progress, Archive and search. A Needs you card asks for the user's hands or an answer: the recommended answer comes first, Details shows the steps, Open goes to the pane, and the menu has Completed and Close without answering. The bell opens Notifications, with Mark all read and Acknowledge.",
+      "tags": [
+        "inbox",
+        "nous"
+      ]
+    },
+    {
+      "key": "decisions",
+      "revision": 1,
+      "title": "SpaceApp help: decisions and approvals",
+      "body": "Nous asks before releases, deletes, anything sent to third parties or involving money, and changes of direction, each as a decision card with Approve or Decline; a plain yes or no in words works too. Always approve on a card lets that kind run alone next time (never offered for deletes); remove it under Ask me again in Settings. Allowances in Settings, Assistants and AI, Nous are off by default and only the user turns them on.",
+      "tags": [
+        "decisions",
+        "nous"
+      ]
+    },
+    {
+      "key": "away-mode",
+      "revision": 1,
+      "title": "SpaceApp help: away mode and quiet hours",
+      "body": "Tell Nous you are away: it keeps working and saves non-urgent alerts for one summary on your return, with no extra permissions. Quiet hours (Settings, Notifications; on by default, overnight) let only urgent items alert; they need the time zone set in Settings, Date and time.",
+      "tags": [
+        "notifications",
+        "nous"
+      ]
+    },
+    {
+      "key": "appointments",
+      "revision": 1,
+      "title": "SpaceApp help: appointments",
+      "body": "The Appointments pane (and tab in the phone app) keeps calls, interviews, webinars and deadlines with reminders before each. A good record holds everything needed to attend: time with time zone, place or meeting link, who it is with, purpose, what to prepare and documents to bring. A past appointment shows Expired until marked Completed or Cancel.",
+      "tags": [
+        "appointments"
+      ]
+    },
+    {
+      "key": "signature",
+      "revision": 1,
+      "title": "SpaceApp help: signatures",
+      "body": "Save a hand signature in Settings, Signatures or in the phone app's Signature tab. When an agent asks for a signed document, a card opens the Sign view; signing saves a new signed copy and never changes the original.",
+      "tags": [
+        "signature",
+        "files"
+      ]
+    },
+    {
+      "key": "history",
+      "revision": 1,
+      "title": "SpaceApp help: history period",
+      "body": "Settings, Personal, History sets how far back every history view goes: 7, 14, 30, 60 or 90 days (90 by default). It filters views and does not delete; items still waiting for the user always show.",
+      "tags": [
+        "history",
+        "settings"
+      ]
+    },
+    {
+      "key": "retention",
+      "revision": 1,
+      "title": "SpaceApp help: what is deleted automatically",
+      "body": "Only logs and history are deleted automatically: copy history, old finished one-time tasks, pane reports after two weeks, notifications and goal logs after a month, expired unpinned media and old sessions. Plans, notes, open or scheduled tasks, memory, decisions, copilot memory and rules, pinned media, settings, rooms and panes are never deleted automatically, only when the user deletes them.",
+      "tags": [
+        "retention",
+        "history"
+      ]
+    },
+    {
+      "key": "memory",
+      "revision": 1,
+      "title": "SpaceApp help: Space Memory",
+      "body": "Space Memory is where Nous and the agents keep lasting knowledge: decisions, rules the user gave, lessons and how-tos like this one. Tell Nous to remember something and it saves it; ask what it remembers about a subject and it searches here first. These starter entries are general help and can be replaced by the user's own.",
+      "tags": [
+        "memory",
+        "help"
+      ]
+    },
+    {
+      "key": "rule-one-goal",
+      "revision": 1,
+      "title": "SpaceApp help: working well: one clear task per pane",
+      "body": "Give each pane one clear task with a result you can check (what done looks like). Before handing out new work, check that no other pane already has it, so nothing runs twice.",
+      "tags": [
+        "working-rules"
+      ]
+    },
+    {
+      "key": "rule-verify",
+      "revision": 1,
+      "title": "SpaceApp help: working well: check before accepting done",
+      "body": "Accept done only after reading the pane's report or output; a queued task alone does not prove the work happened. Before closing a pane, read its last lines and task list: a question or an unchecked change means it is not finished.",
+      "tags": [
+        "working-rules"
+      ]
+    },
+    {
+      "key": "rule-look-first",
+      "revision": 1,
+      "title": "SpaceApp help: working well: let agents look first",
+      "body": "Agents should look things up (memory, notes, files, mail, the app's own settings) before asking the user, and a good question says what was already checked. Sign-ins, one-time codes and captchas are not decisions: they arrive as a Needs you card pointing at the page that needs the user's hands.",
+      "tags": [
+        "working-rules"
+      ]
+    },
+    {
+      "key": "rule-approvals",
+      "revision": 1,
+      "title": "SpaceApp help: working well: approvals",
+      "body": "An approval covers only what was actually shown, so check that every item and attachment was in the preview. Agents never reset passwords or start account recovery unless the user asks.",
+      "tags": [
+        "working-rules",
+        "decisions"
+      ]
+    },
+    {
+      "key": "rule-mail",
+      "revision": 1,
+      "title": "SpaceApp help: working well: sorting mail",
+      "body": "Sort mail by what it asks for: receipts, sign-up confirmations and all-set notes are confirmations; only a request to reply, take a test or attend something is an action.",
+      "tags": [
+        "working-rules",
+        "mail"
+      ]
+    },
+    {
+      "key": "rule-accounts",
+      "revision": 1,
+      "title": "SpaceApp help: working well: outside accounts",
+      "body": "Notes that an outside account is blocked or limited go stale quickly: check its status live before giving up on it or moving work elsewhere.",
+      "tags": [
+        "working-rules",
+        "accounts"
+      ]
+    },
+    {
+      "key": "not-here",
+      "revision": 1,
+      "title": "SpaceApp help: what this install does not have",
+      "body": "A self-hosted install or Nous Cloud has no web search, no source repository or release pipeline, and agents cannot fill passwords from the Vault. Nous says so when a request needs one of these instead of promising it.",
+      "tags": [
+        "help",
+        "limits"
+      ]
+    }
+  ]
+}

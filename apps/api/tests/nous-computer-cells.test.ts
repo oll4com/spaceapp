@@ -7,6 +7,7 @@ import { createFakeCellDriver } from "../src/computer/cell-driver.js";
 import {
   CellCapacityError,
   CellExportRequiredError,
+  CellSuspendedError,
   IDLE_TO_SLEEP_MS,
   SLEEP_TO_COLD_MS,
   createCellOrchestrator,
@@ -31,6 +32,30 @@ describe("nous computer cells", () => {
     expect(ops(driver, "create")).toHaveLength(1);
     expect(new Set(results)).toHaveProperty("size", 1);
     expect((await cells.cell("t1"))?.state).toBe("AWAKE");
+  });
+
+  it("a suspended account's cell sleeps, refuses wakes, still exports and deletes, and wakes again once resumed", async () => {
+    const { driver, cells } = setup([{ id: "h1", ramMib: 8192, maxAwake: 4 }]);
+    await cells.ensureAwake("t1");
+    const [, suspended] = await Promise.allSettled([cells.ensureAwake("t1"), cells.suspendCell("t1")]);
+    expect(suspended.status).toBe("fulfilled");
+    expect(await cells.cell("t1")).toMatchObject({ state: "SLEEPING", suspendedAt: expect.any(Number) });
+    await expect(cells.ensureAwake("t1")).rejects.toBeInstanceOf(CellSuspendedError);
+    const first = (await cells.cell("t1"))?.suspendedAt;
+    await cells.suspendCell("t1");
+    expect((await cells.cell("t1"))?.suspendedAt).toBe(first);
+    expect(ops(driver, "pauseAndSnapshot")).toHaveLength(1);
+
+    await cells.resumeCell("t1");
+    expect((await cells.ensureAwake("t1")).from).toBe("SLEEPING");
+
+    await cells.suspendCell("t2"); // never created: suspended before its first wake
+    await expect(cells.ensureAwake("t2")).rejects.toBeInstanceOf(CellSuspendedError);
+    expect(ops(driver, "create")).toHaveLength(1);
+    await cells.suspendCell("t1");
+    await cells.exportCell("t1");
+    await cells.deleteCell("t1");
+    expect((await cells.cell("t1"))?.state).toBe("DELETED");
   });
 
   it("sleeps after idle, goes cold after a day, and wakes from either with a clock step", async () => {

@@ -35,6 +35,8 @@ it.skipIf(postgresUnavailable)("stores Space Gateway settings, keys, logs and da
     for (const item of migrations.filter(item => item.id <= target!.id)) await pool.query(item.sql);
     // Re-running the migrations is a no-op.
     for (const item of migrations.filter(item => item.id >= "0184" && item.id <= target!.id)) await pool.query(item.sql);
+    // Migration 0421 (key providers) on top, twice: it is idempotent.
+    for (let run = 0; run < 2; run++) await pool.query(migrations.find(item => item.id === "0421_gateway_key_providers")!.sql);
     // The request log's Anthropic request id (token usage page), twice: it is a no-op the second time.
     for (let run = 0; run < 2; run += 1) await pool.query(migrations.find(item => item.id === "0204_token_usage_routes")!.sql);
     // The reset grants' column, which saveResetCredits writes since 14/11.
@@ -73,8 +75,11 @@ it.skipIf(postgresUnavailable)("stores Space Gateway settings, keys, logs and da
       trafficClass: "INTERACTIVE", allowedModels: ["gpt-5.6-sol"], enforcedModel: null, allowedReasoningEfforts: ["high", "xhigh"],
       enforcedReasoningEffort: null, accountIds: [account!.id], compressionOverride: "ON",
       limits: [{ limitType: "TOTAL_TOKENS", limitWindow: "DAILY", maxValue: 1_000_000, modelFilter: null, resetAt: "2030-01-02T00:00:00.000Z" }],
-      expiresAt: null, createdBy: "user:admin", outputPolicyOverride: "OFF" });
+      expiresAt: null, createdBy: "user:admin", outputPolicyOverride: "OFF", allowedProviders: ["codex", "gemini"] });
     expect(key.outputPolicyOverride).toBe("OFF");
+    expect(key.allowedProviders).toEqual(["codex", "gemini"]);
+    expect((await repository.updateApiKey(keyId, { outputPolicyOverride: "CONCISE", allowedProviders: ["codex"] }))).toMatchObject({ outputPolicyOverride: "CONCISE", allowedProviders: ["codex"] });
+    expect((await repository.updateApiKey(keyId, { allowedProviders: [] }))?.allowedProviders).toEqual([]);
     expect((await repository.updateApiKey(keyId, { outputPolicyOverride: "LEAN" }))?.outputPolicyOverride).toBe("LEAN");
     expect((await repository.updateApiKey(keyId, { name: "Codex CLI" }))?.outputPolicyOverride).toBe("LEAN");
     expect((await repository.updateApiKey(keyId, { outputPolicyOverride: null }))?.outputPolicyOverride).toBeNull();

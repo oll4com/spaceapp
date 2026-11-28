@@ -63,6 +63,7 @@ import {
   ToolbarMetrics,
   getToolbarMetricsSnapshot,
 } from "../toolbar-metrics/ToolbarMetrics.js";
+import { NousCloudPanel } from "./NousCloudPanel.js";
 import { formatAppTime } from "../date-time-settings/date-time-settings.js";
 import { useAppVersion } from "../app-version/use-app-version.js";
 import { getAgentsIndicatorBorder, type AgentDashboardSummary } from "../agents-dashboard/dashboard-model.js";
@@ -497,6 +498,7 @@ function HealthWindow({
   thresholds,
   onThresholds,
   allowChanges = true,
+  isAdmin = false,
   onReopenPane, onReopenAllDetached, onCloseSession,
 }: {
   onReopenPane?: (roomId: string, paneId: string) => Promise<void> | void;
@@ -511,6 +513,7 @@ function HealthWindow({
   thresholds: HealthThresholds;
   onThresholds: (thresholds: HealthThresholds) => boolean;
   allowChanges?: boolean;
+  isAdmin?: boolean;
   onManage?: (id: "accounts" | "provider" | "cli") => void;
 }) {
   const embedded = useWorkspaceSurface();
@@ -716,7 +719,7 @@ function HealthWindow({
           {section !== "overview" && <nav className="resources-detail-navigation" aria-label="Resource details">
             <button type="button" onClick={() => onSection("overview")}>← Back</button>
             <select className="resources-detail-select" aria-label="Resource view" value={section} onChange={e => onSection(e.target.value as HealthSection)}>
-              <optgroup label="AI usage"><option value="ai">Accounts & quotas</option><option value="analytics">Token usage & analytics</option><option value="sessions">CLI sessions</option></optgroup>
+              <optgroup label="AI usage"><option value="ai">Accounts & quotas</option><option value="analytics">Token usage & analytics</option><option value="sessions">CLI sessions</option>{isAdmin && <option value="nouscloud">Nous Cloud</option>}</optgroup>
               <optgroup label="System"><option value="performance">Performance & latency</option><option value="processes">Processes</option><option value="services">Service readiness</option><option value="topology">Topology</option><option value="alerts">Alerts & thresholds</option></optgroup>
             </select>
           </nav>}
@@ -905,6 +908,7 @@ function HealthWindow({
                 <LazyHealthProcessTable thresholds={thresholds} />
               </RecoverableSurface>
             )}
+            {section === "nouscloud" && isAdmin && <NousCloudPanel />}
             {section === "services" && (
               <div className="health-stack">
                 <header className="health-section-heading">
@@ -989,6 +993,7 @@ export function SystemHealth({
   environment,
   onManage,
   allowChanges = true,
+  isAdmin = false,
   minimizedBarToggle,
   onOpenAgentsDashboard,
   agentsSummary,
@@ -1006,6 +1011,8 @@ export function SystemHealth({
   indicatorsVisible?: boolean;
   environment: CodexEnvironment | null;
   allowChanges?: boolean;
+  /** Admin-only views (Nous Cloud). */
+  isAdmin?: boolean;
   onManage?: (id: "accounts" | "provider" | "cli") => void;
   minimizedBarToggle?: ReactNode;
   onOpenAgentsDashboard?: () => void;
@@ -1255,6 +1262,7 @@ export function SystemHealth({
                 thresholds={thresholds}
                 onThresholds={save}
                 allowChanges={allowChanges}
+                isAdmin={isAdmin}
                 onManage={
                   onManage
                     ? (id) => {

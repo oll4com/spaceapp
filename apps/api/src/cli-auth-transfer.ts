@@ -38,6 +38,8 @@ export interface NousAgentRequest {
   shell: boolean;
   stream: boolean;
   fallbackModel?: string | null;
+  /** Nous Cloud: the box's Space Gateway entry and key for opencode-nous (plan clipboard:yw_pvUb_616N); absent, its free model. */
+  gateway?: { baseUrl: string; apiKey: string };
 }
 
 /** Runs a wrapper's fixed credential action where the CLIs and their logins live. */

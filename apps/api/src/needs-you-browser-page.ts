@@ -161,22 +161,38 @@ export const isPageTarget = (target: string | undefined) => Boolean(target?.star
  */
 export function createNeedsYouPlaces(deps: PageDeps & { notifications: { addPayload(owner: string, id: string, payload: Record<string, unknown>): Promise<unknown> } }) {
   return async (card: SpaceNotification): Promise<NeedsYouPlace> => {
-    const kept = needsYouBrowserPage(card);
-    const linkTarget = card.link.target;
-    if (!card.roomId || !card.paneId || !(isPageTarget(linkTarget) || kept)) return { page: false, place: null, url: null };
-    // The card's own tab or address first; the browser page found on raise only when the card names neither.
-    const target = isPageTarget(linkTarget) ? linkTarget : kept?.target ?? linkTarget;
-    const browsers = await liveBrowsers(deps, card.ownerUserId);
-    const stored = typeof card.payload.pageUrl === "string" && pathKey(card.payload.pageUrl) ? card.payload.pageUrl : null;
-    const url = stored ?? (target?.startsWith("url:") ? target.slice(4) : null) ?? (kept?.target?.startsWith("url:") ? kept.target.slice(4) : null);
-    const own = await Promise.resolve(deps.store.getPane(card.paneId)).catch(() => null);
-    const place = pickBrowserPage(browsers, { roomId: card.roomId, paneId: card.paneId, ...(target ? { target } : {}), ...(url ? { url } : {}),
-      ownBrowser: Boolean(own && !own.isClosed && isBrowserPane(own)), ...(kept ? { heldPaneId: kept.paneId } : {}), text: cardText(card) }, await roomBrowserIds(deps, card.roomId));
-    const seen = tabUrl(browsers, place?.target);
-    const learned = !stored && seen ? { pageUrl: seen } : {};
-    if (place && (JSON.stringify(place) !== JSON.stringify(kept) || Object.keys(learned).length)) {
-      await deps.notifications.addPayload(card.ownerUserId, card.id, { browserPage: place, ...learned }).catch((error: unknown) => deps.log?.(error));
-    }
-    return { page: true, place, url: url ?? seen };
+    const { rebind, page, place, url } = await findPlace(deps, card, () => liveBrowsers(deps, card.ownerUserId));
+    if (rebind) await deps.notifications.addPayload(card.ownerUserId, card.id, rebind).catch((error: unknown) => deps.log?.(error));
+    return { page, place, url };
   };
+}
+
+/** The same search without the rebind, the owner's browsers read once for many cards: the Inbox's status line (inbox/ask-live.ts) reads, it never writes. */
+export function createNeedsYouPlaceReads(deps: PageDeps) {
+  return (owner: string) => {
+    let browsers: Promise<LiveBrowser[]> | undefined;
+    return async (card: SpaceNotification): Promise<NeedsYouPlace> => {
+      const { page, place, url } = await findPlace(deps, card, () => (browsers ??= liveBrowsers(deps, owner)));
+      return { page, place, url };
+    };
+  };
+}
+
+/** `rebind`: what the card should keep when its page was found somewhere new (null: nothing changed). */
+async function findPlace(deps: PageDeps, card: SpaceNotification, live: () => Promise<LiveBrowser[]>): Promise<NeedsYouPlace & { rebind: Record<string, unknown> | null }> {
+  const kept = needsYouBrowserPage(card);
+  const linkTarget = card.link.target;
+  if (!card.roomId || !card.paneId || !(isPageTarget(linkTarget) || kept)) return { page: false, place: null, url: null, rebind: null };
+  // The card's own tab or address first; the browser page found on raise only when the card names neither.
+  const target = isPageTarget(linkTarget) ? linkTarget : kept?.target ?? linkTarget;
+  const browsers = await live();
+  const stored = typeof card.payload.pageUrl === "string" && pathKey(card.payload.pageUrl) ? card.payload.pageUrl : null;
+  const url = stored ?? (target?.startsWith("url:") ? target.slice(4) : null) ?? (kept?.target?.startsWith("url:") ? kept.target.slice(4) : null);
+  const own = await Promise.resolve(deps.store.getPane(card.paneId)).catch(() => null);
+  const place = pickBrowserPage(browsers, { roomId: card.roomId, paneId: card.paneId, ...(target ? { target } : {}), ...(url ? { url } : {}),
+    ownBrowser: Boolean(own && !own.isClosed && isBrowserPane(own)), ...(kept ? { heldPaneId: kept.paneId } : {}), text: cardText(card) }, await roomBrowserIds(deps, card.roomId));
+  const seen = tabUrl(browsers, place?.target);
+  const learned = !stored && seen ? { pageUrl: seen } : {};
+  const rebind = place && (JSON.stringify(place) !== JSON.stringify(kept) || Object.keys(learned).length) ? { browserPage: place, ...learned } : null;
+  return { page: true, place, url: url ?? seen, rebind };
 }

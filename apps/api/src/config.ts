@@ -59,6 +59,10 @@ export interface SpaceApiConfig {
   publicDistribution?: boolean;
   /** Invites and per-user sign-in (plan clipboard:VrMJ14wJPmVs); off until each user gets an isolated CLI container. */
   multiUserEnabled?: boolean;
+  /** Nous Computer control plane (K2, plan clipboard:ZGz1LnD51ELH): the Nous app is the only UI; off on every SpaceApp install. */
+  headless?: boolean;
+  /** Headless Google sign-up (K2 §4) is open to invited emails only while this terms version is set; the app sends it back as accepted. */
+  signupTermsVersion?: string;
   enableDummyTurns: boolean;
   enableCodexTurns: boolean;
   agentPaneEnabled: boolean;
@@ -68,6 +72,9 @@ export interface SpaceApiConfig {
   codexLbKeyName: string | null;
   /** Space Gateway base URL (the native account load balancer service). */
   gatewayUrl: string;
+  /** A Nous Cloud box: its SpaceApp's Nous Cloud Gateway entry and this account's key file (separate from SPACE_GATEWAY_*, which other features use). */
+  nousCloudGatewayUrl: string | null;
+  nousCloudGatewayKeyFile: string | null;
   codexAppServerEnabled: boolean;
   codexAppServerCommand: string;
   codexAppServerTransport: string;
@@ -376,6 +383,17 @@ export function parseOptionalModules(raw: string | undefined, publicDistribution
   return new Set(optionalModuleIds.filter((id) => value.split(",").map((part) => part.trim()).includes(id)));
 }
 
+// K2 design §2: SPACE_HEADLESS fixes its pairings at start; a contradicting setting refuses to start instead of being ignored.
+function headlessMode(env: NodeJS.ProcessEnv, runtimeStore: string): boolean {
+  if (env.SPACE_HEADLESS !== "true") return false;
+  if (runtimeStore !== "postgres") throw new Error("SPACE_HEADLESS needs SPACE_RUNTIME_STORE=postgres (row-level security exists only in Postgres).");
+  if (env.SPACE_PUBLIC_DISTRIBUTION === "true") throw new Error("SPACE_HEADLESS cannot run with SPACE_PUBLIC_DISTRIBUTION=true.");
+  if (env.SPACE_MULTI_USER_ENABLED === "false") throw new Error("SPACE_HEADLESS needs multi-user; drop SPACE_MULTI_USER_ENABLED=false.");
+  const modules = env.SPACE_OPTIONAL_MODULES?.trim().toLowerCase();
+  if (modules && modules !== "none") throw new Error("SPACE_HEADLESS runs no optional modules; set SPACE_OPTIONAL_MODULES=none or leave it unset.");
+  return true;
+}
+
 export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
   // Variables in the T3 Env schema are read only from its normalized result.
   const valid = validateT3ApiEnv(env);
@@ -383,6 +401,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
   const mcpConfig = parseMcpServerConfigs(env.SPACE_MCP_SERVERS_JSON);
   const artifactRoot = env.SPACE_ARTIFACT_ROOT || `${SPACE_INSTALL_ROOT}/var/artifacts`;
   const spaceMemoryPaths = resolveCanonicalSpaceMemoryPaths(env);
+  const headless = headlessMode(env, runtimeStore);
   return {
     t3CodeEnabled: valid.SPACE_T3CODE_ENABLED !== "false",
     t3CodeSocketPath: valid.SPACE_T3CODE_SOCKET,
@@ -408,7 +427,9 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     // Only the public small profile turns workflows off; private installations always require the worker.
     workflowsEnabled: !(env.SPACE_PUBLIC_DISTRIBUTION === "true" && env.SPACEAPP_WORKFLOWS_ENABLED === "false"),
     publicDistribution: env.SPACE_PUBLIC_DISTRIBUTION === "true",
-    multiUserEnabled: env.SPACE_MULTI_USER_ENABLED === "true",
+    multiUserEnabled: headless || env.SPACE_MULTI_USER_ENABLED === "true",
+    headless,
+    signupTermsVersion: headless ? env.SPACE_SIGNUP_TERMS_VERSION?.trim() || undefined : undefined,
     enableDummyTurns: valid.SPACE_ENABLE_DUMMY_TURNS === "true",
     enableCodexTurns: valid.SPACE_ENABLE_CODEX_TURNS === "true",
     agentPaneEnabled: valid.SPACE_AGENT_PANE_ENABLED === "true",
@@ -419,6 +440,8 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     codexLbKeyFile: env.SPACE_GATEWAY_KEY_FILE || env.SPACE_CODEX_LB_KEY_FILE || null,
     codexLbKeyName: env.SPACE_GATEWAY_KEY_NAME || env.SPACE_CODEX_LB_KEY_NAME || null,
     gatewayUrl: parseGatewayUrl(env.SPACE_GATEWAY_URL),
+    nousCloudGatewayUrl: env.SPACE_NOUS_CLOUD_GATEWAY_URL || null,
+    nousCloudGatewayKeyFile: env.SPACE_NOUS_CLOUD_GATEWAY_KEY_FILE || null,
     codexAppServerEnabled: env.SPACE_CODEX_APP_SERVER_ENABLED === "true",
     codexAppServerCommand: env.SPACE_CODEX_APP_SERVER_COMMAND || `${SPACE_INSTALL_ROOT}/bin/codex-vscode-parity`,
     codexAppServerTransport: env.SPACE_CODEX_APP_SERVER_TRANSPORT || "stdio",
@@ -586,7 +609,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     vpnSocksProxies: parseVpnSocksProxies(env.SPACE_VPN_SOCKS_PROXIES),
     vncPresets: env.SPACE_VNC_PRESETS?.trim() ? vncPresetSchema.array().max(32).parse(JSON.parse(env.SPACE_VNC_PRESETS)) : [],
     trustedProxies: (env.SPACE_TRUSTED_PROXIES ?? "").split(",").map((address) => address.trim()).filter(Boolean),
-    optionalModules: parseOptionalModules(env.SPACE_OPTIONAL_MODULES, env.SPACE_PUBLIC_DISTRIBUTION === "true"),
+    optionalModules: headless ? new Set() : parseOptionalModules(env.SPACE_OPTIONAL_MODULES, env.SPACE_PUBLIC_DISTRIBUTION === "true"),
     harnessHealthTimeoutMs: Math.min(parsePositiveInt(env.SPACE_HARNESS_HEALTH_TIMEOUT_MS, 3000), 15000),
     harnessProxyTimeoutMs: Math.min(parsePositiveInt(env.SPACE_HARNESS_PROXY_TIMEOUT_MS, 30000), 120000),
     planStageMaxAttempts: valid.SPACE_PLAN_STAGE_MAX_ATTEMPTS ?? 20

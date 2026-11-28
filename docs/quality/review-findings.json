@@ -1719,7 +1719,7 @@
       "status": "confirmed",
       "reproduction": "space-capability call: space_ops/space_authenticated_ui_proof with interaction BENCHMARK_WARM_CAPACITY, paneCount 0, viewport desktop, timeoutSeconds 180, uiTheme modern, modernAppearance dark, assertions []",
       "evidence": "Live and staging BENCHMARK_WARM_CAPACITY runs 2026-10-11 under recorded load (reports/20261011-perf001-bisect/results.jsonl). At low load (1-min load 1.4-5.4): live 1040 ms; staging current build 1260 and 996 ms; current JS with the 2026-10-07 CSS 1125 ms; current build with 7ef1f5d552 reverted 1117 ms; content-visibility instead of display:none for dormant layers 979 ms against 1086 ms for the same base in an alternating A/B. In every run capacity and retention pass (96/96 same terminals and sockets after ~45 s hidden). The first warm switch per room after ~45 s hidden costs 600-1100 ms, nearly all RecalcStyle; a second switch seconds later costs about 200 ms. The 2026-10-07 web build cannot run against the current API (attachment/observation failures), so forward bisection is impossible.",
-      "disposition": "Open, narrowed: not CSS (2026-10-07 CSS on current DOM is still slow), not display:none itself (content-visibility gives at most a small gain), not load (it reproduces at low load), and not 7ef1f5d552. The cost is a full style computation of a 16-pane room subtree when its cached style is cold, which points at DOM size or structure per pane growing since 2026-10-07. Next: add Chrome selector stats and per-layer DOM counts to the warm capacity proof (diagnostics only) to name the expensive selectors and elements, then fix them, verified by A/B on the staging origin (scripts/warm-staging.mjs). The approval of 2026-10-11 11:30Z covers the fix. 2026-10-12 quiet-window evidence (load < 1, live and staging, /var/lib/spaceapp-user/agent-workspace/reports/20261011-perf001-bisect/results.jsonl): warm p95 411-467 ms; every second-round warm switch 170-215 ms, so only the first reveal after about 40 s hidden misses the 250 ms gate. Diagnostic v2 (traced 36 s-hidden switch): 0 stylesheet parses (the stylesheet-rewrite hypothesis is rejected); the cost is one style recalculation (454 ms) and layout (376 ms) of the revealed room, forced inside the React commit; first-round switches do about 91 style recalcs and 10 layouts versus 55 and 3 in the second round. Cold opens spend about 7.7 s of about 20 s in 1,350 xterm glyph-width reads. The operator-approved shared glyph-width cache cut reads by 11% with no time gain in its first A/B pair, so it is held back (reverted for deploy). Next A/B: content-visibility: hidden for dormant layers, which keeps their style and layout. Fixed 2026-10-12 (8bb433157d, operator approval of 2026-10-11 11:30Z): where content-visibility is supported, a dormant room layer stays laid out (display: grid; content-visibility: hidden; visibility: hidden; pointer-events: none) instead of display:none, so its style and layout are kept while hidden. Alternating quiet-window A/B on the staging origin, same fixed 6x16 proof: warm p95 238.5 ms with the fix (all 12 warm switches 179-238 ms) against 713.8 ms for its base (e722fe0248); cold 16-pane opens 1.8-2.6 s against 2.4-5.0 s. Capacity, retention (96/96 same terminals and sockets after 40-43 s hidden) and cleanup pass in both. Both proofs still report ok=false on the layout invariant: the 16th terminal of a revealed room shows 6-9 blank frames during a glyph-width geometry repair, in the base as well; that pre-existing defect stays open. Deployed to dev 860ae01ced (2026-10-12 11:43Z, live:verify:dev ok); stable gets it with the operator-run promote, and the gate needs a stable proof after that. 2026-10-12 later: the stable gate proof is postponed by the operator. After the 12:06Z and 14:22Z promotes every warm-capacity run on the busy host failed before measuring (ATTACHMENT_INCOMPLETE with pane-host attaches about 1 s apart, ROOM_BUTTON_MISSING, 429 on proof rooms); the API attach code did not change. The blank 16th-terminal frames have a root cause and a fix on branch space/fix-reveal-blank-terminal (d5f0ad6784, not deployed): FitAddon.fit() clears the DOM rows before a renderer paused by the reveal redraws them, so the fix resizes to the proposed grid before fit(); 393/393 scoped tests and two new regressions. It ships after the A/B warm proof the baseline requires. 2026-10-13: handed to another agent by the operator. Stable after the 2026-10-12 promotes (ff3748b263, content-visibility live): warm p95 746 ms (load rising to 11) and 471 ms (load near 0); capacity, retention and cleanup pass; the 250 ms gate is not met, only first reveals after about 40 s hidden are slow. The blank 16th-terminal fix (branch space/flicker-fix-ab, 41b554a83c) removed the blank frames in 2/2 staging runs (base 0/2) but p95 came out worse in both pairs (653/504 vs 509/448 ms); not deployed. 2026-10-28 (plan clipboard:zJF0KEWRcCje step 2): C-2 and C-3 (q-20261028-112219-d4c0) reached stable with the a9ad4d493f promote; on stable the fixed proof measured warm p95 220.6, 195.1 and 170.5 ms (loads 3.91, 3.32, 3.69; before them 245.1, 329.5, 264.3 on b23bf56e61), so the 250 ms criterion held in those 3 runs, while the same stable web as A in the evening's staging A/B gave 434 and 381 ms in two of 3 runs, each set by one slow switch of 12 (the other 11 at most 222 ms), and 243 ms in the third. 2026-11-14 (goal e803a663, plan clipboard:1NF6u6gcCwtj step 4): one fixed 6x16 proof on stable d26156470d (CALM, 1-min load 8.5 before and 12.7 after) measured warm p95 206.3 ms against 1150/966 ms on 2026-10-11; all 12 warm switches 131-206 ms, 96/96 same terminals and sockets after 39 s hidden, cleanup ok (/var/lib/spaceapp-user/agent-workspace/reports/20261114-perf001/stable-before.json). The gate holds without a new change, so no Warm change was made. The slowest switch is still the first reveal after the dwell (206 ms: RecalcStyle 88 ms, script 94 ms, layout 16 ms), leaving 44 ms of headroom; if it regresses, look there first.",
+      "disposition": "Open, narrowed: not CSS (2026-10-07 CSS on current DOM is still slow), not display:none itself (content-visibility gives at most a small gain), not load (it reproduces at low load), and not 7ef1f5d552. The cost is a full style computation of a 16-pane room subtree when its cached style is cold, which points at DOM size or structure per pane growing since 2026-10-07. Next: add Chrome selector stats and per-layer DOM counts to the warm capacity proof (diagnostics only) to name the expensive selectors and elements, then fix them, verified by A/B on the staging origin (scripts/warm-staging.mjs). The approval of 2026-10-11 11:30Z covers the fix. 2026-10-12 quiet-window evidence (load < 1, live and staging, /var/lib/spaceapp-user/agent-workspace/reports/20261011-perf001-bisect/results.jsonl): warm p95 411-467 ms; every second-round warm switch 170-215 ms, so only the first reveal after about 40 s hidden misses the 250 ms gate. Diagnostic v2 (traced 36 s-hidden switch): 0 stylesheet parses (the stylesheet-rewrite hypothesis is rejected); the cost is one style recalculation (454 ms) and layout (376 ms) of the revealed room, forced inside the React commit; first-round switches do about 91 style recalcs and 10 layouts versus 55 and 3 in the second round. Cold opens spend about 7.7 s of about 20 s in 1,350 xterm glyph-width reads. The operator-approved shared glyph-width cache cut reads by 11% with no time gain in its first A/B pair, so it is held back (reverted for deploy). Next A/B: content-visibility: hidden for dormant layers, which keeps their style and layout. Fixed 2026-10-12 (8bb433157d, operator approval of 2026-10-11 11:30Z): where content-visibility is supported, a dormant room layer stays laid out (display: grid; content-visibility: hidden; visibility: hidden; pointer-events: none) instead of display:none, so its style and layout are kept while hidden. Alternating quiet-window A/B on the staging origin, same fixed 6x16 proof: warm p95 238.5 ms with the fix (all 12 warm switches 179-238 ms) against 713.8 ms for its base (e722fe0248); cold 16-pane opens 1.8-2.6 s against 2.4-5.0 s. Capacity, retention (96/96 same terminals and sockets after 40-43 s hidden) and cleanup pass in both. Both proofs still report ok=false on the layout invariant: the 16th terminal of a revealed room shows 6-9 blank frames during a glyph-width geometry repair, in the base as well; that pre-existing defect stays open. Deployed to dev 860ae01ced (2026-10-12 11:43Z, live:verify:dev ok); stable gets it with the operator-run promote, and the gate needs a stable proof after that. 2026-10-12 later: the stable gate proof is postponed by the operator. After the 12:06Z and 14:22Z promotes every warm-capacity run on the busy host failed before measuring (ATTACHMENT_INCOMPLETE with pane-host attaches about 1 s apart, ROOM_BUTTON_MISSING, 429 on proof rooms); the API attach code did not change. The blank 16th-terminal frames have a root cause and a fix on branch space/fix-reveal-blank-terminal (d5f0ad6784, not deployed): FitAddon.fit() clears the DOM rows before a renderer paused by the reveal redraws them, so the fix resizes to the proposed grid before fit(); 393/393 scoped tests and two new regressions. It ships after the A/B warm proof the baseline requires. 2026-10-13: handed to another agent by the operator. Stable after the 2026-10-12 promotes (ff3748b263, content-visibility live): warm p95 746 ms (load rising to 11) and 471 ms (load near 0); capacity, retention and cleanup pass; the 250 ms gate is not met, only first reveals after about 40 s hidden are slow. The blank 16th-terminal fix (branch space/flicker-fix-ab, 41b554a83c) removed the blank frames in 2/2 staging runs (base 0/2) but p95 came out worse in both pairs (653/504 vs 509/448 ms); not deployed. 2026-10-28 (plan clipboard:zJF0KEWRcCje step 2): C-2 and C-3 (q-20261028-112219-d4c0) reached stable with the a9ad4d493f promote; on stable the fixed proof measured warm p95 220.6, 195.1 and 170.5 ms (loads 3.91, 3.32, 3.69; before them 245.1, 329.5, 264.3 on b23bf56e61), so the 250 ms criterion held in those 3 runs, while the same stable web as A in the evening's staging A/B gave 434 and 381 ms in two of 3 runs, each set by one slow switch of 12 (the other 11 at most 222 ms), and 243 ms in the third. 2026-11-14 (goal e803a663, plan clipboard:1NF6u6gcCwtj step 4): one fixed 6x16 proof on stable d26156470d (CALM, 1-min load 8.5 before and 12.7 after) measured warm p95 206.3 ms against 1150/966 ms on 2026-10-11; all 12 warm switches 131-206 ms, 96/96 same terminals and sockets after 39 s hidden, cleanup ok (/var/lib/spaceapp-user/agent-workspace/reports/20261114-perf001/stable-before.json). The gate holds without a new change, so no Warm change was made. The slowest switch is still the first reveal after the dwell (206 ms: RecalcStyle 88 ms, script 94 ms, layout 16 ms), leaving 44 ms of headroom; if it regresses, look there first. 2026-11-27 (goal e803a663 criterion 3, check only, no code change): one fixed 6x16 BENCHMARK_WARM_CAPACITY proof on dev c260c48ffd (1-min load 10.8 before, 20.0 after) measured warm p95 231.8 ms against the 250 ms gate; the 12 warm switches 117-232 ms, the slowest again the first reveal after the 39 s dwell; CAPACITY_PASS, cleanup ok, top-level ok=false only from 'task queue exceeded allotted deadline' console warnings. Two more runs overlapped dev deploys (2e1c7909ce->2bed634cf9, 2bed634cf9->0d036b6b71; 502s from the API, load 27-32) and are not counted: one FAIL with 2.5-3.4 s first reveals across the API restart, one CAPACITY_PASS at p95 362 ms. A clean re-run needs a deploy-free window. Evidence: /var/lib/spaceapp-user/agent-workspace/reports/20261127-perf001-dev/ (run1.json; run3/run4 contaminated).",
       "resolution": "fixed"
     },
     {
@@ -2205,16 +2205,16 @@
         "public": "837e0b034be977c116444b539f77409cb87642c8"
       },
       "verifiedSourceSha": null,
-      "affected": null,
+      "affected": "apps/api/src/session-access.ts; apps/api/src/app.ts",
       "severity": "P2",
       "owner": "maintainer",
       "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
       "dependency": null,
       "status": "confirmed",
-      "reproduction": null,
-      "evidence": null,
-      "disposition": "Single owner on loopback by default; revocation (logout, log out everywhere) is durable (SEC-011). Making a missing record least-privileged needs an audit of automation identities and the in-memory test store first.",
-      "resolution": "accepted-tradeoff"
+      "reproduction": "apps/api/tests/session-access.test.ts",
+      "evidence": "apps/api/tests/session-access.test.ts",
+      "disposition": "Single owner on loopback by default; revocation (logout, log out everywhere) is durable (SEC-011). Making a missing record least-privileged needs an audit of automation identities and the in-memory test store first. 2026-11-27 (goal e803a663): audited and fixed. With the Postgres store a session's role comes from its row by id, else from the row holding its signed e-mail (upsertUser's ownership; the broker's user:operator-diagnostics has no row of its own and the broker's e-mail has a row on stable and dev), else USER; a deleted row no longer leaves its token's ADMIN. The memory store keeps the token's role for a missing row: it loses every row on restart while 30-day cookies live on, so there a missing row is no deleted account (61 API test files sign sessions for users that store never saved).",
+      "resolution": "fixed"
     },
     {
       "id": "EXT-C-F10",
@@ -5387,6 +5387,184 @@
       "evidence": "apps/api/tests/room-agent.test.ts roomState helper; vitest 30/30.",
       "disposition": "FIXED: the helper reads the latest user turn, where buildRoomAgentChatMessages attaches the room state; both tests pass again (30/30).",
       "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-20..27 (goal e803a663, 2026-11-27)",
+      "reviewedShas": {
+        "source": "1f285799d5"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "id": "REV1127-001",
+      "observation": "DELETE /api/instance-links/:id cleared the link's in-memory lent AI key and lending flag before the owner check, so another person's request with a link id they do not own answered 404 but still stopped the owner's lending until the next 30 s pass and forced a new Gateway key (the key in use was regenerated).",
+      "observationSource": "Independent review pass (instance-link slice), verified by reading routes.ts.",
+      "affected": [
+        "apps/api/src/instance-link/routes.ts:552"
+      ],
+      "severity": "P3",
+      "reproduction": "cd apps/api && npx vitest run tests/instance-link-delete-owner.test.ts (red before the fix: lending false after another person's 404).",
+      "evidence": "apps/api/tests/instance-link-delete-owner.test.ts",
+      "disposition": "FIXED 2026-11-27: the owner-scoped remove runs first; only a removed link loses its key, lending and session.",
+      "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-20..27 (goal e803a663, 2026-11-27)",
+      "reviewedShas": {
+        "source": "1f285799d5"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "id": "REV1127-002",
+      "severity": "P1",
+      "observation": "cleanCompletedWorktrees treated a dirty managed worktree as 'only a file-mode change' when git diff --stat said 0 insertions/0 deletions. --stat leaves out untracked and staged files and shows a binary edit as 0/0, so a merged worktree holding such work next to any mode change was removed with git worktree remove --force and branch -D, losing the uncommitted files.",
+      "observationSource": "Independent review pass (worktree-service slice); verified by reading and by the new test (git 2.47).",
+      "affected": [
+        "apps/api/src/worktrees/worktree-service.ts:1176"
+      ],
+      "reproduction": "cd apps/api && npx vitest run tests/worktree-clean-dirty.test.ts: untracked, staged and binary work next to a chmod are kept, a pure chmod is cleaned.",
+      "evidence": "apps/api/tests/worktree-clean-dirty.test.ts",
+      "disposition": "FIXED 2026-11-27: mode-only now means git -c core.fileMode=false status --porcelain is empty (covers untracked, staged and binary changes); anything else stays 'uncommitted changes (dirty)'.",
+      "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-20..27 (goal e803a663, 2026-11-27)",
+      "reviewedShas": {
+        "source": "1f285799d5"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "id": "REV1127-003",
+      "observation": "trackMessage kept the first row for a campaign open token (ON CONFLICT DO NOTHING / in-memory early return). A tracked send that went RETRY after tracking, then was re-rendered after a template edit and new approval, went out with the new links wrapped by position while the stored links and subject stayed the old ones: clicks redirected to the old URLs or to nothing.",
+      "observationSource": "Independent review pass (mail-campaigns slice); verified by reading campaigns.ts sendOne and both stores.",
+      "affected": [
+        "packages/db/src/mail-campaigns-repository.ts:437",
+        "packages/db/src/mail-campaigns-repository.ts:791"
+      ],
+      "severity": "P3",
+      "reproduction": "cd packages/db && npx vitest run tests/mail-campaigns-repository-postgres.test.ts (memory and PostgreSQL).",
+      "evidence": "packages/db/tests/mail-campaigns-repository-postgres.test.ts",
+      "disposition": "FIXED 2026-11-27: a repeat of the same token by the same owner updates recipient name, subject and links (hits stay); another owner changes nothing.",
+      "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-20..27 (goal e803a663, 2026-11-27)",
+      "reviewedShas": {
+        "source": "1f285799d5"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "id": "REV1127-004",
+      "observation": "updateHermesAgent's disk guard compared (used+home)/(used+avail) >= 0.89; when du or df failed or printed nothing the ratio was NaN, the comparison false, and the 2.7 GB rollback copy ran anyway (the case that crossed the 90% disk guard on 23/11).",
+      "observationSource": "Independent review pass (cli-maintenance slice); verified by reading.",
+      "affected": [
+        "scripts/cli-maintenance-updater.mjs:2013"
+      ],
+      "severity": "P3",
+      "reproduction": "node --test scripts/tests/cli-maintenance-updater.test.mjs (unread du/df -> DISK_SPACE_DEFERRED, no cp).",
+      "evidence": "scripts/tests/cli-maintenance-updater.test.mjs",
+      "disposition": "FIXED 2026-11-27: the copy runs only when the share is a number below the limit; an unread disk defers it with its own message.",
+      "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-20..27 (goal e803a663, 2026-11-27)",
+      "reviewedShas": {
+        "source": "1f285799d5"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "id": "REV1127-005",
+      "observation": "webVersion rebuilt a send from before the stored web copy with renderMailTemplate outside any try; a contact that had since lost a field the template requires threw 'No value for {{x}}' and GET /api/public/mail/web answered 500 (and logged an error) instead of 404.",
+      "observationSource": "Independent review pass (mail-campaigns slice); verified by reading and the new test.",
+      "affected": [
+        "apps/api/src/mail-campaigns/campaigns.ts:515"
+      ],
+      "severity": "P3",
+      "reproduction": "cd apps/api && npx vitest run tests/mail-campaigns-sending.test.ts -t 'own relay'.",
+      "evidence": "apps/api/tests/mail-campaigns-sending.test.ts",
+      "disposition": "FIXED 2026-11-27: a render that fails returns null, so the route's 404 answers.",
+      "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-20..27 (goal e803a663, 2026-11-27)",
+      "reviewedShas": {
+        "source": "1f285799d5"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "id": "REV1127-006",
+      "observation": "The hourly/daily whole-inbox pass let a decision older than the thread's newest message reopen it, but that newest message can be our own sent reply or draft: a thread the copilot drafted or replied in came back as a TRIAGE item (from our own address) after the operator approved the send, and each hour while a draft was re-saved.",
+      "observationSource": "Independent review pass (mail-copilot slice); verified by reading service.ts scanBacklog and the new test.",
+      "affected": [
+        "apps/api/src/mail-copilot/service.ts:1311"
+      ],
+      "severity": "P3",
+      "reproduction": "cd apps/api && npx vitest run tests/mail-copilot-run.test.ts -t 'daily organize' (red before the fix: t4 pending after our SENT reply).",
+      "evidence": "apps/api/tests/mail-copilot-run.test.ts",
+      "disposition": "FIXED 2026-11-27: only an inbound newest message (no SENT/DRAFT label) makes an older decision stale.",
+      "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-20..27 (goal e803a663, 2026-11-27)",
+      "reviewedShas": {
+        "source": "1f285799d5"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": "operator: which account owns the site feed",
+      "status": "product-decision",
+      "id": "REV1127-007",
+      "observation": "The site feed picks its owner as the first owner (lowest id) with any sender whose address ends in @unboxexpert.com; isSiteSender ignores the sender's status, and createSender stores a SETUP sender without proving the domain. With multi-user on, a module user with a lower owner id could make the public feed and archive show their lists and campaigns.",
+      "observationSource": "Independent review pass (mail-campaigns slice); verified by reading site-feed.ts.",
+      "affected": [
+        "apps/api/src/mail-campaigns/site-feed.ts:16",
+        "apps/api/src/mail-campaigns/site-feed.ts:53"
+      ],
+      "severity": "P3",
+      "reproduction": "Latent: SPACE_MULTI_USER_ENABLED is off on stable and dev, so only the operator has senders.",
+      "evidence": "apps/api/src/mail-campaigns/site-feed.ts",
+      "disposition": "OPEN 2026-11-27: not changed hands-free; requiring an ACTIVE sender or the operator's account could hide the live feed if the operator's sender is in another state. Needs the operator to name the feed's owner rule before multi-user is turned on.",
+      "resolution": "product-decision"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-20..27 (goal e803a663, 2026-11-27)",
+      "reviewedShas": {
+        "source": "1f285799d5"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": "operator: should an unexpired sign-up grant keep a Vault from replacement",
+      "status": "product-decision",
+      "id": "REV1127-008",
+      "observation": "applyLinkSync replaces an empty Vault (no items, no waiting logins, no agent access) by deleting it, which cascades its signed vault_signup_grants; the operator rule of 23/11 (nous_msg:931c907c) names only items, waiting logins and agent access as what keeps a Vault.",
+      "observationSource": "Independent review pass (vault/instance-link slice); verified by reading vault-repository.ts and the operator rule in its comment.",
+      "affected": [
+        "packages/db/src/vault-repository.ts:629"
+      ],
+      "severity": "P3",
+      "reproduction": "Read-only: vault-repository.ts applyLinkSync held query.",
+      "evidence": "packages/db/src/vault-repository.ts:626-631",
+      "disposition": "OPEN 2026-11-27: follows the operator's 23/11 rule as written; adding grants to what holds a Vault changes that rule, so it waits for the operator.",
+      "resolution": "product-decision"
     }
   ]
 }

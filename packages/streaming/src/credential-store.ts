@@ -80,6 +80,8 @@ async function healedStat(path: string): Promise<Stats> {
   return stat(path);
 }
 
+const grantClientRef = (credentialRef: string) => `${credentialRef}:client`;
+
 export class StreamingCredentialStore {
   private readonly credentialDirectory: string;
 
@@ -163,6 +165,25 @@ export class StreamingCredentialStore {
     const raw = await readFile(path, { encoding: "utf8" });
     if (Buffer.byteLength(raw) > 64 * 1024) throw new Error(`${provider} client file is too large.`);
     return parseClient(JSON.parse(raw));
+  }
+
+  /**
+   * The OAuth client a grant refreshes with: its own when the grant came from another client (a YouTube grant taken from the
+   * Space Google sign-in, stored beside it as `<ref>:client`), else the provider's client file.
+   */
+  async clientFor(provider: StreamingOAuthProvider, credentialRef: string): Promise<StreamingProviderClient> {
+    try {
+      return parseClient(await this.readCredential(grantClientRef(credentialRef)));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return this.readClient(provider);
+    }
+  }
+
+  /** Stores (or with null removes) the grant's own client beside it; see `clientFor`. */
+  async writeGrantClient(credentialRef: string, client: StreamingProviderClient | null): Promise<void> {
+    if (client) await this.writeCredential(grantClientRef(credentialRef), { ...client });
+    else await this.deleteCredential(grantClientRef(credentialRef));
   }
 
   async writeCredential(credentialRef: string, payload: Record<string, unknown>): Promise<void> {

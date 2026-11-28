@@ -255,7 +255,8 @@ export function operatorAsksByDay(records: SpaceNotification[], decisions: NousD
     const row = days.get(day) ?? { day, decisions: 0, nous: 0, agents: 0, copilots: 0, total: 0 };
     row[key] += 1; row.total += 1; days.set(day, row);
   };
-  for (const decision of decisions) if (decision.createdAt >= since && !AUTO_DECISION_ANSWER.test(decision.answer ?? "")) add(decision.createdAt, "decisions");
+  // 2026-11-27 REVIEW: a decision "Replaced by" its corrected one is one ask, counted on the replacement.
+  for (const decision of decisions) if (decision.createdAt >= since && !AUTO_DECISION_ANSWER.test(decision.answer ?? "") && !(decision.answer ?? "").startsWith("Replaced by ")) add(decision.createdAt, "decisions");
   const seen = new Set<string>();
   for (const item of records) {
     const at = String(item.payload.alertAt ?? item.createdAt);

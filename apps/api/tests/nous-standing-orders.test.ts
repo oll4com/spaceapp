@@ -8,8 +8,9 @@ import { InMemoryNousFollowupsRepository, InMemoryNousPaneCloseoutsRepository, I
 import type { DashboardAgentsSample } from "../src/room-routes.js";
 import type { BoardPaneInput } from "../src/nous/pane-board.js";
 import { closeoutSince, closeoutSkipReason, createStandingOrders, keptOpenForTask, NOUS_SAVE_RETRY_TEXT, NOUS_SAVE_TEXT, NOUS_SWEEP_PANE_TITLE, paneBoundToWork, paneHasPendingTask, panePendingWorktrees, planWaitsFor, savesToMemory, verifyMemorySave, worktreeHasPendingDeliverables, type CloseoutBrowser, type StandingOrdersDeps, type SweepRequest } from "../src/nous/standing-orders.js";
+import { createPaneSaves } from "../src/nous/last-answer.js";
 import { itemActed, type NousTurnItem } from "../src/nous/turn-items.js";
-import { deferralLines, localDayHour, renderDailyReview, type NousDeferral } from "../src/nous/daily-review.js";
+import { deferralLines, localDayHour, renderDailyReview, requestKey, type NousDeferral } from "../src/nous/daily-review.js";
 import { createNousFollowups } from "../src/nous/followups.js";
 import { promptsComing } from "../src/nous/requests-waiting.js";
 import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
@@ -170,13 +171,15 @@ describe("finished panes (close-out candidates)", () => {
     expect(verifyMemorySave([report(andy.id, iso(T0 + 2 * MIN), "Turn ended.")], since, "Saved it: space_memory:ab12cd34ef56")).toBe("space_memory:ab12cd34ef56");
     expect(verifyMemorySave([report(andy.id, iso(T0 + 2 * MIN), "Memory saved (deduplicated).")], since, null)).toBe("saved");
     expect(verifyMemorySave([report(andy.id, iso(T0 + 2 * MIN), "Still working on the export.")], since, null)).toBeNull();
+    expect(verifyMemorySave([report(andy.id, iso(T0 + 2 * MIN), "Nothing new to save from this pane.")], since, null)).toBe("saved");
   });
 });
 
 function fixture(options: { panes?: PaneState[]; plans?: ClipboardItem[]; tasks?: TaskItem[]; reports?: PaneReport[]; summaries?: NousPaneSummaryRow[]; checks?: NousPaneCheck[]; notifications?: SpaceNotification[]; standing?: StandingOrdersDeps["standing"]; away?: boolean; planMap?: StandingOrdersDeps["planMap"];
   browsers?: Map<string, CloseoutBrowser> | null; utilizationLow?: StandingOrdersDeps["utilizationLow"]; reviewLoad?: (owner: string) => Promise<string | null>;
   spend?: Awaited<ReturnType<NonNullable<StandingOrdersDeps["spend"]>>>; requests?: StandingOrdersDeps["requests"]; executions?: Array<{ planId: string; paneId: string }>;
-  closePane?: StandingOrdersDeps["closePane"]; saveMemory?: StandingOrdersDeps["saveMemory"]; lastWorkReport?: StandingOrdersDeps["lastWorkReport"]; prompts?: ReadonlySet<string> | null; parked?: ClipboardItem[] } = {}) {
+  closePane?: StandingOrdersDeps["closePane"]; saveMemory?: StandingOrdersDeps["saveMemory"]; lastWorkReport?: StandingOrdersDeps["lastWorkReport"]; saveTurn?: StandingOrdersDeps["saveTurn"]; paneSaves?: StandingOrdersDeps["paneSaves"]; prompts?: ReadonlySet<string> | null; parked?: ClipboardItem[];
+  dispatch?: StandingOrdersDeps["dispatch"]; datedHolds?: StandingOrdersDeps["datedHolds"] } = {}) {
   let clock = T0;
   const closeouts = new InMemoryNousPaneCloseoutsRepository();
   const marks = new InMemoryNousPlanMarksRepository();
@@ -195,7 +198,9 @@ function fixture(options: { panes?: PaneState[]; plans?: ClipboardItem[]; tasks?
     reportsSince: async (_owner, paneId, since) => state.reports.filter((entry) => entry.paneId === paneId && entry.at >= since),
     ...(options.planMap ? { planMap: options.planMap } : {}), ...(options.parked ? { parked: async () => options.parked! } : {}), ...(options.closePane ? { closePane: options.closePane } : {}),
     ...(options.saveMemory ? { saveMemory: options.saveMemory } : {}),
-    ...(options.lastWorkReport ? { lastWorkReport: options.lastWorkReport } : {}),
+    ...(options.lastWorkReport ? { lastWorkReport: options.lastWorkReport } : {}), ...(options.saveTurn ? { saveTurn: options.saveTurn } : {}),
+    ...(options.paneSaves ? { paneSaves: options.paneSaves } : {}),
+    ...(options.dispatch ? { dispatch: options.dispatch } : {}), ...(options.datedHolds ? { datedHolds: options.datedHolds } : {}),
     lowToken: async () => state.lowToken, standing, notice, paneRound: async () => null, away: async () => state.away, now: () => clock,
     ...(options.utilizationLow ? { utilizationLow: options.utilizationLow } : {}),
     ...(options.spend ? { spend: async () => state.spend! } : {}), ...(options.requests ? { requests: options.requests } : {}),
@@ -515,6 +520,44 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
     expect(items1.map((item) => item.kind)).toContain("UTILIZATION");
   });
 
+  it("28/11 (nous_msg:d2faedf0, work on Gemini panes stalled while the pool had no room): a plan or request on a no-room pane goes to a free pane with room, never dispatched to its own", async () => {
+    const low = vi.fn(async () => "Utilization stayed under the 90% target for 15 min.");
+    const gina = cli("pane:gina0001", "Gina", { terminalRuntimeId: "cli:gemini" });
+    const ready = plan("clipboard:g", gina.id, 40, iso(T0 - 4 * 60 * MIN));
+    const request: SweepRequest = { key: "req:g", messageId: "nous_msg:g1", words: "Fix X", pane: gina.id, paneName: "Main/Gina", paneState: "idle", paneSince: iso(T0 - 60 * MIN), openedAt: iso(T0 - 90 * MIN) };
+    const dispatch = vi.fn<NonNullable<StandingOrdersDeps["dispatch"]>>(async () => true);
+    const f = fixture({ panes: [{ pane: gina, state: "idle", since: iso(T0 - 60 * MIN) }, { pane: andy, state: "idle", since: iso(T0 - 60 * MIN) }], plans: [ready], utilizationLow: low, dispatch,
+      spend: { mode: "NORMAL", avoid: [], refused: ["gemini"] }, requests: { zone: async () => "UTC", open: async () => [request], progress: async () => {} } });
+    f.state.settings = nousSettingsSchema.parse({ enabled: true });
+    await f.orders.tickOwner(owner);
+    expect(dispatch.mock.calls.filter((call) => call[2] === gina.id)).toEqual([]);
+    const [, , text] = f.notice.mock.calls.find((call) => (call as unknown[])[1] === "utilization-low") as unknown as [string, string, string];
+    // Space hands the plan to the free pane with room itself.
+    expect(dispatch.mock.calls.find((call) => call[2] === andy.id)?.[3]).toContain("clipboard:g");
+    expect(text).toContain("Main/Andy ← plan:clipboard:g");
+    expect(text).not.toContain("send it to Gina now");
+    expect(text).toContain("· its pane's pool has no room now: finished → Done (space_request_done); else send its next step to a pane naming it (a new pane when its own is gone or its pool has no room: a free pane with room).");
+    // With room in the pool the plan stays its own pane's.
+    const roomy = fixture({ panes: [{ pane: gina, state: "idle", since: iso(T0 - 60 * MIN) }], plans: [ready], utilizationLow: low, dispatch: vi.fn(async () => true), spend: { mode: "NORMAL", avoid: [], refused: [] } });
+    roomy.state.settings = nousSettingsSchema.parse({ enabled: true });
+    await roomy.orders.tickOwner(owner);
+    expect(roomy.notice.mock.calls.find((call) => (call as unknown[])[1] === "utilization-low")?.[2]).not.toContain("pool has no room");
+  });
+
+  it("28/11 (112 push turns with no free-pane section while 20 of 23 requests were no item): a pane whose request's wait is recorded is a free pane; a fresh request still holds it", async () => {
+    const low = vi.fn(async () => "Utilization stayed under the 90% target for 15 min.");
+    const request: SweepRequest = { key: "req:a", messageId: "nous_msg:a1", words: "Fix Y", pane: andy.id, paneName: "Main/Andy", paneState: "done", paneSince: iso(T0 - 10 * MIN), openedAt: iso(T0 - 90 * MIN) };
+    const run = async (holds: Set<string>) => {
+      const f = fixture({ panes: [{ pane: andy, state: "done", since: iso(T0 - 10 * MIN) }], utilizationLow: low, datedHolds: async () => holds,
+        requests: { zone: async () => "UTC", open: async () => [request], progress: async () => {} } });
+      f.state.settings = nousSettingsSchema.parse({ enabled: true });
+      await f.orders.tickOwner(owner);
+      return (f.notice.mock.calls.find((call) => (call as unknown[])[1] === "utilization-low")?.[2] ?? "") as string;
+    };
+    expect(await run(new Set())).not.toContain("Free CLI panes");
+    expect(await run(new Set([requestKey("nous_msg:a1")]))).toContain("Free CLI panes (each gets work before it closes):");
+  });
+
   it("R21-4 (REVIEW 1/11: 61 % with 4 of 23 CLI panes working; operator 1/11 23:05 BKK): the utilization line carries every stalled plan with no working pane and a step that can run, whatever its whole-plan wait", async () => {
     const low = vi.fn(async () => "Utilization stayed under the 90% target for 15 min.");
     const bob = cli("pane:bob00001", "Bob"), cody = cli("pane:cody0001", "Cody"), dana = cli("pane:dana0001", "Dana");
@@ -740,6 +783,36 @@ describe("the standing orders tick", () => {
     // One inbox line per finish, no STANDING turn (item 7 A).
     expect(f.notice.mock.calls.filter(([, key]) => key === `finished:${andy.id}`)).toHaveLength(2);
     expect(f.standing).not.toHaveBeenCalled();
+  });
+
+  it("27/11 Bruno/Kate: a save turn the monitor missed (no report) is verified from the pane's own completed save turn, never before it ran", async () => {
+    let turn: string | null = null;
+    const saveTurn = vi.fn<NonNullable<StandingOrdersDeps["saveTurn"]>>(async () => turn);
+    const f = fixture({ saveTurn });
+    await f.orders.saveRequested(owner, room.id, [andy.id]);
+    // Still working on it: not read, not verified.
+    f.state.panes = [{ pane: andy, state: "working", since: iso(T0) }];
+    f.advance(3 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(saveTurn).not.toHaveBeenCalled();
+    // Idle, but its transcript has no completed save turn since the ask (the prompt never reached it): stays unverified.
+    f.state.panes = [{ pane: andy, state: "done", since: iso(T0 + 3 * MIN) }];
+    f.advance(MIN);
+    await f.orders.tickOwner(owner);
+    expect(saveTurn).toHaveBeenCalledWith(andy, iso(T0));
+    expect((await f.closeouts.list(owner))[0]).toMatchObject({ state: "SAVE_REQUESTED" });
+    // Its save turn completed with nothing new to save, no report filed: verified.
+    turn = "Nothing new to save: everything is already in Space Memory.";
+    f.advance(MIN);
+    await f.orders.tickOwner(owner);
+    expect((await f.closeouts.list(owner))[0]).toMatchObject({ state: "VERIFIED", verifiedMemoryId: "saved" });
+    // A retried ask answered with an id keeps the id.
+    await f.orders.saveRequested(owner, room.id, [andy.id]);
+    await f.orders.saveRequested(owner, room.id, [andy.id]);
+    turn = "Saved: space_memory:ab12cd34ef56";
+    f.advance(3 * MIN);
+    await f.orders.tickOwner(owner);
+    expect((await f.closeouts.list(owner))[0]).toMatchObject({ state: "VERIFIED", verifiedMemoryId: "space_memory:ab12cd34ef56" });
   });
 
   it("token audit 21/11: a finished pane whose newest own report is open asks for its next step or its wait, never a save or close the close tool refuses", async () => {
@@ -1326,28 +1399,55 @@ describe("the pendings list at the operator's times (R13-9, goal ab5f85bd)", () 
 });
 
 describe("R43-1: roomCloseouts lists a room's finished panes, oldest finished first, closable only with a verified save", () => {
-  it("closes a pane whose save was verified after its last work; never a stale save, a Mail Copilot or a KEEP_OPEN pane", async () => {
+  it("closes a pane whose save was verified after its last work, its own question or KEEP_OPEN check too; never a stale save or a Mail Copilot", async () => {
     const bob = cli("pane:bob00001", "Bob"); const cody = cli("pane:cody0001", "Cody"); const dana = cli("pane:dana0001", "Dana");
     const emma = cli("pane:mail0001", "Emma", { mode: "MAIL_COPILOT" } as Partial<Pane>);
+    const fay = cli("pane:fay00001", "Fay"); const gil = cli("pane:gil00001", "Gil"); const hal = cli("pane:hal00001", "Hal");
+    const question = (paneId: string): PaneReport => ({ ...report(paneId, iso(T0 - 46 * MIN), "Merge it to dev?"), status: "QUESTION", id: `report:q${paneId.slice(5, 8)}` });
     const f = fixture({
       panes: [{ pane: andy, state: "done", since: iso(T0 - 40 * MIN) }, { pane: bob, state: "done", since: iso(T0 - 50 * MIN) },
         { pane: cody, state: "done", since: iso(T0 - 60 * MIN) }, { pane: dana, state: "done", since: iso(T0 - 70 * MIN) },
-        { pane: emma, state: "idle", since: iso(T0 - 3 * 24 * 60 * MIN) }],
-      checks: [{ ...check("KEEP_OPEN", iso(T0 + 60 * MIN)), paneId: dana.id }]
+        { pane: emma, state: "idle", since: iso(T0 - 3 * 24 * 60 * MIN) },
+        { pane: fay, state: "done", since: iso(T0 - 45 * MIN) }, { pane: gil, state: "done", since: iso(T0 - 45 * MIN) }, { pane: hal, state: "done", since: iso(T0 - 45 * MIN) }],
+      checks: [{ ...check("KEEP_OPEN", iso(T0 + 60 * MIN)), paneId: dana.id }, { ...check("WAITING_OPERATOR", iso(T0 + 60 * MIN)), paneId: hal.id }],
+      reports: [question(fay.id), question(gil.id)]
     });
     const row = (paneId: string, at: number) => ({ paneId, roomId: room.id, state: "VERIFIED" as const, requestedAt: iso(at - MIN), retriedAt: null,
       verifiedMemoryId: `space_memory:${paneId.slice(5, 9)}`, closedAt: null, reason: null, updatedAt: iso(at) });
     await f.closeouts.save(owner, row(andy.id, T0 - 30 * MIN));
     await f.closeouts.save(owner, row(bob.id, T0 - 55 * MIN)); // verified before Bob's last work ended
     await f.closeouts.save(owner, row(dana.id, T0 - 60 * MIN));
+    await f.closeouts.save(owner, row(fay.id, T0 - 20 * MIN));
+    await f.closeouts.save(owner, row(hal.id, T0 - 20 * MIN));
     const list = await f.orders.roomCloseouts(owner, room.id);
-    expect(list.map((entry) => entry.pane.paneName)).toEqual(["Emma", "Dana", "Cody", "Bob", "Andy"]);
+    expect(list.map((entry) => entry.pane.paneName).slice(0, 5)).toEqual(["Emma", "Dana", "Cody", "Bob", "Fay"]);
     const by = Object.fromEntries(list.map((entry) => [entry.pane.paneName, entry]));
     expect(by.Andy).toMatchObject({ closable: true, idleMinutes: 40, save: "save verified space_memory:andy" });
     expect(by.Bob).toMatchObject({ closable: false, save: expect.stringContaining("not verified") });
     expect(by.Cody).toMatchObject({ closable: false, save: "save not asked" });
-    expect(by.Dana).toMatchObject({ closable: false, skip: "keep-open" });
+    // 28/11 Copilots/Oscar: "saved already, close it" also closes past Nous's own KEEP_OPEN or WAITING_OPERATOR check.
+    expect(by.Dana).toMatchObject({ closable: true, skip: "keep-open" });
+    expect(by.Hal).toMatchObject({ closable: true, skip: "keep-open" });
+    // 28/11 Dino/Cody: a pane whose question waits on the operator closes once its save is verified after it; unsaved it stays open.
+    expect(by.Fay).toMatchObject({ closable: true, skip: "awaits-operator" });
+    expect(by.Gil).toMatchObject({ closable: false, skip: "awaits-operator", save: "save not asked" });
     expect(by.Emma).toMatchObject({ closable: false, skip: "always-on" });
+  });
+});
+
+describe("27/11: a board-check pane (board reads a wait, finished past the fresh window) saves and closes like a finished pane", () => {
+  it("is closable and auto-closed once its save is verified after it last worked; without a verified save it stays open", async () => {
+    const bob = cli("pane:bob00001", "Bob");
+    const closePane = vi.fn<NonNullable<StandingOrdersDeps["closePane"]>>(async () => true);
+    const f = fixture({ closePane, panes: [{ pane: andy, state: "done", since: iso(T0 - 40 * MIN) }, { pane: bob, state: "done", since: iso(T0 - 40 * MIN) }],
+      summaries: [summary("PROMOTE", iso(T0 - 35 * MIN)), { ...summary("PROMOTE", iso(T0 - 35 * MIN)), id: "2", paneId: bob.id }] });
+    await f.closeouts.save(owner, { paneId: andy.id, roomId: room.id, state: "VERIFIED", requestedAt: iso(T0 - 32 * MIN), retriedAt: null,
+      verifiedMemoryId: "space_memory:andy", closedAt: null, reason: null, updatedAt: iso(T0 - 30 * MIN) });
+    const by = Object.fromEntries((await f.orders.roomCloseouts(owner, room.id)).map((entry) => [entry.pane.paneName, entry]));
+    expect(by.Andy).toMatchObject({ skip: "board-check", closable: true });
+    expect(by.Bob).toMatchObject({ skip: "board-check", closable: false, save: "save not asked" });
+    await f.orders.tickOwner(owner);
+    expect(closePane.mock.calls.map((call) => call[2])).toEqual([andy.id]);
   });
 });
 
@@ -1516,5 +1616,89 @@ describe("2026-11-25 REVIEW: protect task-bound panes and pending deliverables f
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe("plan clipboard:u78xLyqRp6kD: a pane's own Space Memory save verifies its closeout at once (27/11: Iris refused 16 s after its save)", () => {
+  const saved = new Map<string, string>(); // paneId -> the createdAt of its stamped save
+  const paneSaves = vi.fn<NonNullable<StandingOrdersDeps["paneSaves"]>>(async (paneId, since) => (saved.get(paneId) ?? "") >= since ? `space_memory:${paneId.slice(5)}` : null);
+
+  it("space_close_pane's roomCloseouts verifies an asked save now, a fresh pane included; saveRepeats then says saved already", async () => {
+    const iris = cli("pane:irisfix01", "Iris");
+    const f = fixture({ paneSaves, panes: [{ pane: iris, state: "done", since: iso(T0 - 2 * MIN) }] });
+    noteSpacePrompt(iris.id, T0 - 30 * MIN);
+    await f.orders.saveRequested(owner, room.id, [iris.id]);
+    await f.orders.saveRequested(owner, room.id, [iris.id]);
+    // No save yet: refused, and the retry line no longer says "the save is there: close it".
+    expect((await f.orders.roomCloseouts(owner, room.id))[0]).toMatchObject({ closable: false, save: expect.stringContaining("not verified") });
+    expect((await f.orders.saveRepeats(owner, [iris.id])).get(iris.id)).toMatch(/^asked twice already .*Space sees no save yet/);
+    saved.set(iris.id, iso(T0 + 10_000));
+    f.advance(16_000);
+    expect((await f.orders.roomCloseouts(owner, room.id))[0]).toMatchObject({ skip: "fresh", closable: true, save: "save verified space_memory:irisfix01" });
+    expect((await f.closeouts.list(owner))[0]).toMatchObject({ state: "VERIFIED", verifiedMemoryId: "space_memory:irisfix01" });
+    expect((await f.orders.saveRepeats(owner, [iris.id])).get(iris.id)).toMatch(/^saved already \(space_memory:irisfix01/);
+  });
+
+  it("a pane that saved on its own after its last prompt closes without a save ask; an older save or an unknown prompt time never counts", async () => {
+    const max = cli("pane:maxself01", "Max"); const ned = cli("pane:nedself01", "Ned"); const ola = cli("pane:olaself01", "Ola");
+    const closePane = vi.fn<NonNullable<StandingOrdersDeps["closePane"]>>(async () => true);
+    const f = fixture({ paneSaves, closePane, panes: [max, ned, ola].map((pane) => ({ pane, state: "done", since: iso(T0 - 40 * MIN) })) });
+    noteSpacePrompt(max.id, T0 - 60 * MIN); saved.set(max.id, iso(T0 - 45 * MIN));
+    noteSpacePrompt(ned.id, T0 - 60 * MIN); saved.set(ned.id, iso(T0 - 70 * MIN)); // saved before its last task
+    saved.set(ola.id, iso(T0 - 45 * MIN)); // no prompt known (API restart): no proof the save is of its last work
+    await f.orders.tickOwner(owner);
+    expect(closePane.mock.calls.map((call) => call[2])).toEqual([max.id]);
+    expect(f.finished()).toContain(`save not asked yet → send it exactly "${NOUS_SAVE_TEXT}"`);
+    expect(f.finished()).not.toContain("Max");
+  });
+
+  it("a save made after the first ask counts after a second ask (27/11 Copilots/Finn), unless the pane STARTED new work after it", async () => {
+    const finn = cli("pane:finnsave1", "Finn"); const dana = cli("pane:danasave1", "Dana");
+    const f = fixture({ paneSaves, panes: [finn, dana].map((pane) => ({ pane, state: "done", since: iso(T0 - 2 * MIN) })) });
+    await f.orders.saveRequested(owner, room.id, [finn.id, dana.id]);
+    saved.set(finn.id, iso(T0 + 13_000)); saved.set(dana.id, iso(T0 + 13_000));
+    f.advance(40 * MIN);
+    f.state.reports.push({ ...report(dana.id, iso(T0 + 20 * MIN), "Started new work."), status: "STARTED", id: "report:dana-started" });
+    await f.orders.saveRequested(owner, room.id, [finn.id, dana.id]);
+    const rows = await f.orders.roomCloseouts(owner, room.id);
+    expect(rows.find((row) => row.pane.id === finn.id)).toMatchObject({ closable: true, save: "save verified space_memory:finnsave1" });
+    expect(rows.find((row) => row.pane.id === dana.id)).toMatchObject({ closable: false, save: expect.stringContaining("not verified") });
+  });
+});
+
+describe("createPaneSaves: a pane's save by its stamp, or by the id its screen printed (27/11: a sleeping pane's unstamped save)", () => {
+  const since = "2026-11-27T07:45:00.000Z";
+  const entries = [
+    { id: "space_memory:aaaaaaaaaaaaaaaaaaaaaaaa", createdAt: "2026-11-27T07:40:00.000Z", body: "- Source: x; provenance=operator" },
+    { id: "space_memory:decfd7a3bbbbbbbbbbbbbbbb", createdAt: "2026-11-27T07:45:29.000Z", body: "- Source: x; provenance=agent:claude-opus-5-5" },
+    { id: "space_memory:cccccccccccccccccccccccc", createdAt: "2026-11-27T07:46:00.000Z", body: "- Source: x; provenance=pane:other001" }
+  ];
+  const store = (chunks: Array<{ createdAt: string; content: string }>) => ({
+    listPaneCliSessions: async () => [{ sessionId: "cli_session:s1", updatedAt: "2026-11-27T09:00:00.000Z" }, { sessionId: "cli_session:old", updatedAt: "2026-11-26T09:00:00.000Z" }],
+    listPaneCliTranscriptChunks: async (sessionId: string) => sessionId === "cli_session:s1" ? chunks : [{ createdAt: "2026-11-26T09:00:00.000Z", content: "space_memory:cccccccccccccccccccccccc" }]
+  }) as never;
+
+  it("takes the stamped save first, else an entry after the ask whose id the screen showed after it, split across chunks too", async () => {
+    const stamped = createPaneSaves({ store: store([]), entries: async () => [...entries, { id: "space_memory:dddddddddddddddddddddddd", createdAt: "2026-11-27T07:50:00.000Z", body: "provenance=space-memory-save pane:finn0001" }] });
+    expect(await stamped("pane:finn0001", since)).toBe("space_memory:dddddddddddddddddddddddd");
+    const screen = createPaneSaves({ store: store([{ createdAt: "2026-11-27T07:45:30.000Z", content: "Saved \x1b[1mspace_memory:decfd7a3bbbb" }, { createdAt: "2026-11-27T07:45:30.100Z", content: "bbbbbbbbbbbb\x1b[0m." }]), entries: async () => entries });
+    expect(await screen("pane:finn0001", since)).toBe("space_memory:decfd7a3bbbbbbbbbbbbbbbb");
+  });
+
+  it("never counts an id shown before the ask, an entry made before it, or another session's old screen", async () => {
+    const before = createPaneSaves({ store: store([{ createdAt: "2026-11-27T07:30:00.000Z", content: "space_memory:decfd7a3bbbbbbbbbbbbbbbb" }, { createdAt: "2026-11-27T07:50:00.000Z", content: "recalled space_memory:aaaaaaaaaaaaaaaaaaaaaaaa" }]), entries: async () => entries });
+    expect(await before("pane:finn0001", since)).toBeNull();
+  });
+
+  it("counts Nous's own note naming the pane (operator 28/11: Antigravity panes cannot save), never another pane's or a non-Nous one", async () => {
+    const note = (body: string) => createPaneSaves({ store: store([]), entries: async () => [...entries, { id: "space_memory:eeeeeeeeeeeeeeeeeeeeeeee", createdAt: "2026-11-27T07:50:00.000Z", body }] });
+    const names = { pane: "Kate", room: "Work" };
+    const nous = "- Source: Space API memory.save; provenance=nous:observation; trace=x.\n  ";
+    expect(await note(`${nous}Pane Kate in room Work (Gemini, no quota). Step 4 continues with Bruno/Leo.`)("pane:kate0001", since, names)).toBe("space_memory:eeeeeeeeeeeeeeeeeeeeeeee");
+    expect(await note(`${nous}Handoff: work/kate state`)("pane:kate0001", since, names)).toBe("space_memory:eeeeeeeeeeeeeeeeeeeeeeee");
+    expect(await note(`${nous}closing pane:kate0001`)("pane:kate0001", since)).toBe("space_memory:eeeeeeeeeeeeeeeeeeeeeeee");
+    expect(await note(`${nous}Pane Kate in room Alex (Gemini, no quota).`)("pane:kate0001", since, names)).toBeNull();
+    expect(await note(`${nous}closing pane:kate00012`)("pane:kate0001", since, names)).toBeNull();
+    expect(await note("- Source: x; provenance=operator; Pane Kate in room Work")("pane:kate0001", since, names)).toBeNull();
   });
 });

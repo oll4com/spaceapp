@@ -376,6 +376,9 @@ describe("agents never see a reset link", () => {
     // Other mail passes untouched, byte for byte.
     const other = { payload: { body: { data: Buffer.from("hello").toString("base64url") } }, snippet: "hello" };
     expect(maskPasswordResetJson(other)).toEqual(other);
+    // A multi-MB attachment body (the 3.3 MB OUTSCALE deck, 27/11) is read and passed through unchanged.
+    const deck = { size: 3_353_509, data: Buffer.alloc(3_353_509, 0xfe).toString("base64url") };
+    expect(maskPasswordResetJson(deck)).toEqual(deck);
   });
 
   it("the Gmail client every Mail Copilot and Nous read goes through returns the masked message", async () => {
@@ -384,5 +387,20 @@ describe("agents never see a reset link", () => {
       { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
     const client = createGmailClient({ accessToken: "x", fetchImpl });
     expect(JSON.stringify(await client.message("m1", "full"))).not.toContain(token);
+  });
+
+  // 27/11 08:09-08:14Z: a 3.3 MB PDF's attachment body threw "Maximum call stack size exceeded" in the mask's base64 regex.
+  it("a multi-MB attachment body passes byte for byte, and a reset link inside one is still hidden", async () => {
+    const { randomBytes } = await import("node:crypto");
+    const { createGmailClient } = await import("../src/mail-copilot/gmail-client.js");
+    const pdf = randomBytes(4 * 1024 * 1024 + 1);
+    const respond = (data: string) => (async () => new Response(JSON.stringify({ size: data.length, data }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+    expect((await createGmailClient({ accessToken: "x", fetchImpl: respond(pdf.toString("base64url")) }).attachment("m1", "a1")).equals(pdf)).toBe(true);
+    const linked = Buffer.concat([Buffer.alloc(3 * 1024 * 1024, "a"), Buffer.from(mail)]).toString("base64url");
+    const masked = await createGmailClient({ accessToken: "x", fetchImpl: respond(linked) }).attachment("m1", "a1");
+    expect(masked.toString()).not.toContain(token);
+    expect(masked.toString()).toContain("password-reset=[hidden");
+    // Not base64url (a space): the string is masked as text.
+    expect(maskPasswordResetJson({ data: `${"x".repeat(3 * 1024 * 1024)} ${mail}` }).data).not.toContain(token);
   });
 });

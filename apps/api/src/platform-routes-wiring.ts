@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { registerAccountRoutes } from "./account-routes.js";
 import { registerActivityLogRoutes } from "./activity-log-routes.js";
 import { registerAppDiagnosticsSettingsRoutes } from "./app-diagnostics-routes.js";
 import { registerAuthSessionRoutes } from "./auth-session-routes.js";
@@ -6,6 +7,7 @@ import { registerDesktopReleaseRoutes } from "./desktop-release-routes.js";
 import { registerHealthRoutes } from "./health-routes.js";
 import { observeMemoryWorkers } from "./host-metrics.js";
 import { sendApiError } from "./http-errors.js";
+import { DELETION_SWEEP_MS, type AccountLifecycle } from "./computer/accounts.js";
 import type { createInstallTelemetry } from "./install-telemetry.js";
 import { readSpaceMetrics, registerMetricsScrape, WORKER_METRICS_TARGETS } from "./metrics-scrape.js";
 import { createHostSwap } from "./nous/server-load.js";
@@ -27,6 +29,8 @@ type PlatformRoutesDeps = Omit<Health, "routeOptions"> & Pick<AuthSession, "auth
     observability: Pick<ReturnType<typeof createHttpObservability>, "renderPrometheus">; healthMonitor: Pick<SystemHealthMonitor, "snapshot">;
     toolbarUsageProvider: Setup["quotaProviders"]["codex"]; antigravityUsageProvider: Setup["quotaProviders"]["antigravity"];
     apiProviderAccountsProvider: Setup["quotaProviders"]["api"]; installTelemetry: Pick<ReturnType<typeof createInstallTelemetry>, "setupCompleted">;
+    /** Nous Computer account lifecycle (K4); its routes register only headless. */
+    accountLifecycle?: AccountLifecycle;
   };
 
 /** The platform routes after the error handler in app.ts (moved verbatim, ARCH-001 step 84): health, desktop releases, the metrics scrape and
@@ -36,7 +40,16 @@ export async function registerPlatformRoutes(app: FastifyInstance, deps: Platfor
   const { apiStartedAt, config, appVersionReader, store, appDiagnosticsService, browserSessionManager, workerReadinessChecker, cliTerminalManager,
     defaultRouteRateLimitOptions, observability, auth, userRoleCache, options, publicCredentialHost, setupConnections, setupConnectionCheckRuns,
     streamingService, sourceControlService, visibleCliRuntimeIds, agentSessionHistoryService, healthMonitor, toolbarUsageProvider, antigravityUsageProvider,
-    apiProviderAccountsProvider, installTelemetry, activityLogService } = deps;
+    apiProviderAccountsProvider, installTelemetry, activityLogService, accountLifecycle } = deps;
+  if (config.headless && accountLifecycle) {
+    registerAccountRoutes(app, { store, lifecycle: accountLifecycle, routeOptions: defaultRouteRateLimitOptions });
+    const sweep = setInterval(() => void accountLifecycle.finishDueDeletions("account deletion undo window ended").then(({ finished, failed }) => {
+      if (finished.length) app.log.info({ finished }, "Account deletions finished.");
+      if (failed.length) app.log.error({ failed }, "Account deletions failed; retried next sweep.");
+    }, (error: unknown) => app.log.error({ err: error }, "Account deletion sweep failed.")), DELETION_SWEEP_MS);
+    sweep.unref();
+    app.addHook("onClose", async () => clearInterval(sweep));
+  }
   registerHealthRoutes(app, {
     apiStartedAt, config, appVersionReader, store, appDiagnosticsService, browserSessionManager,
     workerReadinessChecker, cliTerminalManager, routeOptions: defaultRouteRateLimitOptions

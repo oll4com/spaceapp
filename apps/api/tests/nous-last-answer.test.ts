@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Pane, PaneCliSession } from "@space/contracts";
 import { claudeTaskTimeline } from "../src/claude-native-turns.js";
-import { createPaneLastAnswer } from "../src/nous/last-answer.js";
+import { createPaneLastAnswer, createPaneSaveTurn } from "../src/nous/last-answer.js";
 import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
 
 // space_read_pane reply "last" (plan clipboard:8s0ZNiO3q5ZT S2): a CLI's last answer from its transcript.
@@ -49,6 +49,29 @@ describe("a CLI pane's last answer", () => {
     expect(await read(pane)).toBeNull();
     active = null;
     expect(await read(pane)).toBeNull();
+  });
+
+  it("finds the pane's completed save turn since the ask, by its prompt, with its answer (27/11: save turns the monitor missed)", async () => {
+    const task = (taskId: string, title: string, completedAt: string | null, status = "COMPLETED") => ({ taskId, title, status, timing: { completedAt } });
+    let tasks = [task("t1", "save to memory", "2026-11-27T05:00:00.000Z"), task("t2", "fix the bug", "2026-11-27T06:03:00.000Z")];
+    const claude = vi.fn(async () => ({ tasks, turnResults: [{ taskId: "t3", answer: "Saved space_memory:ab12cd34ef56" }] }) as never);
+    const timeline = vi.fn(async () => [task("c1", "Run /opt/spaceapp/bin/space-memory-save with a title", "2026-11-27T06:05:00.000Z")] as never);
+    const finalResult = vi.fn(async () => "Nothing new to save.");
+    let active: PaneCliSession | null = session("cli:claude");
+    const read = createPaneSaveTurn({ store: { getActivePaneCliSession: () => active }, activeSessionPids: async () => new Map(), claude, codex: { timeline, finalResult } });
+    const since = "2026-11-27T06:04:58.000Z";
+    // Only an older save turn and a work turn: none since the ask.
+    expect(await read(pane, since)).toBeNull();
+    // Still running: not yet.
+    tasks = [...tasks, task("t3", "save to memory", null, "RUNNING")];
+    expect(await read(pane, since)).toBeNull();
+    tasks = [...tasks.slice(0, 2), task("t3", "save to memory", "2026-11-27T06:05:03.000Z")];
+    expect(await read(pane, since)).toBe("Saved space_memory:ab12cd34ef56");
+    active = session("cli:codex", { codexThreadId: "thread-1" });
+    expect(await read(pane, since)).toBe("Nothing new to save.");
+    expect(finalResult).toHaveBeenCalledWith(expect.objectContaining({ turnId: "c1" }));
+    active = session("cli:opencode");
+    expect(await read(pane, since)).toBeNull();
   });
 
   it("answers space_read_pane reply \"last\" as untrusted text, and other CLIs with their screen", async () => {

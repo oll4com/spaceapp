@@ -898,6 +898,26 @@ describe('Claude Code per-pane model selection', () => {
     expect(writes).not.toContain('\r\r');
   });
 
+  it('confirms a pick that keeps a non-default effort while no banner or effort footer is on screen', async () => {
+    // 27/11 PTY (2.1.332, --effort high): the confirmation names no effort and the banner has scrolled away.
+    const noBanner = (text: string) => text.replace(banner, '');
+    const screens = [
+      { text: noBanner(idle).replace('◉ xhigh · /effort', ''), revision: 1 },
+      { text: noBanner(menu(3, '● High effort')), revision: 2 },
+      { text: noBanner(menu(4, '● High effort')), revision: 3 },
+      { text: '❯ /model\n  ⎿  Set model to Sonnet 5.5 for this session only\n────\n❯ \n────\n  ⏵⏵ bypass permissions on', revision: 4 }
+    ];
+    let index = 0;
+    const writes: string[] = [];
+    const write = vi.fn(async (data: string) => {
+      writes.push(data);
+      if (data !== '/model') index = Math.min(index + 1, screens.length - 1);
+    });
+    await switchNativeCliModel({ model: sonnet, effort: 'high', runtimeId: 'cli:claude', write,
+      read: async () => screens[index]!, assertCurrent: async () => undefined, wait: async () => undefined });
+    expect(writes).toEqual(['/model', '\r', '\u001b[B', 's']);
+  });
+
   // Claude Code asks before a pick drops a cached conversation's cache (27/10 16:07 BKK: Alex/Hugo hung on it until a restart).
   const switchQuestion = `${banner}❯ /model\n────\n  Switch model?\n\n  This conversation is cached for the current model. Switching to Sonnet 5.5 re-reads the whole\n` +
     '  conversation on your next message, which costs more and takes longer.\n\n  ❯ 1. Yes, switch to Sonnet 5.5\n    2. No, go back\n';

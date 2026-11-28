@@ -112,6 +112,8 @@ export function classifySpaceFailure(message: string): SpaceFailureKind {
   // Daily Nous errors 18/11 (Claude on Antigravity HTTP 400 ×4, an empty Gemini answer, OpenCode asking for a tool outside Nous): the route's
   // own fault, which the next route does not share, fails over instead of ending the turn.
   if (/returned HTTP 40[04]\b|returned an empty answer|returned no answer content|requested a tool outside Nous/i.test(message)) return "unavailable";
+  // Daily Nous errors 27/11 06:43/06:51Z: OpenCode that never started (CLI VPN broker stall) is the route's fault, so fail over, not end the turn.
+  if (/OpenCode (?:did not start its server|stopped before its server started|could not connect the Nous tools)/i.test(message)) return "unavailable";
   return "other";
 }
 

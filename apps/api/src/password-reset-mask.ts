@@ -15,7 +15,9 @@ export function maskPasswordResetJson<T>(value: T): T {
 
 function walk(value: unknown, key: string): unknown {
   if (typeof value === "string") {
-    if ((key === "data" || key === "raw") && value.length >= 16 && /^[A-Za-z0-9_=-]+$/.test(value)) {
+    // No disallowed character, not /^[…]+$/: that whole-string regex throws "Maximum call stack size exceeded" in the API on a multi-MB
+    // attachment (27/11 OUTSCALE review: Approve failed on the 3.3 MB deck), as the draft route's base64 regex did.
+    if ((key === "data" || key === "raw") && value.length >= 16 && !/[^A-Za-z0-9_=-]/.test(value)) {
       const decoded = Buffer.from(value, "base64url").toString("utf8");
       const masked = maskPasswordResetLinks(decoded);
       return masked === decoded ? value : Buffer.from(masked, "utf8").toString("base64url");

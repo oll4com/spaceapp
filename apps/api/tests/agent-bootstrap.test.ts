@@ -101,6 +101,7 @@ describe("Space agent bootstrap", () => {
   it("tells agents and Nous to write in the operator's chosen language; English adds nothing (operator 1/11 11:59 BKK)", () => {
     expect(operatorLanguageRule("en")).toBeNull();
     expect(operatorLanguageRule("el")).toMatch(/^The operator's language is Greek.*needs-you summaries, questions, options.*wins over any tool description that says English/);
+    expect(operatorLanguageRule("th")).toMatch(/^The operator's language is Thai.*Write everything they read in Thai/);
   });
 
   it("gives every CLI pane and the nine copilot personas (not repeated in their skills) the operator's-orders rule (operator 31/10 13:37 BKK)", () => {

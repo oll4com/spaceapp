@@ -143,6 +143,10 @@ describe("Plan Needs you", () => {
       body: "Turn Vault sync on", link: { roomId: "room:r1", paneId: "pane:p9" }, dedupeKey: agentNeedsYouKey("pane:p9"), telegram: null, payload: {} });
     f.state.plans = [plan("clipboard:planBBBB", { waitsOn: { kind: "OPERATOR", what: `Card ${elsewhere.id.slice("notification:".length, "notification:".length + 8)}: Vault sync`, until: null } as never })];
     expect(await f.needs.sync(owner)).toMatchObject({ raised: 0 });
+    // 2026-11-27 REVIEW (plan I86UpEfZU2ke): a wait naming an open decision by short id is asked by that decision, not by a second card.
+    f.decisions.push({ id: "nous_decision:61db5eaf239b4eaba6b57d97", refs: {}, status: "OPEN" } as NousDecision);
+    f.state.plans = [plan("clipboard:planCCCC", { waitsOn: { kind: "OPERATOR", what: "Απόφαση 61db5eaf (Azure 1b) ανοιχτή από 24/11", until: null } as never })];
+    expect(await f.needs.sync(owner)).toMatchObject({ raised: 0 });
   });
 
   it("fix 3: Space's old text item clears, and a plan card clears when its plan closes", async () => {

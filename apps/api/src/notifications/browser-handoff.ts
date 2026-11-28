@@ -61,7 +61,13 @@ export function browserHandoffFocus(session: Pick<PaneBrowserSession, "currentUr
 export const NIGHT_HANDOFF_MARK = "Held for the morning; the browser keeps it open on";
 // shortcut: handoffs asked before 16/11 closed their browser at once and carry this mark; drop it once none waits (one night after the deploy).
 const CLOSED_NIGHT_MARK = "Closed for the night; Take control reopens it on";
-export const nightHandoffLine = (url: string | null | undefined) => `\n${NIGHT_HANDOFF_MARK} ${url || "its last page"}.`;
+// A handoff reason is capped at 500 characters with the agent's words first. Sign-in URLs can be longer (27/11 ibank.nbg.gr MFA), and
+// the agent's words were then left with no room. Long URLs therefore lose their query, then their tail; the full URL stays in the open browser.
+const NIGHT_PAGE_MAX = 200;
+export const nightHandoffLine = (url: string | null | undefined) => {
+  const page = !url ? "its last page" : url.length <= NIGHT_PAGE_MAX ? url : url.replace(/[?#].*$/, "").slice(0, NIGHT_PAGE_MAX);
+  return `\n${NIGHT_HANDOFF_MARK} ${page}.`;
+};
 /** A night handoff's page (from its reason), or null for a day handoff. */
 export function nightHandoffPage(reason: string): string | null {
   for (const mark of [NIGHT_HANDOFF_MARK, CLOSED_NIGHT_MARK]) {
@@ -229,8 +235,9 @@ export function startBrowserHandoffNotifications(deps: SettleDeps & {
       const reason = handoff?.reason ?? null;
       const session = handoff && deps.store.getPaneBrowserSession ? await Promise.resolve().then(() => deps.store.getPaneBrowserSession!(handoff.sessionId)).catch(() => null) : null;
       const dedupeKey = event.paneId ? browserHandoffNotificationKey(event.paneId) : `event:${event.id}`;
-      // R20-asks-1 (30/10: 50 handoff notices reached the operator, 1 acknowledged): a new handoff on the same pane and site under 30 minutes
+      // R20-asks-1 (30/10: 50 handoff notices reached the operator, 1 acknowledged): a new handoff on the same pane and site within 24 hours
       // after the last one is recorded (Needs you shows it) without Telegram or push; the site is the first host its reason names.
+      // 2026-11-27 REVIEW (26/11: linkedin, E2B, x.com asked again 65-101 min after an untaken handoff): 24 h, the window operatorAsksByDay counts a repeat in.
       const { site, target, body, ask } = browserHandoffFocus(session, reason ?? event.message);
       // A one-time code (MFA) expires in minutes (6/11 PayPal: a held repeat reached nobody): never held, and its card takes the code
       // itself for the CLI that asked (`codePane`), which types it into the page.
@@ -241,7 +248,7 @@ export function startBrowserHandoffNotifications(deps: SettleDeps & {
       const last = event.paneId && deps.notifications.list ? (await deps.notifications.list(owner, { status: "ALL", dedupeKey, limit: 1 }).catch(() => []))[0] : undefined;
       // A handoff the operator took was answered: the pane's next one is a new ask, whoever asks (6/11: Kate's PayPal code after Leo's
       // sign-in on the same browser was held and reached no phone).
-      const recent = Boolean(last && Date.parse(last.createdAt) > Date.now() - 30 * 60_000 && (last.payload.site ?? null) === site);
+      const recent = Boolean(last && Date.parse(last.createdAt) > Date.now() - 24 * 3_600_000 && (last.payload.site ?? null) === site);
       const taken = recent && Boolean((await Promise.resolve().then(() => deps.store.listBrowserHandoffRequests(roomId)).catch(() => []))
         .find((entry) => entry.paneId === event.paneId && entry.handoffRequestId !== handoffId)?.acceptedAt);
       const repeat = !mfa && recent && !taken;

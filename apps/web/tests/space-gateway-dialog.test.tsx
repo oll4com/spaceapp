@@ -420,12 +420,14 @@ describe("SpaceGatewayDialog", () => {
     expect(await screen.findByText("The enforced model must be one of the allowed models.")).toBeTruthy();
     expect(api.updateKey).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("Enforced model"), { target: { value: "gpt-6-sol" } });
+    fireEvent.change(screen.getByLabelText("Allowed providers"), { target: { value: "Codex, gemini" } });
     fireEvent.click(screen.getByLabelText("Team A"));
     fireEvent.change(screen.getByLabelText("Compression"), { target: { value: "ON" } });
     fireEvent.change(screen.getByLabelText("Output policy"), { target: { value: "OFF" } });
     fireEvent.click(screen.getByRole("button", { name: "Save key" }));
     await waitFor(() => expect(api.updateKey).toHaveBeenCalledWith(key.id, expect.objectContaining({
-      allowedModels: ["gpt-5.5", "gpt-6-sol"], enforcedModel: "gpt-6-sol", accountIds: [account.id], compressionOverride: "ON", outputPolicyOverride: "OFF", limits: []
+      allowedModels: ["gpt-5.5", "gpt-6-sol"], allowedProviders: ["codex", "gemini"], enforcedModel: "gpt-6-sol", accountIds: [account.id], compressionOverride: "ON",
+      outputPolicyOverride: "OFF", limits: []
     })));
     fireEvent.click(await screen.findByRole("button", { name: "Regenerate" }));
     expect(api.regenerateKey).not.toHaveBeenCalled();

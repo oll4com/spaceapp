@@ -197,6 +197,20 @@ describe("Four SpaceApp fixes", () => {
       expect(res.display).toMatch(/not ready to close/i);
     });
 
+    it.each([["board-check", true], ["fresh", true], ["keep-open", false]])("27/11: save to memory with closeout skip %s passes: %s", async (skip, passes) => {
+      const roomTool = vi.fn(async () => ({ ok: true, result: "sent" }));
+      const tools = makeTools({
+        listPanes: async () => [targetPane],
+        inspectPane: async () => ({ state: "IDLE", sessionId: "sess:1" } as never),
+        closeouts: { roomCloseouts: async () => [{ pane: targetPane, state: "done", since: new Date().toISOString(), idleMinutes: 40, save: "save not asked", closable: false, skip }] },
+        roomTool: roomTool as never
+      });
+      const res = await tools.execute("space_send_to_pane", { room: "room:dev", panes: ["Worker"], text: "save to memory" }, context as never);
+      expect(res.ok).toBe(passes);
+      if (!passes) expect(res.result).toMatch(/kept open \(keep-open\)/);
+      expect(roomTool.mock.calls.length > 0).toBe(passes);
+    });
+
     it("allows save to memory when target pane is finished and ready to close", async () => {
       const roomTool = vi.fn(async () => ({ ok: true, result: "sent" }));
       const tools = makeTools({

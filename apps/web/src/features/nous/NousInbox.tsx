@@ -22,13 +22,15 @@ import "./nous-done.css";
 const messageOf = (error: unknown, fallback: string) => (error instanceof Error && error.message ? error.message : fallback);
 type Group = "operator" | "new" | "working" | "closed";
 /** Plan clipboard:JD8EbQgQdRls (operator 24/11): the Inbox's four tabs, in the order the first one with something opens. */
-export const INBOX_TABS = ["NEEDS", "DONE", "UPDATES", "REQUESTS"] as const satisfies readonly InboxTab[];
-const TAB_LABELS: Record<InboxTab, string> = { NEEDS: "Needs you", DONE: "Done", UPDATES: "Updates", REQUESTS: "Requests" };
-const TAB_EMPTY: Record<InboxTab, string> = { NEEDS: "Nothing waits for you", DONE: "You’re up to date", UPDATES: "No updates yet", REQUESTS: "No request in progress" };
+/** The server's four tabs and the Archive: every closed Thread whatever its tab (operator 27/11: read updates leave Updates). */
+export type InboxTabChoice = InboxTab | "ARCHIVE";
+export const INBOX_TABS = ["NEEDS", "DONE", "UPDATES", "REQUESTS", "ARCHIVE"] as const satisfies readonly InboxTabChoice[];
+const TAB_LABELS: Record<InboxTabChoice, string> = { NEEDS: "Needs you", DONE: "Done", UPDATES: "Updates", REQUESTS: "Requests", ARCHIVE: "Archived" };
+const TAB_EMPTY: Record<InboxTabChoice, string> = { NEEDS: "Nothing waits for you", DONE: "You’re up to date", UPDATES: "No updates yet", REQUESTS: "No request in progress", ARCHIVE: "Nothing archived yet" };
 const WHERE_LABELS = { stable: "Stable", dev: "Dev", "no code": "No code" } as const;
 /** The tab he chose, kept on this device (nous-ui-state); null: the first tab with something. NousDock writes it for a toast, pop-up or push. */
 export const INBOX_TAB_KEY = "inbox.tab";
-export const isInboxTabChoice = (value: unknown): value is InboxTab | null => value === null || INBOX_TABS.includes(value as InboxTab);
+export const isInboxTabChoice = (value: unknown): value is InboxTabChoice | null => value === null || INBOX_TABS.includes(value as InboxTabChoice);
 export const inboxGroupOf = (thread: InboxThreadView): Group =>
   thread.closedAt ? "closed" : thread.waitingFor === "OPERATOR" ? "operator" : thread.unseen && !thread.openRequest ? "new" : "working";
 const EVENT_LABELS: Record<InboxEvent["type"], string> = { REQUEST: "Request", ASK: "Asked", ANSWER: "Answered", PROGRESS: "Progress", REPORT: "Report",
@@ -66,7 +68,6 @@ export function InboxThreadCard({ thread, sources, onChanged }: { thread: InboxT
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
   const { confirm, confirmDialog } = useDockConfirm();
-  const [events, setEvents] = useState<InboxEvent[] | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,18 +76,12 @@ export function InboxThreadCard({ thread, sources, onChanged }: { thread: InboxT
   // An answered ask leaves the card at once (operator 13/11: every action reacts at once); a failure brings it back with the error.
   const [answered, setAnswered] = useState<string | null>(null);
   const asks = thread.openAsks.filter((event) => event.ask?.forOperator && event.ref !== answered);
-  useEffect(() => {
-    if (!expanded) return;
-    let cancelled = false;
-    api.inboxThread(thread.id).then((answer) => { if (!cancelled) setEvents(answer.events); }, (failure: unknown) => { if (!cancelled) setError(messageOf(failure, "The thread could not be loaded.")); });
-    return () => { cancelled = true; };
-  }, [expanded, thread.id, thread.lastEventAt]);
   const act = async (input: Parameters<typeof api.actInbox>[1]) => {
     setBusy(true);
     setError(null);
     if (input.askId) setAnswered(input.askId);
-    try { await api.actInbox(thread.id, input); setText(""); onChanged(); void refreshNotifications(); }
-    catch (failure) { setAnswered(null); setError(messageOf(failure, "That did not work. Try again.")); }
+    try { await api.actInbox(thread.id, input); setText(""); onChanged(); void refreshNotifications(); return true; }
+    catch (failure) { setAnswered(null); setError(messageOf(failure, "That did not work. Try again.")); return false; }
     finally { setBusy(false); }
   };
   const dismiss = async () => {
@@ -94,13 +89,17 @@ export function InboxThreadCard({ thread, sources, onChanged }: { thread: InboxT
     if (asks.length && !(await confirm({ title: t("Not relevant to you?"), message: t("What it still asks is cancelled without an answer and the thread closes."), confirmLabel: t("Not relevant") }))) return;
     await act({ verb: "DISMISS" });
   };
+  const cardOf = (event: InboxEvent) => event.ref && !sources.decisions.some((item) => item.id === event.ref) ? sources.needs?.find((item) => item.id === event.ref) : undefined;
+  // Plan clipboard:va__qa_eBMYr: a Thread whose one open ask is a needs-you card IS that card; its history and Close without answering live in it.
+  const single = asks.length === 1 ? cardOf(asks[0]!) : undefined;
   const askNode = (event: InboxEvent) => {
     const decision = event.ref ? sources.decisions.find((item) => item.id === event.ref) : undefined;
     if (decision) return <div key={event.id} style={{ display: "contents" }}>{sources.renderDecision(decision)}</div>;
-    const card = event.ref ? sources.needs?.find((item) => item.id === event.ref) : undefined;
+    const card = cardOf(event);
     if (card) return <NeedsYouCard key={event.id} variant="row" item={card} pane={card.paneId ? sources.panes?.get(card.paneId) : undefined} unblocks={planUnblocks(card, sources.plans ?? [])}
       {...(sources.openCard ? { open: sources.openCard.id === card.id, onOpenChange: (open: boolean) => sources.openCard!.set(open ? card.id : null) } : {})}
-      onOpenPlan={sources.onOpenPlan} onAnswered={onChanged} />;
+      onOpenPlan={sources.onOpenPlan} onAnswered={onChanged} panes={sources.panes} live={event.ask?.live}
+      {...(single ? { onDismiss: () => act({ verb: "DISMISS" }), history: <InboxThreadHistory thread={thread} /> } : {})} />;
     // shortcut: a record the dock has not loaded answers through the Thread's verbs (no Go to pane); its source card covers that once loaded.
     // Its files show here though (operator nous_msg:acb1aa48, 23/11: an approval of two .md files reached the Nous app with no way to read them).
     const ask = event.ask!;
@@ -126,13 +125,11 @@ export function InboxThreadCard({ thread, sources, onChanged }: { thread: InboxT
       </div>
     );
   };
-  const notes = events?.filter((event) => event.type === "NOTE") ?? [];
-  const eventRow = (event: InboxEvent) => (
-    <li key={event.id} className={`inbox-event is-${event.type.toLowerCase()}`}>
-      <span className="inbox-event-meta">{t(EVENT_LABELS[event.type])} · <time dateTime={event.at}>{formatUserTime(event.at, { withDate: true })}</time></span>
-      {event.title ? <strong>{event.title}</strong> : null}
-      {event.body ? <div><ChatMarkdown content={event.body} /></div> : null}
-    </li>
+  if (single) return (
+    <article className={`inbox-thread is-card is-${group}`} data-thread-id={thread.id} aria-label={thread.title}>
+      {asks.map(askNode)}
+      {error ? <p role="alert" className="inbox-thread-error">{t(error)}</p> : null}
+    </article>
   );
   return (
     <article className={`inbox-thread is-${group}${thread.priority === "URGENT" && !thread.closedAt ? " is-urgent" : ""}`} data-thread-id={thread.id} aria-label={thread.title}>
@@ -162,15 +159,37 @@ export function InboxThreadCard({ thread, sources, onChanged }: { thread: InboxT
         <DockButton tone="ghost" onClick={() => setExpanded(!expanded)}>{t(expanded ? "Less" : "Details")}</DockButton>
         {!thread.closedAt ? <DockButton disabled={busy} onClick={() => void dismiss()}>{t("Not relevant")}</DockButton> : null}
       </div>
-      {expanded ? (
-        <div className="inbox-thread-timeline">
-          {events === null && !error ? <DockState kind="loading" title={t("Loading the thread")} /> : null}
-          <ol>{events?.filter((event) => event.type !== "NOTE").map(eventRow)}</ol>
-          {notes.length ? <details><summary>{t("Nous notes ({count})", { count: notes.length })}</summary><ol>{notes.map(eventRow)}</ol></details> : null}
-        </div>
-      ) : null}
+      {expanded ? <InboxThreadHistory thread={thread} /> : null}
       {confirmDialog}
     </article>
+  );
+}
+
+/** A Thread's timeline, loaded when shown (Details, or More on a Thread that is its card); Nous's notes folded. */
+function InboxThreadHistory({ thread }: { thread: InboxThreadView }) {
+  const language = useUiLanguage();
+  const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
+  const [events, setEvents] = useState<InboxEvent[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api.inboxThread(thread.id).then((answer) => { if (!cancelled) setEvents(answer.events); }, (failure: unknown) => { if (!cancelled) setError(messageOf(failure, "The thread could not be loaded.")); });
+    return () => { cancelled = true; };
+  }, [thread.id, thread.lastEventAt]);
+  const notes = events?.filter((event) => event.type === "NOTE") ?? [];
+  const eventRow = (event: InboxEvent) => (
+    <li key={event.id} className={`inbox-event is-${event.type.toLowerCase()}`}>
+      <span className="inbox-event-meta">{t(EVENT_LABELS[event.type])} · <time dateTime={event.at}>{formatUserTime(event.at, { withDate: true })}</time></span>
+      {event.title ? <strong>{event.title}</strong> : null}
+      {event.body ? <div><ChatMarkdown content={event.body} /></div> : null}
+    </li>
+  );
+  return (
+    <div className="inbox-thread-timeline">
+      {error ? <p role="alert" className="inbox-thread-error">{t(error)}</p> : events === null ? <DockState kind="loading" title={t("Loading the thread")} /> : null}
+      <ol>{events?.filter((event) => event.type !== "NOTE").map(eventRow)}</ol>
+      {notes.length ? <details><summary>{t("Nous notes ({count})", { count: notes.length })}</summary><ol>{notes.map(eventRow)}</ol></details> : null}
+    </div>
   );
 }
 
@@ -190,10 +209,14 @@ export function useNeedsYouPanes(wanted: boolean): Map<string, NeedsYouBoardPane
  * Nous › «Εισερχόμενα» v2 (spec §6, plan clipboard:aE7U1J_gU9OV) in four tabs (plan clipboard:JD8EbQgQdRls): Needs you, Done, Updates and
  * Requests over the same Threads, each with the server's counter; the search covers every Thread whatever the tab.
  */
-export function NousInbox({ active, sources, focus, trailing }: {
+export function NousInbox({ active, sources, focus, trailing, queue }: {
   active: boolean; sources: Omit<InboxCardSources, "panes" | "openCard">;
   /** The needs-you card a toast, the small window or a pop-up was clicked for (a new object each click). */
-  focus: { id: string | null } | null; trailing?: ReactNode;
+  focus: { id: string | null } | null;
+  /** What waits on the operator from elsewhere (linked SpaceApps' decisions), at the end of Needs you. */
+  trailing?: ReactNode;
+  /** Nous's own round queue: it asks nothing of him, so it folds under Requests (operator 27/11), never in Needs you. */
+  queue?: ReactNode;
 }) {
   const language = useUiLanguage();
   const t = (text: string, vars?: Record<string, string | number>) => uiText(language, text, vars);
@@ -206,7 +229,7 @@ export function NousInbox({ active, sources, focus, trailing }: {
   const [revision, setRevision] = useState(0);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [doneBusy, setDoneBusy] = useState(false);
-  const [chosen, setChosen] = useNousUiState<InboxTab | null>(INBOX_TAB_KEY, null, isInboxTabChoice);
+  const [chosen, setChosen] = useNousUiState<InboxTabChoice | null>(INBOX_TAB_KEY, null, isInboxTabChoice);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const reload = useCallback(() => setRevision((value) => value + 1), []);
   useEffect(() => { const timer = window.setTimeout(() => setAsked(query.trim()), 250); return () => window.clearTimeout(timer); }, [query]);
@@ -214,8 +237,8 @@ export function NousInbox({ active, sources, focus, trailing }: {
   useEffect(() => {
     if (!active) return;
     let cancelled = false;
-    // What is open comes whole; the closed page is the Updates tab's read ones (a search reads every Thread).
-    api.inbox(asked ? { q: asked } : { tab: "UPDATES" }).then((next) => { if (!cancelled) { setPage(next); setError(null); } },
+    // What is open comes whole; the closed page is the Archive, every tab's (a search reads every Thread).
+    api.inbox(asked ? { q: asked } : {}).then((next) => { if (!cancelled) { setPage(next); setError(null); } },
       (failure: unknown) => { if (!cancelled) setError(messageOf(failure, "The inbox could not be loaded. Try again.")); });
     return () => { cancelled = true; };
   }, [active, asked, store.inbox, revision]);
@@ -224,11 +247,11 @@ export function NousInbox({ active, sources, focus, trailing }: {
     if (!cursor) return;
     setLoadingOlder(true);
     try {
-      const next = await api.inbox({ cursor, tab: "UPDATES" });
+      const next = await api.inbox({ cursor });
       setOlder((current) => ({ threads: [...current?.threads ?? [], ...next.threads], cursor: next.cursor }));
     } catch (failure) { setError(messageOf(failure, "The inbox could not be loaded. Try again.")); } finally { setLoadingOlder(false); }
   };
-  // shortcut: older read updates page with a button, not on scroll; add an IntersectionObserver if the operator asks.
+  // shortcut: the Archive pages with a button, not on scroll; add an IntersectionObserver if the operator asks.
   const loadEarlier = cursor ? <DockButton className="nous-load-earlier" busy={loadingOlder} disabled={loadingOlder} onClick={() => void loadOlder()}>{t("Load earlier")}</DockButton> : null;
   const threads = useMemo(() => {
     const first = page?.threads ?? [];
@@ -237,7 +260,7 @@ export function NousInbox({ active, sources, focus, trailing }: {
   }, [page, older]);
   const panes = useNeedsYouPanes(active && threads.some((thread) => thread.openAsks.some((event) => event.ref?.startsWith("notification:"))));
   const counts = page?.summary.tabs;
-  const countOf = (id: InboxTab) => counts?.[id.toLowerCase() as Lowercase<InboxTab>] ?? 0;
+  const countOf = (id: InboxTabChoice) => id === "ARCHIVE" ? 0 : counts?.[id.toLowerCase() as Lowercase<InboxTab>] ?? 0;
   const tab = chosen ?? INBOX_TABS.find((id) => countOf(id) > 0) ?? "NEEDS";
   // A clicked needs-you card opens in its Thread, brought into view once the list holds it.
   const scrollTo = useRef<string | null>(focus?.id ?? null);
@@ -249,7 +272,7 @@ export function NousInbox({ active, sources, focus, trailing }: {
     if (card) { scrollWithin(card, "nearest", "auto", rootRef.current); scrollTo.current = null; }
   }, [threads, focus, tab]);
   const open = threads.filter((thread) => !thread.closedAt);
-  const inTab = (id: InboxTab) => open.filter((thread) => !thread.held && (thread.tab ?? inboxTabOf(thread)) === id);
+  const inTab = (id: InboxTabChoice) => open.filter((thread) => !thread.held && (thread.tab ?? inboxTabOf(thread)) === id);
   // Updates: news on a request with a plan first (it stays under Requests too), then what counts; only what does not count (INFO alerts) folds at the end.
   // Operator 26/11 20:38 BKK (chip 6, one card: 5 ATTENTION alerts were folded): the cards on top are the server's tabs.updates, by its own inboxThreadCounts.
   const updates = [...open.filter((thread) => thread.requestNews), ...inTab("UPDATES").filter(inboxThreadCounts)];
@@ -282,21 +305,19 @@ export function NousInbox({ active, sources, focus, trailing }: {
       {!page ? null : asked ? <>{threads.length ? null : empty("No thread matches")}{cards(threads)}</>
         : tab === "UPDATES" ? <>
           {seenAllBar([...updates, ...alerts].map((thread) => thread.id))}
-          {updates.length || alerts.length || read.length ? null : empty(TAB_EMPTY.UPDATES)}
+          {updates.length || alerts.length ? null : empty(TAB_EMPTY.UPDATES)}
           {cards(updates)}
-          {read.length ? <h3 className="nous-inbox-group-title">{t("Earlier updates")}</h3> : null}
-          {cards(read)}
-          {loadEarlier}
           {alerts.length ? <details className="nous-inbox-alerts"><summary>{t("Alerts from copilots and the system ({count})", { count: alerts.length })}</summary>{cards(alerts)}</details> : null}
         </>
+        : tab === "ARCHIVE" ? <>{read.length ? null : empty(TAB_EMPTY.ARCHIVE)}{cards(read)}{loadEarlier}</>
         : tab === "REQUESTS" ? <>
           {cards(shown)}
           {/* Plan LkwKdOOh2mXK step 1: what Nous or an agent decides (held for Nous) is one folded line each, never a card. */}
           {held.length ? <details className="nous-inbox-held"><summary>{t("Nous handles these ({count})", { count: held.length })}</summary>
             <ul>{held.map((thread) => <li key={thread.id} data-thread-id={thread.id} title={thread.now || thread.title}><span>{thread.originLabel}</span> {thread.now || thread.title}</li>)}</ul></details> : null}
+          {queue}
           <h3 className="nous-inbox-group-title">{t("All requests")}</h3>
           <NousRequests active={active} onOpenPlan={sources.onOpenPlan} />
-          {trailing}
         </>
         : <>{tab === "DONE" ? seenAllBar(shown.map((thread) => thread.id)) : null}{shown.length ? null : empty(TAB_EMPTY[tab])}{cards(shown)}{tab === "NEEDS" ? trailing : null}</>}
     </div>

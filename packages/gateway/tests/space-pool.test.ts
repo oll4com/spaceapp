@@ -136,6 +136,31 @@ describe("Space Gateway /pools/space", () => {
     expect(capped.calls.filter((call) => call.path.endsWith("/responses"))).toHaveLength(1);
   });
 
+  it("auto passes over a route outside the key's providers; an explicit model there gets the refusal (plan clipboard:yw_pvUb_616N)", async () => {
+    const notAllowed = (provider: string) => json({ error: { code: "provider_not_allowed", message: `This API key does not have access to provider '${provider}'.` } }, 403);
+    const f = setup((path, headers) => {
+      if (path === "/v1/models") return headers.get("anthropic-version") ? notAllowed("claude") : models("gpt-6-astra");
+      if (path === "/v1/messages") return notAllowed(headers.get("x-space-gateway-route") ? "claude_opencode" : "claude");
+      if (path.startsWith("/pools/")) return notAllowed(path.split("/")[2]!);
+      return json({ id: "r", object: "response", output: [] });
+    });
+    const served = await f.post("responses", { model: "auto", input: "hi" });
+    expect(served.statusCode).toBe(200);
+    expect(served.headers["x-space-route"]).toBe("CODEX");
+    expect(served.headers["x-space-fallback"]).toBeUndefined();
+    // Messages: every route that speaks it is outside the list, so auto ends without trying a model.
+    const none = await f.post("messages", { model: "auto", max_tokens: 10, messages: [] });
+    expect(none.statusCode).toBe(503);
+    expect(none.json()).toMatchObject({ error: { code: "space_routes_exhausted", attempts: [] } });
+    expect(f.calls.filter((call) => call.path === "/v1/messages")).toHaveLength(0);
+    const explicit = await f.post("messages", { model: "claude:claude-opus-5-5", max_tokens: 10, messages: [] });
+    expect(explicit.statusCode).toBe(403);
+    expect(explicit.json()).toMatchObject({ error: { code: "provider_not_allowed", route: "CLAUDE" } });
+    const listed = (await f.app.inject({ method: "GET", url: "/pools/space/v1/models", headers: { authorization: "Bearer sk-space-test" } })).json();
+    expect(listed.routes.find((route: { route: string }) => route.route === "CLAUDE")).toMatchObject({ available: false, reason: "Not allowed for this key." });
+    expect(listed.data.map((model: { id: string }) => model.id)).toEqual(["auto", "auto-balanced", "auto-light", "codex:gpt-6-astra"]);
+  });
+
   it("refuses the API-key route without the internal token instead of running it on the subscriptions", async () => {
     const f = setup(() => json({ type: "message" }), allOn, null);
     const response = await f.post("messages", { model: "opencode-claude:claude-opus-5-5", messages: [] });

@@ -90,12 +90,30 @@ export async function issueTenantKey(pool: pg.Pool, input: {
 }
 
 /** Freeze (chargeback, abuse), unfreeze, or revoke every key of a tenant (account deletion); every replica hears it at once. */
+/** The Stripe webhook's actor: billing holds its own freeze, apart from people and services (plan clipboard:ZGz1LnD51ELH step 12). */
+export const BILLING_ACTOR = "stripe:webhook";
+
+/** Billing and everyone else (staff, the account lifecycle) each hold a freeze while their latest key.frozen / key.active is a freeze. */
+export async function keyFreezeHolds(client: pg.PoolClient, tenantId: string): Promise<{ billing: boolean; staff: boolean }> {
+  const rows = (await client.query(`SELECT DISTINCT ON (actor = $2) actor = $2 AS billing, action FROM ngw_audit
+    WHERE tenant_id = $1 AND action IN ('key.frozen', 'key.active') ORDER BY actor = $2, id DESC`, [tenantId, BILLING_ACTOR])).rows;
+  const held = (billing: boolean) => rows.some((row) => row.billing === billing && row.action === "key.frozen");
+  return { billing: held(true), staff: held(false) };
+}
+
+/**
+ * Sets every live key's status. An ACTIVE only releases its own side's freeze: while the other side still holds one (a staff resume
+ * after a billing freeze, a paid subscription during a suspension) the keys stay FROZEN, and the audit row says who holds them.
+ */
 export async function setTenantKeyStatus(pool: pg.Pool, tenantId: string, status: TenantKeyStatus, actor: string, reason: string): Promise<number> {
   return withTenant(pool, tenantId, async (client) => {
-    const rows = (await client.query(`UPDATE ngw_tenant_keys SET status = $2, revoked_at = CASE WHEN $2 = 'REVOKED' THEN now() ELSE NULL END
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`ngw-key:${tenantId}`]);
+    const holds = status === "ACTIVE" ? await keyFreezeHolds(client, tenantId) : null;
+    const heldBy = holds && (actor === BILLING_ACTOR ? holds.staff && "staff" : holds.billing && "billing") || null;
+    const rows = heldBy ? [] : (await client.query(`UPDATE ngw_tenant_keys SET status = $2, revoked_at = CASE WHEN $2 = 'REVOKED' THEN now() ELSE NULL END
       WHERE tenant_id = $1 AND status <> 'REVOKED' RETURNING id, key_hash`, [tenantId, status])).rows;
     for (const row of rows) await notify(client, row.key_hash);
-    await audit(client, tenantId, actor, `key.${status.toLowerCase()}`, null, { reason, keys: rows.map((row) => row.id) });
+    await audit(client, tenantId, actor, `key.${status.toLowerCase()}`, null, { reason, keys: rows.map((row) => row.id), ...(heldBy ? { heldBy } : {}) });
     return rows.length;
   });
 }

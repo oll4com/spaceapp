@@ -1035,6 +1035,9 @@ export interface SpaceStore {
   revokeUserInvite?(inviteId: string, revokedAt: string): MaybePromise<boolean>;
   /** Creates the invited user with this password once; null for an unknown, used, revoked or expired token. */
   acceptUserInvite?(input: { tokenSha256: string; passwordHash: string; now: string }): MaybePromise<AuthUser | null>;
+  /** Headless Google sign-up (K2 §4): an open invite for the Google email gives a PERSONAL tenant, a USER in it and the Google link, in
+   *  one transaction; null when no open invite matches or the email is taken. */
+  signUpWithGoogleInvite?(input: { identity: VerifiedGoogleIdentity; termsVersion: string; region: string; now: string }): MaybePromise<AuthUser | null>;
   /** A user who may sign in with a password (not disabled). */
   getPasswordUser?(email: string): MaybePromise<OwnerCredentials | null>;
   /** A new password hash for a user who already signs in with one (Settings → Login password); false when there is none to replace.

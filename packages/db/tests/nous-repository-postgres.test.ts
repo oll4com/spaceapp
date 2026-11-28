@@ -63,6 +63,13 @@ async function expectPagingAndClear(store: NousRepository, user: string) {
   const rows = async () => (await store.listMessages(user, 1_000, 1_000)).length;
   expect(await rows()).toBe(5);
   expect(await store.conversationClearedAt(user)).toBeNull();
+  // The last-read mark (nous_msg:443bb5d5) moves only forward and is no Clear.
+  expect(await store.conversationReadUpTo(user)).toBeNull();
+  expect(await store.markConversationRead(user, "2026-11-27T08:00:00.000Z")).toBe("2026-11-27T08:00:00.000Z");
+  expect(await store.markConversationRead(user, "2026-11-27T07:00:00.000Z")).toBe("2026-11-27T08:00:00.000Z");
+  expect(await store.conversationReadUpTo(user)).toBe("2026-11-27T08:00:00.000Z");
+  expect(await store.conversationClearedAt(user)).toBeNull();
+  expect(await contents(10, { sinceClear: true })).toHaveLength(5);
   expect(await store.clearMessages(user)).toBe(5);
   // A clear leaves the row count unchanged; its time hides the decisions asked before it in the dock (operator 2/11).
   expect(await rows()).toBe(5);

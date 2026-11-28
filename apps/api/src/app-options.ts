@@ -106,6 +106,7 @@ import type { WorkerReadinessChecker } from "./worker-readiness.js";
 import type { WorkflowTaskFault } from "./trace-workflow-faults.js";
 import type { DecisionsService } from "./decisions-service.js";
 import type { FirstSetupAppOptions } from "./setup-wiring.js";
+import type { AccountLifecycle } from "./computer/accounts.js";
 
 export interface CreateAppOptions extends FirstSetupAppOptions, CliAccountProfileCommandOptions {
   /** Where the API log goes instead of stdout (tests read it). */
@@ -113,6 +114,8 @@ export interface CreateAppOptions extends FirstSetupAppOptions, CliAccountProfil
   /** The production server continues a chess tournament its restart interrupted (tests never do). */
   resumeChessTournament?: boolean;
   decisionsService?: DecisionsService;
+  /** Nous Computer (K4): the account routes, registered only headless; none until the cell driver and gateway client exist (steps 12, 20). */
+  accountLifecycle?: AccountLifecycle;
   store?: SpaceStore;
   t3CodeServiceController?: T3CodeServiceController;
   agentFileDocxNormalizer?: AgentFileDocxNormalizer;

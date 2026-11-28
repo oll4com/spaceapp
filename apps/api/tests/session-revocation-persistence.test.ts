@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SessionRevocationStore, signSessionWithTtl, verifySession, type SessionRevocationPersistence } from "../src/auth.js";
+import { SessionRevocationStore, renewSessionIfDue, signSession, signSessionWithTtl, verifySession, type SessionRevocationPersistence } from "../src/auth.js";
 
 /** In-memory stand-in for the durable table: survives a "restart" (a new store instance). */
 function fakePersistence() {
@@ -72,6 +72,23 @@ describe("session revocations survive an API restart (SEC-011)", () => {
       await restarted.attachPersistence(durable.persistence);
       expect(verifySession(oldToken, secret, restarted)).toBeNull();
     } finally { restarted.close(); }
+  });
+
+  it("keeps a login in the same second after 'log out everywhere' valid, and one before it cut (Nous Cloud rebind 27/11)", async () => {
+    const second = Math.floor(Date.now() / 1000) * 1000;
+    const before = signSession(user, secret, second + 200);
+    const after = signSession(user, secret, second + 800);
+    const store = new SessionRevocationStore();
+    try {
+      await store.attachPersistence(fakePersistence().persistence);
+      await store.revokeUser(user.id, second + 500);
+      expect(verifySession(before, secret, store)).toBeNull();
+      expect(verifySession(after, secret, store)).toEqual(user);
+      // A renewal keeps the login's ms issue time, so the cut stays where it was.
+      const renewed = renewSessionIfDue(after, secret, second + 800 + 20 * 86_400_000);
+      expect(renewed).toBeTruthy();
+      expect(JSON.parse(Buffer.from(renewed!.split(".")[0]!, "base64url").toString()).iatMs).toBe(second + 800);
+    } finally { store.close(); }
   });
 
   it("does not resurrect expired revocations", async () => {

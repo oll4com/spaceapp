@@ -61,10 +61,10 @@ describe("Nous › «Εισερχόμενα» v2 in four tabs (plans clipboard:a
     const view = render(<Harness />);
     const card = await screen.findByRole("article", { name: "Pick a colour" });
     const tabs = screen.getByRole("group", { name: "Inbox tabs" });
-    expect(within(tabs).getAllByRole("button").map((chip) => [chip.textContent, chip.getAttribute("aria-pressed")])).toEqual([["Needs you1", "true"], ["Done1", "false"], ["Updates3", "false"], ["Requests1", "false"]]);
+    expect(within(tabs).getAllByRole("button").map((chip) => [chip.textContent, chip.getAttribute("aria-pressed")])).toEqual([["Needs you1", "true"], ["Done1", "false"], ["Updates3", "false"], ["Requests1", "false"], ["Archived", "false"]]);
     expect(titles()).toEqual(["Pick a colour"]);
-    // The read updates are the closed page this view asks for.
-    expect(apiMock.inbox).toHaveBeenCalledWith({ tab: "UPDATES" });
+    // The closed page this view asks for is the Archive, every tab's.
+    expect(apiMock.inbox).toHaveBeenCalledWith({});
     expect(within(card).queryByRole("button", { name: "Done" })).toBeNull();
     fireEvent.click(within(card).getByRole("button", { name: "red" }));
     await waitFor(() => expect(apiMock.actInbox).toHaveBeenCalledWith("inbox_thread:ask", { verb: "ANSWER", askId: "notification:q", option: "red" }));
@@ -80,13 +80,12 @@ describe("Nous › «Εισερχόμενα» v2 in four tabs (plans clipboard:a
     fireEvent.click(within(report).getByRole("button", { name: "Seen it" }));
     await waitFor(() => expect(apiMock.actInbox).toHaveBeenCalledWith("inbox_thread:done", { verb: "DONE" }));
 
-    // Updates: the request's news first, then every counted update or alert, the read ones, then the uncounted (INFO) alerts in one fold; «Seen all» leaves Done alone.
-    // Operator 26/11 20:38 BKK: the chip (3) is the unseen cards above «Earlier updates», never one card and the rest folded.
+    // Updates: the request's news first, then every counted update or alert, then the uncounted (INFO) alerts in one fold; «Seen all» leaves Done alone.
+    // Operator 26/11 20:38 BKK: the chip (3) is the unseen cards, never one card and the rest folded; 27/11: a read one leaves for the Archive.
     openTab(/^Updates/);
-    expect(titles()).toEqual(["Build the inbox", "Tests passed", "Deploy failed", "Old report", "Mail from a shop"]);
+    expect(titles()).toEqual(["Build the inbox", "Tests passed", "Deploy failed", "Mail from a shop"]);
     const top = [...document.querySelectorAll(".nous-inbox > article.inbox-thread")].map((card) => card.getAttribute("aria-label"));
-    expect(top.slice(0, top.indexOf("Old report"))).toEqual(["Build the inbox", "Tests passed", "Deploy failed"]);
-    expect(top.indexOf("Old report")).toBe(page.summary.tabs!.updates);
+    expect(top).toHaveLength(page.summary.tabs!.updates);
     const fold = document.querySelector("details.nous-inbox-alerts")!;
     expect(fold.querySelector("summary")!.textContent).toBe("Alerts from copilots and the system (1)");
     expect(within(fold as HTMLElement).getByRole("article", { name: "Mail from a shop" })).toBeTruthy();
@@ -94,9 +93,14 @@ describe("Nous › «Εισερχόμενα» v2 in four tabs (plans clipboard:a
     await waitFor(() => expect(apiMock.actInbox).toHaveBeenCalledWith("inbox_thread:fresh", { verb: "DONE" }));
     fireEvent.click(screen.getByRole("button", { name: "Seen all" }));
     await waitFor(() => expect(apiMock.inboxDoneAll).toHaveBeenCalledWith(["inbox_thread:working", "inbox_thread:fresh", "inbox_thread:alert", "inbox_thread:quiet"]));
+    expect(screen.queryByRole("button", { name: "Load earlier" })).toBeNull();
+
+    // Archived: every closed Thread whatever its tab, paged back with Load earlier.
+    openTab(/^Archived/);
+    expect(titles()).toEqual(["Old report"]);
     fireEvent.click(screen.getByRole("button", { name: "Load earlier" }));
     expect(await screen.findByRole("article", { name: "Older report" })).toBeTruthy();
-    expect(apiMock.inbox).toHaveBeenCalledWith({ cursor: "older", tab: "UPDATES" });
+    expect(apiMock.inbox).toHaveBeenCalledWith({ cursor: "older" });
 
     // Requests: the work in progress with its last progress line (seen, never closed, from here too), then every request.
     openTab(/^Requests/);

@@ -256,6 +256,22 @@ describe('site sign-in account through the CLI bridge', () => {
     store.updatePaneBrowserSession(session.sessionId, { currentUrl });
   });
 
+  it('takes a short quiet-hours handoff on a long sign-in URL and names the field over the cap (27/11 Andy: "Too big <=500" for an 11-char reason)', async () => {
+    const hhmm = (offsetMin: number) => new Date(Date.now() + offsetMin * 60_000).toISOString().slice(11, 16);
+    await store.updateUserSettings(user.id, { dateTime: { timeZone: 'UTC' }, notifications: { quietHours: { enabled: true, start: hhmm(-60), end: hhmm(60) } } as never });
+    const { currentUrl } = store.getActivePaneBrowserSession(job.id)!;
+    store.updatePaneBrowserSession(session.sessionId, { currentUrl: `https://ibank.example.org/auth/mfa?state=${'x'.repeat(700)}` });
+    const asked = await command({ type: 'REQUEST_HANDOFF', kind: 'MFA', reason: 'Approve MFA' });
+    expect(asked.statusCode, asked.body).toBe(200);
+    expect(asked.json().handoff.reason).toMatch(/Approve MFA\nHeld for the morning; the browser keeps it open on https:\/\/ibank\.example\.org\/auth\/mfa\.$/);
+    expect((await command({ type: 'CANCEL_HANDOFF' })).statusCode).toBe(200);
+    const long = await command({ type: 'REQUEST_HANDOFF', kind: 'MFA', reason: 'x'.repeat(501) });
+    expect(long.statusCode).toBe(422);
+    expect(long.json().error.details.fieldErrors.command).toEqual([expect.stringMatching(/^reason: Too big/)]);
+    await store.updateUserSettings(user.id, { notifications: null });
+    store.updatePaneBrowserSession(session.sessionId, { currentUrl });
+  });
+
   it('reports the account per browser session in the bridge context', async () => {
     const context = await app.inject({ url: '/api/cli/browser/context', headers: headers() });
     expect(context.statusCode).toBe(200);
@@ -291,6 +307,18 @@ describe('site sign-in account through the CLI bridge', () => {
     expect(action).toHaveBeenCalledTimes(1);
     expect(ambiguous.json().results[0].statusReason).toContain('lobste.rs has site sign-in recipes in nth@gemini.example.test, other@example.test');
     expect((await command({ type: 'CREATE_PAGE', url: 'https://lobste.rs/' })).json().siteAccount).toContain('none of them');
+    expect(start).not.toHaveBeenCalled();
+
+    // 2026-11-27 REVIEW: a sign-in handoff on that tab is the agent's to route, so no operator card forms, even with triedStored.
+    store.updatePaneBrowserSession(session.sessionId, { currentUrl: 'https://lobste.rs/login' });
+    const before = store.listBrowserHandoffRequests(room.id).length;
+    for (const kind of ['LOGIN', 'MFA']) {
+      const picked = await command({ type: 'REQUEST_HANDOFF', kind, reason: 'Sign in to lobste.rs', triedStored: true });
+      expect(picked.statusCode, picked.body).toBe(200);
+      expect(picked.json()).toMatchObject({ status: 'PICK_ACCOUNT', accounts: ['nth@gemini.example.test', 'other@example.test'],
+        message: expect.stringContaining('space_browser_select_account') });
+    }
+    expect(store.listBrowserHandoffRequests(room.id)).toHaveLength(before);
     expect(start).not.toHaveBeenCalled();
   });
 });

@@ -225,7 +225,9 @@ export class StreamingBotService {
       const authorization = authorizations.find(item => item.id === account?.authorizationId && item.status === "ACTIVE");
       const scopes = chatScopes[platform];
       const needed = [scopes.read, ...(settings.platforms[platform].enabled ? [scopes.write] : []), ...(settings.moderationEnabled ? [scopes.moderate] : [])];
-      const client = this.options.credentialStore ? await this.options.credentialStore.readiness(platform) : null;
+      // A grant with its own client (taken from the Space Google sign-in) needs no client file.
+      const store = this.options.credentialStore;
+      const client = store && authorization ? await store.clientFor(platform, authorization.credentialRef).then(() => null, () => store.readiness(platform)) : null;
       const hint = !selected ? `Pick a connected ${name} account under Platforms.`
         : !account ? `Reconnect ${name} in Overview. ${selected.safeErrorMessage ?? ""}`.trim().slice(0, 300)
         : !authorization ? `Reconnect ${name} in Overview.`

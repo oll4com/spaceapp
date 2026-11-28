@@ -20,7 +20,7 @@ import type { TaskTitleState } from "@space/contracts";
 import pg from "pg";
 import { accessSync, constants } from "node:fs";
 import { dirname, parse } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { defaultToolRoutingState, toolRoutingStateSchema, type ToolRoutingStateV1 } from "@space/contracts";
 import {
   adminOperationRunSchema,
@@ -6041,6 +6041,51 @@ export class PostgresSpaceStore implements SpaceStore {
       await client.query(
         "UPDATE user_invites SET accepted_at = $2, accepted_user_id = $3 WHERE id = $1",
         [invite.id, input.now, user.id]
+      );
+      await client.query("COMMIT");
+      return user;
+    } catch (error) {
+      const rollback = await rollbackKeepingError(client, error);
+      rollbackFailed = rollback.failed;
+      throw rollback.error;
+    } finally {
+      client.release?.(rollbackFailed || undefined);
+    }
+  }
+
+  async signUpWithGoogleInvite(input: { identity: VerifiedGoogleIdentity; termsVersion: string; region: string; now: string }): Promise<AuthUser | null> {
+    const { identity, now } = input;
+    const client = await this.pool.connect();
+    let rollbackFailed = false;
+    try {
+      await client.query("BEGIN");
+      const found = await client.query<{ id: string }>(
+        `SELECT id FROM user_invites WHERE lower(email) = lower($1) AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > $2
+         ORDER BY created_at LIMIT 1 FOR UPDATE`,
+        [identity.email, now]
+      );
+      const invite = found.rows[0];
+      // shortcut: users.email is unique, so a second Google account with a taken address is refused (K2 §4.2 wants a second user); lift with K1's per-tenant users.
+      const taken = invite ? await client.query("SELECT 1 FROM users WHERE lower(email) = lower($1) LIMIT 1", [identity.email]) : null;
+      if (!invite || (taken?.rows.length ?? 0) > 0) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+      // The invite's role is ignored: a sign-up is always a USER of its own tenant (roles are platform-wide).
+      const user = authUserSchema.parse({ id: makeSpaceId("user"), email: identity.email, role: "USER", googleId: identity.sub, avatarUrl: identity.picture ?? null });
+      const tenantId = makeSpaceId("tenant");
+      await client.query("UPDATE user_invites SET accepted_at = $2, accepted_user_id = $3 WHERE id = $1", [invite.id, now, user.id]);
+      await client.query("INSERT INTO tenants (id, kind, region) VALUES ($1, 'PERSONAL', $2)", [tenantId, input.region]);
+      // The user's rows (the Google link, the seeded Dots) take their tenant_id default from this setting, never tenant:local.
+      await client.query("SELECT set_config('space.tenant_id', $1, true)", [tenantId]);
+      await client.query(
+        `INSERT INTO users (id, email, role, tenant_id, google_id, avatar_url, terms_version, adult_confirmed_at, updated_at)
+         VALUES ($1, $2, 'USER', $3, $4, $5, $6, $7, $7)`,
+        [user.id, user.email, tenantId, identity.sub, identity.picture ?? null, input.termsVersion, now]
+      );
+      await client.query(
+        "INSERT INTO google_accounts (id, owner_user_id, google_sub, email, display_name, avatar_url, is_primary) VALUES ($1, $2, $3, $4, $5, $6, true)",
+        [`google_account:${randomUUID()}`, user.id, identity.sub, identity.email, identity.name ?? null, identity.picture ?? null]
       );
       await client.query("COMMIT");
       return user;

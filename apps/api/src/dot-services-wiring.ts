@@ -1,4 +1,4 @@
-import type { Pane } from "@space/contracts";
+import { connectorCapabilities, type Pane } from "@space/contracts";
 import { PostgresConnectorAccountsRepository, PostgresDotDelegationsRepository, PostgresDotDeliverablesRepository, PostgresDotSchedulesRepository, type AutoRouteShadowRepository, type PostgresDotGoalsRepository, type PostgresDotsRepository } from "@space/db";
 import { SpaceConflictError, makeSpaceId, redactMemoryText, type SpaceEventBus, type SpaceStore } from "@space/runtime";
 import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fastify";
@@ -11,6 +11,7 @@ import type { SpaceApiConfig } from "./config.js";
 import { registerDotAutoRoutingShadowRoutes } from "./dot-auto-routing-routes.js";
 import { createDotComputerService } from "./dot-computer.js";
 import { createConnectorService, createGoogleConnector, createMicrosoftConnector, registerConnectorRoutes, type ConnectorCrypto, type ConnectorOAuthStateTools } from "./dot-connectors.js";
+import type { StreamingService } from "./streaming-service.js";
 import { createDotDelegationService } from "./dot-delegations.js";
 import { createDotDeliverablesService, registerDotDeliverableRoutes } from "./dot-deliverables.js";
 import type { createDotGoalService } from "./dot-goals.js";
@@ -46,6 +47,7 @@ type DotServicesWiringDeps = {
   connectorStateTools: ConnectorOAuthStateTools;
   roomPaneCommands: Pick<ReturnType<typeof createRoomPaneCommands>, "resolve">;
   spaceAgentAdapter: Pick<SpaceAgentAdapter, "sendMessage" | "interrupt" | "createOrRestoreSession">;
+  streamingService: Pick<StreamingService, "importYouTubeGrant">;
 };
 
 /**
@@ -57,7 +59,7 @@ type DotServicesWiringDeps = {
 export function registerDotServices(app: FastifyInstance, deps: DotServicesWiringDeps) {
   const { store, config, options, auth, eventBus, defaultRouteRateLimitOptions, dotsAuthenticatedOwner, dotsRepository, dotGoalsRepository, dotGoalService,
     dotMemoryService, dotAtCapacity, autoRouteFactsLoader, browserSessionManager, browserAccountStore, youtubeAccountOwner, cliRuntimeVisibility, connectorCrypto,
-    connectorServiceRef, connectorStateTools, roomPaneCommands, spaceAgentAdapter } = deps;
+    connectorServiceRef, connectorStateTools, roomPaneCommands, spaceAgentAdapter, streamingService } = deps;
   const dotSchedulesRepository = dotsRepository && config.databaseUrl ? PostgresDotSchedulesRepository.fromConnectionString(config.databaseUrl) : null;
   if (dotSchedulesRepository) app.addHook("onClose", () => dotSchedulesRepository.dispose());
   const dotScheduleService = dotsRepository && dotSchedulesRepository ? createDotScheduleService({
@@ -162,6 +164,15 @@ export function registerDotServices(app: FastifyInstance, deps: DotServicesWirin
       if (request) await recordAudit(store, request, { action, targetType: "connector", targetId: String(metadata.accountId ?? ""), metadata });
       else await Promise.resolve(store.recordAuditEvent({ actorUserId: null, traceId: makeSpaceId("trace"), action, targetType: "connector",
         targetId: String(metadata.accountId ?? ""), metadata })).catch(() => undefined);
+    },
+    // Streaming (admin only) uses an admin's YouTube grant on the sign-in client when it has no active YouTube grant of its own.
+    onGrant: async ({ request, provider, tokens, redirectUri }) => {
+      if (provider !== "GOOGLE" || request?.user?.role !== "ADMIN" || !tokens.refreshToken || !auth.googleClientId || !auth.googleClientSecret
+        || !connectorCapabilities("GOOGLE", tokens.scopes).includes("YOUTUBE")) return;
+      await streamingService.importYouTubeGrant({
+        token: { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, expiresAt: tokens.expiresAt, tokenType: "Bearer", scopes: tokens.scopes, grantSubject: null },
+        client: { clientId: auth.googleClientId, clientSecret: auth.googleClientSecret, redirectUri }
+      });
     }
   }) : null;
   connectorServiceRef.current = connectorService;

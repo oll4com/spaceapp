@@ -4,7 +4,7 @@ import { InMemorySpaceNotificationsRepository } from "@space/db";
 import { InMemorySpaceStore, SpaceEventBus } from "@space/runtime";
 import { createNotificationService } from "../src/notifications/service.js";
 import {
-  closeInterviewTask, completeAppointment, parseDeadline, recordInterviewTask, remindInterviews, renderInterviewReminder, setInterviewDeadline, siblingDeadline, taskDeadline, type InterviewRequest, type PassMail
+  closeInterviewTask, completeAppointment, interviewStage, parseDeadline, recordInterviewTask, remindInterviews, renderInterviewReminder, setInterviewDeadline, siblingDeadline, taskDeadline, threadAppointments, type InterviewRequest, type PassMail
 } from "../src/job-apply/interview-tasks.js";
 import { classifyApplicationMail } from "../src/job-apply/mail-triage.js";
 
@@ -145,15 +145,17 @@ describe("daily test and interview reminder", () => {
     lastUsedAt: "2026-10-26T00:00:00.000Z", schedule: null, objective: `${title}\nDeadline: ${deadline}\nTodo\nGmail thread: ${id} (me@gmail.com)`
   });
 
-  it("lists open ones soonest first, marks due in <24 h, says a passed deadline once and leaves done tasks out", () => {
+  it("puts requests with no date for 2+ days first, then open ones soonest first, keeps passed deadlines every day and leaves done tasks out", () => {
     const hours = (count: number) => new Date(nowMs + count * 3_600_000).toISOString();
     const reminder = renderInterviewReminder([
       task("a", "Test: A", hours(30)), task("b", "Interview: B", hours(5)), task("c", "Test: C", "not stated"), task("d", "Test: D", hours(2), "DONE"),
-      task("e", "Test: E", hours(-2)), task("f", "Test: F", hours(-72)), { ...task("g", "Someone else's task", hours(1)), objective: "No thread here" }
+      task("e", "Test: E", hours(-2)), task("f", "Test: F", hours(-72)), { ...task("g", "Someone else's task", hours(1)), objective: "No thread here" },
+      { ...task("h", "Interview: H", "not stated"), createdAt: "2026-10-16T00:00:00.000Z" }
     ], nowMs);
-    expect(reminder).toEqual({ title: "Tests and interviews: 3 open", taskIds: ["b", "a", "c", "e"],
-      body: "- Interview: B (due in <24 h)\n- Test: A\n- Test: C\n- Test: E (deadline passed)" });
-    expect(renderInterviewReminder([task("f", "Test: F", hours(-72))], nowMs)).toBeNull();
+    expect(reminder).toEqual({ title: "Tests and interviews: 4 open, 1 with no date for 2+ days", taskIds: ["h", "b", "a", "c", "e", "f"],
+      body: "- Interview: H (NO DATE FOR 11 DAYS: reply, book or record the date)\n- Interview: B (due in <24 h)\n- Test: A\n- Test: C\n"
+        + "- Test: E (deadline passed: close the task or get a new date)\n- Test: F (deadline passed: close the task or get a new date)" });
+    expect(renderInterviewReminder([task("d", "Test: D", hours(2), "DONE")], nowMs)).toBeNull();
   });
 
   it("raises one ATTENTION reminder a day at 10:00 in the operator's zone, also across a restart", async () => {
@@ -215,5 +217,44 @@ describe("an appointment marked completed", () => {
     // A plain task's appointment changes no task and names no application.
     expect(await completeAppointment(deps, owner, appointment("appointment:plain", plain.id))).toEqual({ taskId: null, applicationId: null, closed: 0 });
     expect((await store.getTaskItem(owner, plain.id))!.status).toBe("OPEN");
+  });
+});
+
+describe("interview stage of an Action-needed thread (operator 27/11)", () => {
+  const nowMs = Date.parse("2026-11-27T05:00:00.000Z");
+  const day = 86_400_000;
+  const task = (status: "OPEN" | "DONE" | "ARCHIVED") => ({ id: "task:t1", title: "Interview: X", status, source: "AGENT" as const, roomId: null, paneId: null, paneTitle: null,
+    occurrenceCount: 1, characterCount: 10, createdAt: "2026-11-20T00:00:00.000Z", lastUsedAt: "2026-11-20T00:00:00.000Z", schedule: null,
+    objective: "Interview: X\nDeadline: not stated\nGmail thread: th1 (me@gmail.com)" });
+  const appt = (sourceRef: string, startsAt: number, status: Appointment["status"] = "UPCOMING", kind: Appointment["kind"] = "INTERVIEW"): Appointment => ({
+    id: `appointment:${sourceRef}:${startsAt}`, ownerUserId: owner, title: "Interview", startsAt: new Date(startsAt).toISOString(), endsAt: null, timeZone: "Asia/Bangkok", kind,
+    location: null, notes: null, sourceRef, status, format: null, timing: null, deadlineAt: null, remindersSent: [], createdAt: "", updatedAt: "" });
+
+  it("finds a thread's appointments by its Gmail ref or its task, also the old doubled task ref", () => {
+    const list = [appt("gmail:me@gmail.com:th1", nowMs), appt("task:t1", nowMs), appt("task:task:t1", nowMs), appt("gmail:me@gmail.com:th2", nowMs), appt("gmail:other@gmail.com:th1", nowMs)];
+    expect(threadAppointments(list, "me@gmail.com", "th1", task("OPEN")).map((item) => item.sourceRef)).toEqual(["gmail:me@gmail.com:th1", "task:t1", "task:task:t1"]);
+    expect(threadAppointments(list, "me@gmail.com", "th1", null)).toHaveLength(1);
+  });
+
+  it("keeps a step we owe in Action needed, files a booked one under Interview and a finished one under Old Interview", () => {
+    const stage = (input: Partial<Parameters<typeof interviewStage>[0]>) => interviewStage({ task: null, appointments: [], newestAt: nowMs, nowMs, ...input });
+    expect(stage({ task: task("OPEN") })).toBe("ACTION_NEEDED");
+    expect(stage({ task: task("OPEN"), appointments: [appt("task:t1", nowMs + day)] })).toBe("INTERVIEW");
+    expect(stage({ task: task("DONE"), appointments: [appt("task:t1", nowMs + day)] })).toBe("INTERVIEW");
+    expect(stage({ task: task("OPEN"), appointments: [appt("task:t1", nowMs + day, "UPCOMING", "DEADLINE")] })).toBe("ACTION_NEEDED");
+    // A new round asked after an old interview stays ours to answer.
+    expect(stage({ task: task("OPEN"), appointments: [appt("task:t1", nowMs - day, "DONE")] })).toBe("ACTION_NEEDED");
+    expect(stage({ task: task("DONE") })).toBe("OLD_INTERVIEW");
+    expect(stage({ task: task("ARCHIVED") })).toBe("OLD_INTERVIEW");
+    expect(stage({ appointments: [appt("gmail:me@gmail.com:th1", nowMs - day, "DONE")] })).toBe("OLD_INTERVIEW");
+    expect(stage({ appointments: [appt("gmail:me@gmail.com:th1", nowMs + day, "CANCELLED")] })).toBe("ACTION_NEEDED");
+    expect(stage({ newestAt: nowMs - 15 * day })).toBe("OLD_INTERVIEW");
+    expect(stage({ newestAt: nowMs - 3 * day })).toBe("ACTION_NEEDED");
+    expect(stage({ newestAt: null })).toBe("ACTION_NEEDED");
+    // Under Interview: over once its time passed (also with the task left open), kept while nothing says so.
+    expect(stage({ filed: "INTERVIEW", task: task("OPEN"), appointments: [appt("task:t1", nowMs - day)] })).toBe("OLD_INTERVIEW");
+    expect(stage({ filed: "INTERVIEW", task: task("OPEN"), appointments: [appt("task:t1", nowMs + day)] })).toBe("INTERVIEW");
+    expect(stage({ filed: "INTERVIEW", task: task("OPEN") })).toBe("INTERVIEW");
+    expect(stage({ filed: "INTERVIEW", task: task("DONE") })).toBe("OLD_INTERVIEW");
   });
 });

@@ -243,6 +243,22 @@ describe("Vault sealed fill (Browser Host)", () => {
     expect(password.opened).not.toHaveBeenCalled();
   });
 
+  it("finds a username box with no name, id or autocomplete by its label, else as the one text box before the password, never by guessing (NBG, 27/11)", async () => {
+    const { broker, request } = await harness(["USERNAME", "PASSWORD"]);
+    const inputs = (window: Window) => Array.from(window.document.querySelectorAll("input"), (input) => input.value);
+    const labelled = fakePage('<form><input type="text" placeholder="Όνομα χρήστη"><input type="password"><button>Είσοδος</button></form>');
+    const bare = fakePage('<form><input type="text"><input type="password"><button>Login</button></form>');
+    for (const { page, window } of [labelled, bare]) {
+      expect(await runSealedFill(page, broker, request("FILL"), now)).toMatchObject({ status: "FILLED", typed: true });
+      expect(inputs(window)).toEqual(["synthetic@example.com", SECRET]);
+    }
+    const username = await harness(["USERNAME"]);
+    const two = fakePage('<form><input type="text"><input type="text"><input type="password"></form>');
+    expect(await runSealedFill(two.page, username.broker, username.request("FILL"), now)).toMatchObject({ reason: "FIELD_NOT_FOUND_AFTER_RELOAD", typed: false });
+    expect(inputs(two.window)).toEqual(["", "", ""]);
+    expect(username.opened).not.toHaveBeenCalled();
+  });
+
   it("fills a login's only password field even when the site marks it new-password, never a new/confirm pair (Skimlinks Hub, 14/11)", async () => {
     const { broker, request, opened } = await harness(["USERNAME", "PASSWORD"]);
     const skimlinks = fakePage('<form><input id="user" type="email"><input id="pass" type="password" autocomplete="new-password"><button>Log in</button></form>');

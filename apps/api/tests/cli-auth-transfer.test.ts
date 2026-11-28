@@ -181,6 +181,8 @@ describe("CLI login transfer", () => {
     expect(await cache.read("/usr/local/bin/codex-vscode-parity")).toBeNull();
     expect(probe).toHaveBeenCalledOnce();
     await new Promise<void>((resolve) => signedOut.close(() => resolve()));
+    // A real restart takes seconds; here the new socket can reuse the inode within one coarse ctime tick (CI on hz), which no restart does.
+    await new Promise((resolve) => setTimeout(resolve, 50));
     const signedIn = await startAgent({ exitCode: 0, stdout: "READY\n" });
     try {
       expect(await cache.read("/usr/local/bin/codex-vscode-parity")).toBe("READY");

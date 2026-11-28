@@ -10,8 +10,8 @@ const ACCESS_CACHE_TTL_MS = 60_000;
  * What a signed-in user may do now, as the store says, cached for a minute: the database role replaces the role in
  * the long-lived token, and a disabled account gets no session at all (also after SPACE_MULTI_USER_ENABLED is turned off).
  */
-export function createSessionAccess(options: { store: Pick<SpaceStore, "getControlActor" | "isUserDisabled"> }) {
-  const { store } = options;
+export function createSessionAccess(options: { store: Pick<SpaceStore, "getControlActor" | "isUserDisabled">; durableUsers?: boolean }) {
+  const { store, durableUsers = false } = options;
   const roleCache = new Map<string, { role: AuthUser["role"]; cachedAt: number }>();
   const disabledCache = new Map<string, { disabled: boolean; cachedAt: number }>();
   const fresh = (entry: { cachedAt: number } | undefined, now: number) => entry !== undefined && now - entry.cachedAt < ACCESS_CACHE_TTL_MS;
@@ -24,10 +24,14 @@ export function createSessionAccess(options: { store: Pick<SpaceStore, "getContr
         sessionUser.role = cached.role;
       } else if (store.getControlActor) {
         try {
-          const dbActor = await store.getControlActor(sessionUser.id);
-          if (dbActor) {
-            roleCache.set(sessionUser.id, { role: dbActor.role, cachedAt: now });
-            sessionUser.role = dbActor.role;
+          // Durable rows (EXT-C-F9): by id, else by the signed e-mail the way upsertUser owns rows (the broker's user:operator-diagnostics
+          // has no row of its own; demoting it would let its next upsertUser write USER onto the operator's row); no row at all (a deleted
+          // account): USER. The memory store loses its rows on restart while cookies live on, so there a missing row keeps the token's role.
+          const dbActor = await store.getControlActor(sessionUser.id, durableUsers ? sessionUser.email : undefined);
+          if (dbActor || durableUsers) {
+            const role = dbActor?.role ?? "USER";
+            roleCache.set(sessionUser.id, { role, cachedAt: now });
+            sessionUser.role = role;
           }
         } catch (error) {
           // Never trust the role embedded in a long-lived token when the store

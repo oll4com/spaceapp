@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { connectorCapabilities, connectorCapabilitySchema, type ConnectorCapability } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
+import { appointmentsFor } from "../src/appointments.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { getApiConfig } from "../src/config.js";
 import { createGoogleConnector, messageText } from "../src/dot-connectors.js";
@@ -234,20 +235,21 @@ describe("gmail organize client", () => {
     }) as unknown as typeof fetch;
     const labels = await ensureJobApplyLabels({ accessToken: "t", fetchImpl });
     const [c, r, a] = ["L-Job Applications/Confirmations", "L-Job Applications/Rejections", "L-Job Applications/Action needed"];
-    expect(labels).toEqual({ ids: { CONFIRMATION: c, REJECTION: r, ACTION_NEEDED: a }, all: ["L-old", "L-mine", c, r, a], legacyOther: "L-old" });
+    expect(labels).toEqual({ ids: { CONFIRMATION: c, REJECTION: r, ACTION_NEEDED: a }, interview: "L-Interview", oldInterview: "L-Old Interview",
+      all: ["L-old", "L-mine", c, r, a, "L-Interview", "L-Old Interview"], legacyOther: "L-old" });
     // No Other label any more (operator 3/11).
     expect(calls.filter((call) => call.method === "POST").map((call) => (call.body as { name: string }).name))
-      .toEqual(["Job Applications/Confirmations", "Job Applications/Rejections", "Job Applications/Action needed"]);
+      .toEqual(["Job Applications/Confirmations", "Job Applications/Rejections", "Job Applications/Action needed", "Interview", "Old Interview"]);
     calls.length = 0;
     await fileGmailThreads({ accessToken: "t", fetchImpl, threadIds: ["t1", "t1", "t2"], labelId: c, archive: true, jobLabelIds: labels.all });
     await fileGmailThreads({ accessToken: "t", fetchImpl, threadIds: ["t3"], labelId: a, archive: false, jobLabelIds: labels.all });
     await fileGmailThreads({ accessToken: "t", fetchImpl, threadIds: ["t4"], labelId: null, archive: false, jobLabelIds: labels.all });
     await fileGmailThreads({ accessToken: "t", fetchImpl, threadIds: [], labelId: a, archive: false, jobLabelIds: labels.all });
     expect(calls.map((call) => [call.url.replace(/^.*\/users\/me/, ""), call.body])).toEqual([
-      ["/threads/t1/modify", { addLabelIds: [c], removeLabelIds: ["INBOX", "L-old", "L-mine", r, a] }],
-      ["/threads/t2/modify", { addLabelIds: [c], removeLabelIds: ["INBOX", "L-old", "L-mine", r, a] }],
-      ["/threads/t3/modify", { addLabelIds: [a], removeLabelIds: ["L-old", "L-mine", c, r] }],
-      ["/threads/t4/modify", { removeLabelIds: ["L-old", "L-mine", c, r, a] }]
+      ["/threads/t1/modify", { addLabelIds: [c], removeLabelIds: ["INBOX", "L-old", "L-mine", r, a, "L-Interview", "L-Old Interview"] }],
+      ["/threads/t2/modify", { addLabelIds: [c], removeLabelIds: ["INBOX", "L-old", "L-mine", r, a, "L-Interview", "L-Old Interview"] }],
+      ["/threads/t3/modify", { addLabelIds: [a], removeLabelIds: ["L-old", "L-mine", c, r, "L-Interview", "L-Old Interview"] }],
+      ["/threads/t4/modify", { removeLabelIds: ["L-old", "L-mine", c, r, a, "L-Interview", "L-Old Interview"] }]
     ]);
     expect(calls.some((call) => /trash|delete/i.test(call.url) || call.method === "DELETE")).toBe(false);
   });
@@ -426,6 +428,43 @@ describe("job copilot mail triage", () => {
     }
   });
 
+  it("keeps in Action needed only a step we owe: a booked interview goes under Interview, a closed task or a passed interview under Old Interview (operator 27/11)", async () => {
+    const day = 24 * 60;
+    const gmail = fakeGmail([
+      { id: "m-closed", threadId: "t-closed", from: "Acme <jobs@acme.example>", subject: "Your interview", minutesAgo: 3 * day, plain: "Please pick a time.", labelIds: ["INBOX", "Existing_0"] },
+      { id: "m-open", threadId: "t-open", from: "Beta <jobs@beta.example>", subject: "Take the test", minutesAgo: 3 * day, plain: "Please take the test.", labelIds: ["INBOX", "Existing_0"] },
+      { id: "m-booked", threadId: "t-booked", from: "Gamma <jobs@gamma.example>", subject: "Interview booked", minutesAgo: 2 * day, plain: "See you then.", labelIds: ["INBOX", "Existing_0"] },
+      { id: "m-done", threadId: "t-done", from: "Delta <jobs@delta.example>", subject: "Interview", minutesAgo: 5 * day, plain: "Confirmed.", labelIds: ["Existing_1"] }
+    ], ["Job Applications/Action needed", "Interview"]);
+    const capabilities: ConnectorCapability[] = ["MAIL_READ", "MAIL_ORGANIZE"];
+    const google: JobApplyGoogleAccess = { googleConfigured: true, async googleAccounts() { return [{ email: "me@gmail.com", capabilities }]; },
+      async googleCapabilities() { return capabilities; }, async googleAccessToken() { return "gmail-token"; }, async tool() { return { status: "COMPLETED", result: {} }; } };
+    const { app, store, owner, headers, agent } = await fixture(google, gmail.fetchImpl);
+    try {
+      expect((await app.inject({ method: "PUT", url: "/api/job-apply/google", headers, payload: { email: "me@gmail.com" } })).statusCode).toBe(200);
+      const task = (threadId: string, status: "OPEN" | "DONE") => store.upsertTaskItem({ ownerUserId: owner, title: `Interview: ${threadId}`, status, source: "AGENT",
+        objective: `Interview: ${threadId}\nDeadline: not stated\nGmail thread: ${threadId} (me@gmail.com)` });
+      await task("t-closed", "DONE");
+      await task("t-open", "OPEN");
+      const booked = await task("t-booked", "OPEN");
+      const service = appointmentsFor(store)!;
+      const filled = { format: "PHONE", timing: "FIXED", location: "+30 210 000 0000", notes: ["WHAT IT IS: an interview.", "HOW TO JOIN: the phone, no sign-in.", "WHY IT MATTERS: the next step.",
+        "WHAT YOU NEED: the CV.", "SOURCE: the mail thread."].join("\n") } as const;
+      await service.add(owner, { title: "Gamma interview", startsAt: new Date(Date.now() + 86_400_000).toISOString(), kind: "INTERVIEW", sourceRef: booked.id, ...filled });
+      await service.add(owner, { title: "Delta interview", startsAt: new Date(Date.now() - 86_400_000).toISOString(), kind: "INTERVIEW", sourceRef: "gmail:me@gmail.com:t-done", ...filled });
+      await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/triage", headers: agent, payload: {} });
+      const label = (name: string) => gmail.labels.find((entry) => entry.name === name)!.id;
+      expect(gmail.state.get("m-open")!.labelIds).toEqual(["INBOX", label("Job Applications/Action needed")]);
+      expect(gmail.state.get("m-booked")!.labelIds).toEqual(["INBOX", label("Interview")]);
+      expect(gmail.state.get("m-closed")!.labelIds).toEqual([label("Old Interview")]);
+      expect(gmail.state.get("m-done")!.labelIds).toEqual([label("Old Interview")]);
+      const events = (await app.inject({ method: "GET", url: "/api/job-apply/events?limit=50", headers })).json();
+      expect(JSON.stringify(events)).toContain("Filed 1 thread under Interview and 2 under Old Interview from me@gmail.com");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("leaves a job alert in the inbox with no label, task or notice, and takes Action needed off an alert filed there earlier (OpenTrain, 28/10)", async () => {
     const gmail = fakeGmail([
       { id: "m-alert", from: "OpenTrain Alert <alert@opentrain.ai>", subject: "New job: Python Infrastructure Engineer - LLM Training & Agent Tooling [AS-L]", minutesAgo: 30,
@@ -538,7 +577,8 @@ describe("job copilot mail triage", () => {
       expect(first.statusCode, first.body).toBe(200);
       expect(first.json()).toEqual({ accounts: ["me@gmail.com"], scanned: 8, confirmations: 3, rejections: 1, actionNeeded: 2, other: 1, skipped: 1, digests: 3 });
       const label = (name: string) => gmail.labels.find((entry) => entry.name === name)!.id;
-      expect(gmail.labels.map((entry) => entry.name)).toEqual(["INBOX", "Job Applications", "Job Applications/Confirmations", "Job Applications/Rejections", "Job Applications/Action needed"]);
+      expect(gmail.labels.map((entry) => entry.name)).toEqual(["INBOX", "Job Applications", "Job Applications/Confirmations", "Job Applications/Rejections", "Job Applications/Action needed",
+        "Interview", "Old Interview"]);
       expect(gmail.state.get("m-receipt")!.labelIds).toEqual([label("Job Applications/Confirmations")]);
       expect(gmail.state.get("m-old-code")!.labelIds).toEqual([label("Job Applications/Confirmations")]);
       expect(gmail.state.get("m-done")!.labelIds).toEqual([label("Job Applications/Confirmations")]);
@@ -593,16 +633,19 @@ describe("job copilot mail triage", () => {
       const unfiled = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/organize", headers: agent, payload: { messageIds: ["m-other"], category: "NONE" } });
       expect(unfiled.json()).toEqual({ account: "me@gmail.com", category: "NONE", label: null, organized: 1, archived: false });
       expect(gmail.state.get("m-other")!.labelIds).toEqual(["INBOX"]);
-      expect(gmail.modifies.at(-1)).toEqual({ thread: "m-other", removeLabelIds: [label("Job Applications/Confirmations"), label("Job Applications/Rejections"), label("Job Applications/Action needed")] });
+      expect(gmail.modifies.at(-1)).toEqual({ thread: "m-other", removeLabelIds: [label("Job Applications/Confirmations"), label("Job Applications/Rejections"), label("Job Applications/Action needed"),
+        label("Interview"), label("Old Interview")] });
       // NONE + archive: plain archive, the Job Applications labels go too.
       const archivedNone = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/organize", headers: agent, payload: { messageIds: ["m-other"], category: "NONE", archive: true } });
       expect(archivedNone.json()).toEqual({ account: "me@gmail.com", category: "NONE", label: null, organized: 1, archived: true });
-      expect(gmail.modifies.at(-1)).toEqual({ thread: "m-other", removeLabelIds: ["INBOX", label("Job Applications/Confirmations"), label("Job Applications/Rejections"), label("Job Applications/Action needed")] });
+      expect(gmail.modifies.at(-1)).toEqual({ thread: "m-other", removeLabelIds: ["INBOX", label("Job Applications/Confirmations"), label("Job Applications/Rejections"), label("Job Applications/Action needed"),
+        label("Interview"), label("Old Interview")] });
       expect(gmail.state.get("m-other")!.labelIds).toEqual([]);
       // ACTION_NEEDED + archive: the label stays, the inbox goes.
       const archivedAction = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/organize", headers: agent, payload: { messageIds: ["m-new-code"], category: "ACTION_NEEDED", archive: true } });
       expect(archivedAction.json()).toEqual({ account: "me@gmail.com", category: "ACTION_NEEDED", label: "Job Applications/Action needed", organized: 1, archived: true });
-      expect(gmail.modifies.at(-1)).toEqual({ thread: "m-new-code", addLabelIds: [label("Job Applications/Action needed")], removeLabelIds: ["INBOX", label("Job Applications/Confirmations"), label("Job Applications/Rejections")] });
+      expect(gmail.modifies.at(-1)).toEqual({ thread: "m-new-code", addLabelIds: [label("Job Applications/Action needed")], removeLabelIds: ["INBOX", label("Job Applications/Confirmations"), label("Job Applications/Rejections"),
+        label("Interview"), label("Old Interview")] });
       expect(gmail.state.get("m-new-code")!.labelIds).toEqual([label("Job Applications/Action needed")]);
       const invalid = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/organize", headers: agent, payload: { messageIds: ["m-other"], category: "SPAM" } });
       expect(invalid.statusCode).toBe(422);

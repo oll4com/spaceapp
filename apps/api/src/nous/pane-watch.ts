@@ -43,6 +43,10 @@ export function firstClaim(text: string, pattern: RegExp): string | null {
   }) ?? null;
 }
 export const waitsOnOperatorClaim = (text: string) => firstClaim(text, WAITS_ON_OPERATOR);
+// lessons-pane-pileup 27/11 (~58 open panes, many kept by KEEP_OPEN verdicts "waits on promote/third party"): a promote is the operator's
+// and a third party's reply comes by mail or a card, so neither needs the pane that finished; text folded as firstClaim folds it.
+const WAITS_WITHOUT_PANE = /(?<!\p{L})(?:wait\p{L}*|await\p{L}*|pending|until|περιμεν\p{L}*|αναμεν\p{L}*|μεχρι)(?:\s+\S+){0,6}?\s+(?:promot\p{L}*|third[- ]part\p{L}*|τριτ(?:ο|ου|ων|οι|ους)(?!\p{L})|vendor\p{L}*|supplier\p{L}*|προμηθευτ\p{L}*|(?:\S+\s+){0,2}(?:reply|answer|response) from|απαντηση (?:απο|του|της|των))/gu;
+export const waitsWithoutPaneClaim = (text: string) => firstClaim(text, WAITS_WITHOUT_PANE);
 /** Only Nous's answers are checked for it: a Done summary may well say a card went to Needs you and was answered. */
 export const inNeedsYouClaim = (text: string) => firstClaim(text, IN_NEEDS_YOU);
 

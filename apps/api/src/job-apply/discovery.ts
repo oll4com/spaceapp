@@ -26,9 +26,9 @@ const SEARCH_URL: Record<SearchSite, (input: SearchInput, page: number, cursor: 
   himalayas: (input, page) => `https://himalayas.app/jobs/api/search?q=${encodeURIComponent(input.query)}&country=Greece&page=${page}`,
   // Guest job search (HTML cards, 10 a page); f_WT=2 is remote, f_TPR=r2592000 the last 30 days (MAX_POSTING_AGE_MS).
   linkedin: (input, page) => `https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=${encodeURIComponent(input.query)}`
-    + `&location=${encodeURIComponent(input.location ?? "Greece")}${input.remote === false ? "" : "&f_WT=2"}&f_TPR=r2592000&start=${(page - 1) * 10}`,
+    + `&location=${encodeURIComponent(input.location ?? "Greece")}${input.remote === true ? "&f_WT=2" : ""}&f_TPR=r2592000&start=${(page - 1) * 10}`,
   workable: (input, _page, cursor) => `https://jobs.workable.com/api/v1/jobs?query=${encodeURIComponent(input.query)}`
-    + `&location=${encodeURIComponent(input.location ?? "Greece")}${input.remote === false ? "" : "&workplace=remote"}${cursor ? `&pageToken=${encodeURIComponent(cursor)}` : ""}`
+    + `&location=${encodeURIComponent(input.location ?? "Greece")}${input.remote === true ? "&workplace=remote" : ""}${cursor ? `&pageToken=${encodeURIComponent(cursor)}` : ""}`
 };
 /** Himalayas returns 20 jobs a page and LinkedIn 10 (no cursor): a short page is the last. Workable pages by nextPageToken. */
 const SEARCH_PAGE_SIZE: Record<SearchSite, number> = { himalayas: 20, linkedin: 10, workable: 0 };
@@ -174,8 +174,8 @@ export function matchesQuery(posting: RawPosting, input: Pick<JobApplyDiscoverRe
   // Goal 91e45be1 (jobrun:FxwhONTgsfU2): stacks off the CV and geofenced "remote" roles were queued, then failed as not eligible.
   const place = `${title} ${posting.location ?? ""}`.toLowerCase();
   if (input.exclude?.some((word) => hasWord(place, word.toLowerCase()))) return false;
-  // Fully remote only unless the caller asks for more with remote: false (goal 91e45be1: hybrid roles were queued, then skipped as "not remote").
-  if (input.remote !== false && posting.remote !== true) return false;
+  // Operator 27/11: every workplace (remote, hybrid, on-site, relocation); remote ranks first in search, remote: true asks for remote only.
+  if (input.remote === true && posting.remote !== true) return false;
   const posted = posting.postedAt ? Date.parse(posting.postedAt) : Number.NaN;
   if (now - posted > MAX_POSTING_AGE_MS) return false;
   if (posting.remote === true && geofenced(posting, input.location?.toLowerCase())) return false;
@@ -217,7 +217,7 @@ export function createDiscovery(options: DiscoveryOptions = {}) {
     for (let page = 1; ; page++) {
       const { payload, error } = await fetchBody(SEARCH_URL[site](input, page, cursor), site === "linkedin");
       if (error) return { postings, error };
-      const parsed = parseBoardPayload(ats, token, payload, Date.now(), input.remote !== false);
+      const parsed = parseBoardPayload(ats, token, payload, Date.now(), input.remote === true);
       postings.push(...parsed.filter(keep));
       const jobs = site === "himalayas" ? (payload as { jobs?: unknown } | null)?.jobs : null;
       cursor = site === "workable" ? text((payload as { nextPageToken?: unknown } | null)?.nextPageToken) : null;
@@ -253,7 +253,7 @@ export function createDiscovery(options: DiscoveryOptions = {}) {
       }));
       const seen = new Set<string>();
       const unique = found.filter((posting) => { if (seen.has(posting.url)) return false; seen.add(posting.url); return true; })
-        .sort((left, right) => (right.postedAt ?? "").localeCompare(left.postedAt ?? "") || left.company.localeCompare(right.company) || left.role.localeCompare(right.role));
+        .sort((left, right) => Number(right.remote === true) - Number(left.remote === true) || (right.postedAt ?? "").localeCompare(left.postedAt ?? "") || left.company.localeCompare(right.company) || left.role.localeCompare(right.role));
       const postings: JobApplyDiscoveredPosting[] = [];
       for (const posting of unique.slice(0, input.limit)) postings.push({ ...posting, tracked: await isTracked(posting.url) });
       return { postings, scanned: scanned.sort((left, right) => left.ats.localeCompare(right.ats) || left.board.localeCompare(right.board)), truncated: unique.length > input.limit };

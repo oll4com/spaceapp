@@ -994,6 +994,9 @@ describe("Nous's gates", () => {
     // R13-12: a site the texts name joins only when it holds mail.
     expect(await mail.lines("user:operator", {}, ["shopflix.gr", "quiet.example"])).toEqual(['Mail from shopflix.gr in 30 days: shop@example.invalid: 2 threads, newest 2026-10-28 "Re: Price feed"']);
     expect(threads).toHaveBeenCalledTimes(3);
+    // lessons-unclear-card (27/11, nous_decision:fe3c969b): a send to people lists their mail only, never the sites its links name.
+    expect(await mail.lines("user:operator", { recipients: ["info@quiet.example"] }, ["shopflix.gr"])).toEqual(["Mail from quiet.example in 30 days: none"]);
+    expect(threads).toHaveBeenCalledTimes(3);
     expect((await ask("Which logo?", "DIRECTION", { recipients: ["maria@shopflix.gr"] })).body).not.toContain("Mail from");
     await service.idle("user:operator");
   });

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Pane, Room } from "@space/contracts";
 import { InMemoryNousPaneChecksRepository } from "@space/db";
-import { createNousPaneWatch, paneCheckedText, waitsOnOperatorClaim, paneRoundLine, paneWatchEntries, paneWatchOverview, renderPanesNotChecked } from "../src/nous/pane-watch.js";
+import { createNousPaneWatch, paneCheckedText, waitsOnOperatorClaim, waitsWithoutPaneClaim, paneRoundLine, paneWatchEntries, paneWatchOverview, renderPanesNotChecked } from "../src/nous/pane-watch.js";
 import { renderNousWorld } from "../src/nous/digest.js";
 import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
 import { paneProgressSchema } from "../src/pane-reports.js";
@@ -74,12 +74,12 @@ describe("Nous's pane watch", () => {
     expect(checks.get(bob.id)).toMatchObject({ verdict: "WAITING_DATE", nextCheckAt: new Date(now + 90 * 60_000).toISOString() });
     // KEEP_OPEN (standing orders 2026-10-21): a finished pane Nous keeps open says why; with no next check it looks again in 30 minutes
     // (2026-11-06 REVIEW: 10 of 18 failed checks were KEEP_OPEN without nextCheckInMinutes).
-    expect(await tools.execute("space_pane_checked", { room: "Bruno", pane: "Bob", verdict: "KEEP_OPEN", note: "Waits for the promote" }, ctx))
+    expect(await tools.execute("space_pane_checked", { room: "Bruno", pane: "Bob", verdict: "KEEP_OPEN", note: "Runs its own nightly import at 02:00" }, ctx))
       .toMatchObject({ ok: true, result: `Recorded; next check ${new Date(now + 30 * 60_000).toISOString()}.` });
-    expect(await tools.execute("space_pane_checked", { room: "Bruno", pane: "Bob", verdict: "KEEP_OPEN", note: "Waits for the promote", nextCheckInMinutes: 120 }, ctx))
+    expect(await tools.execute("space_pane_checked", { room: "Bruno", pane: "Bob", verdict: "KEEP_OPEN", note: "Runs its own nightly import at 02:00", nextCheckInMinutes: 120 }, ctx))
       .toMatchObject({ ok: true, display: "Checked Bob in Bruno: keep open" });
     const kept = (await repository.list(owner)).find((check) => check.paneId === bob.id);
-    expect(kept).toMatchObject({ verdict: "KEEP_OPEN", note: "Waits for the promote", nextCheckAt: new Date(now + 120 * 60_000).toISOString() });
+    expect(kept).toMatchObject({ verdict: "KEEP_OPEN", note: "Runs its own nightly import at 02:00", nextCheckAt: new Date(now + 120 * 60_000).toISOString() });
     expect(paneCheckedText({ room: bruno, pane: bob, state: "done", check: kept!, dueAt: kept!.nextCheckAt!, overdue: false }, clock)).toBe("checked 16:00 (keep open), keep open");
     // A later read keeps the verdict and moves only the time.
     await watch.read(owner, bruno.id, andy.id);
@@ -145,11 +145,28 @@ describe("Nous's pane watch", () => {
     cards = [{ id: "notif:1", paneId: bob.id }];
     decisions = [{ id: "nous_decision:1", status: "OPEN", refs: { paneId: bob.id } }];
     expect((await keep("Waits for the operator's SMS code")).ok).toBe(false);
-    expect((await keep("Waits for the promote")).ok).toBe(true);
+    expect((await keep("Runs its own nightly import at 02:00")).ok).toBe(true);
     decisions = [{ id: "nous_decision:2", status: "OPEN", refs: { paneId: andy.id } }];
     expect((await keep("Waits for the operator's SMS code")).ok).toBe(true);
     decisions = [];
     cards = [{ id: "notif:2", paneId: andy.id }];
     expect(await keep("Η Iris σε περιμένει για τον κωδικό SMS")).toMatchObject({ ok: true, display: "Checked Andy in Bruno: keep open" });
+  });
+
+  it("lessons-pane-pileup 27/11: a work pane is not kept open for a promote or a third party's reply; its own work or another pane type still is", async () => {
+    for (const text of ["Waits for the promote", "Done; waiting on the operator's promote to stable", "Pending the reply from Hetzner support",
+      "Περιμένει τον προμηθευτή να απαντήσει", "Waits on a third-party API key"]) expect(waitsWithoutPaneClaim(text), text).not.toBeNull();
+    for (const text of ["Runs its own nightly import at 02:00", "Nothing waits on the promote now", "Writes the promotion banner", "Waits for its build to finish"])
+      expect(waitsWithoutPaneClaim(text)).toBeNull();
+    const repository = new InMemoryNousPaneChecksRepository();
+    const mail = pane("pane:mail0001", "Mia", { mode: "FREELANCE_COPILOT" });
+    const tools = createNousTools({ paneWatch: createNousPaneWatch({ repository, now: () => now }), rooms: async () => [bruno], listPanes: async () => [andy, mail] } as unknown as NousToolDeps);
+    const ctx = { owner, turnId: "nous_turn:w3", callId: "toolu_p", traceId: "trace:p" };
+    const check = (name: string, verdict: string, note: string) => tools.execute("space_pane_checked", { room: "Bruno", pane: name, verdict, note, nextCheckInMinutes: 120 }, ctx);
+    expect(await check("Andy", "KEEP_OPEN", "Waits for the promote")).toMatchObject({ ok: false, refused: true, result: expect.stringContaining('Send it exactly "save to memory" and close it') });
+    expect(await check("Andy", "WAITING_DATE", "Pending the reply from Hetzner support")).toMatchObject({ ok: false, refused: true });
+    expect(await repository.list(owner)).toEqual([]);
+    expect((await check("Andy", "KEEP_OPEN", "Runs its own nightly import at 02:00")).ok).toBe(true);
+    expect((await check("Mia", "KEEP_OPEN", "Pending the reply from the client")).ok).toBe(true);
   });
 });

@@ -8,6 +8,7 @@ export * from "./mcp-policy.js";
 export * from "./session-auth.js";
 export * from "./shared-state.js";
 export * from "./space-memory-files.js";
+export * from "./space-memory-seed.js";
 export * from "./memory-mutation-executor.js";
 export * from "./memory-rollout-config.js";
 export * from "./telegram.js";

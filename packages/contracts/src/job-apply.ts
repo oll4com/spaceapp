@@ -247,14 +247,14 @@ export type JobApplyMailboxInput = z.infer<typeof jobApplyMailboxInputSchema>;
  */
 export const jobApplyGoogleAccountSchema = z.object({
   email: z.string().trim().min(3).max(320),
-  capabilities: z.array(connectorCapabilitySchema).max(4),
+  capabilities: z.array(connectorCapabilitySchema).max(connectorCapabilitySchema.options.length),
   available: z.boolean()
 }).strict();
 export type JobApplyGoogleAccount = z.infer<typeof jobApplyGoogleAccountSchema>;
 /** A Google account allowed for Space and what it allowed; Job Copilot reads mail from every one with MAIL_READ. */
 export const jobApplyGoogleMailAccountSchema = z.object({
   email: z.string().trim().min(3).max(320),
-  capabilities: z.array(connectorCapabilitySchema).max(4)
+  capabilities: z.array(connectorCapabilitySchema).max(connectorCapabilitySchema.options.length)
 }).strict();
 export type JobApplyGoogleMailAccount = z.infer<typeof jobApplyGoogleMailAccountSchema>;
 export const jobApplyGoogleAccountInputSchema = z.object({ email: z.string().trim().toLowerCase().email().max(320).nullable() }).strict();
@@ -402,6 +402,9 @@ export const JOB_APPLY_MAIL_LABELS: Record<JobApplyMailCategory, string> = {
   REJECTION: "Job Applications/Rejections",
   ACTION_NEEDED: "Job Applications/Action needed"
 };
+/** Interview stages beside the Job Applications labels (operator 27/11): a scheduled interview, then one that is over or a closed process. */
+export const JOB_APPLY_INTERVIEW_LABEL = "Interview";
+export const JOB_APPLY_OLD_INTERVIEW_LABEL = "Old Interview";
 /** The label filed before 3/11 for mail the rules could not place; Space only takes it off and deletes it once empty. */
 export const JOB_APPLY_MAIL_LEGACY_OTHER_LABEL = "Job Applications/Other";
 /** Organize categories: NONE takes the Job Applications labels off (archived only with `archive: true`). */
@@ -824,7 +827,7 @@ export const jobApplyDiscoverRequestSchema = z.object({
   /** Board tokens (company slugs) to scan, in addition to the ones remembered as SITE memories tagged board-token. */
   tokens: z.array(boardTokenSchema).max(40).default([]),
   location: z.string().trim().max(120).optional(),
-  /** Unset or true: only postings the board marks fully remote (hybrid, on-site and unknown are left out); false: every workplace. */
+  /** true: only postings the board marks fully remote; unset or false: every workplace, remote postings first. */
   remote: z.boolean().optional(),
   /** Whole words or phrases that drop a posting when its title or location has them: the copilot's negate list (stacks, roles) and
    *  geography ban list ("rust", "c#", "us only", "brazil"). Bounded at this trust boundary: each word becomes a scan over every posting. */

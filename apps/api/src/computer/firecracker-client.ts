@@ -24,6 +24,8 @@ export interface FirecrackerClient {
   /** A tampered or foreign snapshot answers 400 (K3), which rejects with FirecrackerApiError. */
   loadSnapshot(paths: { snapshotPath: string; memFilePath: string }, resumeVm: boolean): Promise<void>;
   setBalloon(amountMib: number): Promise<void>;
+  /** A boot-time PUT (machine config, drives, network, balloon, vsock, InstanceStart); see cellBootCalls. */
+  put(path: string, body: unknown): Promise<void>;
 }
 
 export function createFirecrackerClient(socketPath: string, timeoutMs = FIRECRACKER_REQUEST_TIMEOUT_MS): FirecrackerClient {
@@ -71,6 +73,7 @@ export function createFirecrackerClient(socketPath: string, timeoutMs = FIRECRAC
         mem_backend: { backend_type: "File", backend_path: memFilePath },
         resume_vm: resumeVm
       }),
-    setBalloon: (amountMib) => call("PATCH", "/balloon", { amount_mib: amountMib })
+    setBalloon: (amountMib) => call("PATCH", "/balloon", { amount_mib: amountMib }),
+    put: (path, body) => call("PUT", path, body)
   };
 }

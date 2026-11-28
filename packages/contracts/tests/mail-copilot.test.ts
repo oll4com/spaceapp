@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   eventSchema, mailCopilotEventInputSchema, jobApplyMemoryQuerySchema, mailCopilotMemoryQuerySchema, marketingMemoryQuerySchema,
-  connectorCapabilities, createPaneInputSchema, defaultMailCopilotPaneMetadata, mailCopilotConsentUrl, mailCopilotPaneMetadataSchema, mailRuleConditionSchema,
+  connectorCapabilities, missingGoogleCapabilities, createPaneInputSchema, defaultMailCopilotPaneMetadata, mailCopilotConsentUrl, mailCopilotPaneMetadataSchema, mailRuleConditionSchema,
   mailRuleMatches, resolveMailCopilotPaneMetadata, roomPaneBatchItemSchema, userSettingsSchema
 } from "../src/index.js";
 
@@ -50,6 +50,11 @@ describe("Mail Copilot contracts", () => {
     expect(connectorCapabilities("GOOGLE", ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.compose"])).toEqual(["MAIL_READ", "MAIL_COMPOSE", "MAIL_ORGANIZE"]);
     expect(connectorCapabilities("GOOGLE", ["https://www.googleapis.com/auth/gmail.readonly"])).toEqual(["MAIL_READ"]);
     expect(connectorCapabilities("MICROSOFT", ["Mail.ReadWrite"])).toEqual(["MAIL_READ", "MAIL_ORGANIZE"]);
+    // YouTube counts only when every Streaming scope was granted (27/11); a missing one leaves it to "Grant the missing ones".
+    const youtube = ["youtube.readonly", "youtube.force-ssl", "yt-analytics.readonly"].map((scope) => `https://www.googleapis.com/auth/${scope}`);
+    expect(connectorCapabilities("GOOGLE", youtube)).toEqual(["YOUTUBE"]);
+    expect(connectorCapabilities("GOOGLE", youtube.slice(0, 2))).toEqual([]);
+    expect(missingGoogleCapabilities(["MAIL_READ", "CALENDAR"])).toEqual(["MAIL_COMPOSE", "MAIL_ORGANIZE", "YOUTUBE"]);
     expect(mailCopilotConsentUrl("me@gmail.com")).toBe("/api/connectors/google/start?capabilities=MAIL_READ%2CMAIL_COMPOSE%2CCALENDAR%2CMAIL_ORGANIZE&source=mail-copilot&loginHint=me%40gmail.com");
     expect(mailCopilotConsentUrl()).not.toContain("loginHint");
   });

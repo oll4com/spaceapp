@@ -160,7 +160,7 @@ describe("task title details", () => {
         nativeTitle: "Αναβάθμιση τίτλων task",
         nativeTitleLabel: "Claude Code",
         topics: [
-          { title: "Workspace menu layout", summary: "Improve the menu.", source: "native", at: "2026-10-12T08:00:00.000Z" },
+          { title: "Workspace menu layout", summary: "Improve the menu.", source: "native", at: "2026-10-12T08:00:00.000Z", fromNous: true },
           { title: "Login 500 error fix", summary: "Repair the failing login.", source: "ai", at: "2026-10-12T08:05:00.000Z", hasImages: true },
         ],
       },
@@ -175,9 +175,12 @@ describe("task title details", () => {
     expect(screen.getByText("Αναβάθμιση τίτλων task")).toBeTruthy();
     const lines = screen.getByRole("list", { name: "Task title lines" }).querySelectorAll("li");
     expect([...lines].map((line) => line.textContent)).toEqual([
-      "Workspace menu layoutImprove the menu.",
+      "Sent by NousWorkspace menu layoutImprove the menu.",
       "Login 500 error fixImageRepair the failing login.",
     ]);
+    // Only the line whose prompt Nous sent shows the Nous icon.
+    expect(lines[0]!.querySelector('[role="img"][aria-label="Sent by Nous"]')).toBeTruthy();
+    expect(lines[1]!.querySelector('[aria-label="Sent by Nous"]')).toBeNull();
     expect(lines[1]!.getAttribute("aria-current")).toBe("step");
     expect(screen.queryByText("Repair the failing login.", { selector: ".task-title-description" })).toBeNull();
   });

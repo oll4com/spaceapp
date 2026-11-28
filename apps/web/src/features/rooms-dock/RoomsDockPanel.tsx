@@ -10,7 +10,7 @@ import { SPACE_PANE_CONTEXT_MIME, readPaneContextDragPayload } from "../pane-dra
 import { RecoverableSurface } from "../SurfaceErrorBoundary.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { DockButton, DockChips, DockSearch } from "../dock-kit/DockKit.js";
-import { ChevronRight, EyeOff, Folder, FolderOpen, GitBranch, LayoutGrid, MoreHorizontal, Plus, Rocket, Save, Terminal, Trash2, X, type LucideIcon } from "../ui-theme/app-icons.js";
+import { ChevronRight, EyeOff, Folder, FolderOpen, GitBranch, LayoutGrid, MoreHorizontal, Pencil, Plus, Rocket, Save, Terminal, Trash2, X, type LucideIcon } from "../ui-theme/app-icons.js";
 import { modeIcons } from "../pane-card/pane-mode-icons.js";
 import { paneModeLabel } from "../pane-float/pane-mode-labels.js";
 import type { AdminUsers } from "./useAdminUsers.js";
@@ -122,6 +122,27 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
     isRoomWorktreeEnabled, setRoomWorktreeEnabled, projectPresets, reportError: setError, roomDeleteConfirmDialog, movePaneToRoom
   } = actions;
   const [paneDropRoomId, setPaneDropRoomId] = useState<string | null>(null);
+  const [roomNameDrafts, setRoomNameDrafts] = useState<Record<string, string>>({});
+  const [roomNameSavingId, setRoomNameSavingId] = useState<string | null>(null);
+
+  const saveRoomName = async (room: Room) => {
+    const name = roomNameDrafts[room.id]?.trim();
+    if (roomNameSavingId || name === undefined || name === room.name) return;
+    if (!name) {
+      setError("Room name is required.");
+      return;
+    }
+    setRoomNameSavingId(room.id);
+    try {
+      const updated = await api.updateRoom(room.id, { name });
+      setRooms((current) => current.map((r) => (r.id === room.id ? updated : r)));
+      setRoomNameDrafts(({ [room.id]: _saved, ...rest }) => rest);
+    } catch (err) {
+      setError(err instanceof Error ? `The room could not be renamed: ${err.message}` : "The room could not be renamed.");
+    } finally {
+      setRoomNameSavingId(null);
+    }
+  };
   const { preparingRoomId, presentationPanes, presentationRoom, addRoomPanes, openSettingsSurface } = composer;
   const filteredRoomEntries = entries;
   const workspaceEntries = filteredRoomEntries.filter(({ room }) => !isTestRoom(room));
@@ -290,7 +311,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
             type="button"
             className="room-dock-expand-btn"
             aria-expanded={isExpanded}
-            title={isExpanded ? "Close room settings" : "Room settings: project folder, worktrees, delete"}
+            title={isExpanded ? "Close room settings" : "Room settings: name, project folder, worktrees, delete"}
             aria-label={isExpanded ? `Collapse ${room.name}` : `Configure project for ${room.name}`}
             onClick={(e) => {
               e.stopPropagation();
@@ -302,6 +323,42 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
         </div>
         {isExpanded && (
           <div className="room-dock-expansion" onClick={(e) => e.stopPropagation()}>
+            <div className="room-dock-field-header">
+              <span className="room-dock-field-title">
+                <Pencil aria-hidden="true" /> Room name
+              </span>
+            </div>
+            <div className="room-dock-input-row">
+              <input
+                type="text"
+                className="room-dock-project-input dock-kit-field"
+                aria-label={`Name of ${room.name}`}
+                value={roomNameDrafts[room.id] ?? room.name}
+                disabled={roomNameSavingId === room.id}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setRoomNameDrafts((prev) => ({ ...prev, [room.id]: val }));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void saveRoomName(room);
+                  } else if (e.key === "Escape") {
+                    setRoomNameDrafts(({ [room.id]: _discarded, ...rest }) => rest);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="room-dock-save-btn dock-kit-icon-button is-primary"
+                disabled={roomNameSavingId === room.id || !roomNameDrafts[room.id]?.trim() || roomNameDrafts[room.id]?.trim() === room.name}
+                title="Save room name"
+                aria-label="Save room name"
+                onClick={() => void saveRoomName(room)}
+              >
+                <Save aria-hidden="true" />
+              </button>
+            </div>
             <div className="room-dock-field-header">
               <span className="room-dock-field-title">
                 <Folder aria-hidden="true" /> Project folder

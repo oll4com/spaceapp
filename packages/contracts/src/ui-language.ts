@@ -10,6 +10,11 @@ export const UI_LANGUAGES = ["en", "el"] as const;
 export const uiLanguageSchema = z.enum(UI_LANGUAGES);
 export type UiLanguage = z.infer<typeof uiLanguageSchema>;
 export const UI_LANGUAGE_NAMES: Record<UiLanguage, string> = { en: "English", el: "Ελληνικά" };
+/** Agents may also write Thai (Nous Cloud, operator 27/11): the Nous app has a Thai interface; SpaceApp's own screens stay English or Greek. */
+export const AGENT_LANGUAGES = [...UI_LANGUAGES, "th"] as const;
+export const agentLanguageSchema = z.enum(AGENT_LANGUAGES);
+export type AgentLanguage = z.infer<typeof agentLanguageSchema>;
+export const AGENT_LANGUAGE_NAMES: Record<AgentLanguage, string> = { ...UI_LANGUAGE_NAMES, th: "ไทย" };
 
 export function uiLanguageOf(settings: { uiLanguage?: unknown; voice?: { language?: unknown } | null } | null | undefined, browserLanguages: readonly string[] = []): UiLanguage {
   const voice = settings?.voice?.language ?? "auto";
@@ -23,7 +28,14 @@ export function uiLanguageOf(settings: { uiLanguage?: unknown; voice?: { languag
  */
 export function agentLanguageOf(settings: { uiLanguage?: unknown; agentLanguage?: unknown; voice?: { language?: unknown } | null } | null | undefined,
   browserLanguages: readonly string[] = []): UiLanguage {
-  return uiLanguageSchema.safeParse(settings?.agentLanguage).data ?? uiLanguageOf(settings, browserLanguages);
+  const language = agentWritingLanguageOf(settings, browserLanguages);
+  return language === "th" ? "en" : language; // SpaceApp's translations and tables are Greek only: Thai reads them in English
+}
+
+/** The language agents write in, Thai included (operatorLanguageRule); everything translated by SpaceApp itself uses agentLanguageOf. */
+export function agentWritingLanguageOf(settings: { uiLanguage?: unknown; agentLanguage?: unknown; voice?: { language?: unknown } | null } | null | undefined,
+  browserLanguages: readonly string[] = []): AgentLanguage {
+  return agentLanguageSchema.safeParse(settings?.agentLanguage).data ?? uiLanguageOf(settings, browserLanguages);
 }
 
 /** An Accept-Language header's tags, most preferred first ("el-GR,el;q=0.9,en;q=0.8" → ["el-GR", "el", "en"]). */

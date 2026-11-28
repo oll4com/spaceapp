@@ -1305,9 +1305,12 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       let created = 0;
       for (const thread of threads) {
         if (!wholeInbox && (!thread.receivedAt || Date.parse(thread.receivedAt) < since || AUTOMATED_SENDER.test(thread.from.address))) continue;
+        // Our own reply or draft at the end is no new mail: it never reopens a decided conversation (REV1127-006).
+        const newestInbound = !thread.newestLabelIds?.some((label) => label === "SENT" || label === "DRAFT");
         const seen = wholeInbox
           ? (await repository.listEvents(owner, { accountEmail: thread.account, threadId: thread.threadId, types: ["TRIAGE", "MAIL_RECEIVED", "FIX_REQUESTED", "SKIPPED", ...DECIDED_TYPES] }))
-            .filter((event) => DECIDED_TYPES.includes(event.type) || (!offerSkipped && event.type === "SKIPPED") || event.status === "PENDING" || event.status === "TAKEN")
+            // A decision older than the conversation's newest mail no longer counts: new mail brought it back to the inbox (26/11: a Skroutz thread waited 9 hours).
+            .filter((event) => ((DECIDED_TYPES.includes(event.type) || (!offerSkipped && event.type === "SKIPPED")) && !(newestInbound && Date.parse(event.createdAt) < Date.parse(thread.receivedAt ?? ""))) || event.status === "PENDING" || event.status === "TAKEN")
           : await repository.listEvents(owner, { accountEmail: thread.account, threadId: thread.threadId, types: ["TRIAGE", "MAIL_RECEIVED", "TRIAGED", "REPLIED", "DRAFTED", "ARCHIVED", "TRASHED", "LABELED", "SKIPPED", "NEEDS_USER"], limit: 1 });
         if (seen.length) continue;
         await record(owner, { paneId: pane.id, runId, type: "TRIAGE", status: "PENDING", accountEmail: thread.account, threadId: thread.threadId, messageId: thread.messageId,
@@ -1456,8 +1459,26 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const draft = review?.payload.draft as MailComposeInput | undefined;
       if (!draft) return null;
       const files = (review!.payload.attachments as Array<{ filename: string }> | undefined) ?? [];
-      return { headers: [["From", draft.account], ["To", draft.to.join(", ")], ["Cc", (draft.cc ?? []).join(", ")], ["Bcc", (draft.bcc ?? []).join(", ")], ["Subject", draft.subject],
+      // Daily Nous errors 27/11 (decision e561e184, E2B thanks): the card said "From: spaceappdv@gmail.com", the mailbox, while a reply goes from the
+      // Send-as address the thread was written to; the operator declined over it. Show the sender the send uses (replySender), the mailbox only if Gmail is unreachable.
+      const from = await (async () => {
+        const client = await clientFor(owner, draft.account);
+        const original = draft.inReplyToMessageId ? await client.message(draft.inReplyToMessageId, "metadata") : null;
+        const { sender, unsendable } = await replySender(owner, client, draft, original);
+        return unsendable ? `${sender.from} (cannot send: ${unsendable.why})` : sender.from;
+      })().catch(() => `${draft.account} (sender not checked: Gmail unreachable)`);
+      return { headers: [["From", from],["To", draft.to.join(", ")], ["Cc", (draft.cc ?? []).join(", ")], ["Bcc", (draft.bcc ?? []).join(", ")], ["Subject", draft.subject],
         ["Attachments", files.map((file) => file.filename).join(", ")]] as Array<[string, string]>, body: draft.text };
+    },
+    /** Queue.md 1219 (decision 7763df63 26/11): why approving this review would fail at the send (its thread's corporate address has no "Send mail as" route), null when it would go. */
+    async reviewUnsendable(owner: string, reviewId: string) {
+      const review = (await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).find((event) => event.payload.reviewId === reviewId);
+      const draft = review?.payload.draft as MailComposeInput | undefined;
+      if (!draft) return null;
+      const client = await clientFor(owner, draft.account);
+      const original = draft.inReplyToMessageId ? await client.message(draft.inReplyToMessageId, "metadata").catch((error) => { throw gmailError(draft.account, error); }) : null;
+      const { unsendable } = await replySender(owner, client, draft, original);
+      return unsendable ? `${unsendable.why} Add the route: ${unsendable.remedy}` : null;
     },
     async reviewRequiredBy(owner: string, reviewId: string) {
       const review = (await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"] })).find((event) => event.payload.reviewId === reviewId);

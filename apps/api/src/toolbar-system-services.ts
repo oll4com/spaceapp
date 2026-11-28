@@ -221,7 +221,8 @@ async function defaultProcessTable(): Promise<string> {
   const { stdout } = await execFileAsync(
     "ps",
     ["-eo", "pid=,rss=,pcpu=,stat=,args="],
-    { timeout: 2_000, maxBuffer: 512 * 1024 }
+    // Full args= lines run to ~8 KB each; 512 KiB overflowed on busy hosts (Sentry SPACEAPP-API-2K, 27/11).
+    { timeout: 2_000, maxBuffer: 8 * 1024 * 1024 }
   );
   return String(stdout);
 }

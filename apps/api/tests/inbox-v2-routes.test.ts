@@ -6,7 +6,7 @@ import { InMemoryInboxRepository, InMemorySpaceNotificationsRepository, type Pan
 import { makeSpaceId, SpaceConflictError, SpaceEventBus, SpaceNotFoundError } from "@space/runtime";
 import { ZodError } from "zod";
 import { createInboxService } from "../src/inbox/service.js";
-import { registerInboxRoutes } from "../src/inbox/routes.js";
+import { dayIn, registerInboxRoutes, searchDays } from "../src/inbox/routes.js";
 import { installPollEtag } from "../src/poll-etag.js";
 import { createNotificationService } from "../src/notifications/service.js";
 import { registerNousPaneBoardRoutes } from "../src/nous/pane-board-routes.js";
@@ -96,6 +96,19 @@ describe("the v2 inbox routes", () => {
     expect(next).toMatchObject({ cursor: null });
     expect(new Set([...page.threads, ...next.threads].map((thread) => thread.id)).size).toBe(3);
     expect((await f.get("?q=deploy")).threads.map((thread) => thread.id)).toEqual([await f.threadOf(alert)]);
+    // A date is a day (UTC here), with or without words: today's Threads only.
+    const [y, m, d] = new Date().toISOString().slice(0, 10).split("-");
+    expect((await f.get(`?q=${encodeURIComponent(`deploy ${d}/${m}/${y}`)}`)).threads.map((thread) => thread.id)).toEqual([await f.threadOf(alert)]);
+    expect((await f.get(`?q=${encodeURIComponent(`${d}/${m}/${y}`)}`)).threads).toHaveLength(3);
+    expect((await f.get(`?q=${encodeURIComponent("deploy 1/1/2001")}`)).threads).toEqual([]);
+  });
+
+  it("reads a date in the search as a day in the operator's zone, day first", () => {
+    const now = new Date("2026-11-27T08:00:00Z");
+    expect(searchDays("all good closed greenhouse 20/11/2026", now, "Asia/Bangkok")).toEqual({ days: new Set(["2026-11-20"]), words: "all good closed greenhouse" });
+    expect(searchDays("20.11 mail 2026-11-21 3-1-26", now, "UTC")).toEqual({ days: new Set(["2026-11-20", "2026-11-21", "2026-01-03"]), words: "mail" });
+    expect(searchDays("q-20261127-081859 32/13", now, "UTC")).toEqual({ days: new Set(), words: "q-20261127-081859 32/13" });
+    expect(dayIn("2026-11-20T18:30:00Z", "Asia/Bangkok")).toBe("2026-11-21");
   });
 
   it("16/11 12:05 (plan LkwKdOOh2mXK step 1): a card held for Nous is held, last and out of the header's counts; a line never carries internal ids", async () => {

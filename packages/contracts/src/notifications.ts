@@ -14,6 +14,11 @@ export type NotificationSource = z.infer<typeof notificationSourceSchema>;
  * them at once in the app, on the desktop and on Telegram and never waits for Nous (operator rule 2026-10-17, plan clipboard:xEQOrVRQgeAn).
  */
 export const needsOperatorHands = (source: NotificationSource, kind: string) => source === "BROWSER_HANDOFF" || /SIGN_IN|LOGIN|CAPTCHA|HANDOFF|NEEDS_USER|NEEDS_YOU/i.test(kind);
+/** Operator 27/11 (nous_msg:766ca4f6, a Crosschq ID.me card held an hour for Nous): what only the operator's own person can do, by its words: prove
+ *  their identity (KYC, ID.me, passport) or take their own interview or test. Such a question is never held for Nous. Sign-ins and codes are not
+ *  here: Space fills those from the Vault and mail first (vaultCodeHold, the Vault fill gap), and a code that expires is shown at once (EXPIRING_CODE). */
+export const OPERATOR_HANDS_TEXT = /\b(?:id\.me|kyc|identity (?:verification|check)|verify (?:your|my|his|her|their) identity|passport|id document|selfie|liveness check|interview\w*|assessment|exam|(?:coding|skills?|online|technical|take[- ]home|aptitude|personality) (?:test|challenge|quiz))\b|ταυτοποίησ|ταυτότητ|διαβατήρι|συνέντευξ/i;
+export const needsOperatorHandsText = (text: string) => OPERATOR_HANDS_TEXT.test(text);
 export const NOTIFICATION_SOURCE_LABELS: Record<NotificationSource, string> = {
   MAIL_COPILOT: "Mail Copilot", JOB_COPILOT: "Job Copilot", MARKETING_COPILOT: "Marketing Copilot", FREELANCE_COPILOT: "Freelance Copilot", DESIGN: "Design", APP_STUDIO: "App Studio", VIDEO: "Video", SECURITY_COPILOT: "Security Copilot", MONITORING_COPILOT: "Monitoring Copilot", ROOM_AGENT: "Room Agent", COUNCIL: "Council", NOUS: "Nous", BROWSER_HANDOFF: "Browser", ROOM_WATCHDOG: "Room watchdog", SYSTEM: "Space", AGENT: "Agent"
 };

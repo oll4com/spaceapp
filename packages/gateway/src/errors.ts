@@ -16,6 +16,8 @@ export const gatewayErrors = {
   keyRateLimited: () => gatewayError("rate_limit_exceeded", "This API key sent too many requests this minute.", "rate_limit_error"),
   draining: () => gatewayError("gateway_draining", "Space Gateway is restarting. Retry the request.", "server_error"),
   unavailable: () => gatewayError("gateway_unavailable", "Space Gateway storage is unavailable.", "server_error"),
+  providerNotAllowed: (provider: string | null) => gatewayError("provider_not_allowed", provider ? `This API key does not have access to provider '${provider}'.`
+    : "This API key may not use this path.", "permission_error"),
   sourceNotAllowed: () => gatewayError("source_not_allowed", "This address may not use Space Gateway.", "permission_error"),
   lanRouteNotFound: () => gatewayError("not_found", "This path is not available on the LAN address.", "invalid_request_error")
 };

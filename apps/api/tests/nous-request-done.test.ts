@@ -23,7 +23,7 @@ const ctx = { owner, turnId: "turn:operator001", callId: "call:done0001", traceI
 const args = { plan: "clipboard:done0001", request: "Πρόσθεσε Done στο Nous", summary: "Προστέθηκε η καρτέλα Done με επιβεβαίωση.", where: "dev" as const, verified: "Read the Done tab /nous/done on dev: the record shows", tickets: ["q-20261029-060000-abcd"] };
 
 const PROMOTE_TICKET = "q-20261030-203351-eb04";
-function fixture(quiet = false, evidence: { pane?: (since: string) => string | null; ticket?: (id: string) => boolean; statuses?: Record<string, NousRequestStatus>; open?: (paneId: string) => boolean | null; derived?: boolean; sessions?: Record<string, string> } = {}) {
+function fixture(quiet = false, evidence: { pane?: (since: string) => string | null; ticket?: (id: string) => boolean; statuses?: Record<string, NousRequestStatus>; open?: (paneId: string) => boolean | null; derived?: boolean; sessions?: Record<string, string>; reports?: Record<string, { at: string; status: string }> } = {}) {
   const notes = new InMemoryNousRepository();
   const repository = new InMemorySpaceNotificationsRepository(() => "2026-10-29T12:00:00.000Z", true);
   const push = { send: vi.fn(async () => "SENT" as const) };
@@ -40,6 +40,7 @@ function fixture(quiet = false, evidence: { pane?: (since: string) => string | n
   const done = createNousRequestDone({ notes, notifications, plan: async (who, id) => who === owner && id === plan.id ? plan : null, notice, now: () => clock.now,
     ticketSummary: async (id) => id === PROMOTE_TICKET ? "Promote dev a6a234ec0d to stable" : "Nous: a Done tab beside Needs you",
     paneFinished: async (_who, _pane, since) => evidence.pane?.(since) ?? null, paneOpen: async (paneId) => evidence.open?.(paneId) ?? true,
+    paneLastReport: async (_who, paneId) => evidence.reports?.[paneId] ?? null,
     sessionPane: async (paneId) => evidence.sessions?.[paneId.replace(/^pane:/, "cli_session:")] ?? null, ticketOnStable: async (id) => evidence.ticket?.(id) ?? false, releaseShipped: createReleaseShipped(notes),
     requestStatus: async (who, ids) => requests ? requests.statuses(who, ids) : new Map(ids.flatMap((id) => evidence.statuses?.[id] ? [[id, evidence.statuses[id]!] as const] : [])) });
   const tools = createNousTools({ requestDone: done, requests, clipboard: { save: async () => plan },
@@ -354,7 +355,7 @@ describe("Nous Done", () => {
       await f.done.tick(owner);
       const [entry] = await f.done.openList(owner);
       // The turn that carries the line acts on this request before it may answer NOTHING_NEW (31/10 11:18 UTC: consumed with nothing done).
-      expect((f.notice.mock.calls.at(-1) as unknown[])[4]).toMatchObject({ items: [{ key: `request:${entry!.key}`, kind: "REQUEST", requestKey: entry!.key, messageId: m2, pane: "pane:bob0000001" }] });
+      expect((f.notice.mock.calls.at(-1) as unknown[])[4]).toMatchObject({ items: [{ key: `request:${entry!.key}`, kind: "REQUEST", requestKey: entry!.key, messageId: m2, pane: "pane:bob0000001", finished: true, always: true }] });
       expect(await f.done.evidence(owner, entry!)).toBe("pane:bob0000001 reported done 12:40 UTC: pane board fixed");
       // D: seven quiet hours read as no act; an act on it (hold A reports it) starts the count over.
       f.clock.now += 7 * 3_600_000;
@@ -387,6 +388,32 @@ describe("Nous Done", () => {
       // A reopen naming the pane is the act that moves the item.
       expect(itemActed({ key: "k", kind: "REQUEST", line: "", pane: "pane:cody000001" }, [{ name: "space_execute", ok: true, subjects: [],
         args: { room: "Alex", actions: [{ kind: "pane", operation: "reopen", target: { paneIds: ["pane:cody000001"] } }] } }])).toBe(true);
+    });
+
+    it("27/11 Response time (nous_msg:c2f90bd0: Kate's Gemini silent 8 h, the request waited for the 6 h daily line): a request's pane silent 2 h is an item once per silence", async () => {
+      const reports: Record<string, { at: string; status: string }> = { "pane:kate0000001": { at: "2026-10-29T12:35:00.000Z", status: "HEARTBEAT" } };
+      const f = fixture(false, { reports });
+      await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Kate lists the bank orders", outcome: "PENDING", pane: "pane:kate0000001", id: m2 },
+        { summary: "Dana reads the bank page", outcome: "PENDING", pane: "pane:dana000001" }] }, turnCtx);
+      const silent = () => f.notice.mock.calls.filter(([, key]) => String(key).startsWith("request-silent:"));
+      f.clock.now = Date.parse("2026-10-29T14:30:00.000Z");
+      await f.done.tick(owner);
+      expect(silent()).toEqual([]);
+      // Two hours after its last report; Dana's pane never reported (a browser pane) and is not judged.
+      f.clock.now = Date.parse("2026-10-29T14:36:00.000Z");
+      await f.done.tick(owner);
+      expect(silent().map(([, , line]) => line)).toEqual([expect.stringMatching(/^Request "Kate lists the bank orders" \(nous_msg:open00000002\): pane:kate0000001 has been silent since 2026-10-29 12:35 UTC \(its last report 12:35 UTC \(HEARTBEAT\)\); its CLI may have stopped\./)]);
+      await f.done.tick(owner);
+      expect(silent()).toHaveLength(1);
+      // A wait on the operator is not silence; a new silence after a later report comes again.
+      reports["pane:kate0000001"] = { at: "2026-10-29T15:00:00.000Z", status: "NEEDS_YOU" };
+      f.clock.now = Date.parse("2026-10-29T18:00:00.000Z");
+      await f.done.tick(owner);
+      expect(silent()).toHaveLength(1);
+      reports["pane:kate0000001"] = { at: "2026-10-29T18:10:00.000Z", status: "TURN_END" };
+      f.clock.now = Date.parse("2026-10-29T20:11:00.000Z");
+      await f.done.tick(owner);
+      expect(silent()).toHaveLength(2);
     });
 
     it("17/11 (ten finished requests left 16 h behind an hourly low-mode follow-up): a follow-up naming a finished request does not move it; its Done does", () => {
@@ -463,6 +490,14 @@ describe("Nous Done", () => {
       expect(moved!.paneGone).toBeUndefined();
     });
 
+    it("28/11 (nous_msg:ed0d7106, 6522fbcf stayed \"no pane\" after a send named them): a request with no pane binds the pane the first send naming it reached", async () => {
+      const f = fixture(false, { open: () => true });
+      await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Dana reads the bank mail", outcome: "PENDING", id: m2 }] }, turnCtx);
+      expect((await f.done.openList(owner))[0]!.pane ?? null).toBeNull();
+      await f.done.rebound(owner, [{ paneId: "pane:erin000001", text: "Unrelated work" }, { paneId: "pane:dana000001", text: `Work on ${m2.slice(0, "nous_msg:".length + 8)}: the bank mail.` }]);
+      expect((await f.done.openList(owner))[0]).toMatchObject({ pane: "pane:dana000001" });
+    });
+
     it("backfills once the last 7 days' PENDING outcomes that have no Done record, bound to their turn's oldest message", async () => {
       const f = fixture();
       const asked = await f.notes.addMessage({ ownerUserId: owner, turnId: null, kind: "OPERATOR", status: "DONE", content: "Telegram και vault" });
@@ -495,10 +530,32 @@ describe("Nous Done", () => {
       await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Build the Requests tab for the operator: tests left", outcome: "PENDING" }] }, inbox);
       expect((await f.done.openList(owner)).map((entry) => entry.summary)).toEqual(["Build the Requests tab for the operator: tests left"]);
       await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Build the Requests tab for the operator: tests left", outcome: "SELF" }] }, inbox);
+      // 27/11 (nous_msg:583c7629): a SELF with no Done record no longer closes it (its message read Not done forever): it stays open and comes back.
+      const [still] = await f.done.openList(owner);
+      expect(still).toMatchObject({ messageId: m1, reportedDone: expect.stringMatching(/^SELF at /) });
+      expect(await f.done.evidence(owner, still!)).toMatch(/^you reported it SELF at .* but no Done record names it/);
+      await f.tools.execute("space_request_done", { request: "Build the Requests tab for the operator", summary: "Built the Requests tab: tests pass.", where: "dev", id: m1,
+        verified: "Checked /nous/requests on dev: the tab lists every message" }, inbox);
       expect(await f.done.openList(owner)).toEqual([]);
       // Closed, never deleted (nous_notes is class A): the note keeps its data with why it closed.
       const kept = (await f.notes.listNotes(owner)).filter((note) => note.key.startsWith("request-done:open:")).map((note) => JSON.parse(note.text));
-      expect(kept).toEqual([expect.objectContaining({ messageId: m1, summary: "Build the Requests tab for the operator: tests left", closedReason: "outcome SELF", closedAt: expect.any(String) })]);
+      expect(kept).toEqual([expect.objectContaining({ messageId: m1, summary: "Build the Requests tab for the operator: tests left", closedReason: "recorded in Done", closedAt: expect.any(String) })]);
+    });
+
+    it("a SELF outcome of an open request whose Done record exists closes it with a receipt naming its message, so the Requests tab reads Done (27/11 nous_msg:583c7629)", async () => {
+      const f = fixture();
+      await f.tools.execute("space_nous_outcome", { requests: [{ summary: "Civo account lock warning", outcome: "PENDING" }] }, turnCtx);
+      // A Done record its words or id do not tie to the open request (closeOpen leaves it open); the SELF names the record's id.
+      await f.done.run(owner, { request: "Signup warning release", summary: "The warning is gone from the signup page.", where: "dev", id: "nous_msg:other0000001",
+        verified: "Checked /signup on dev: no lock warning" });
+      expect(await f.done.openList(owner)).toHaveLength(1);
+      await f.done.reported(owner, "turn:inbox002", [{ summary: "Civo account lock warning", outcome: "SELF", messageIds: [m1] }], "INBOX");
+      expect(await f.done.openList(owner)).toHaveLength(1);
+      await f.done.reported(owner, "turn:inbox003", [{ summary: "Civo account lock warning", outcome: "SELF", messageIds: [m1], id: "nous_msg:other0000001" }], "INBOX");
+      expect(await f.done.openList(owner)).toEqual([]);
+      const notes = await f.notes.listNotes(owner);
+      expect(notes.find((note) => note.key === requestDoneReceiptKey(m1))?.text).toMatch(/^recorded in Done .* \(outcome SELF at /);
+      expect(notes.filter((note) => note.key.startsWith("request-done:open:")).map((note) => JSON.parse(note.text).closedReason)).toEqual(["recorded in Done"]);
     });
 
     it("closes once, silently, the open requests that are no operator request or whose message is already done or answered; the daily line counts the rest", async () => {
@@ -564,20 +621,21 @@ describe("Nous Done", () => {
       expect(await one({ key: "000000000000000000000000", outcome: "DROPPED", note: drop })).toMatch(/^Closed 1\./);
       // Operator rule 31/10 (STRICT): "already done" with nothing checkable is held; naming what was checked closes it.
       expect(await f.tools.execute("space_open_requests", { close: [{ messageId: "nous_msg:bulk00000058", outcome: "SELF", note: "Done long ago" }] }, ctx)).toMatchObject({ ok: false, refused: true, display: "Not closed: no proof" });
-      expect(await one({ messageId: "nous_msg:bulk00000058", outcome: "SELF", note: "Done long ago: q-20261029-060000-abcd is live on stable" })).toMatch(/^Closed 1\./);
+      // 27/11 (nous_msg:583c7629): a SELF or HELPER close always records its Done, so it needs where and verified like done.
+      expect(await one({ messageId: "nous_msg:bulk00000058", outcome: "SELF", note: "Done long ago: q-20261029-060000-abcd is live on stable" })).toMatch(/^Closed 0\.\n.*needs where/);
       expect(await one({ messageId: "nous_msg:bulk00000057", outcome: "OPERATOR", note: "x", done: true })).toContain("nous_msg:bulk00000057: done takes SELF or HELPER");
-      expect(await one({ key: "request-done:open:000000000000000000000056", outcome: "SELF", note: "/nous/requests", done: true })).toContain("done needs where");
+      expect(await one({ key: "request-done:open:000000000000000000000056", outcome: "SELF", note: "/nous/requests", done: true })).toContain("needs where");
       expect(await one({ key: "000000000000000000000056", outcome: "SELF", note: "/nous/requests", done: true, where: "dev", verified: "looked at it" })).toContain("done needs verified");
       expect(await one({ key: "000000000000000000000056", outcome: "SELF", note: "/nous/requests", done: true, where: "dev" })).toContain("done needs verified");
-      expect(await one({ messageId: "nous_msg:missing00001", outcome: "SELF", note: "/nous/requests" })).toContain("nous_msg:missing00001: no open request");
-      expect((await read({})).list).toMatchObject({ total: 58 });
+      expect(await one({ messageId: "nous_msg:missing00001", outcome: "DROPPED", note: drop })).toContain("nous_msg:missing00001: no open request");
+      expect((await read({})).list).toMatchObject({ total: 59 });
       expect(await f.notifications.list(owner, { status: "ALL", limit: 50 })).toEqual([]);
       // done: its Done record, bound to its operator message.
       const done = await read({ close: [{ key: "000000000000000000000057", outcome: "SELF", note: "Το bulk 57 έγινε.", done: true, where: "dev", verified: "Checked /nous/done on the surface the operator uses" }] });
       expect(done.result.result).toMatch(/^Closed 1, 1 recorded in Done\./);
       const records = await f.notifications.list(owner, { status: "ALL", limit: 50 });
       expect(records).toEqual([expect.objectContaining({ kind: "REQUEST_DONE", dedupeKey: "nous:done:nous_msg:bulk00000057", body: "Το bulk 57 έγινε.\nChecked: Checked /nous/done on the surface the operator uses", payload: expect.objectContaining({ verified: "Checked /nous/done on the surface the operator uses" }) })]);
-      expect(done.list.total).toBe(57);
+      expect(done.list.total).toBe(58);
     });
 
     it("closes an operator message with no open request by its messageId: DROPPED reads Answered, done reads Done, with no notification (Nous 6/11, 801 Not done)", async () => {
@@ -657,7 +715,8 @@ describe("Nous Done", () => {
       const first = await run(`${root}/audit/one.jsonl`);
       expect(first.ok).toBe(true);
       expect(JSON.parse(first.result)).toMatchObject({ lines: 1, closed: 1, alreadyDone: 0, notOpen: 0, errors: [], open: 0 });
-      expect(await f.notifications.list(owner, { status: "ALL", limit: 50 })).toEqual([]);
+      // 27/11: a HELPER close records its Done even with done: false.
+      expect(await f.notifications.list(owner, { status: "ALL", limit: 50 })).toEqual([expect.objectContaining({ kind: "REQUEST_DONE", dedupeKey: `nous:done:${ids[2]}` })]);
       const closed = (await f.notes.listNotes(owner)).filter((note) => note.key.startsWith("request-done:open:")).map((note) => JSON.parse(note.text) as { messageId: string; closedReason?: string });
       expect(closed.find((entry) => entry.messageId === ids[2])?.closedReason).toMatch(/^HELPER: n+…$/);
       // Idempotent: the same file again closes nothing new.

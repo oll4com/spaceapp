@@ -132,6 +132,15 @@ describe("connector crypto and messages", () => {
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(url.searchParams.get("redirect_uri")).toBe("https://space.test/api/auth/google/callback");
   });
+  it("asks Google for all of Streaming's YouTube scopes as one permission, which Microsoft refuses (27/11)", () => {
+    const url = new URL(createGoogleConnector({ clientId: "client-1" }).authorizeUrl({ redirectUri: "https://space.test/api/auth/google/callback",
+      state: "state-1", codeChallenge: "c".repeat(43), capabilities: ["CALENDAR", "YOUTUBE"] }));
+    expect(url.searchParams.get("scope")?.split(" ")).toEqual(["openid", "email", "https://www.googleapis.com/auth/calendar.events",
+      "https://www.googleapis.com/auth/youtube.readonly", "https://www.googleapis.com/auth/youtube.force-ssl", "https://www.googleapis.com/auth/yt-analytics.readonly"]);
+    const microsoft = createMicrosoftConnector({ clientId: "m", clientSecret: "s", tenant: "common" });
+    expect(() => microsoft.authorizeUrl({ redirectUri: "https://x/cb", state: "s", codeChallenge: "c".repeat(43), capabilities: ["YOUTUBE"] }))
+      .toThrow(/cannot grant YOUTUBE/);
+  });
   it("treats a revoked or expired grant as needing reconnection, and an outage as temporary", async () => {
     const respond = (status: number, body: Record<string, unknown>) => vi.fn(async () => Response.json(body, { status })) as unknown as typeof fetch;
     await expect(createGoogleConnector({ clientId: "c", fetchImpl: respond(400, { error: "invalid_grant" }) }).refresh("r")).rejects.toMatchObject({ status: 401 });
@@ -231,6 +240,14 @@ describe("connector service", () => {
     const noOffline = createConnectorService({ accounts, crypto, google: provider({ exchange: vi.fn(async () => ({ accessToken: "a", refreshToken: null,
       expiresAt: new Date().toISOString(), scopes: [], email: "x@example.com" })) }), audit: vi.fn(async () => undefined) });
     await expect(noOffline.complete("user:1", "GOOGLE", { code: "c", codeVerifier: "v", redirectUri: "x" }, null)).rejects.toMatchObject({ code: "CONNECTOR_NO_OFFLINE_ACCESS" });
+  });
+
+  it("hands every stored grant to onGrant, and its failure never fails the connection (27/11)", async () => {
+    const { accounts } = repository();
+    const onGrant = vi.fn(async () => { throw new Error("streaming down"); });
+    const service = createConnectorService({ accounts, crypto, google: provider(), audit: vi.fn(async () => undefined), onGrant });
+    await expect(service.complete("user:1", "GOOGLE", { code: "c", codeVerifier: "v", redirectUri: "https://x/cb" }, null)).resolves.toMatchObject({ email: "owner@example.com" });
+    expect(onGrant).toHaveBeenCalledWith(expect.objectContaining({ provider: "GOOGLE", redirectUri: "https://x/cb", tokens: expect.objectContaining({ refreshToken: "refresh-1" }) }));
   });
 
   it("serves mail and calendar tools, refreshes expired access and marks content untrusted", async () => {

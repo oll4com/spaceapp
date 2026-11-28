@@ -165,7 +165,7 @@ describe("Needs you brings the operator to a pane", () => {
     const window = peek()!;
     expect(within(window).getByRole("article", { name: "Emma needs you" })).toBeTruthy();
     // One answer and Details; the rest waits behind Details.
-    expect(within(window).getAllByRole("button").map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual(["Later", "Go to pane", "Details"]);
+    expect(within(window).getAllByRole("button").map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual(["Later", "Go to pane", "1 more answer", "Details"]);
     expect(peekNotificationStore().toasts).toEqual([]);
     await advance(60_000);
     expect(calls).toEqual([]);
@@ -278,8 +278,10 @@ describe("Needs you brings the operator to a pane", () => {
       expect(window.textContent).toContain("Is SpaceApp 0.2.13 on the phone?");
       expect(window.textContent).not.toContain("Open the Play Store");
       fireEvent.click(within(window).getByRole("button", { name: "Details" }));
+      fireEvent.click(within(window).getByRole("button", { name: "More" }));
       expect(window.textContent).toContain("Open the Play Store.");
-      expect(within(window).getByRole("button", { name: "Υπάρχει πρόβλημα" })).toBeTruthy();
+      // Plan clipboard:va__qa_eBMYr: a problem is his words in the field, its hint in the agents' language.
+      expect((within(window).getByRole("textbox", { name: "What went wrong?" }) as HTMLInputElement).placeholder).toBe("Υπάρχει πρόβλημα; γράψ' το");
       fireEvent.click(within(window).getByRole("button", { name: "Το έκανα, όλα καλά" }));
       await advance(0);
       const sent = vi.mocked(fetch).mock.calls.find(([url]) => decodeURIComponent(String(url)).endsWith("notification:phone/answer"));
@@ -483,7 +485,7 @@ describe("Needs you brings the operator to a pane", () => {
     unregister();
   });
 
-  it("operator nous_msg:42ec5f5c: a handoff another CLI raises on the browser a visit is on still offers Go now, and only his click takes the pane and tab", async () => {
+  it("operator nous_msg:42ec5f5c: a handoff another CLI raises on the browser a visit is on still offers Go to the page, and only his click takes the pane and tab", async () => {
     // 6/11: Leo (Claude) left a visit on the PayPal browser; Kate (Gemini CLI) then asked for the code through the same handoff route, the Nous dock open.
     emmaMode = "BROWSER";
     handoffStatus = "REQUESTED";
@@ -497,11 +499,11 @@ describe("Needs you brings the operator to a pane", () => {
       link: { roomId: "room:work000001", paneId: EMMA, target: "tab:page-paypal" }, payload: { site: "paypal.com" } });
     expect(needsYouPlace(handoff, "BROWSER")).toBe("PANE");
     await deliver(handoff);
-    expect(within(peek()!).getByRole("button", { name: "Go now" })).toBeTruthy();
+    expect(within(peek()!).getByRole("button", { name: "Go to the page" })).toBeTruthy();
     await advance(PEEK_MS - 1_000);
     expect(calls).toEqual([]);
     expect(actions).toEqual([]);
-    fireEvent.click(within(peek()!).getByRole("button", { name: "Go now" }));
+    fireEvent.click(within(peek()!).getByRole("button", { name: "Go to the page" }));
     await advance(200);
     expect(actions).toContainEqual({ paneId: EMMA, action: "handoff", roomId: "room:work000001" });
     unregister();

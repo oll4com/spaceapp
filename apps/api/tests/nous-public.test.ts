@@ -1,15 +1,16 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { InMemoryNousRepository } from "@space/db";
-import { createNousService } from "../src/nous/service.js";
+import { createNousService, NOUS_PROVIDER_FAILURE } from "../src/nous/service.js";
 import { computeNousTokens } from "../src/nous/tokens.js";
-import { NOUS_CONNECT_CLAUDE, NOUS_FREE_MODEL_NOTE, NOUS_UPDATE_CLI, nousFilesRoots, nousTurnBackend } from "../src/nous/wiring.js";
+import { NOUS_CLOUD_BUSY, NOUS_CONNECT_CLAUDE, NOUS_FREE_MODEL_NOTE, NOUS_UPDATE_CLI, nousFilesRoots, nousTurnBackend } from "../src/nous/wiring.js";
 import { createNousFiles, NOUS_FILES_ROOT } from "../src/nous/files.js";
 import { createNousTools, nousToolDefinitions } from "../src/nous/tools.js";
-import { nousLowSpendSettingsSchema, nousSettingsSchema, withNousPublicDefaults } from "@space/contracts";
+import { NOUS_GATEWAY_UNREACHABLE, NOUS_QUOTA_EXHAUSTED, nousLowSpendSettingsSchema, nousSettingsSchema, withNousPublicDefaults } from "@space/contracts";
 
 const owner = "user:operator";
 const config = (extra: Record<string, unknown>) => ({ instance: "stable", publicDistribution: false, cliEnabled: true, cliHostSocketPath: "/run/x/host.sock", ...extra }) as never;
@@ -92,6 +93,79 @@ describe("where Nous's turns run (plan clipboard:1NF6u6gcCwtj, operator decision
       expect(await backend.unavailable()).toBe(NOUS_UPDATE_CLI);
     } finally {
       agent.close();
+    }
+  });
+
+  it("a Nous Cloud box runs on Auto: its Space Gateway key, then the free model, and no provider text reaches the chat (plan clipboard:yw_pvUb_616N step 4)", async () => {
+    const root = await mkdtemp("/tmp/space-cloud-nous-");
+    await writeFile(join(root, "gateway.key"), "sk-sgw-synthetic-test-key\n"); // synthetic test key; gitleaks:allow
+    let gatewayFails = false;
+    let freeFails = false;
+    let gatewayHangs = false;
+    // The Gateway's own entry only answers the reachability probe here; the turns go to the CLI container's socket.
+    const entry = createHttpServer((_request, response) => response.end("{}"));
+    await new Promise<void>((resolve) => entry.listen(0, "127.0.0.1", resolve));
+    const gw = `http://127.0.0.1:${(entry.address() as { port: number }).port}/api/nous-cloud/gateway/v1`;
+    const inputs: Array<Record<string, unknown>> = [];
+    const answer = (ok: boolean, text: string, model: string) => `${JSON.stringify({ type: "result", provider: "opencode", subtype: ok ? "success" : "error", is_error: !ok, result: text, num_turns: 1,
+      modelUsage: { [model]: { inputTokens: 3, outputTokens: 2 } } })}\n\x1e${JSON.stringify({ exitCode: ok ? 0 : 1, stderr: "" })}\n`;
+    const agent = createServer({ allowHalfOpen: true }, (socket) => {
+      let body = "";
+      socket.setEncoding("utf8").on("data", (chunk) => {
+        body += chunk;
+        if (!body.includes("\n")) return;
+        const request = JSON.parse(body.split("\n")[0]!) as Record<string, unknown>;
+        if (request.action === "credential-status") { socket.end(`${JSON.stringify({ exitCode: 1, stdout: "NOT_READY\n" })}\n`); return; }
+        const input = JSON.parse(String(request.input)) as Record<string, unknown>;
+        inputs.push(input);
+        if (input.gateway && gatewayHangs) return;
+        if (input.gateway) socket.end(answer(!gatewayFails, gatewayFails ? "Claude via OpenCode: Space Gateway answered 429 (quota exhausted); provider unavailable." : "Via the Gateway.", "space/gpt-6-mini"));
+        else socket.end(answer(!freeFails, freeFails ? "Free usage limit reached" : "Via the free model.", "opencode/big-pickle"));
+      });
+    });
+    await new Promise<void>((resolve) => agent.listen(join(root, "credentials.sock"), resolve));
+    try {
+      const backend = nousTurnBackend({ config: config({ publicDistribution: true, cliHostSocketPath: join(root, "host.sock"),
+        nousCloudGatewayUrl: gw, nousCloudGatewayKeyFile: join(root, "gateway.key") }) });
+      // A provider other than Claude in the settings is no refusal on a box: Auto decides.
+      const turn = { provider: "codex" as const, model: "gpt-6", effort: "medium", system: "s", prompt: "p", maxTurns: 80, timeoutMs: 60_000, caller: "nous-operator",
+        mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp", mcpToken: "tok_0123456789abcdefghij" }; // synthetic MCP test token; gitleaks:allow
+      expect(await backend.unavailable()).toBeNull();
+      const labels: string[] = [];
+      const drafts: Array<{ start?: boolean }> = [];
+      // The box's key first, with no suggestion to connect Claude Code.
+      expect(await backend.run!(turn, new AbortController().signal, undefined, (model) => labels.push(model))).toMatchObject({ text: "Via the Gateway.", isError: false, model: "space/gpt-6-mini" });
+      expect(inputs.at(-1)).toMatchObject({ gateway: { baseUrl: gw, apiKey: "sk-sgw-synthetic-test-key" } });
+      expect(labels).toEqual(["auto"]);
+      // The Gateway refuses: the free model answers the same turn, its draft starts over, and nothing of the refusal shows.
+      gatewayFails = true;
+      expect(await backend.run!(turn, new AbortController().signal, (event) => drafts.push(event), (model) => labels.push(model))).toMatchObject({ text: "Via the free model.", isError: false, model: "opencode/big-pickle" });
+      expect(inputs.at(-1)).not.toHaveProperty("gateway");
+      expect(labels.slice(1)).toEqual(["auto", "opencode"]);
+      expect(drafts).toContainEqual({ start: true });
+      // Every backend refuses: one neutral line the service retries (no quota hold, no pause, no provider wording).
+      freeFails = true;
+      await expect(backend.run!(turn, new AbortController().signal)).rejects.toThrow(NOUS_CLOUD_BUSY);
+      for (const pattern of [NOUS_PROVIDER_FAILURE, NOUS_QUOTA_EXHAUSTED, NOUS_GATEWAY_UNREACHABLE]) expect(NOUS_CLOUD_BUSY).not.toMatch(pattern);
+      // No key file yet (the provisioner has not written it): straight to the free model.
+      freeFails = false;
+      const keyless = nousTurnBackend({ config: config({ publicDistribution: true, cliHostSocketPath: join(root, "host.sock"),
+        nousCloudGatewayUrl: gw, nousCloudGatewayKeyFile: join(root, "missing.key") }) });
+      const before = inputs.length;
+      expect((await keyless.run!(turn, new AbortController().signal)).text).toBe("Via the free model.");
+      expect(inputs.length - before).toBe(1);
+      // The Gateway step hangs: it stops on its own time and the free model still answers within the turn's.
+      gatewayHangs = true;
+      expect((await backend.run!({ ...turn, timeoutMs: 1_000 }, new AbortController().signal)).text).toBe("Via the free model.");
+      gatewayHangs = false;
+      // The Gateway is unreachable: the probe skips its step, and the free model answers at once.
+      await new Promise<void>((resolve) => entry.close(() => resolve()));
+      const counted = inputs.length;
+      expect((await backend.run!(turn, new AbortController().signal)).text).toBe("Via the free model.");
+      expect(inputs.slice(counted).map((input) => Boolean(input.gateway))).toEqual([false]);
+    } finally {
+      agent.close();
+      entry.close();
     }
   });
 

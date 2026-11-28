@@ -6,6 +6,7 @@ import { makeSpaceId, type GoogleAccount, type SpaceStore } from "@space/runtime
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
+import { registerNousCloudRoutes } from "./nous-cloud-routes.js";
 import { registerAdminUserRoutes } from "./admin-user-routes.js";
 import { registerAgentSessionHistoryRoutes, registerAgentSessionThreadRoutes } from "./agent-session-routes.js";
 import { registerAppSignIn } from "./app-signin.js";
@@ -130,6 +131,7 @@ export function registerSignInRoutes(app: FastifyInstance, deps: SignInRoutesDep
       google: () => deps.mailCopilotGoogle ?? connectorServiceRef.current, gmailFetch: deps.mailCopilotGmailFetch })
   });
 
+  registerNousCloudRoutes(app, { routeOptions: defaultRouteRateLimitOptions, gateway: deps.linkGateway && { url: config.gatewayUrl, keyByHash: deps.linkGateway.keyByHash, service: deps.linkGateway.service } });
   registerAdminUserRoutes(app, {
     store, userRoleCache, routeOptions: defaultRouteRateLimitOptions,
     recordAudit: (request, input) => recordAudit(store, request, input),

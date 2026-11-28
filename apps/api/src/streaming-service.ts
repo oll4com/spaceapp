@@ -32,7 +32,7 @@ import {
 } from "@space/db";
 import type { SpaceStore } from "@space/runtime";
 import type { ActiveAgentCountProvider } from "./active-agent-count.js";
-import { StreamingCredentialStore, streamingProviderScopes } from "./streaming-credential-store.js";
+import { StreamingCredentialStore, streamingProviderScopes, type StreamingProviderClient } from "./streaming-credential-store.js";
 import {
   createStreamingProviderAdapters,
   parseStreamingTokenSet,
@@ -384,19 +384,44 @@ export class StreamingService {
     const discovered = await adapter.discoverAccounts({ client, token: exchanged });
     const grantSubject = exchanged.grantSubject ?? discovered[0]?.grantSubject;
     if (!grantSubject) throw new StreamingServiceError("OAUTH_GRANT_SUBJECT_MISSING", "The provider grant could not be identified.", 502);
-    const token: StreamingTokenSet = { ...exchanged, grantSubject };
+    return this.storeGrant(input.provider, { ...exchanged, grantSubject }, discovered, null, consumedAt);
+  }
+
+  /**
+   * Streaming YouTube without an active grant of its own takes the YouTube grant the admin gave the Space Google sign-in
+   * (Settings → Connected accounts); it refreshes with that sign-in's client, stored beside it. Returns false when one is active.
+   */
+  async importYouTubeGrant(input: { token: StreamingTokenSet; client: StreamingProviderClient }): Promise<boolean> {
+    const authorizations = await this.options.repository.listAuthorizations();
+    if (authorizations.some((authorization) => authorization.provider === "YOUTUBE" && authorization.status === "ACTIVE")) return false;
+    const discovered = await this.adapters.YOUTUBE.discoverAccounts({ client: input.client, token: input.token });
+    if (!discovered.length) return false; // a Google account without a channel has nothing to stream
+    const grantSubject = input.token.grantSubject ?? discovered[0]!.grantSubject;
+    await this.storeGrant("YOUTUBE", { ...input.token, grantSubject }, discovered, input.client, this.now().toISOString());
+    return true;
+  }
+
+  private async storeGrant(
+    provider: StreamingOAuthProvider,
+    token: StreamingTokenSet & { grantSubject: string },
+    discovered: StreamingDiscoveredAccount[],
+    grantClient: StreamingProviderClient | null,
+    consumedAt: string
+  ): Promise<{ authorization: StreamingAuthorizationRecord; accounts: StreamingPlatformAccountRecord[] }> {
+    const grantSubject = token.grantSubject;
     const existing = (await this.options.repository.listAuthorizations()).find(
-      (authorization) => authorization.provider === input.provider && authorization.externalGrantId === grantSubject
+      (authorization) => authorization.provider === provider && authorization.externalGrantId === grantSubject
     );
     const credentialRef = existing?.credentialRef ?? randomId("streaming-credential");
     await this.options.credentialStore.writeCredential(credentialRef, serializeStreamingTokenSet(token));
+    await this.options.credentialStore.writeGrantClient(credentialRef, grantClient);
     const authorization = await this.options.repository.upsertAuthorization({
       id: existing?.id ?? randomId("streaming-auth"),
-      provider: input.provider,
+      provider: provider,
       externalGrantId: grantSubject,
       credentialRef,
       status: "ACTIVE",
-      scopes: token.scopes.length ? token.scopes : streamingProviderScopes[input.provider],
+      scopes: token.scopes.length ? token.scopes : streamingProviderScopes[provider],
       safeErrorCode: null,
       safeErrorMessage: null,
       lastRefreshedAt: consumedAt
@@ -406,7 +431,7 @@ export class StreamingService {
       accounts.push(await this.options.repository.upsertAccount({
         id: randomId("streaming-account"),
         authorizationId: authorization.id,
-        provider: input.provider,
+        provider: provider,
         externalAccountId: account.externalAccountId,
         displayName: account.displayName,
         badge: account.badge,
@@ -427,7 +452,7 @@ export class StreamingService {
       throw new StreamingServiceError("AUTHORIZATION_INACTIVE", "The provider authorization is not active.", 409);
     }
     const [client, credential] = await Promise.all([
-      this.options.credentialStore.readClient(account.provider),
+      this.options.credentialStore.clientFor(account.provider, authorization.credentialRef),
       this.options.credentialStore.readCredential(authorization.credentialRef)
     ]);
     return digest(JSON.stringify({ version: "streaming-connection:v1", accountId, provider: account.provider,
@@ -442,7 +467,7 @@ export class StreamingService {
       throw new StreamingServiceError("AUTHORIZATION_INACTIVE", "The provider authorization is not active.", 409);
     }
     try {
-      const client = await this.options.credentialStore.readClient(account.provider);
+      const client = await this.options.credentialStore.clientFor(account.provider, authorization.credentialRef);
       const token = await this.activeToken(authorization, client);
       const discovered = await this.adapters[account.provider].discoverAccounts({ client, token });
       if (!discovered.some((candidate) => candidate.externalAccountId === account.externalAccountId)) {
@@ -491,12 +516,13 @@ export class StreamingService {
   async disconnectAuthorization(authorizationId: string): Promise<StreamingDisconnectAuthorizationResponse> {
     const authorization = await this.requiredAuthorization(authorizationId);
     try {
-      const client = await this.options.credentialStore.readClient(authorization.provider);
+      const client = await this.options.credentialStore.clientFor(authorization.provider, authorization.credentialRef);
       const token = parseStreamingTokenSet(await this.options.credentialStore.readCredential(authorization.credentialRef));
       await this.adapters[authorization.provider].revoke({ client, token });
       const accounts = (await this.options.repository.listAccounts()).filter((account) => account.authorizationId === authorization.id);
       await this.options.repository.deleteAuthorization(authorization.id);
       await this.options.credentialStore.deleteCredential(authorization.credentialRef);
+      await this.options.credentialStore.writeGrantClient(authorization.credentialRef, null);
       accounts.forEach((account) => this.invalidateAccount(account.id));
       const accountIds = new Set(accounts.map((a) => a.id));
       try {
@@ -705,7 +731,7 @@ export class StreamingService {
     if (active) return active;
     const flight = (async () => {
       try {
-        const client = await this.options.credentialStore.readClient(account.provider);
+        const client = await this.options.credentialStore.clientFor(account.provider, authorization.credentialRef);
         const token = await this.activeToken(authorization, client);
         const adapterAccount: StreamingDiscoveredAccount = {
           externalAccountId: account.externalAccountId,

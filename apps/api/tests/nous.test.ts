@@ -11,7 +11,7 @@ import { createNotificationService } from "../src/notifications/service.js";
 import Fastify from "fastify";
 import { NOUS_MCP_ANSWER_MS, NOUS_TOOL_SCHEMA, postToWorkerWhenUp, registerNousMcpRoute, signNousToken, verifyNousToken } from "../src/nous/mcp.js";
 import { createServer } from "node:http";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyNousOutgoing, classifyNousPrompt } from "../src/nous/guardrails.js";
@@ -337,6 +337,23 @@ describe("Nous's world", () => {
     expect(f.roomTool).not.toHaveBeenCalledWith("send_to_pane", expect.objectContaining({ panes: expect.arrayContaining(["pane:andy0001"]) }), expect.anything());
   });
 
+  // 2026-11-28 REVIEW (Andy, Bob, Finn 27/11): the operator's answer on a pane's own Needs you card was refused as "1 unanswered Needs you item".
+  it("types the operator's answer on a pane's Needs you card into that pane despite its open question", async () => {
+    const f = toolFixture();
+    f.deps.listPanes = async (roomId) => roomId === "room:main0001" ? [pane("pane:andy0001", roomId, "Andy")] : [];
+    f.deps.paneNeeds = async () => [{ paneId: "pane:andy0001", id: "notification:a1", title: "Andy needs you", source: "AGENT", kind: "NEEDS_YOU" }] as never;
+    f.deps.paneWatch = { checked: vi.fn(async () => ({ ok: true, display: "", result: "" })) } as never;
+    const text = "Operator's answer to your needs-you (Pick the colour): red";
+    const refused = await createNousTools(f.deps).execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text }, ctx);
+    expect(refused.result).toContain("Not sent to Andy (1 unanswered Needs you item");
+    const sent = await createNousTools(f.deps).execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text }, { ...ctx, answering: true });
+    expect(sent.ok).toBe(true);
+    expect(f.roomTool).toHaveBeenCalledWith("send_to_pane", expect.objectContaining({ panes: ["pane:andy0001"], text }), expect.anything());
+    // The card route's send (pane-board-routes answerNeedsYou -> deps.sendToPane) is that answer.
+    const wiring = readFileSync(new URL("../src/nous/wiring.ts", import.meta.url), "utf8");
+    expect(wiring).toMatch(/sendToPane: \(owner, room, pane, text\) => tools\.execute\("space_send_to_pane",[^\n]*\n[^\n]*turnId: "needs-you"[^\n]*answering: true/);
+  });
+
   // Operator 22/11 04:23Z: Finn, a Claude pane the operator had opened 90 s before and was picking its model in, got "save to memory".
   it("refuses \"save to memory\" to a CLI pane the operator just opened that Space never prompted", async () => {
     const f = toolFixture();
@@ -396,6 +413,22 @@ describe("Nous's world", () => {
     await createNousTools(f.deps).execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text: "save to memory" }, ctx);
     f.deps.inspectPane = async () => ({ text: "✻ Working… (esc to interrupt)", state: "RUNNING", sessionId: "session:1", tasks: [] } as never);
     await createNousTools(f.deps).execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text: "Next piece" }, ctx);
+    expect(pressKeys).not.toHaveBeenCalled();
+  });
+
+  // Goal 5acd171d (26/11: sweep panes ran sweep after sweep in one Gemini chat, 562 requests over 150k).
+  it("starts each hygiene sweep fresh with /clear on an idle sweep pane of any CLI, and never other text or another pane", async () => {
+    const f = toolFixture();
+    const sweep = { title: "Hygiene sweeps (Space)", titleSource: "manual", terminalRuntimeId: "cli:gemini" } as never;
+    f.deps.listPanes = async (roomId) => roomId === "room:main0001" ? [pane("pane:andy0001", roomId, "Andy", sweep), pane("pane:bob00001", roomId, "Bob", { terminalRuntimeId: "cli:gemini" } as never)] : [];
+    f.deps.inspectPane = async (target) => ({ text: "────\n❯ \n────", state: "IDLE", sessionId: `session:${target.id}`, tasks: [] } as never);
+    const pressKeys = vi.fn(async () => undefined);
+    f.deps.pressKeys = pressKeys;
+    f.deps.wait = async () => undefined;
+    await createNousTools(f.deps).execute("space_send_to_pane", { room: "Main", panes: ["pane:andy0001", "pane:bob00001"], text: "Hygiene sweep of apps/api/src/nous: lint" }, ctx);
+    expect(pressKeys.mock.calls).toEqual([["session:pane:andy0001", "/clear", expect.anything()], ["session:pane:andy0001", "\r", expect.anything()]]);
+    pressKeys.mockClear();
+    await createNousTools(f.deps).execute("space_send_to_pane", { room: "Main", panes: ["pane:andy0001"], text: "What did the last sweep find?" }, ctx);
     expect(pressKeys).not.toHaveBeenCalled();
   });
 
@@ -2057,7 +2090,7 @@ describe("Nous's turns", () => {
       } finally { vi.useRealTimers(); }
     });
 
-    it("lets a turn that writes in words through, and after NOUS_ITEM_HOLDS holds puts the items in the chat; a standing turn's items come back as lines", async () => {
+    it("lets a turn that writes in words through, and after NOUS_ITEM_HOLDS holds keeps the items out of the chat; a standing turn's items come back as lines", async () => {
       const f = serviceFixture([nothing, nothing, nothing]);
       const stalled: NousTurnItem = { key: "plan:clipboard:p1", kind: "PLAN", plan: "clipboard:p1", line: "Stalled plan [clipboard:p1] \"Export\" 40%, unchanged 4 h: one concrete action now." };
       expect(await f.service.standing(owner, "STANDING", "# Standing orders\n## Stalled plans\n- [clipboard:p1] \"Export\" 40%", { items: [stalled] })).toBe("STARTED");
@@ -2065,7 +2098,8 @@ describe("Nous's turns", () => {
       await f.service.idle(owner);
       expect(f.requests.map((request) => request.reason)).toEqual(["STANDING", "INBOX", "INBOX"]);
       expect(f.requests[1]!.prompt).toContain("Stalled plan [clipboard:p1]");
-      expect(await answers(f)).toEqual([expect.stringContaining("I left this item without an act after 2 reminders:\n- Stalled plan [clipboard:p1]")]);
+      // Operator 27/11 (nous_msg:81ee0d64243d48b6a011f25e): the spent holds are internal, never in the operator's chat.
+      expect(await answers(f)).toEqual([]);
       // Words are no NOTHING_NEW: they reach the chat and the line is taken.
       const g = serviceFixture([async () => ({ text: "Blocked: the plan's pane needs the operator's sign-in first.", isError: false })]);
       const done = vi.fn(async () => {});
@@ -2086,8 +2120,8 @@ describe("Nous's turns", () => {
         await push(-79);
         await vi.advanceTimersByTimeAsync(4 * 60_000);
         expect(f.requests).toHaveLength(1 + NOUS_ITEM_HOLDS);
-        expect(await answers(f)).toEqual([expect.stringContaining("I left this item without an act after 2 reminders")]);
-        // 21/11: the next snapshot pushed it again with new points, and it ran a turn and two held re-runs again; now it rides with the next turn.
+        expect(await answers(f)).toEqual([]);
+        // The item is still kept as left (entry.left): a re-push that changes only its numbers runs no turn. 21/11: the next snapshot pushed it again with new points, and it ran a turn and two held re-runs again; now it rides with the next turn.
         await push(-81);
         await vi.advanceTimersByTimeAsync(5 * 60_000);
         expect(f.requests).toHaveLength(1 + NOUS_ITEM_HOLDS);
@@ -2115,6 +2149,20 @@ describe("Nous's turns", () => {
         expect(f.requests).toHaveLength(2 + NOUS_ITEM_HOLDS);
       } finally { vi.useRealTimers(); }
     });
+
+    it("27/11 (be63e69c, 850b9678): a looks-finished request (always) comes back after a turn that answered in words, or whose Done was refused, without an act", async () => {
+      const words: Step = async () => ({ text: "Load is at 20 %; more panes are working now.", isError: false });
+      const f = serviceFixture([words, nothing, nothing]);
+      const done = vi.fn(async () => {});
+      await f.service.notice(owner, "request-open:abc", finished, done, { items: [{ ...requestItem, finished: true, always: true }] });
+      await vi.waitFor(() => expect(f.requests).toHaveLength(3), { timeout: 25_000 });
+      await f.service.idle(owner);
+      expect(f.requests[1]!.prompt).toContain("Held: your INBOX turn ended while an item below had no act");
+      expect(f.requests[1]!.prompt).toContain("looks finished: plan clipboard:VWt5sAXmYwgI is 100%");
+      // Bounded: NOUS_ITEM_HOLDS (2) holds, then the line is spent.
+      expect(f.requests[2]!.prompt).toContain("Held: your INBOX turn answered NOTHING_NEW while an item below had no act");
+      expect(f.requests).toHaveLength(3);
+    }, 40_000);
 
     it("R37-1: a Marketing or Freelance review held for Nous comes back after a turn that answered in words without deciding it", async () => {
       // 1/11: reviews 3174f3b7 (X reply mktpost:AI0lMF51zcaY) and 59fb1c3a (Contra flmsg:jOM4TzXaJxEx) were held for Nous; the turns that
@@ -3199,6 +3247,26 @@ describe("Nous's turns", () => {
     expect(results[0]).toBe("Not run: answer the operator first, then call this again.");
     expect(results[2]).toBe("result of space_subagents");
     expect(f.execute.mock.calls.filter(([name]) => name === "space_subagents")).toHaveLength(1);
+  });
+
+  it("Response time 27/11 (f08eb3b1, 134 s): an operator turn that sent its work to a pane before any answer is told to reply at once, before the 30 s hold", async () => {
+    let clock = Date.parse("2026-11-27T17:10:40.000Z");
+    const results: string[] = [];
+    const f = serviceFixture([async (input, service) => {
+      clock += 8_000;
+      results.push((await service.callTool(owner, input.turnId, "space_world", {}, "call-1")).result);
+      clock += 15_000;
+      results.push((await service.callTool(owner, input.turnId, "space_send_to_pane", { pane: "Cody", text: "turn the day limit off" }, "call-2")).result);
+      results.push((await service.callTool(owner, input.turnId, "space_reply_now", { text: "Το έδωσα στον Cody." }, "call-3")).result);
+      results.push((await service.callTool(owner, input.turnId, "space_send_to_pane", { pane: "Cody", text: "and check the 502" }, "call-4")).result);
+      return { text: "Έγινε.", isError: false };
+    }], { now: () => clock });
+    await f.service.send(owner, "βγάλε τον περιορισμό");
+    await f.service.idle(owner);
+    expect(results[0]).toBe("result of space_world");
+    // Not held (it is under 30 s and the reply may now say the pane was told), only reminded.
+    expect(results[1]).toBe("result of space_send_to_pane\n\nThe operator has waited 23 s with no answer: call space_reply_now now with the short answer (what you found or will do), then go on with the work.");
+    expect(results[3]).toBe("result of space_send_to_pane");
   });
 
   it("Score 13/11 (e602d5de, e0f1e573, 1aaa7bd6 within 28 s): the newest row is a repeat when it is the same operator text, files' ids aside, under a minute old", async () => {
@@ -4343,6 +4411,14 @@ describe("Nous API", () => {
     const page = async (query = "") => (await app.inject({ method: "GET", url: `/api/nous/messages${query}`, headers: operator })).json();
     const [asked, answered] = (await page()).messages as NousMessage[];
     expect((await page()).clearedAt).toBeNull();
+    // The shared last-read mark (nous_msg:443bb5d5): forward only, a future time is now, on the latest page for every client.
+    const mark = (at: string) => app.inject({ method: "PUT", url: "/api/nous/read-mark", headers: operator, payload: { at } });
+    expect((await page()).readUpTo).toBeNull();
+    expect((await mark(answered!.createdAt)).json()).toEqual({ readUpTo: answered!.createdAt });
+    expect((await mark(asked!.createdAt)).json()).toEqual({ readUpTo: answered!.createdAt });
+    expect(Date.parse((await mark("2999-01-01T00:00:00.000Z")).json().readUpTo)).toBeLessThanOrEqual(Date.now());
+    expect((await mark("soon")).statusCode).toBe(422);
+    expect((await page()).readUpTo).not.toBe(answered!.createdAt);
     expect(await page("?limit=1")).toMatchObject({ messages: [{ id: answered!.id }], hasMore: true });
     expect(await page(`?before=${answered!.id}`)).toMatchObject({ messages: [{ id: asked!.id }], hasMore: false, waiting: [] });
     expect((await app.inject({ method: "GET", url: "/api/nous/messages?limit=501", headers: operator })).statusCode).toBe(422);

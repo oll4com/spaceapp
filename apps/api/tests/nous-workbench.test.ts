@@ -1,7 +1,7 @@
 // Nous's workbench (operator request 2026-10-21, plan clipboard:GZNzxm7FNwjM): its own folder, Agent Files from it, public pages,
 // web search, network checks, git read only and the Space reads it used to ask panes for. No shell, GET only, public hosts only.
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { createSocket } from "node:dgram";
 import { createServer as createTcpServer } from "node:net";
@@ -44,6 +44,9 @@ describe("Nous's own folder (space_files_write) and Agent Files (space_agent_fil
     expect((await nous.execute("space_files_write", { path: "nous/research/dns.md", text: "again" }, ctx)).result).toContain("exists: replace it");
     expect((await nous.execute("space_files_write", { path: `${root}/nous/research/dns.md`, text: "MX ok\n", mode: "append" }, ctx)).ok).toBe(true);
     expect(readFileSync(join(ownRoot, "research", "dns.md"), "utf8")).toBe("# DNS\nMX ok\n");
+    // 27/11: panes (space group) can edit what Nous writes, e.g. mark a nous/upgrades/queue.md line DONE.
+    expect(statSync(join(ownRoot, "research", "dns.md")).mode & 0o7777).toBe(0o664);
+    expect(statSync(join(ownRoot, "research")).mode & 0o7777).toBe(0o2775);
     expect((await nous.execute("space_files_write", { path: `${ownRoot}/research/dns.md`, text: "fresh", mode: "replace" }, ctx)).ok).toBe(true);
     expect(readFileSync(join(ownRoot, "research", "dns.md"), "utf8")).toBe("fresh");
     // 18/11 (×5 EACCES): a file a pane wrote (another owner, 644) is replaced or extended through a copy renamed over it.

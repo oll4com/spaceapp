@@ -33,11 +33,14 @@ describe("Nous › Inbox tabs: no dead controls (plan clipboard:LkwKdOOh2mXK ste
     await show({ threads: [thread("ask", { title: "Pick a colour", waitingFor: "OPERATOR" }), thread("old", { title: "Old report", closedAt: at, closedBy: "SOURCE" })],
       cursor: null, summary: { operator: 1, unseen: 0, working: 0, held: 0, tabs: { needs: 1, done: 0, updates: 0, requests: 0 } }, badge: 1, attention: true });
     const tabs = within(screen.getByRole("group", { name: "Inbox tabs" })).getAllByRole("button");
-    expect(tabs.map((tab) => tab.textContent)).toEqual(["Needs you1", "Done", "Updates", "Requests"]);
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Needs you1", "Done", "Updates", "Requests", "Archived"]);
     fireEvent.click(tabs[1]!);
     expect(screen.getByText("You’re up to date")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Seen all" })).toBeNull();
+    // f426883907: a closed Thread of any tab lists under Archived, not Updates.
     fireEvent.click(tabs[2]!);
+    expect(screen.getByText("No updates yet")).toBeTruthy();
+    fireEvent.click(tabs[4]!);
     expect(await screen.findByRole("article", { name: "Old report" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Seen all" })).toBeNull();
   });

@@ -52,6 +52,18 @@ describe("R35-1: a CLI pane frozen on a spinner, or never taking a queued text, 
     expect(stuck.observe(sample(frozen, { waiting: true }), T0 + 31 * MIN)).toBeNull();
   });
 
+  it("names a pane Space reads working whose screen stood still 30 minutes with no spinner (26/11 Alex/Kate, Gemini hung on a background grep)", () => {
+    const hung = ["  I am reading memory dc4989f7.", rule, ">", rule, "  ● [18:00:28] grep -rn \"dc4989f7\" /opt/spaceapp/ 2>/dev/null ... running", rule,
+      "? for shortcuts                          accept-edits · Gemini 3.8 Flash · high · 1 task(s) · /tasks"].join("\n");
+    const stuck = createStuckPanes();
+    stuck.observe(sample(hung), T0);
+    expect(stuck.observe(sample(hung), T0 + 40 * MIN)).toBeNull();
+    stuck.observe(sample(hung, { working: true }), T0);
+    expect(stuck.observe(sample(hung, { working: true }), T0 + 29 * MIN)).toBeNull();
+    expect(stuck.observe(sample(hung, { working: true }), T0 + 30 * MIN)?.line).toContain("unchanged 30 min (since 18:50 UTC), read as working with nothing moving →");
+    expect(stuck.observe(sample(hung, { working: true, waiting: true }), T0 + 31 * MIN)).toBeNull();
+  });
+
   it("counts only a restart, stop or close of the pane as acting on a stuck item; a text sent to it waits like the ones before", () => {
     const item: NousTurnItem = { key: "stuck:pane:kDGQgEZG1Ws1", kind: "STUCK", pane: "pane:kDGQgEZG1Ws1", paneName: "Alex/Emma", line: "Alex/Emma · STUCK" };
     const act = (name: string, args: Record<string, unknown>) => ({ name, args, ok: true, subjects: [] });

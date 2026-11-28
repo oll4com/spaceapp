@@ -52,7 +52,10 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
     // Plan clipboard:ytwWl09xNH0Z: closed, a review is its title and «Δες και ενέκρινε»; answered here, its pane is only a link under Details.
     fireEvent.click(await screen.findByRole("button", { name: "Δες και ενέκρινε" }));
     const approve = screen.getByRole("button", { name: "Έγκριση Προτείνεται" });
-    expect(screen.getByRole("button", { name: "Πήγαινε στο pane" }).closest(".ny-footer")).toBeTruthy();
+    // A question card's pane is in its ⋯ menu (plan clipboard:va__qa_eBMYr).
+    fireEvent.click(screen.getByRole("button", { name: "Περισσότερες ενέργειες" }));
+    expect(screen.getByRole("menuitem", { name: "Πήγαινε στο pane" })).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.getByRole("button", { name: "Απόρριψη" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Να σταλεί η απάντηση;" })).toBeTruthy();
     fireEvent.click(approve);
@@ -73,6 +76,7 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
     expect(await screen.findByRole("heading", { name: "Να διαγραφούν δεδομένα στο VM 105;" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Λεπτομέρειες" }));
     expect(screen.getByText("Τι χρειάζεται")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Περισσότερα" }));
     expect(screen.getByText("Βήματα")).toBeTruthy();
     expect(screen.getByText("Σύνδεσμοι")).toBeTruthy();
     expect(screen.getByText("Το αντίγραφο ελευθερώνει 40 GB για απόψε.")).toBeTruthy();
@@ -123,8 +127,8 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
       const buttons = within(screen.getByRole("article")).getAllByRole("button").filter((button) => button.closest(".ny-answers"));
       expect(buttons.map((button) => button.textContent)).toEqual([approve, decline]);
       // …nor look the same: Approve filled with a tick, Decline outlined with a cross; the note field comes before them.
-      expect(buttons.map((button) => [button.classList.contains("ny-approve"), button.classList.contains("ny-decline"), button.classList.contains("is-primary"), Boolean(button.querySelector("svg"))]))
-        .toEqual([[true, false, true, true], [false, true, false, true]]);
+      expect(buttons.map((button) => [button.classList.contains("is-approve"), button.classList.contains("is-decline"), Boolean(button.querySelector("svg"))]))
+        .toEqual([[true, false, true], [false, true, true]]);
       expect(screen.getByRole("textbox", { name: uiText(language, "Your answer") }).compareDocumentPosition(buttons[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: approve }));
       await waitFor(() => expect(calls.find((call) => call.url.endsWith("/answer"))?.body).toEqual({ option: "Approve" }));
@@ -172,10 +176,12 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
       expect(within(finnCard).getByText("Τι χρειάζεται").nextElementSibling?.textContent).toBe("Το προφίλ στο Braintrust είναι έτοιμο εκτός από τρία πράγματα που δίνεις μόνο εσύ.");
       expect(checks()).toEqual(Array(2).fill({ inLanguage: true, headingOnce: true, whyOnce: true, factLabelsOnce: true }));
       // The original reads the same way: each part once, no labels.
+      fireEvent.click(within(finnCard).getByRole("button", { name: "Περισσότερα" }));
       fireEvent.click(within(finnCard).getByRole("button", { name: "Δες το πρωτότυπο" }));
       expect(screen.getByRole("heading", { name: items.join(" ") })).toBeTruthy();
       expect(checks().map(({ headingOnce, whyOnce }) => ({ headingOnce, whyOnce }))).toEqual(Array(2).fill({ headingOnce: true, whyOnce: true }));
       fireEvent.click(within(danaCard).getByRole("button", { name: "Λεπτομέρειες" }));
+      fireEvent.click(within(danaCard).getByRole("button", { name: "Περισσότερα" }));
       fireEvent.click(within(danaCard).getByRole("button", { name: "Δες το πρωτότυπο" }));
       expect(screen.getByRole("heading", { name: "Which mobile number may I give Contra?" })).toBeTruthy();
       expect(screen.getByRole("article", { name: "Dana needs you" }).textContent).not.toMatch(/Report:|Needs:/);
@@ -198,6 +204,7 @@ describe("UI language (operator 1/11 11:59 BKK)", () => {
         paused: null, callsToday: 1, settings: { language: "el" }, generatedAt: at };
       render(<NousNeedsYou requests={[agent]} />);
       fireEvent.click(await screen.findByRole("button", { name: "Λεπτομέρειες" }));
+      fireEvent.click(screen.getByRole("button", { name: "Περισσότερα" }));
       expect(await screen.findByText(/Προχωρά στο Contra όσο περιμένει/)).toBeTruthy();
       expect(screen.queryByText(/Moved on to Contra/)).toBeNull();
       const why = screen.getByText("Τι χρειάζεται").nextElementSibling?.textContent ?? "";

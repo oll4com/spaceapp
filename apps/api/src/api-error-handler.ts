@@ -87,7 +87,9 @@ export function registerApiErrorHandler(app: FastifyInstance) {
     }
     if (error instanceof ZodError) {
       request.log.info({ err: error, requestId: request.requestIdForSpace }, "request rejected");
-      return sendApiError(reply, 422, "VALIDATION_ERROR", "Invalid request data.", error.flatten());
+      // flatten() keys an error only by its top-level field. A nested one ("command" > "reason") keeps its sub-path in the message so the reply names it.
+      return sendApiError(reply, 422, "VALIDATION_ERROR", "Invalid request data.",
+        error.flatten((issue) => issue.path.length > 1 ? `${issue.path.slice(1).map(String).join(".")}: ${issue.message}` : issue.message));
     }
     if (error instanceof SpaceNotFoundError) {
       request.log.info({ err: error, requestId: request.requestIdForSpace }, "request target not found");

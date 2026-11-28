@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { GatewayStatus, SystemAnalyticsModelsResponse, SystemHealthSnapshot, SystemServicesResponse } from "@space/contracts";
+import type { GatewayStatus, NousCloudReport, SystemAnalyticsModelsResponse, SystemHealthSnapshot, SystemServicesResponse } from "@space/contracts";
 import type { GatewayAdminService } from "../gateway/gateway-service.js";
 
 /**
@@ -12,6 +12,8 @@ export interface NousOpsDeps {
   services?: () => Promise<SystemServicesResponse>;
   tokenUsage?: (range: NousUsageRange) => Promise<SystemAnalyticsModelsResponse>;
   gateway?: () => Promise<GatewayStatus>;
+  /** Nous Cloud installs (the ADMIN Resources › Nous Cloud view): never an invite, key or token. */
+  nousCloud?: (days: number) => Promise<NousCloudReport>;
   /** Space Gateway's admin reads (gap audit, plan clipboard:ajcJqa3IW6Eh): never a key secret, never a request body. */
   gatewayAdmin?: Pick<GatewayAdminService, "listAccounts" | "listApiKeys" | "listRequestLogs" | "report" | "lostTokens" | "anthropicBilling"> & Partial<Pick<GatewayAdminService, "getSettings" | "tokenReview" | "projectUsage" | "gatewayAdmin">>;
 }
@@ -20,6 +22,10 @@ export const nousUsageRangeSchema = z.enum(["1h", "24h", "7d", "30d"]);
 export type NousUsageRange = z.infer<typeof nousUsageRangeSchema>;
 export const nousOpsServicesArgsSchema = z.object({});
 export const nousOpsUsageArgsSchema = z.object({ range: nousUsageRangeSchema.optional().describe("Token usage period (default 24h).") });
+export const nousOpsNousCloudArgsSchema = z.object({
+  // Technical: the history period's maximum (history.periodDays, at most 90).
+  days: z.number().int().min(1).max(90).optional().describe("Days of per-day rows (default 7).")
+});
 export const nousOpsGatewayArgsSchema = z.object({
   view: z.enum(["accounts", "keys", "logs", "report", "lost", "billing"]).describe("accounts: status and usage windows; keys: names, models, limits (never the key); logs: newest request metadata; "
     + "report: every statistic (requests, tokens in/out/cache and API value by day, model, account and provider, errors and 429s, fallbacks between providers, "
@@ -96,4 +102,10 @@ export async function nousOpsUsageText(deps: NousOpsDeps, range: NousUsageRange 
     `Gateway last 24 h: ${last24h.requests} requests, ${last24h.errors} errors, ${count(last24h.inputTokens)} in, ${count(last24h.outputTokens)} out, ${usd(last24h.costUsd)}.`);
   } else lines.push("Space Gateway status could not be read now.");
   return lines.join("\n");
+}
+
+/** Nous Cloud telemetry for Nous, the same report as GET /api/admin/nous-cloud. */
+export async function nousOpsNousCloudText(deps: NousOpsDeps, args: z.infer<typeof nousOpsNousCloudArgsSchema>): Promise<string> {
+  if (!deps.nousCloud) return "Nous Cloud telemetry is not available here.";
+  return JSON.stringify(await deps.nousCloud(args.days ?? 7));
 }

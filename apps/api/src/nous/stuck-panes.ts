@@ -20,6 +20,8 @@ export interface StuckSample {
   queuedAt: string | null;
   /** A question, a permission prompt or a usage limit: the pane waits on purpose, never stuck. */
   waiting?: boolean;
+  /** Space's activity reads it working (26/11 18:00-02:35 UTC Alex/Kate: Gemini CLI hung on a background grep under an empty prompt, no spinner, 8.5 h). */
+  working?: boolean;
 }
 
 export function createStuckPanes() {
@@ -32,10 +34,11 @@ export function createStuckPanes() {
       const since = last?.key === key ? last.since : now;
       const queued = input.queuedAt && now - Date.parse(input.queuedAt) >= NOUS_STUCK_MS ? input.queuedAt : null;
       const spinner = roomComposerNotReady(input.screen) === "its CLI is working";
-      const stuck = !input.waiting && now - since >= NOUS_STUCK_MS && (spinner || queued) ? {
+      const working = !spinner && Boolean(input.working);
+      const stuck = !input.waiting && now - since >= NOUS_STUCK_MS && (spinner || queued || working) ? {
         owner: input.owner, paneId: input.paneId, label: input.label, since: new Date(since).toISOString(),
         line: `STUCK: screen and CLI state unchanged ${Math.round((now - since) / 60_000)} min (since ${new Date(since).toISOString().slice(11, 16)} UTC)`
-          + `${spinner ? ", a spinner that does not move (Space holds texts for it while it shows)" : ""}${queued ? `, a text queued for it since ${queued.slice(11, 16)} UTC never typed` : ""}`
+          + `${spinner ? ", a spinner that does not move (Space holds texts for it while it shows)" : ""}${working ? ", read as working with nothing moving" : ""}${queued ? `, a text queued for it since ${queued.slice(11, 16)} UTC never typed` : ""}`
           + " → read it (space_read_pane), restart it (space_restart_pane) and send its work again",
       } : null;
       seen.set(input.paneId, { state: input.state, key, since, at: now, stuck });

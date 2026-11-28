@@ -163,7 +163,7 @@ async function main() {
   const webSockets = new CodexWebSocketRegistry();
   let anthropicBilling: AnthropicBillingSync | null = null;
   const server = createGatewayServer({
-    repository, version: await readVersion(), credentialKeyPresent: () => credentialKeyPresent, logger: false, lan: config.lan, tenancy,
+    repository, version: await readVersion(), credentialKeyPresent: () => credentialKeyPresent, logger: false, lan: config.lan, tenancy, internalToken: config.internalToken,
     requestLog: (record) => { process.stdout.write(`${JSON.stringify(record)}\n`); },
     live: {
       inFlightByAccount: () => Object.assign({}, codexPool.inFlight(), claudePool.inFlight(), antigravityPool.inFlight(), openAiApiPool.inFlight(),

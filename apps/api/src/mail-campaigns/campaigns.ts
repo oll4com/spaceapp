@@ -512,7 +512,9 @@ export function createCampaignEngine(deps: CampaignEngineDeps) {
       const [template, version, sender] = await Promise.all([repository.getTemplate(owner, row.templateId), repository.getTemplateVersion(owner, row.templateId, row.templateVersion),
         repository.getSender(owner, row.senderId)]);
       if (!template || !version || !sender) return null;
-      const rendered = renderMailTemplate(version, valuesOf(sender, row.id, contact));
+      let rendered: ReturnType<typeof renderMailTemplate>;
+      // A contact that has since lost a field the template needs: no page (404), not a 500 on a public route (REV1127-005).
+      try { rendered = renderMailTemplate(version, valuesOf(sender, row.id, contact)); } catch { return null; }
       const relay = row.track ? relayFor(sender) : null;
       return htmlWithFooter({ from: sender.address, fromName: sender.displayName, footerAddress: sender.footerAddress, language: template.language, ...rendered,
         html: relay ? wrap(rendered.html, sender, relay, row.id, contact.id).html : rendered.html,

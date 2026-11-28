@@ -353,6 +353,20 @@
 
 .nous-conversation > :not(.nous-messages) { flex: none; }
 
+/* Where the operator left off (nous_msg:443bb5d5): a thin yellow band down the scrollbar to the last row read; NousDock sets its box. */
+.nous-read-band {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3px;
+  height: 0;
+  transform: translateX(-100%);
+  border-radius: 2px;
+  background: var(--dock-warning);
+  opacity: 0.75;
+  pointer-events: none;
+}
+
 .nous-conversation.is-dropping .nous-messages {
   outline: 2px dashed var(--dock-accent);
   outline-offset: -4px;

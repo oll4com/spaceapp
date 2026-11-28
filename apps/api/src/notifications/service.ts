@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   NOTIFICATION_SOURCE_LABELS, eventSchema, notificationChannelEnabled, notificationRaiseInputSchema, resolveNotificationSettings,
-  type Event, type NotificationListQuery, type NotificationRaiseInput, type NotificationSource, type NotificationStatus, type NeedsYouTranslation, type NotificationStreamPayload, type PushDevice, type PushDeviceRegistration, type PushLevel, type SpaceNotification, type UiLanguage, type UserSettings, heldForNous, isHandRequest, heldUnderAllowance, isNousApproval, isNousFirstCard, needsOperatorHands, NEEDS_YOU_TOPIC_KINDS, sameNeedsYouTopic, needsYou, needsYouAsk, needsYouCardTexts, NEEDS_YOU_COMPLETION_OPTION, NEEDS_YOU_GO_NOW, NEEDS_YOU_START_NOW, needsYouTranslation, needsYouMail, agentLanguageOf, agentFilesNamedIn, type AgentFileRef } from "@space/contracts";
+  type Event, type NotificationListQuery, type NotificationRaiseInput, type NotificationSource, type NotificationStatus, type NeedsYouTranslation, type NotificationStreamPayload, type PushDevice, type PushDeviceRegistration, type PushLevel, type SpaceNotification, type UiLanguage, type UserSettings, heldForNous, isHandRequest, heldUnderAllowance, isNousApproval, isNousFirstCard, needsOperatorHands, needsOperatorHandsText, NEEDS_YOU_TOPIC_KINDS, sameNeedsYouTopic, needsYou, needsYouAsk, needsYouCardTexts, NEEDS_YOU_COMPLETION_OPTION, NEEDS_YOU_GO_NOW, NEEDS_YOU_START_NOW, needsYouTranslation, needsYouMail, agentLanguageOf, agentFilesNamedIn, type AgentFileRef } from "@space/contracts";
 import type { SpaceNotificationsRepository } from "@space/db";
 import { makeSpaceId, type SpaceEventBus } from "@space/runtime";
 import type { FcmSender } from "./fcm.js";
@@ -307,6 +307,8 @@ export function createNotificationService(deps: NotificationServiceDeps) {
           const at = Date.parse(String((item.payload.answer as { at?: unknown } | undefined)?.at ?? ""));
           return Date.parse(now()) - at < OPERATOR_JUST_ANSWERED_MS;
         })));
+      // Operator 27/11 (nous_msg:766ca4f6): an identity check or their own interview or test is the operator's own hands: never held for Nous.
+      const handsText = isNousFirstCard(parsed) && needsOperatorHandsText([parsed.title, parsed.body, needsYouAsk(parsed).question].join("\n"));
       // 2/11 (operator 10:16 BKK: two Mail Copilot cards for one Google Cloud billing account): a card about what an open one of its source,
       // kind and pane is about refreshes that one (its key joins `mergedKeys`, so resolving either key closes it); and a refreshed card held
       // for Nous stays held (a raise replaces the payload, which let an agent's second ask skip Nous).
@@ -322,7 +324,7 @@ export function createNotificationService(deps: NotificationServiceDeps) {
           const merged = [...new Set([...(Array.isArray(prior.payload.mergedKeys) ? prior.payload.mergedKeys as string[] : []), ...(prior.dedupeKey === parsed.dedupeKey ? [] : [parsed.dedupeKey])])];
           parsed = { ...parsed, dedupeKey: prior.dedupeKey, payload: { ...parsed.payload, ...(merged.length ? { mergedKeys: merged } : {}),
             // A release is no refresh; an allowance hold is set again below only while it still covers the card.
-            ...(heldForNous(prior, Date.parse(now())) && !heldUnderAllowance(prior) && !parsed.payload.releasedFromNous && !awaited ? { heldForNous: prior.payload.heldForNous } : {}) } };
+            ...(heldForNous(prior, Date.parse(now())) && !heldUnderAllowance(prior) && !parsed.payload.releasedFromNous && !awaited && !handsText ? { heldForNous: prior.payload.heldForNous } : {}) } };
         }
       }
       // Operator 2/11 15:08 BKK («να μην φτανει σε εμενα το aprove»): an approval "May send" covers is held for Nous with no time limit while
@@ -346,7 +348,7 @@ export function createNotificationService(deps: NotificationServiceDeps) {
       if (answered) notification = answered;
       // Ask Last step 7: a new copilot question goes to Nous first (its inbox line below), up to an hour; only a new record is held, so
       // a producer refreshing a released question never holds it again.
-      const forNous = !covered && created && !answered && Boolean(notification.dedupeKey) && isNousFirstCard(notification) && parsed.severity !== "URGENT" && !awaited
+      const forNous = !covered && created && !answered && !handsText && Boolean(notification.dedupeKey) && isNousFirstCard(notification) && parsed.severity !== "URGENT" && !awaited
         && Boolean(await deps.nous?.holdsCopilotQuestions?.(input.ownerUserId).catch(() => false));
       if (forNous) notification = (await deps.repository.raise({ ...input, payload: { ...input.payload,
         heldForNous: { until: new Date(Date.parse(now()) + NOUS_QUESTION_HOLD_MS).toISOString() } } })).notification;
@@ -354,7 +356,7 @@ export function createNotificationService(deps: NotificationServiceDeps) {
       if ((created || options.realert || keptHold) && !answered) {
         const channels = resolveNotificationSettings(settings?.notifications);
         // What only the operator's hands can do (handoff, CAPTCHA, sign-in, NEEDS_USER) never waits for Nous.
-        const hands = input.severity === "URGENT" || needsOperatorHands(input.source, input.kind);
+        const hands = input.severity === "URGENT" || needsOperatorHands(input.source, input.kind) || handsText;
         const forNousNow = forNous || keptHold || (input.severity === "ATTENTION" && input.source !== "NOUS" && !hands && !awaited && Boolean(await deps.nous?.held(input.ownerUserId).catch(() => false)));
         const quietHeld = options.held === true || night?.quiet === true;
         const held = quietHeld || forNousNow;

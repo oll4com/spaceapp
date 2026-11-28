@@ -1,3 +1,4 @@
+import type { PgClientLike } from "@space/db";
 import type { CellDriver, CellRef } from "./cell-driver.js";
 
 // Per-tenant microVM ("cell") lifecycle and placement for Nous Computer (plan clipboard:ZGz1LnD51ELH §2.3-2.5, §8
@@ -30,15 +31,11 @@ export interface CellRecord {
   objectKey: string | null;
   exportKey: string | null;
   exportedAt: number | null;
+  /** K4: set while the account is suspended (unpaid, abuse); the cell sleeps and refuses every wake until resumeCell. */
+  suspendedAt: number | null;
   updatedAt: number;
 }
 
-// Design for the SQL store (not a migration yet: a new table needs its class in scripts/tests/record-retention.test.mjs;
-// cells are durable records, so a deleted cell stays as a DELETED row):
-//   CREATE TABLE nous_computer_cells (tenant_id text PRIMARY KEY, state text NOT NULL, host_id text, mem_mib int NOT NULL,
-//     last_active_at timestamptz NOT NULL, slept_at timestamptz, snapshot_bytes bigint, object_key text,
-//     export_key text, exported_at timestamptz, updated_at timestamptz NOT NULL);
-//   CREATE INDEX nous_computer_cells_host ON nous_computer_cells (host_id, state);
 export interface CellStore {
   get(tenantId: string): Promise<CellRecord | undefined>;
   put(record: CellRecord): Promise<void>;
@@ -54,6 +51,38 @@ export function createMemoryCellStore(): CellStore {
     },
     put: async (record) => void rows.set(record.tenantId, { ...record }),
     list: async () => [...rows.values()].map((row) => ({ ...row }))
+  };
+}
+
+interface CellRow {
+  tenant_id: string; state: CellState; host_id: string | null; mem_mib: number; last_active_at: Date; slept_at: Date | null;
+  snapshot_bytes: string | null; object_key: string | null; export_key: string | null; exported_at: Date | null; suspended_at: Date | null;
+  updated_at: Date;
+}
+const CELL_COLUMNS = "tenant_id, state, host_id, mem_mib, last_active_at, slept_at, snapshot_bytes, object_key, export_key, exported_at, suspended_at, updated_at";
+const ms = (value: Date | null) => value && value.getTime();
+const at = (value: number | null) => (value === null ? null : new Date(value));
+const fromRow = (row: CellRow): CellRecord => ({
+  tenantId: row.tenant_id, state: row.state, hostId: row.host_id, memMib: row.mem_mib, lastActiveAt: row.last_active_at.getTime(),
+  sleptAt: ms(row.slept_at), snapshotBytes: row.snapshot_bytes === null ? null : Number(row.snapshot_bytes), objectKey: row.object_key,
+  exportKey: row.export_key, exportedAt: ms(row.exported_at), suspendedAt: ms(row.suspended_at), updatedAt: row.updated_at.getTime()
+});
+
+/** Durable store on migration 0415's nous_computer_cells; a DELETED cell is a row, never a delete (record retention). */
+export function createPgCellStore(pool: PgClientLike): CellStore {
+  return {
+    get: async (tenantId) => {
+      const { rows } = await pool.query<CellRow>(`SELECT ${CELL_COLUMNS} FROM nous_computer_cells WHERE tenant_id = $1`, [tenantId]);
+      return rows[0] && fromRow(rows[0]);
+    },
+    put: async (r) => void await pool.query(
+      `INSERT INTO nous_computer_cells (${CELL_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (tenant_id) DO UPDATE SET state = EXCLUDED.state, host_id = EXCLUDED.host_id, mem_mib = EXCLUDED.mem_mib,
+         last_active_at = EXCLUDED.last_active_at, slept_at = EXCLUDED.slept_at, snapshot_bytes = EXCLUDED.snapshot_bytes,
+         object_key = EXCLUDED.object_key, export_key = EXCLUDED.export_key, exported_at = EXCLUDED.exported_at, suspended_at = EXCLUDED.suspended_at,
+         updated_at = EXCLUDED.updated_at`,
+      [r.tenantId, r.state, r.hostId, r.memMib, at(r.lastActiveAt), at(r.sleptAt), r.snapshotBytes, r.objectKey, r.exportKey, at(r.exportedAt), at(r.suspendedAt), at(r.updatedAt)]),
+    list: async () => (await pool.query<CellRow>(`SELECT ${CELL_COLUMNS} FROM nous_computer_cells ORDER BY tenant_id`)).rows.map(fromRow)
   };
 }
 
@@ -91,6 +120,7 @@ export interface TickResult {
 export class CellCapacityError extends Error {}
 export class CellDeletedError extends Error {}
 export class CellExportRequiredError extends Error {}
+export class CellSuspendedError extends Error {}
 
 export interface CellOrchestrator {
   /** Wakes, restores or creates the tenant's cell; concurrent calls share one wake. Call it before every vm-agent call: it also marks activity. */
@@ -100,6 +130,9 @@ export interface CellOrchestrator {
   exportCell(tenantId: string): Promise<{ exportKey: string }>;
   /** Refuses without an export newer than the cell's last activity, unless the tenant-deletion path forces it. */
   deleteCell(tenantId: string, options?: { force?: "tenant-deletion" }): Promise<void>;
+  /** K4 account suspension: an awake cell sleeps now, and ensureAwake refuses until resumeCell; export and delete still work. */
+  suspendCell(tenantId: string): Promise<void>;
+  resumeCell(tenantId: string): Promise<void>;
   /** The host takes no new cells; its cells leave through cold as they go idle. */
   drainHost(hostId: string): void;
   hostMetrics(): Promise<HostMetrics[]>;
@@ -151,6 +184,7 @@ export function createCellOrchestrator(options: {
         objectKey: null,
         exportKey: null,
         exportedAt: null,
+        suspendedAt: null,
         updatedAt: now()
       }
     );
@@ -241,6 +275,7 @@ export function createCellOrchestrator(options: {
     let record = await load(tenantId);
     const from = record.state;
     if (from === "DELETED") throw new CellDeletedError(`Cell ${tenantId} was deleted.`);
+    if (record.suspendedAt !== null) throw new CellSuspendedError(`Cell ${tenantId} belongs to a suspended account.`);
     if (from === "AWAKE" && record.hostId) {
       await save(record, { lastActiveAt: started });
       return { tenantId, hostId: record.hostId, from, wakeMs: 0 };
@@ -330,6 +365,22 @@ export function createCellOrchestrator(options: {
         }
         await driver.destroy(tenantId, { hostId: record.hostId, objectKey: record.objectKey });
         await save(record, { state: "DELETED", hostId: null, objectKey: null, snapshotBytes: null });
+      });
+    },
+
+    suspendCell(tenantId) {
+      return serial(tenantKey(tenantId), async () => {
+        let record = await load(tenantId);
+        if (record.state === "DELETED" || record.suspendedAt !== null) return;
+        if (await sleep(record)) record = await load(tenantId);
+        await save(record, { suspendedAt: now() });
+      });
+    },
+
+    resumeCell(tenantId) {
+      return serial(tenantKey(tenantId), async () => {
+        const record = await load(tenantId);
+        if (record.suspendedAt !== null) await save(record, { suspendedAt: null });
       });
     },
 

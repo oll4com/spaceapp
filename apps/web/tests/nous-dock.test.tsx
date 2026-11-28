@@ -63,7 +63,7 @@ const attachment = (id: string, kind: NousAttachment["kind"], filename: string, 
 });
 
 function serve(overrides: {
-  state?: NousState; messages?: NousMessage[]; waiting?: string[]; decisions?: NousDecision[]; files?: Record<string, NousAttachment[]>;
+  state?: NousState; messages?: NousMessage[]; readUpTo?: string; waiting?: string[]; decisions?: NousDecision[]; files?: Record<string, NousAttachment[]>;
   upload?: (file: File) => Response | Promise<Response>; live?: unknown; panes?: unknown; board?: unknown; plans?: unknown[]; closedPlans?: unknown[]; planHolds?: unknown; decisionFiles?: unknown[]; persistSettings?: boolean;
   needs?: () => unknown[]; alwaysCounts?: unknown[]; providersGate?: Promise<void>; inProgress?: () => number; notDone?: () => number; taskRuns?: unknown; updates?: () => unknown[];
 } = {}) {
@@ -97,7 +97,7 @@ function serve(overrides: {
       const end = before ? all.findIndex((row) => row.id === before) : all.length;
       const page = all.slice(Math.max(end - 200, before || query.has("cleared") ? 0 : cleared), end);
       return Response.json({ messages: page, hasMore: end > page.length, waiting: before ? [] : overrides.waiting ?? [], attachments: overrides.files ?? {},
-        ...(before || query.has("cleared") ? {} : { clearedAt }) });
+        ...(before || query.has("cleared") ? {} : { clearedAt, readUpTo: overrides.readUpTo ?? null }) });
     }
     if (url === "/api/nous/messages" && method === "DELETE") {
       cleared = (overrides.messages ?? []).length;
@@ -488,7 +488,7 @@ describe("Nous dock", () => {
       expect(intoView).not.toHaveBeenCalled();
 
       // Up walks back from the newest of the operator's messages, one per press; after the oldest it starts over at the newest.
-      const up = screen.getByRole("button", { name: "Go to my last message (press again for the one before)" });
+      const up = screen.getByRole("button", { name: "Go to where I stopped reading (press again for my messages before it)" });
       fireEvent.click(up);
       expect(laterRow.hasAttribute("data-jumped")).toBe(true);
       fireEvent.click(up);
@@ -521,6 +521,33 @@ describe("Nous dock", () => {
       delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
       delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
     }
+  });
+
+  it("Up goes first where the yellow read band ends, then to the operator's messages above it (operator 27/11)", async () => {
+    const row = (kind: NousMessage["kind"], content: string, n: number): NousMessage =>
+      ({ ...message(kind, content, `r${String(n).padStart(7, "0")}`), createdAt: new Date(Date.parse(at) + n * 60_000).toISOString() });
+    const rows = [row("OPERATOR", "Old question", 0), row("ANSWER", "Old answer", 1), row("OPERATOR", "Read question", 2), row("ANSWER", "Unread answer", 3)];
+    serve({ messages: rows, readUpTo: rows[2]!.createdAt });
+    render(<NousDock canRun />);
+    const unread = (await screen.findByText("Unread answer")).closest(".nous-message") as HTMLElement;
+    const list = document.querySelector<HTMLElement>(".nous-messages")!;
+    const readRow = screen.getByText("Read question").closest(".nous-message") as HTMLElement;
+    const oldRow = screen.getByText("Old question").closest(".nous-message") as HTMLElement;
+    list.getBoundingClientRect = () => ({ top: 100 }) as DOMRect;
+    unread.getBoundingClientRect = () => ({ top: 400 }) as DOMRect;
+    readRow.getBoundingClientRect = () => ({ top: 300 }) as DOMRect;
+    oldRow.getBoundingClientRect = () => ({ top: 200 }) as DOMRect;
+    const up = screen.getByRole("button", { name: "Go to where I stopped reading (press again for my messages before it)" });
+    fireEvent.click(up);
+    expect(unread.hasAttribute("data-jumped")).toBe(true);
+    // The list moved: the unread row is at the top, the read rows above the view.
+    unread.getBoundingClientRect = () => ({ top: 100 }) as DOMRect;
+    readRow.getBoundingClientRect = () => ({ top: 0 }) as DOMRect;
+    oldRow.getBoundingClientRect = () => ({ top: -100 }) as DOMRect;
+    fireEvent.click(up);
+    expect(readRow.hasAttribute("data-jumped")).toBe(true);
+    fireEvent.click(up);
+    expect(oldRow.hasAttribute("data-jumped")).toBe(true);
   });
 
   it("finds in the conversation from the Search button, ignoring case and Greek accents, newest match first (operator nous_msg:a44eacc4)", async () => {
@@ -567,7 +594,7 @@ describe("Nous dock", () => {
     render(<NousDock canRun />);
     const latest = await screen.findByText("Third question");
     expect(screen.queryByText("Second question")).toBeNull();
-    const up = screen.getByRole("button", { name: "Go to my last message (press again for the one before)" });
+    const up = screen.getByRole("button", { name: "Go to where I stopped reading (press again for my messages before it)" });
     const jumped = () => document.querySelector("[data-jumped]")?.textContent;
     fireEvent.click(up);
     expect(latest.closest(".nous-message")!.hasAttribute("data-jumped")).toBe(true);
@@ -645,13 +672,13 @@ describe("Nous dock", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Details" }));
     for (const name of [/^Go now/, "Go to pane", "Need links/steps", "Always answer like this"]) expect(within(card).queryByRole("button", { name })).toBeNull();
     // Operator 4/11 18:42 BKK: every card takes his words too, off Space as well.
-    expect(within(card).getByRole("textbox", { name: "Your answer" })).toBeTruthy();
-    expect(within(card).getByRole("button", { name: "There is a problem" })).toBeTruthy();
+    // Plan clipboard:va__qa_eBMYr: off Space his words go as the problem.
+    expect(within(card).getByRole("textbox", { name: "What went wrong?" })).toBeTruthy();
     fireEvent.click(within(card).getByRole("button", { name: "Done, all good" }));
     await waitFor(() => expect(calls.find((call) => call.url === "/api/notifications/notification%3Aphone000001/answer")?.body).toEqual({ text: "Done, all good" }));
   });
 
-  it("asks each needs-you request's question with its options; the answer goes from the card's Details, its page and It no longer needs me stay (plan clipboard:5AQvaoSR-IZa)", async () => {
+  it("asks each needs-you request's question with its options; the answer goes from the card's Details, its page and Close without answering stay in its ⋯ menu (plan clipboard:5AQvaoSR-IZa, clipboard:va__qa_eBMYr)", async () => {
     const request = { id: "notification:needs000001", ownerUserId: "user:operator", roomId: "room:work000001", paneId: "pane:emma0000001", source: "AGENT", kind: "NEEDS_YOU",
       severity: "ATTENTION", title: "Emma needs you", body: "Pick the colour\nNeeds: Which colour?\n• Step 1: open https://example.com/colours\n• Step 2: pick one\n\nChecked first:\n• Space Memory: no colour rule", link: { roomId: "room:work000001", paneId: "pane:emma0000001", target: "url:https://example.com/colours" }, dedupeKey: "agent:needs-you:pane:emma0000001",
       status: "READ", payload: { ask: { question: "Which colour?", options: ["Red", "Blue"], recommended: "Blue", answer: { kind: "PANE" } } }, createdAt: at, updatedAt: at, readAt: at, resolvedAt: null };
@@ -683,6 +710,7 @@ describe("Nous dock", () => {
       expect(await within(card).findByText("Work · Emma")).toBeTruthy();
       expect(within(card).queryByText("Steps")).toBeNull();
       fireEvent.click(within(card).getByRole("button", { name: "Details" }));
+      fireEvent.click(within(card).getByRole("button", { name: "More" }));
       expect(within(card).getByText("Since then").nextElementSibling?.textContent).toMatch(/: Painted it grey for now$/);
       // The body keeps its lines (step 2 of plan clipboard:32etNsBgtbI-): what it needs, then the steps under their own label as a numbered list with a live link;
       // what Nous checked folded apart below them (operator 1/11 23:09 BKK: each part once).
@@ -695,26 +723,30 @@ describe("Nous dock", () => {
       // An agent's card names the agent as the one who checked (plan clipboard:7L5KyWp3kQsP step 4); Nous's cards keep "What Nous checked".
       const checked = within(card).getByText("What the agent checked").closest("details")!;
       expect([checked.open, checked.querySelector("li")?.textContent]).toEqual([false, "Space Memory: no colour rule"]);
-      expect(within(card).getByRole("button", { name: "Blue Recommended" }).className).toContain("is-primary");
+      expect(within(card).getByRole("button", { name: "Blue Recommended" }).className).toContain("is-recommended");
       // "Hide sensitive data" blurs only private values, never the request's own words (plan clipboard:1NF6u6gcCwtj step 14, superseding clipboard:32etNsBgtbI- step 4).
       expect(card.querySelector("[data-sensitive-masked]")).toBeNull();
       // Its own answers make it a question answered here: no Go to pane, its page one click away inside Details (the approved §8.1 choice).
       expect(within(card).queryByRole("button", { name: "Go to pane" })).toBeNull();
-      fireEvent.click(within(card).getByRole("button", { name: "Open the page" }));
+      fireEvent.click(within(card).getByRole("button", { name: "More actions" }));
+      fireEvent.click(within(card).getByRole("menuitem", { name: "Open the page" }));
       expect(seen).toEqual([expect.objectContaining({ roomId: "room:work000001", paneId: "pane:emma0000001", immediate: true })]);
       // Goal 7365014c-d: a card with a recommended option offers "Always answer like this", only without a note.
-      expect((within(card).getByRole("button", { name: "Always answer like this" }) as HTMLButtonElement).disabled).toBe(false);
+      fireEvent.click(within(card).getByRole("button", { name: "More actions" }));
+      expect((within(card).getByRole("menuitem", { name: "Always answer like this" }) as HTMLButtonElement).disabled).toBe(false);
       fireEvent.change(within(card).getByRole("textbox", { name: "Your answer" }), { target: { value: "the darker one" } });
-      expect((within(card).getByRole("button", { name: "Always answer like this" }) as HTMLButtonElement).disabled).toBe(true);
+      expect((within(card).getByRole("menuitem", { name: "Always answer like this" }) as HTMLButtonElement).disabled).toBe(true);
       fireEvent.click(within(card).getByRole("button", { name: "Blue Recommended" }));
       await waitFor(() => expect(calls.find((call) => call.url === "/api/notifications/notification%3Aneeds000001/answer")?.body).toEqual({ option: "Blue", text: "the darker one" }));
       expect(await within(card).findByText("Sent to Emma: it gets your answer as its next prompt.")).toBeTruthy();
       waiting = [];
       fireEvent.click(within(other).getByRole("button", { name: "Details" }));
-      // An ask-less card offers no "Always answer like this".
-      expect(within(other).queryByRole("button", { name: "Always answer like this" })).toBeNull();
-      fireEvent.click(within(other).getByRole("button", { name: "It no longer needs me" }));
-      await waitFor(() => expect(calls.some((call) => call.url === "/api/notifications/notification%3Aneeds000002/ack" && call.method === "POST")).toBe(true));
+      // An ask-less card offers no "Always answer like this"; Close without answering confirms, then closes its Thread (the card is the Thread).
+      fireEvent.click(within(other).getByRole("button", { name: "More actions" }));
+      expect(within(other).queryByRole("menuitem", { name: "Always answer like this" })).toBeNull();
+      fireEvent.click(within(other).getByRole("menuitem", { name: "Close without answering" }));
+      fireEvent.click(within(await screen.findByRole("alertdialog", { name: "Close without answering?" })).getByRole("button", { name: "Close without answering" }));
+      await waitFor(() => expect(calls.find((call) => call.url === "/api/inbox/threads/inbox_thread%3Anotification%3Aneeds000002/act")).toMatchObject({ method: "POST", body: { verb: "DISMISS" } }));
       expect(await screen.findByText("Nothing waits for you")).toBeTruthy();
     } finally {
       window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
@@ -762,7 +794,8 @@ describe("Nous dock", () => {
     expect(article.querySelector(".ny-meta")?.textContent).toMatch(/Due|Overdue/);
     expect(calls.some((call) => call.url.startsWith("/api/mail-copilot/threads/"))).toBe(false);
     fireEvent.click(within(article).getByRole("button", { name: "Details" }));
-    // The mail itself, read in the card (operator 12/11 23:19 BKK).
+    fireEvent.click(await within(article).findByRole("button", { name: "More" }));
+    // The mail itself, read in the card (operator 12/11 23:19 BKK), under More (plan clipboard:va__qa_eBMYr).
     const mail = await within(article).findByRole("region", { name: "Mail" });
     expect(within(mail).getByText("From").nextElementSibling?.textContent).toBe("Mercor <team@mercor.com>");
     expect(within(mail).getByText("To").nextElementSibling?.textContent).toBe("ntheogr@gmail.com");
@@ -772,7 +805,7 @@ describe("Nous dock", () => {
     expect(calls.some((call) => call.url.startsWith("/api/mail-copilot/threads/1a1925b124bb7cb8?") && call.url.includes("account=ntheogr%40gmail.com"))).toBe(true);
     expect(await within(article).findByText("Mercor application")).toBeTruthy();
     expect(within(article).getByText("Deadline").nextElementSibling?.textContent).toMatch(/\S/);
-    const facts = article.querySelector(".ny-details > .ny-facts")!;
+    const facts = article.querySelector(".ny-folded > .ny-facts")!;
     expect(within(facts as HTMLElement).getByRole("link", { name: "app.zinc.work/checks/42" }).getAttribute("href")).toBe("https://app.zinc.work/checks/42");
     expect(article.querySelector("details:not(.ny-checked)")).toBeNull();
   });
@@ -1713,12 +1746,17 @@ describe("Nous dock", () => {
     const counts = screen.getByRole("group", { name: "Live counts" });
     fireEvent.click(await within(counts).findByRole("button", { name: "4 Turns this hour" }));
     expect(within(views).getByRole("button", { name: "Load" }).getAttribute("aria-pressed")).toBe("true");
-    // The Inbox count opens the Inbox, Nous's queued lines at its end (nous_msg:eb36261e), not the Pane board.
+    // The Inbox count opens the Inbox (nous_msg:eb36261e), not the Pane board; Nous's own queue asks nothing of him, so it is not
+    // under Needs you but one fold under Requests, a plain line each (operator 27/11).
     fireEvent.click(await within(counts).findByRole("button", { name: "1 Inbox" }));
     expect(inbox.getAttribute("aria-pressed")).toBe("true");
     expect(within(views).getByRole("button", { name: "Panes" }).getAttribute("aria-pressed")).toBe("false");
-    expect(await screen.findByText("Pane A finished its step.")).toBeTruthy();
-    expect(screen.getByText(/waiting for Nous's next round/)).toBeTruthy();
+    await screen.findByRole("article", { name: `Thread ${decision.title}` });
+    expect(document.querySelector("[data-nous-inbox]")).toBeNull();
+    fireEvent.click(within(screen.getByRole("group", { name: "Inbox tabs" })).getByRole("button", { name: /^Requests/ }));
+    const queue = (await screen.findByText("Waiting for Nous's next round (1)")).closest("details")!;
+    expect(queue.querySelector("[data-inbox-key='pane:a'] summary")!.textContent).toContain("Pane A finished its step.");
+    expect(within(queue).getByText(/waiting for Nous's next round\. Nous reads/)).toBeTruthy();
   });
 
   it("lets the operator tell Nous it could have decided an answered decision itself", async () => {
