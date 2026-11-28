@@ -1,16 +1,17 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "c3117d79e5a9105c9fd740e7e93f61194b523f906de24d8c068d93d55caf0d29",
-  "sourceCommit": "12d400c1a0b780c50b95c4570ae2c3503439ae72",
-  "spaceSourceCommit": "024f89893259cd9abe30383c88f5885f500eb98f",
+  "candidateDigest": "66dedcbd50f28b2ec3db8e93e686148f81c095334ae9990064ff3689ce26f48e",
+  "sourceCommit": "cbaf74b2",
+  "spaceSourceCommit": "5fd6ed3345c7c71c1e6b1417ae538d9495f08002",
   "launcherVersion": "1.2.5",
   "runtimeVersion": "1.2.5",
-  "createdAt": "2026-11-28T05:03:52.493Z",
+  "createdAt": "2026-11-28T05:25:50.859Z",
   "launcherTarballSha256": "9891860bf87ed798c1ade14ddfe20c7067dd4b969357afea8ffed6dddc2cc7a3",
   "labProof": {
-    "acceptanceSha256": "65e184dffaa7d8763a35e4b1937b9ae39ec56135fc7ebb9fe74961373d449757",
+    "acceptanceSha256": "1ba140546a5dde3e4654988634e3b3502b18dbd64f0f39dd11741687ea48f264",
     "allCasesPass": true,
-    "ci": "ci/ci-12d400c1.log: provenance, sanitized candidate, install, lint, db, gateway, web, worker, runtime and launcher passed; Public release tests exit 1 only from api project-ensure-security and setup-selected-service, refused by the security policy because the lab set TMPDIR=/dev/shm/r125-tmp (GitHub uses /tmp). ci/ci-recheck-12d400c1.log: those 2 files pass with TMPDIR=/tmp, then Typecheck, Build and Pack launcher candidate exit 0 (RECHECK-ALL ok)."
+    "ci": "ci/ci-12d400c1.log: provenance, sanitized candidate, install, lint, db, gateway, web, worker, runtime and launcher passed; Public release tests exit 1 only from api project-ensure-security and setup-selected-service, refused by the security policy because the lab set TMPDIR=/dev/shm/r125-tmp (GitHub uses /tmp). ci/ci-recheck-12d400c1.log: those 2 files pass with TMPDIR=/tmp, then Typecheck, Build and Pack launcher candidate exit 0 (RECHECK-ALL ok).",
+    "candidateDelta": "Lab ran on Space 024f898932 / public 12d400c1. Space 5fd6ed3345 adds only version.json pillars.setup 1.2.5 (not exported; space-version verify exit 0); public cbaf74b2 changes only PUBLIC_EXPORT_MANIFEST.json sourceCommit. Shipped files, launcher tarball 9891860b and images are the ones tested."
   },
   "pendingAfterPublication": [
     "windows W1: fresh 1.2.5 install from the registry, no --local-images",
