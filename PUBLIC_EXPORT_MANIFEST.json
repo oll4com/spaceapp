@@ -2,7 +2,7 @@
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
   "sourceCommit": "b94451a5f5ad6f215d3fd2eaaab59f1f1a078fc0",
-  "fileCount": 6313,
+  "fileCount": 6311,
   "transformations": 487,
   "files": [
     {
@@ -15694,12 +15694,6 @@
       "sourceObjectId": "3beec9473b813efa5dbff5cc5a769e5a47798efa",
       "sha256": "637c32e83d479107007771d34f3873f40823ed64599cd05e1c6c08cac1c1c1dd",
       "size": 2143
-    },
-    {
-      "path": "apps/api/tests/headless-signup.test.ts",
-      "sourceObjectId": "3dbed7acafe5e2cf7636d8977f4d4f3c529af337",
-      "sha256": "366fa23c41e19fd12e58fc872aac137a478d6f6dc32f849868b3455bedee9e38",
-      "size": 6268
     },
     {
       "path": "apps/api/tests/headless-surface.test.ts",
@@ -34192,12 +34186,6 @@
       "sourceObjectId": "c09379fa487eeba6a2712c3964a9400f3722f8ae",
       "sha256": "ef4a7d3197b4cd3f7c6d9cd0913421975ec2478593fad46e223cb45a0d55f08e",
       "size": 2755
-    },
-    {
-      "path": "packages/db/tests/signup-invite-postgres.test.ts",
-      "sourceObjectId": "caea030478492eccbe74488ee8c81382598ce1a2",
-      "sha256": "3becd5ae62996114f77c225751243e370f96e5ba6ccc875a86e2aa1f5ac4119d",
-      "size": 5934
     },
     {
       "path": "packages/db/tests/site-signins-repository-postgres.test.ts",
