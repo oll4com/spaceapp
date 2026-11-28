@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "edcce98d92a3f4a7ac5e53c8de619031ec4533cca089eb1c4bef83d12b8bb21f",
-  "sourceCommit": "2246df9b",
+  "candidateDigest": "ab26127e8e9c2e9c8bf61dcc61a1279a290757e9bad92afaf1360245153728fe",
+  "sourceCommit": "35dd4a9e",
   "spaceSourceCommit": "b94451a5f5ad6f215d3fd2eaaab59f1f1a078fc0",
   "launcherVersion": "1.2.5",
   "runtimeVersion": "1.2.5",
-  "createdAt": "2026-11-28T08:39:54.663Z",
+  "createdAt": "2026-11-28T09:28:11.669Z",
   "launcherTarballSha256": "9891860bf87ed798c1ade14ddfe20c7067dd4b969357afea8ffed6dddc2cc7a3",
   "labProof": {
     "acceptanceSha256": "1ba140546a5dde3e4654988634e3b3502b18dbd64f0f39dd11741687ea48f264",
     "allCasesPass": true,
     "ci": "ci/ci-12d400c1.log: provenance, sanitized candidate, install, lint, db, gateway, web, worker, runtime and launcher passed; Public release tests exit 1 only from api project-ensure-security and setup-selected-service, refused by the security policy because the lab set TMPDIR=/dev/shm/r125-tmp (GitHub uses /tmp). ci/ci-recheck-12d400c1.log: those 2 files pass with TMPDIR=/tmp, then Typecheck, Build and Pack launcher candidate exit 0 (RECHECK-ALL ok).",
-    "candidateDelta": "VM lab (Linux, Windows, macOS) ran on Space 024f898932 / public 12d400c1. This candidate is Space b94451a5f5 (dev tip 28/11, Nous order after release run 46112244327 flaked on old public b9867c47): it adds the 3 release-run test fixes af9819693f, 14403c7c10, 9b5de9f10b and the other dev commits since 024f898932 (public diff vs b9867c47: 131 files, core/api/web/db, migrations 0422-0423). The run-spaceapp launcher package is unchanged; the core image is rebuilt from the new source and was NOT re-run on the VMs. The new workflow_dispatch run's 'Verify sanitized source and npm candidate' job is the test of this source. Kept under the operator's standing 1.2.5 approval (Nous 28/11 nous_msg:7377c0e9)."
+    "candidateDelta": "VM lab (Linux, Windows, macOS) ran on Space 024f898932 / public 12d400c1. This candidate is Space b94451a5f5 (dev tip 28/11, Nous order after release run 46112244327 flaked on old public b9867c47): it adds the 3 release-run test fixes af9819693f, 14403c7c10, 9b5de9f10b and the other dev commits since 024f898932 (public diff vs b9867c47: 131 files, core/api/web/db, migrations 0422-0423). The run-spaceapp launcher package is unchanged; the core image is rebuilt from the new source and was NOT re-run on the VMs. The new workflow_dispatch run's 'Verify sanitized source and npm candidate' job is the test of this source. Kept under the operator's standing 1.2.5 approval (Nous 28/11 nous_msg:7377c0e9). Run 46127479915 failed only on apps/api/tests/headless-signup.test.ts and packages/db/tests/signup-invite-postgres.test.ts, which read private Nous Computer hub files the export does not ship; both are now private-only tests (dea5c88c), shipped code unchanged."
   },
   "pendingAfterPublication": [
     "windows W1: fresh 1.2.5 install from the registry, no --local-images",
