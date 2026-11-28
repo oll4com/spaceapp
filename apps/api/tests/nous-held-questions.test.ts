@@ -93,6 +93,26 @@ describe("held copilot questions are never lost by a Nous turn (plan clipboard:7
     expect(f.requests).toHaveLength(2);
   }, 30_000);
 
+  it("folds the Woken-again line into the inbox batch while the refusal line still runs in seconds (operator yes 28/11, needs-decision 62392)", async () => {
+    const f = fixture([async () => ({ text: "Here is your answer.", isError: false }),
+      async () => ({ text: "Τα τεστ της NVIDIA δεν θα τα απαντήσει agent.", isError: false }),
+      async (input, service) => { await service.callTool(owner, input.turnId, "space_copilot_answer", answer, "toolu_answer"); return { text: "NOTHING_NEW", isError: false }; }],
+    { limits: { inboxDebounceMs: 60_000 } });
+    const reasons = () => f.requests.map((request) => request.reason);
+    await f.service.send(owner, "πώς πάμε;");
+    await vi.waitFor(() => expect(reasons()).toEqual(["OPERATOR"]), { timeout: 8_000 });
+    await f.service.idle(owner);
+    // The Woken-again line alone used to run an INBOX turn 5 s on; now it waits for the batch window.
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    expect(reasons()).toEqual(["OPERATOR"]);
+    await f.service.send(owner, "κάνε και τα τεστ της NVIDIA");
+    await vi.waitFor(() => expect(reasons()).toEqual(["OPERATOR", "OPERATOR", "INBOX"]), { timeout: 10_000 });
+    await f.service.idle(owner);
+    // The refusal line stays urgent and the waiting Woken-again line rides in the same turn.
+    expect(f.requests[2]!.prompt).toContain("Your answer to the operator refused or narrowed an order of theirs");
+    expect(f.requests[2]!.prompt).toContain("Woken again: your OPERATOR turn showed this copilot question held for you");
+  }, 40_000);
+
   it("holds the outcome report once per card, not once per turn that shows it (Daily Nous errors 22/11: one card held 13 turns' outcomes)", async () => {
     const outcome = { requests: [{ summary: "Answered the operator", outcome: "SELF", answerOnly: true }] };
     const f = fixture([async (input, service) => {

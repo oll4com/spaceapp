@@ -18,12 +18,13 @@ export const cliNousPathPrefix = "/api/cli/nous/";
 export const NOUS_MCP_PATH = "/api/cli/nous/mcp";
 
 /** `deferred`: a runner without Claude Code's ToolSearch (Gemini, OpenCode, Codex, Chat) gets slim schemas and space_tool_schema. */
-interface NousTokenClaims { owner: string; turnId: string; expiresAt: number; deferred?: boolean }
+/** `tenant`: a turn run in that tenant's Nous Computer cell; its MCP calls count only through that cell's relay (x-space-cell). */
+interface NousTokenClaims { owner: string; turnId: string; expiresAt: number; deferred?: boolean; tenant?: string }
 const b64 = (value: string) => Buffer.from(value, "utf8").toString("base64url");
 const sign = (secret: string, payload: string) => createHmac("sha256", secret).update(`nous-mcp:${payload}`).digest("base64url");
 
 export function signNousToken(secret: string, claims: NousTokenClaims): string {
-  const payload = b64(JSON.stringify({ o: claims.owner, t: claims.turnId, e: claims.expiresAt, ...(claims.deferred ? { d: 1 } : {}) }));
+  const payload = b64(JSON.stringify({ o: claims.owner, t: claims.turnId, e: claims.expiresAt, ...(claims.deferred ? { d: 1 } : {}), ...(claims.tenant ? { n: claims.tenant } : {}) }));
   return `nous.${payload}.${sign(secret, payload)}`;
 }
 
@@ -34,9 +35,10 @@ export function verifyNousToken(secret: string, token: string | undefined, now =
   const given = Buffer.from(match[2]!);
   if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
   try {
-    const claims = JSON.parse(Buffer.from(match[1]!, "base64url").toString("utf8")) as { o?: unknown; t?: unknown; e?: unknown; d?: unknown };
+    const claims = JSON.parse(Buffer.from(match[1]!, "base64url").toString("utf8")) as { o?: unknown; t?: unknown; e?: unknown; d?: unknown; n?: unknown };
     if (typeof claims.o !== "string" || typeof claims.t !== "string" || typeof claims.e !== "number" || claims.e < now) return null;
-    return { owner: claims.o, turnId: claims.t, expiresAt: claims.e, ...(claims.d === 1 ? { deferred: true } : {}) };
+    if (claims.n !== undefined && typeof claims.n !== "string") return null;
+    return { owner: claims.o, turnId: claims.t, expiresAt: claims.e, ...(claims.d === 1 ? { deferred: true } : {}), ...(claims.n ? { tenant: claims.n } : {}) };
   } catch {
     return null;
   }
@@ -93,6 +95,8 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
   /** The turn's helpers: a helper's token works only while it and its parent turn run, with the helpers' tools only. */
   subagents?: Pick<NousSubagents, "running" | "countCall">;
   answerMs?: number;
+  /** Nous Computer: does this x-space-cell proof come from the tenant's own cell? Without it, a cell turn's token is refused. */
+  cellProven?: (tenantId: string, proof: string | string[] | undefined) => boolean;
 }): void {
   // Claude Code may open a server-to-client stream first; this server only answers requests.
   app.get(NOUS_MCP_PATH, deps.routeOptions, async (_request, reply) => reply.code(405).header("allow", "POST").send());
@@ -100,6 +104,7 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
     const bearer = /^Bearer (.+)$/.exec(String(request.headers.authorization ?? ""))?.[1];
     const claims = verifyNousToken(deps.secret, bearer);
     if (!claims) return reply.code(401).send({ error: "A Nous turn token is required." });
+    if (claims.tenant && !deps.cellProven?.(claims.tenant, request.headers["x-space-cell"])) return reply.code(403).send({ error: "This Nous turn runs in a cell; call through its relay." });
     const helper = claims.turnId.startsWith(NOUS_HELPER_PREFIX) ? deps.subagents?.running(claims.owner, claims.turnId) ?? null : undefined;
     if (helper === null) return reply.code(403).send({ error: "This Nous helper is over." });
     if (!helper && !deps.service.turnRunning(claims.owner, claims.turnId)) return reply.code(403).send({ error: "This Nous turn is over." });

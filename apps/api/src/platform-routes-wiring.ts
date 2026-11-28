@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { registerAccountRoutes } from "./account-routes.js";
+import type { TenantAiKeys } from "./computer/ai-key.js";
 import { registerActivityLogRoutes } from "./activity-log-routes.js";
 import { registerAppDiagnosticsSettingsRoutes } from "./app-diagnostics-routes.js";
 import { registerAuthSessionRoutes } from "./auth-session-routes.js";
@@ -31,6 +32,7 @@ type PlatformRoutesDeps = Omit<Health, "routeOptions"> & Pick<AuthSession, "auth
     apiProviderAccountsProvider: Setup["quotaProviders"]["api"]; installTelemetry: Pick<ReturnType<typeof createInstallTelemetry>, "setupCompleted">;
     /** Nous Computer account lifecycle (K4); its routes register only headless. */
     accountLifecycle?: AccountLifecycle;
+    accountAiKeys?: TenantAiKeys | undefined;
   };
 
 /** The platform routes after the error handler in app.ts (moved verbatim, ARCH-001 step 84): health, desktop releases, the metrics scrape and
@@ -40,9 +42,9 @@ export async function registerPlatformRoutes(app: FastifyInstance, deps: Platfor
   const { apiStartedAt, config, appVersionReader, store, appDiagnosticsService, browserSessionManager, workerReadinessChecker, cliTerminalManager,
     defaultRouteRateLimitOptions, observability, auth, userRoleCache, options, publicCredentialHost, setupConnections, setupConnectionCheckRuns,
     streamingService, sourceControlService, visibleCliRuntimeIds, agentSessionHistoryService, healthMonitor, toolbarUsageProvider, antigravityUsageProvider,
-    apiProviderAccountsProvider, installTelemetry, activityLogService, accountLifecycle } = deps;
+    apiProviderAccountsProvider, installTelemetry, activityLogService, accountLifecycle, accountAiKeys } = deps;
   if (config.headless && accountLifecycle) {
-    registerAccountRoutes(app, { store, lifecycle: accountLifecycle, routeOptions: defaultRouteRateLimitOptions });
+    registerAccountRoutes(app, { store, lifecycle: accountLifecycle, aiKeys: accountAiKeys, routeOptions: defaultRouteRateLimitOptions });
     const sweep = setInterval(() => void accountLifecycle.finishDueDeletions("account deletion undo window ended").then(({ finished, failed }) => {
       if (finished.length) app.log.info({ finished }, "Account deletions finished.");
       if (failed.length) app.log.error({ failed }, "Account deletions failed; retried next sweep.");

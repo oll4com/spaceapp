@@ -2,8 +2,8 @@ import type { PgClientLike } from "@space/db";
 import type { CellDriver, CellRef } from "./cell-driver.js";
 
 // Per-tenant microVM ("cell") lifecycle and placement for Nous Computer (plan clipboard:ZGz1LnD51ELH §2.3-2.5, §8
-// K3/K8; rules in docs/agents/nous-computer.md). Not wired into app.ts yet: K2's headless `vmTurnBackend(tenantId)`
-// will call ensureAwake before every space-vm-agent call and run tick() on a timer.
+// K3/K8; rules in docs/agents/nous-computer.md). server.ts runs tick() on a timer (provisioning.ts nousComputerFromEnv); K2's headless `vmTurnBackend(tenantId)`
+// will call ensureAwake before every space-vm-agent call.
 //
 //   NONE -> CREATING -> AWAKE <-> SLEEPING (paused, Full snapshot on host NVMe, RAM freed) -> COLD (object storage)
 //   any state -> DELETED (after a finished export, or forced by the tenant-deletion path)
@@ -90,6 +90,8 @@ export interface CellHost {
   id: string;
   ramMib: number;
   maxAwake: number;
+  /** First boots at once on this host; more wait their turn (nc-cells 28/11: 10 at once all missed the 60 s ready timeout, 5 took 25 s). */
+  maxBooting?: number;
   draining?: boolean;
 }
 
@@ -270,6 +272,22 @@ export function createCellOrchestrator(options: {
     return save(record, { state: "COLD", hostId: null, objectKey });
   }
 
+  const booting = new Map<string, { count: number; queue: Array<() => void> }>();
+  /** A slot among the host's first boots; the release hands it to the next waiter. */
+  async function bootSlot(hostId: string): Promise<() => void> {
+    const limit = hosts.get(hostId)?.maxBooting;
+    if (!limit) return () => undefined;
+    const slots = booting.get(hostId) ?? { count: 0, queue: [] };
+    booting.set(hostId, slots);
+    if (slots.count >= limit) await new Promise<void>((resolve) => slots.queue.push(resolve));
+    else slots.count++;
+    return () => {
+      const next = slots.queue.shift();
+      if (next) next();
+      else slots.count--;
+    };
+  }
+
   async function wake(tenantId: string): Promise<WakeResult> {
     const started = now();
     let record = await load(tenantId);
@@ -283,9 +301,11 @@ export function createCellOrchestrator(options: {
     // A draining host's sleeping cells leave through cold instead of waking where they are.
     if (from === "SLEEPING" && record.hostId && hosts.get(record.hostId)?.draining) record = await cool(record);
     const hostId = await reserve(record, record.state === "SLEEPING" ? record.hostId : null);
+    let release = () => undefined as void;
     try {
       if (record.state === "NONE" || record.state === "CREATING") {
         record = await save(record, { state: "CREATING", hostId, lastActiveAt: started });
+        release = await bootSlot(hostId);
         await driver.create(ref(record, hostId));
       } else {
         if (record.state === "COLD") {
@@ -301,6 +321,7 @@ export function createCellOrchestrator(options: {
       if (record.state === "CREATING") await save(record, { state: "NONE", hostId: null });
       throw error;
     } finally {
+      release();
       reserved.delete(tenantId);
     }
     const wakeMs = now() - started;

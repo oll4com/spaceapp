@@ -75,7 +75,7 @@ export function createPaneSaveTurn(deps: PaneLastAnswerDeps): (pane: Pane, since
  */
 export function createPaneSaves(deps: {
   store: Pick<SpaceStore, "listPaneCliSessions" | "listPaneCliTranscriptChunks">;
-  entries(): Promise<Array<{ id: string; createdAt: string; body: string }>>;
+  entries(): Promise<Array<{ id: string; createdAt: string; body: string; title?: string }>>;
 }): (paneId: string, since: string, names?: { pane: string; room: string }) => Promise<string | null> {
   return async (paneId, since, names) => {
     const entries = (await deps.entries()).filter((entry) => entry.createdAt >= since);
@@ -86,7 +86,8 @@ export function createPaneSaves(deps: {
     // Operator 28/11 (Antigravity panes with no quota cannot run "save to memory"): Nous's own note naming the pane (its id, "Room/Pane" or "Pane in room Room") is its save.
     const esc = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const named = new RegExp(`(?<![\\w-])(?:${esc(paneId)}${names ? `|${esc(names.room)}/${esc(names.pane)}|${esc(names.pane)} in room ${esc(names.room)}` : ""})(?![\\w-])`, "i");
-    const noted = entries.find((entry) => /provenance=nous[:;]/.test(entry.body) && named.test(entry.body));
+    // 28/11 space_memory:6eec03f9 "Work/Dana: …": the name may stand in the title only.
+    const noted = entries.find((entry) => /provenance=nous[:;]/.test(entry.body) && named.test(`${entry.title ?? ""}\n${entry.body}`));
     if (noted) return noted.id;
     let screen = "";
     for (const session of await deps.store.listPaneCliSessions(paneId)) {

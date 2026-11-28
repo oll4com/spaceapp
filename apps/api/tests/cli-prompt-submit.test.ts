@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { clearIdleClaudeSession, cliPromptNotReady, rememberSpaceTyped, spaceTypedDraft, spaceTypedTexts, submitCliPrompt } from "../src/cli-prompt-submit.js";
+import { NOUS_SAVE_RETRY_TEXT, NOUS_SAVE_TEXT } from "../src/nous/save-request.js";
 import { roomComposerNotReady, roomComposerShowsOnly } from "../src/room-terminal-screen.js";
+import { lastSpacePromptAt } from "../src/space-prompts.js";
 
 const rule = "─".repeat(60);
 const empty = [rule, "❯ ", rule].join("\n");
@@ -36,6 +38,15 @@ describe("typing a prompt into a CLI pane", () => {
     expect(spaceTypedTexts("cli_session:obs6").map(({ text, requestId }) => ({ text, requestId }))).toEqual([
       { text: "First prompt", requestId: "req:abc" }, { text: "Second prompt", requestId: undefined }]);
     log.mockRestore();
+  });
+
+  // Plan clipboard:CTVaL1V3kAFM step 3: a held "save to memory" is typed after its ask was recorded; as a prompt mark it voided its own ask.
+  it("marks a work prompt as Space's, never a text that only asks for a memory save", async () => {
+    await submitCliPrompt(terminal(empty, empty), "cli_session:mark", NOUS_SAVE_TEXT, "trace:m", "k:m", { delayMs: 0, paneId: "pane:mark0001" });
+    await submitCliPrompt(terminal(empty, empty), "cli_session:mark", NOUS_SAVE_RETRY_TEXT, "trace:m", "k:m", { delayMs: 0, paneId: "pane:mark0001" });
+    expect(lastSpacePromptAt("pane:mark0001")).toBe(-Infinity);
+    await submitCliPrompt(terminal(empty, empty), "cli_session:mark", "Run the tests, then save to memory.", "trace:m", "k:m", { delayMs: 0, paneId: "pane:mark0001" });
+    expect(lastSpacePromptAt("pane:mark0001")).toBeGreaterThan(0);
   });
 
   // 7/11 Bruno/Kate: "cli_prompt.typed" was logged before the composer wait that then failed; the caller's signal reaches the wait.

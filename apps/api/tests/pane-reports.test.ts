@@ -109,7 +109,7 @@ describe("pane reports", () => {
     // Goal 7365014c: a page to act on asks whether to start now (Go now / Later today), never "when"; the ask stays in the body.
     expect(raise.mock.calls[0]![0]).toMatchObject({ link: { target: "url:https://contra.com/settings/verification" },
       body: expect.stringContaining("Finish the ID check at https://contra.com/settings/verification, then W-8."),
-      payload: { ask: { question: NEEDS_YOU_START_NOW, options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_CHECK_AGAIN, answer: { kind: "PANE" } } } });
+      payload: { ask: { question: NEEDS_YOU_START_NOW, options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_GO_NOW, answer: { kind: "PANE" } } } });
     // With nowhere to open, R27-2's options stay.
     await reports.report(bruno, andy, { status: "needs-you", summary: "Call the bank", needs: "Ask them to lift the card block" });
     expect(raise.mock.calls.at(-1)![0]).toMatchObject({ payload: { ask: { question: "Ask them to lift the card block", options: [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"] } } });
@@ -486,7 +486,7 @@ describe("pane reports", () => {
       .toEqual([{ at: "2026-11-23T10:15:30.000Z", summary: "Daily Nous errors lessons ×7: no code cause", next: null }]);
   });
 
-  it("2026-11-25 REVIEW: refuses Start now? / needs-you on completed plans or gone tabs, and predicts Check again on unverified Start now? cards", async () => {
+  it("2026-11-25 REVIEW: refuses Start now? / needs-you on completed plans or gone tabs, and offers Check again but predicts Go now on unverified Start now? cards", async () => {
     const raise = vi.fn(async (input: unknown) => input as never);
     let live = false;
     let done = true;
@@ -508,10 +508,10 @@ describe("pane reports", () => {
       .rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("No browser holds tab:page-gone") });
     expect(raise).not.toHaveBeenCalled();
     // 2026-11-25 REVIEW (ledger 24/11 «ελενξε το ξανα»): unverified url: target (no live tab on that site): the page may be done already or
-    // need a re-check, so the card offers and predicts "Check again", a real scored prediction.
+    // need a re-check, so the card offers "Check again"; it still predicts "Go now" (both unverified cards of 28/11 were answered Go now).
     await reports.report(bruno, andy, { status: "needs-you", summary: "Create account", needs: "Open https://signup.live.com to sign up", checked: ["browser: blocked"] });
     expect(raise.mock.calls[0]![0]).toMatchObject({
-      payload: { ask: { question: NEEDS_YOU_START_NOW, options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_CHECK_AGAIN } }
+      payload: { ask: { question: NEEDS_YOU_START_NOW, options: [NEEDS_YOU_GO_NOW, NEEDS_YOU_CHECK_AGAIN, NEEDS_YOU_LATER_TODAY], recommended: NEEDS_YOU_GO_NOW } }
     });
     expect((raise.mock.calls[0]![0] as { payload: Record<string, unknown> }).payload.recommendedDefault).toBeUndefined();
     // Verified live browser tab (pageLive === true): proven unstarted, so "Go now" is the prediction and no "Check again" is offered.

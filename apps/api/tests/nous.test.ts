@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { classifyNousOutgoing, classifyNousPrompt } from "../src/nous/guardrails.js";
 import { renderNousWorld } from "../src/nous/digest.js";
 import { inNeedsYouClaim, waitsOnOperatorClaim } from "../src/nous/pane-watch.js";
-import { createNousService, nousHistory, NOUS_OVERVIEW_REUSE_MS, NOUS_PERSONA, NousUnavailableError, cardPromiseClaim, claimTopicWords, mailSentClaim, operatorMessagesToAnswer, paneToldClaim, operatorRefusal, riskLineSentence, heldStepSentence, knownFaultSentence, fileContentClaim, noNewWorkSentence, downClaim, serverBlockedClaim, fixedClaim, closedPanesSentence, closesCover, reissueClaim, reportPromiseSentence, workClaimSentence, paneModelClaim, listingSpecClaim, renderDone, toolSubjects, type NousRunner, type NousServiceDeps } from "../src/nous/service.js";
+import { createNousService, nousHistory, NOUS_OVERVIEW_REUSE_MS, NOUS_PERSONA, NousUnavailableError, cardPromiseClaim, claimTopicWords, mailSentClaim, operatorMessagesToAnswer, paneToldClaim, operatorRefusal, riskLineSentence, heldStepSentence, knownFaultSentence, spaceRefusalSentence, fileContentClaim, noNewWorkSentence, downClaim, serverBlockedClaim, fixedClaim, closedPanesSentence, closesCover, reissueClaim, reportPromiseSentence, workClaimSentence, paneModelClaim, listingSpecClaim, renderDone, toolSubjects, type NousRunner, type NousServiceDeps } from "../src/nous/service.js";
 import { itemActed, NOUS_ITEM_HOLDS, type NousTurnAct, type NousTurnItem } from "../src/nous/turn-items.js";
 import { heldReviewItem } from "../src/nous/copilot-questions.js";
 import { createNousTools, nousControlRisk, nousToolDefinitions, paneIdIn, pendingNousBriefOf, timedFocusSentence, timedPromoteSentence, type CopilotBriefEvent, type NousToolDeps, type NousToolOutcome } from "../src/nous/tools.js";
@@ -321,6 +321,57 @@ describe("Nous's world", () => {
     const answered = await tools.execute("space_answer_pane", { room: "Main", pane: "Andy", answer: "Ναι, υλοποίησέ τα με tests" }, ctx);
     expect(answered.ok).toBe(true);
     expect(f.roomTool).toHaveBeenCalled();
+  });
+
+  // 28/11 Bruno/Hugo: its BLOCKED report ("promote held") went stale while it sat idle; it was refused every new prompt as an "open question".
+  it("gives new work to a pane whose blocked report is 30+ min old, and still holds one blocked just now", async () => {
+    const f = toolFixture();
+    let at = new Date(Date.now() - 31 * 60_000).toISOString();
+    f.deps.paneLastReport = async () => ({ status: "BLOCKED", source: "AGENT", at, summary: "promote held, next allowed 03:36Z", body: null });
+    f.deps.paneWatch = { checked: vi.fn(async () => ({ ok: true, display: "", result: "" })) } as never;
+    const tools = createNousTools(f.deps);
+    expect((await tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text: "Verify the promote on stable" }, ctx)).ok).toBe(true);
+    at = new Date().toISOString();
+    expect(await tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text: "Verify the promote on stable" }, ctx))
+      .toMatchObject({ ok: false, display: "Not sent: its question is open" });
+  });
+
+  // Goal 7365014c (28/11 Dino/Andy): its needs-you card was acked and the pane restarted IDLE, yet its NEEDS_YOU report refused every send.
+  it("gives new work to a pane whose needs-you card is closed and whose CLI waits at no prompt, and still holds it while either is open", async () => {
+    const f = toolFixture();
+    f.deps.paneLastReport = async () => ({ status: "NEEDS_YOU", source: "AGENT", at: new Date().toISOString(), summary: "Sign in to LinkedIn", body: null });
+    f.deps.paneWatch = { checked: vi.fn(async () => ({ ok: true, display: "", result: "" })) } as never;
+    const tools = createNousTools(f.deps);
+    const send = () => tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text: "Apply to the saved jobs" }, ctx);
+    // The fixture's CLI waits at "Continue? (y/n)": the question is still on screen.
+    expect(await send()).toMatchObject({ ok: false, display: "Not sent: its question is open" });
+    f.deps.inspectPane = async () => ({ text: "────\n❯ \n────", state: "IDLE", sessionId: "session:1", tasks: [] } as never);
+    f.deps.paneNeeds = async () => [{ paneId: "pane:andy0001", id: "notification:c82f", title: "Andy needs you", source: "JOB_COPILOT", kind: "NEEDS_YOU" }] as never;
+    expect(await send()).toMatchObject({ ok: false, display: "Not sent: its question is open" });
+    f.deps.paneNeeds = async () => [];
+    expect((await send()).ok).toBe(true);
+    expect(f.roomTool).toHaveBeenCalledWith("send_to_pane", expect.objectContaining({ panes: ["pane:andy0001"] }), expect.anything());
+  });
+
+  // Operator 28/11 14:00 BKK: Dana's micro1 interview card was answered «δεν με ενδιαφέρει» from the pane board, yet every send of that answer was refused.
+  it("sends to a pane whose open card the operator has answered, and still holds an unanswered one or a save", async () => {
+    const f = toolFixture();
+    const asked = new Date(Date.now() - 60_000).toISOString();
+    f.deps.paneLastReport = async () => ({ status: "NEEDS_YOU", source: "AGENT", at: asked, summary: "micro1: η συνέντευξη AI θέλει τη δική σου συνεδρία", body: null });
+    f.deps.paneWatch = { checked: vi.fn(async () => ({ ok: true, display: "", result: "" })) } as never;
+    f.deps.paneNeeds = async () => [{ paneId: "pane:andy0001", id: "notification:4dc6", title: "Andy needs you", source: "AGENT", kind: "NEEDS_YOU", createdAt: asked }] as never;
+    const answer = (at: string, paneId = "pane:andy0001") => ({ id: "nous_msg:answer01", ownerUserId: "user:operator", turnId: null, kind: "OPERATOR", status: "DONE",
+      content: "[Main · Andy] My answer to \"micro1\": δεν με ενδιαφέρει", meta: { person: true, refs: { paneId } }, createdAt: at, updatedAt: at });
+    let messages = [answer(new Date(Date.now() - 120_000).toISOString()), answer(new Date().toISOString(), "pane:other001")];
+    f.deps.listConversation = async () => messages as never;
+    const tools = createNousTools(f.deps);
+    const send = (text: string) => tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text }, ctx);
+    // An answer older than the card, or about another pane, answers nothing.
+    expect(await send("Operator answer: not interested, drop micro1")).toMatchObject({ ok: false, display: "Not sent: its question is open" });
+    messages = [answer(new Date().toISOString())];
+    expect((await send("Operator answer: not interested, drop micro1")).ok).toBe(true);
+    expect(f.roomTool).toHaveBeenCalledWith("send_to_pane", expect.objectContaining({ panes: ["pane:andy0001"] }), expect.anything());
+    expect(await send("save to memory")).toMatchObject({ ok: false, display: "Not sent: it waits for the operator" });
   });
 
   // Operator 24/11 12:50 BKK: Bob (Mail Copilot) was refused new mail work over an unrelated Mail Copilot review of a Microsoft SR.
@@ -677,6 +728,28 @@ describe("Nous's world", () => {
     run.mockResolvedValueOnce({ ok: false, display: "no", result: "no" });
     f.deps.tasks.list = async () => [{ id: "task:o9TCBL5YcL8W", title: "Skroutz orders", paneId: "pane:andy0001", schedule: { nextRunAt: new Date(Date.now() + 30 * 60_000).toISOString() } }] as never;
     expect(await f.tools.execute("space_close_pane", { room: "Main", panes: ["Andy"] }, ctx)).toMatchObject({ ok: false, refused: true });
+  });
+
+  it("plan clipboard:CTVaL1V3kAFM step 6: a done task's old run time holds no pane; a running task holds it even with force, through either tool", async () => {
+    const f = toolFixture();
+    const run = vi.fn(async () => ({ ok: true, display: "Set a follow-up", result: "nous_followup:1" }));
+    f.deps.followups = { run } as never;
+    const old = new Date(Date.now() - 86_400_000).toISOString();
+    const bound = (status: string, schedule: object | null) => { f.deps.tasks.list = async () => [{ id: "task:step6", title: "Skroutz orders", paneId: "pane:andy0001", status, schedule }] as never; };
+    const close = (force: boolean) => f.tools.execute("space_close_pane", { room: "Main", panes: ["Andy"], force }, ctx);
+    bound("RUNNING", null);
+    for (const force of [false, true]) expect(await close(force)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining('"Skroutz orders" [task:step6] running now') });
+    expect(await f.tools.execute("space_execute", { room: "Main", actions: [{ kind: "pane", operation: "close", target: { paneIds: ["pane:andy0001"] }, force: true }] }, ctx))
+      .toMatchObject({ refused: true, result: expect.stringContaining("running now") });
+    // A one-off that ran and is not marked done: no next run whose turn end could wake a close, so the refusal stands, with its way out.
+    bound("OPEN", { nextRunAt: null, lastRunAt: old });
+    expect(await close(true)).toMatchObject({ refused: true, result: expect.stringMatching(/ran, not marked done yet\. .*first mark the task done, remove its schedule or bind it to another pane/) });
+    expect(run).not.toHaveBeenCalled();
+    expect(f.roomTool).not.toHaveBeenCalled();
+    for (const status of ["DONE", "ARCHIVED"]) {
+      bound(status, { nextRunAt: old, lastRunAt: old });
+      expect(await close(false)).toMatchObject({ ok: true });
+    }
   });
 
   it("mutes a room's finished and waiting panes for as long as Nous sets, and nothing else", async () => {
@@ -1750,7 +1823,7 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
       const [held] = await f.run(["space_execute", { room: "Main", actions }]);
       expect(held!.ok).toBe(false);
       expect(f.execute).not.toHaveBeenCalled();
-      const ask = { category: "DESTRUCTIVE", title: "Delete the old export", body: "", recommendation: "Delete it. Πρόβλεψη: ναι (80%)", action: { type: "SPACE_CONTROL", roomId: f.room.id, actions },
+      const ask = { category: "DESTRUCTIVE", title: "Delete the old export", body: "Old export: a week-old file nobody uses.", recommendation: "Delete it. Πρόβλεψη: ναι (80%)", action: { type: "SPACE_CONTROL", roomId: f.room.id, actions },
         checked: ["Agent Files: the export is a week old"] };
       // R12-1: a similar title over another file is another decision.
       await f.run(["space_ask_operator", ask], ["space_ask_operator", { ...ask, title: "Delete the other export",
@@ -2582,6 +2655,29 @@ describe("Nous's turns", () => {
     expect(f.requests[1]!.prompt).toContain("and that turn gave its fix to no pane. Known means fixed now");
   }, 20_000);
 
+  it("corrections 22/11 0d086294, 27/11 766ca4f6, 28/11 57f3908d: relays a Space refusal on an ask only in a turn that sent its guard's fix to a pane", async () => {
+    const answer = "Το είδα. Το Space δεν με αφήνει να κλείσω panes που έχουν τελειώσει, όταν η τελευταία τους αναφορά λέει «περιμένω».";
+    expect(spaceRefusalSentence(answer)).toBe("Το Space δεν με αφήνει να κλείσω panes που έχουν τελειώσει, όταν η τελευταία τους αναφορά λέει «περιμένω».");
+    for (const text of ["Είναι απλό shell χωρίς AI, και το Space απέρριψε τη μεταφορά.", "Το Space απέρριψε την κάρτα, γιατί ζητά πρώτα να γίνει όλη η δουλειά.",
+      "Οι κάρτες απορρίφθηκαν από το Space.", "Space refused to close the pane.", "The close guard would not let me close Bob."]) expect(spaceRefusalSentence(text)).toBe(text);
+    for (const text of ["Το Space δεν αρνήθηκε τίποτα.", "Γιατί το Space απέρριψε τη μεταφορά;", "Έκλεισα τα panes στο Space.", "Space did not refuse it.", "Disk space did not run out overnight."]) expect(spaceRefusalSentence(text)).toBeNull();
+    const f = serviceFixture([async (input, service) => {
+      expect(await service.callTool(owner, input.turnId, "space_reply_now", { text: answer }, "r1")).toMatchObject({ ok: false, refused: true, display: expect.stringContaining("relays a Space refusal") });
+      return { text: answer, isError: false };
+    }, async (input, service) => {
+      // A send that names no fix is no fix: still held.
+      await service.callTool(owner, input.turnId, "space_send_to_pane", { paneId: "pane:bob", text: "save to memory" }, "r2");
+      expect((await service.callTool(owner, input.turnId, "space_reply_now", { text: answer }, "r3")).ok).toBe(false);
+      await service.callTool(owner, input.turnId, "space_send_to_pane", { paneId: "pane:bob", text: "Fix the finished-pane close guard at its root." }, "r4");
+      expect((await service.callTool(owner, input.turnId, "space_reply_now", { text: answer }, "r5")).ok).toBe(true);
+      return { text: "NOTHING_NEW", isError: false };
+    }]);
+    await f.service.send(owner, "κλείσε τα panes που τελείωσαν");
+    await vi.waitFor(() => expect(f.requests.map((request) => request.reason)).toEqual(["OPERATOR", "INBOX"]), { timeout: 8_000 });
+    await f.service.idle(owner);
+    expect(f.requests[1]!.prompt).toContain("and that turn gave the guard's fix to no pane. A refusal is a guard to fix");
+  }, 20_000);
+
   it("corrections 21/11 85691c61 and 22/11 37276cdc: says no new work went to free panes only in a turn that handed some out", async () => {
     const answer = "Ο Bob στείλε 10 αιτήσεις. Το φορτίο ήταν 69% έναντι στόχου 90%, και δεν έστειλα νέα δουλειά σε κανένα pane.";
     expect(noNewWorkSentence(answer)).toBe("Το φορτίο ήταν 69% έναντι στόχου 90%, και δεν έστειλα νέα δουλειά σε κανένα pane.");
@@ -3201,6 +3297,28 @@ describe("Nous's turns", () => {
     expect(results[0]).toMatch(/^Not run: answer the operator first, then call this again\.\n\nThe operator has waited 7\d s with no answer/);
     expect(f.execute.mock.calls.filter(([name]) => name === "space_world")).toHaveLength(0);
     expect(results[1]).not.toContain("has waited");
+  });
+
+  it("Response time 28/11 (edcffc12, 724 s): an operator turn silent past ackMs gets Space's acknowledgement in their language; one that replied gets none", async () => {
+    const silent = serviceFixture([async (input, service) => {
+      await new Promise((done) => setTimeout(done, 200));
+      await service.callTool(owner, input.turnId, "space_reply_now", { text: "Το κοιτάζω." }, "call-1");
+      return { text: "Έγινε.", isError: false };
+    }], { limits: { inboxDebounceMs: 10, ackMs: 30 }, language: async () => "el" });
+    const asked = await silent.service.send(owner, "τι ολοκλήρωσες;");
+    await silent.service.idle(owner);
+    const answers = (await silent.repository.listMessages(owner, 20)).filter((message) => message.kind === "ANSWER");
+    expect(answers.map((message) => message.content)).toEqual(["Το είδα, το δουλεύω. Η απάντηση έρχεται σε λίγο.", "Έγινε."]);
+    expect(answers[0]!.meta).toMatchObject({ interim: true, ack: true, replyTo: [asked.id] });
+
+    const quick = serviceFixture([async (input, service) => {
+      await service.callTool(owner, input.turnId, "space_reply_now", { text: "Το κοιτάζω." }, "call-1");
+      await new Promise((done) => setTimeout(done, 200));
+      return { text: "Έγινε.", isError: false };
+    }], { limits: { inboxDebounceMs: 10, ackMs: 30 } });
+    await quick.service.send(owner, "τι ολοκλήρωσες;");
+    await quick.service.idle(owner);
+    expect((await quick.repository.listMessages(owner, 20)).filter((message) => message.meta.ack)).toEqual([]);
   });
 
   it("Response time 14/11 (220b3272, 93 s): a message carried in after the turn's space_reply_now waits for its own answer, held once past 30 s", async () => {
@@ -3950,9 +4068,11 @@ describe("Nous's turns", () => {
     f.executeAction.mockImplementationOnce(async () => { throw new Error("domain must be appearance|voice|task_titles|tools|plugins"); });
     const decision = await f.service.ask({ ownerUserId: owner, category: "DIRECTION", title: "Goal turns every 10 min", body: "", options: [], recommendation: "Yes. Πρόβλεψη: ναι (80%)", refs: {},
       action: { type: "SPACE_CONTROL", roomId: "room:main0001", actions: [{ kind: "resource", operation: "settings.update", input: { domain: "nous", patch: {} } }] } });
-    expect(await f.service.standing(owner, "STANDING", "# Standing orders")).toBe("STARTED");
-    expect(await f.service.answer(owner, decision.id, { answer: "APPROVE" })).toMatchObject({ outcome: expect.stringContaining("Failed: domain must be") });
-    release();
+    // 28/11: a failed or timed-out step before release() left the gate shut, so the turn waited forever and kept the fork worker alive (full run hung 4 h 40).
+    try {
+      expect(await f.service.standing(owner, "STANDING", "# Standing orders")).toBe("STARTED");
+      expect(await f.service.answer(owner, decision.id, { answer: "APPROVE" })).toMatchObject({ outcome: expect.stringContaining("Failed: domain must be") });
+    } finally { release(); }
     await vi.waitFor(() => expect(f.requests.some((request) => request.reason === "INBOX"
       && request.prompt.includes(`Approved decision ${decision.id} "Goal turns every 10 min" FAILED: domain must be appearance|voice|task_titles|tools|plugins; act now`))).toBe(true), { timeout: 8_000 });
     await f.service.idle(owner);

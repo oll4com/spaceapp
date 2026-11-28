@@ -120,7 +120,7 @@ export function DoneCard({ item, onOpenPlan, onAcknowledged }: { item: SpaceNoti
   };
   const where = t({ stable: "Stable", dev: "Dev", "no code": "No code" }[payload.where]);
   return <article className="nous-done-entry" aria-label={payload.request} data-notification-id={item.id}>
-    <div className="nous-done-meta"><span>{where}</span><time dateTime={item.createdAt}>{formatUserTime(item.createdAt)}</time></div>
+    <div className="nous-done-meta"><span>{where}</span><time dateTime={item.createdAt}>{formatUserTime(item.createdAt, { withDate: true })}</time></div>
     <blockquote>{payload.request}</blockquote>
     <p className="nous-done-summary"><FileMentionText text={payload.summary} /></p>
     {payload.verified ? <p className="nous-muted">{t("Checked: {what}", { what: payload.verified })}</p> : null}

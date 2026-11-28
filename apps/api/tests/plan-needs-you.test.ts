@@ -131,6 +131,18 @@ describe("Plan Needs you", () => {
     expect(await f.needs.carry(owner, "pane:p1")).toBe(0);
   });
 
+  it("request 1feac683 (28/11 \"Andy needs sign-in\" carried from a deleted room): a closing pane's Room Agent card closes with it, its agent's ask still moves", async () => {
+    const f = fixture([]);
+    const screen = await f.service.raise({ ownerUserId: owner, roomId: "room:r1", paneId: "pane:p1", source: "ROOM_AGENT", kind: "SIGN_IN", severity: "ATTENTION", title: "Andy needs sign-in",
+      body: "", link: { roomId: "room:r1", paneId: "pane:p1" }, dedupeKey: "room-agent-event:room_agent_event:e1", telegram: false, payload: { eventId: "room_agent_event:e1", status: "OPEN" } });
+    expect(await f.needs.carry(owner, "pane:p1")).toBe(0);
+    expect(await f.service.get(owner, screen.id)).toMatchObject({ status: "RESOLVED", payload: { resolvedReason: "its pane was closed" } });
+    expect(await f.waiting()).toEqual([]);
+    await f.service.raise({ ownerUserId: owner, roomId: "room:r1", paneId: "pane:p2", source: "AGENT", kind: "NEEDS_HANDS", severity: "ATTENTION", title: "Press the key",
+      body: "Press the YubiKey", link: { roomId: "room:r1", paneId: "pane:p2" }, dedupeKey: agentNeedsYouKey("pane:p2"), telegram: null, payload: {} });
+    expect(await f.needs.carry(owner, "pane:p2")).toBe(1);
+  });
+
   it("operator 16/11 21:55 BKK: no plan card while a card on the plan's pane asks, even one Nous holds, or one its wait names by short id", async () => {
     const f = fixture([plan("clipboard:planAAAA", { paneId: "pane:p1" })]);
     const held = await f.service.raise({ ownerUserId: owner, roomId: "room:r1", paneId: "pane:p1", source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION", title: "Sign in",

@@ -13,17 +13,9 @@ import { NOUS_PANE_NOTICE_PREFIX } from "./pane-notices.js";
 import { nousPlanActivity, openPlanStep, renderStandingPlansPrompt } from "./stalled-plans.js";
 import { HARD_HOLDS, stalledHold, type PlanMap } from "./plan-map.js";
 
-/**
- * Standing orders (operator orders 2026-10-21): Space itself, every `tickMinutes`, 24/7 and whatever the inbox does, finds
- * (a) the finished CLI panes (reported done at once, idle for `finishedAfterMinutes`, nothing waiting on them) and (b) the stalled plans, and
- * brings them to Nous in a STANDING turn of their own until each one is handled. Nous does the judgment and the actions per
- * pane with its tools: it sends "save to memory" (space_send_to_pane), Space verifies the save from the pane's reports, Nous
- * closes the pane (space_close_pane) or keeps it open (space_pane_checked KEEP_OPEN). The close-out's state per pane lives in
- * nous_pane_closeouts, written from Nous's own tool calls (tools.ts), so a restart loses nothing and nothing is asked twice.
- * Until 2026-10-20 the rule lived only in Space Memory and in a follow-up Nous re-armed hourly, and that chain broke.
- */
-import { awaitsOperator, NOUS_SAVE_RETRY_TEXT, NOUS_SAVE_TEXT } from "./save-request.js";
-import { TASK_SOON_MS } from "./tools.js";
+/** Standing orders (operator 2026-10-21): each tick Space brings finished CLI panes and stalled plans to Nous in a STANDING turn until handled; close-out state lives in nous_pane_closeouts so a restart loses nothing. */
+import { awaitsOperator, CLOSEOUT_NEXT, type CloseoutSkip, NOUS_SAVE_RETRY_TEXT, NOUS_SAVE_TEXT, NOUS_SAVE_YOURSELF, reportSettled, STALE_WAIT_MS, workOpen } from "./save-request.js";
+import { taskHoldsPane } from "./tools.js";
 import type { NousTurnItem } from "./turn-items.js";
 import { quote } from "./requests-waiting.js";
 import { NOUS_SWEEP_PANE_TITLE, sweepAreaTouched, sweepPane, sweepPieces } from "./utilization.js";
@@ -43,12 +35,12 @@ const SETTLE_MS = 2 * MINUTE;
 export const NOUS_SAVE_WAIT_MS = 20 * MINUTE;
 /** The same pane line is not repeated to Nous more often than this unless its state changed. */
 const RELIST_MS = 30 * MINUTE;
-/** Operator 5/11 20:44 BKK (nous_msg:ffec6f53f5674ba2a86a507b): Standing orders run on a change; a line that did not change comes back at most 3 times a day. */
+/** A line that did not change comes back at most 3 times a day (operator nous_msg:ffec6f53). */
 const UNCHANGED_MS = 8 * 60 * MINUTE;
 /** C (plan clipboard:ZWJJdBgHm64Z): the requests sweep's cadence and the operator's day it runs in (local hours, end exclusive). */
 const SWEEP_MS = 30 * MINUTE;
 const SWEEP_HOURS = { from: 9, to: 23 } as const;
-/** The push (operator 3/11 23:11 BKK): runnable work comes to Nous every 10 minutes while capacity is free; a request joins once its pane rested 30 minutes. */
+/** The push: runnable work reaches Nous every 10 minutes while capacity is free; a request joins once its pane rested 30 minutes. */
 const PUSH_MS = 10 * MINUTE;
 const PUSH_REQUEST_IDLE_MS = 30 * MINUTE;
 /** The pool a pane's CLI draws on, as the Provider advice names it (tokens.ts POOLS); null: a CLI outside Space Gateway's pools. */
@@ -71,16 +63,12 @@ const OPEN_PLAN = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 /** R10-19: the daily review's turns that may fail in one local day before it waits for the next (the first ask and 2 retries). */
 export const NOUS_REVIEW_MAX_FAILED = 3;
 
-export type CloseoutSkip = "always-on" | "browser-held" | "busy" | "unknown" | "fresh" | "operator-test" | "keep-open" | "waiting-operator" | "card-check" | "task" | "managed" | "plan-open" | "board-waits" | "board-check" | "awaits-operator" | "scheduled" | "prompted" | "operator-pane" | "pending-deliverables";
+export type { CloseoutSkip };
 /** A browser tab count above this shows on the pane's line, so Nous has the finished tabs closed (browser hygiene, operator 27/10). */
 export const NOUS_TABS_SHOWN_ABOVE = 3;
 const isNousCard = (item: SpaceNotification) => item.source === "NOUS" && Boolean(item.dedupeKey?.startsWith(NOUS_PANE_NOTICE_PREFIX));
 
-/**
- * A pane's live browser as the standing orders read it (the census's own records, no Browser Host call): its tabs, who holds it
- * (a control lease, a handoff, a Vault fence; "unknown" when a read failed: kept open) and when it last moved (the tab-list polls
- * of an open browser pane and its frames stamp it every few seconds while it is on screen).
- */
+/** A pane's live browser from the census records: tab count, who holds it ("unknown" on a failed read keeps it open) and when it last moved. */
 export interface CloseoutBrowser { tabs: number; held: "control" | "handoff" | "vault" | "unknown" | null; activeAt: string | null }
 
 export interface CloseoutContext {
@@ -118,10 +106,7 @@ export function savesToMemory(pane: Pick<Pane, "mode" | "terminalRuntimeId">): b
   return isCliPane(pane) && (cliToggleRuntimeIds as readonly string[]).includes(pane.terminalRuntimeId ?? "");
 }
 
-/**
- * When the pane last did or showed anything: an AI CLI's own state; for any other pane the newest of its state, its record, its
- * browser and its playback, so a browser on screen or a video playing is never finished.
- */
+/** When the pane last did or showed anything, so a browser on screen or a playing video is never finished. */
 export function closeoutSince(input: Pick<BoardPaneInput, "pane">, ctx: CloseoutContext): string | null {
   const { pane } = input;
   if (savesToMemory(pane)) return ctx.since(pane.id);
@@ -130,11 +115,7 @@ export function closeoutSince(input: Pick<BoardPaneInput, "pane">, ctx: Closeout
   return times.length ? times.reduce((newest, value) => Date.parse(value) > Date.parse(newest) ? value : newest) : null;
 }
 
-/**
- * Operator 28/10 14:59 BKK («δεν θελω να ισχυει το οριο των 30 λεπτων θελω αμεσα»): a CLI pane whose newest report is its own done
- * or failed, or Space's turn-end report, is finished at once when it sits idle at its prompt; only a pane idle with no such report
- * waits `finishedAfterMinutes`.
- */
+/** A CLI pane idle at its prompt with its own done/failed or Space's turn-end report is finished at once; otherwise it waits `finishedAfterMinutes`. */
 export function reportedFinished(input: Pick<BoardPaneInput, "pane" | "report">): boolean {
   const report = input.report;
   return savesToMemory(input.pane) && Boolean(report) && (report!.status === "DONE" || report!.status === "FAILED" || (report!.status === "TURN_END" && report!.source === "AUTO"));
@@ -142,11 +123,7 @@ export function reportedFinished(input: Pick<BoardPaneInput, "pane" | "report">)
 
 const PLAN_WAITS = new Set(["DATE", "PROMOTE", "THIRD_PARTY"]);
 const waitText = (kind: string, what: string) => `${kind.toLowerCase().replace("_", " ")}: ${what.replace(/\s+/g, " ")}`;
-/**
- * R10-3 (operator rule 264b98c3, 28/10 10:43 BKK «panes that do not run and will not run right now are closed; reopened when their
- * work continues»): what a pane's open linked plan waits on that nobody can move now (its own date, promote or third-party wait, a plan
- * it depends on, or the pane's board wait of those kinds), null when it waits on nothing of the kind.
- */
+/** What a pane's open plan waits on that nobody can move now (date, promote, third party, a plan it depends on), or null (operator rule 264b98c3). */
 export function planWaitsFor(input: Pick<BoardPaneInput, "pane" | "plan">, ctx: Pick<CloseoutContext, "summaries" | "now" | "plans">): string | null {
   const plan = input.plan;
   if (!plan) return null;
@@ -166,22 +143,26 @@ export function closeoutSkipReason(input: BoardPaneInput, ctx: CloseoutContext):
   if (pane.mode === "MAIL_COPILOT") return "always-on";
   // A Marketing Copilot pane closes only once its copilot has nothing scheduled (operator rule 9/11; the close itself refuses too).
   if (pane.mode === "MARKETING_COPILOT" && (ctx.scheduled === null || ctx.scheduled?.has(pane.id))) return "scheduled";
-  // Every pane type closes once finished (operator 27/10 «όλα του τύπου Panes»; copilot, Design, App Studio and Video panes since
-  // 2026-10-24), but a browser someone holds is in use: a control lease, a handoff, a Vault fence.
+  // Every pane type closes once finished, but a browser someone holds (control lease, handoff, Vault fence) is in use.
   if (ctx.browsers?.get(pane.id)?.held) return "browser-held";
   if (ctx.browsers === null && !savesToMemory(pane)) return "unknown";
   if (state !== "done" && state !== "idle") return "busy";
   // Operator 21/11 nous_msg:63896af5: a pane the operator opened or prompted is never finished nor idle for Nous's work.
   if (ctx.operatorPane?.(pane)) return "operator-pane";
-  if (savesToMemory(pane) && awaitsOperator(input.report, ctx.operatorPromptedLast?.(pane.id) ?? false)) return "awaits-operator";
+  const promptedLast = ctx.operatorPromptedLast?.(pane.id) ?? false;
+  const operatorWaits = input.decisions.length > 0 || input.copilotItems.length > 0 || input.notifications.some((item) => !isNousCard(item));
+  // Operator 28/11 nous_msg:57f3908d: a waiting, needs-decision or blocked report idle 30+ min with nothing open for the operator is finished.
+  const settled = !promptedLast && !operatorWaits && Boolean(input.report) && reportSettled(input.report!, input.report, ctx.since(pane.id), ctx.now);
+  if (savesToMemory(pane) && !settled && awaitsOperator(input.report, promptedLast)) return "awaits-operator";
   const since = closeoutSince(input, ctx);
   if (!since) return "unknown";
   // 13/11 Eva/Andy: closed 18 s after Nous typed its plan step, the dashboard still read done. A prompt since it finished, or one to come, is work.
   if (ctx.prompts === null || ctx.prompts?.has(pane.id) || (ctx.promptedAt?.(pane.id) ?? -Infinity) > Date.parse(since)) return "prompted";
   if (check?.verdict === "OPERATOR_TEST" && ctx.closeOperatorPanes === false) return "operator-test";
+  // Before keep-open: Nous's own mark passes its later save and close (operator 28/11), the operator's open card or decision never does.
+  if (operatorWaits) return "waiting-operator";
   if (check?.verdict && KEEP_VERDICTS.has(check.verdict) && check.nextCheckAt && Date.parse(check.nextCheckAt) > ctx.now) return "keep-open";
-  if (input.decisions.length || input.copilotItems.length || input.notifications.some((item) => !isNousCard(item))) return "waiting-operator";
-  // Only Nous's own card waits, on a pane finished since: Nous re-checks it (stable 2026-10-22: cards of 10-17..10-19 kept panes and rooms "Needs attention").
+  // Only Nous's own card waits on a finished pane: Nous re-checks it instead of keeping the pane.
   const wait = reportedFinished(input) ? 0 : ctx.finishedAfterMs;
   if (input.notifications.length) {
     const old = (iso: string) => ctx.now - Date.parse(iso) >= wait;
@@ -195,26 +176,23 @@ export function closeoutSkipReason(input: BoardPaneInput, ctx: CloseoutContext):
   // A plan that waits on a date, a promote, a third party or another plan does not keep its pane: it closes and reopens with the work (R10-3).
   const planOpen = plan && plan.progressPercentage < 100 && !OPEN_PLAN.has(plan.executionStatus) && plan.steps.some((step) => step.status !== "COMPLETED");
   const planWait = planOpen ? planWaitsFor(input, ctx) : null;
-  // 13/11 (Load 66 %, 7 of 17 done CLI panes kept open by plans whose open steps were all BLOCKED): only a step that can run, or the
-  // operator's own answer, keeps the pane; the rest save and close and reopen with the work.
+  // Only a runnable plan step or the operator's own answer keeps a finished pane; the rest save, close and reopen with the work.
   if (planOpen && !planWait && (openPlanStep(plan) || plan.waitsOn?.kind === "OPERATOR")) return "plan-open";
   const summary = latestSummary(pane.id, ctx.summaries);
   const fresh = ctx.now - Date.parse(since) < wait;
-  // The board's wait is a model's reading of the last answer: once the pane is finished long enough Nous re-checks it (stable 2026-10-24: panes "waiting" 3 days, nothing open for the operator).
+  // The board's wait is a model's reading: once the pane is finished long enough Nous re-checks it.
   if ((!planWait || summary?.waitsOn === "OPERATOR") && summary && BOARD_WAITS.has(summary.waitsOn) && summary.generatedAt >= since) return fresh ? "board-waits" : "board-check";
   if (fresh) return "fresh";
   return null;
 }
 
-/**
- * Operator 23/11 (cli_session:SFmu0kLCt3yJ «αν δεν κλεισει η απαντηση απο εμενα ή απο τον Nous να μην λαμβανει νεο prompt γιατι χανετε η ερωτηση»):
- * a CLI pane's question is open while its last answer or report asks, a card of its own waits on the operator, or its board reads a wait on the
- * operator since it finished. Such a pane gets no new work, whatever the load; the operator's answer or Nous's (space_answer_pane) closes it.
- */
-export function questionOpen(input: BoardPaneInput, ctx: Pick<CloseoutContext, "since" | "summaries">): boolean {
+/** A CLI pane's question is open (its answer, report, card or board wait asks the operator) and it gets no new work until answered (operator cli_session:SFmu0kLCt3yJ). */
+export function questionOpen(input: BoardPaneInput, ctx: Pick<CloseoutContext, "since" | "summaries" | "now">): boolean {
   if (!savesToMemory(input.pane)) return false;
-  // Operator 24/11 12:50 BKK: a copilot's review or question waits in its queue, not at this prompt, so it holds no new work (its save still waits, closeoutSkipReason).
-  if (awaitsOperator(input.report, false) || input.decisions.length || input.notifications.some((item) => !isNousCard(item) && !COPILOT_SOURCES.has(item.source))) return true;
+  // A blocked, waiting or needs-decision report idle 30+ min asks nothing; cards and decisions still hold it (nous_msg:57f3908d).
+  const stale = Boolean(input.report) && reportSettled(input.report!, input.report, ctx.since(input.pane.id), ctx.now);
+  // A copilot's review or question waits in its queue, so it holds no new work here; its save still waits.
+  if ((!stale && awaitsOperator(input.report, false)) || input.decisions.length || input.notifications.some((item) => !isNousCard(item) && !COPILOT_SOURCES.has(item.source))) return true;
   const since = ctx.since(input.pane.id), board = latestSummary(input.pane.id, ctx.summaries);
   return Boolean(since && board?.waitsOn === "OPERATOR" && board.generatedAt >= since);
 }
@@ -227,24 +205,10 @@ export function keptOpenForTask(paneId: string, tasks: TaskItem[]): TaskItem | n
   return tasks.find((task) => task.paneId === paneId && task.schedule) ?? null;
 }
 
-/**
- * 2026-11-25 REVIEW: checks every task bound to a pane (not only the first scheduled one): a RUNNING task, a scheduled task
- * due within TASK_SOON_MS, or a one-off scheduled task that ran and has not yet been marked DONE keeps the pane open.
- */
-export function paneHasPendingTask(paneId: string, tasks: readonly TaskItem[], at: number): boolean {
-  return tasks.some((task) => {
-    if (task.paneId !== paneId || task.status === "DONE" || task.status === "ARCHIVED") return false;
-    if (task.status === "RUNNING") return true;
-    if (!task.schedule) return false;
-    if (Date.parse(task.schedule.nextRunAt ?? "") - at < TASK_SOON_MS) return true;
-    return Boolean(task.schedule.lastRunAt && !task.schedule.nextRunAt);
-  });
-}
+/** Any task bound to the pane keeps it open: running, scheduled within TASK_SOON_MS, or a one-off that ran but is not DONE. */
+export const paneHasPendingTask = (paneId: string, tasks: readonly TaskItem[], at: number): boolean => tasks.some((task) => task.paneId === paneId && taskHoldsPane(task, at));
 
-/**
- * 2026-11-25 REVIEW: a pane associated with any open/running task, open plan, managed execution, open operator request,
- * or worktree with pending deliverables never receives a hygiene sweep (even if titled NOUS_SWEEP_PANE_TITLE).
- */
+/** A pane bound to any task, plan, managed run, open request or worktree with pending deliverables never gets a hygiene sweep. */
 export function paneBoundToWork(
   paneId: string,
   work: {
@@ -262,25 +226,36 @@ export function paneBoundToWork(
   return work.pendingWorktrees === null || Boolean(work.pendingWorktrees?.has(paneId));
 }
 
-/** True when a git worktree has uncommitted/untracked files or commits not yet merged into dev or main. */
+/**
+ * A pane held now (open question, a task running or due within TASK_SOON_MS, a managed run); Load leaves it out while idle. A date/promote/third-party
+ * wait parks no pane. Operator 28/11 14:40 BKK (nous_msg:8277b302 «με 6 running να ειναι 100% ειναι λαθος»): any open task parked it, so 6 idle panes
+ * whose recurring tasks ran next in hours to a month left the denominator and 6 working read 6 of 6.
+ */
+export const parkedPane = (input: BoardPaneInput, ctx: Pick<CloseoutContext, "since" | "summaries" | "now" | "tasks" | "executions">): boolean =>
+  questionOpen(input, ctx) || paneHasPendingTask(input.pane.id, ctx.tasks, ctx.now) || ctx.executions.some((execution) => execution.paneId === input.pane.id);
+
+/** True when a worktree has uncommitted/untracked files or unmerged commits; a failing git counts as pending (plan CTVaL1V3kAFM step 7). */
 export async function worktreeHasPendingDeliverables(worktreePath: string): Promise<boolean> {
   if (!existsSync(worktreePath)) return false;
   const status = await execGit(worktreePath, ["status", "--porcelain"], 3_000);
-  if (status.code !== 0) return false;
+  if (status.code !== 0) return !/not a git repository \(or any/i.test(status.stderr);
   if (status.stdout.trim().length > 0) return true;
   const refs = await execGit(worktreePath, ["for-each-ref", "--format=%(refname)", "refs/heads/dev", "refs/heads/main"], 3_000);
-  if (refs.code !== 0) return false;
+  if (refs.code !== 0) return true;
   const bases = refs.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   if (!bases.length) return false;
   const ahead = await execGit(worktreePath, ["rev-list", "--count", "HEAD", "--not", ...bases], 3_000);
-  return ahead.code === 0 && Number.parseInt(ahead.stdout.trim(), 10) > 0;
+  return ahead.code !== 0 || ahead.stdout.trim() !== "0";
 }
 
 /** Panes whose managed worktree (via pane.cwd or .worktree-registry.json) holds uncommitted changes or unmerged commits. */
-export async function panePendingWorktrees(
+export const panePendingWorktrees = async (panes: readonly Pick<Pane, "id" | "cwd">[], options: { worktreesRoot?: string; registryPath?: string } = {}): Promise<Set<string>> =>
+  new Set((await panePendingWorktreePaths(panes, options)).keys());
+/** The same, with the first such worktree of each pane (a close note names it: plan clipboard:CTVaL1V3kAFM step 4). */
+export async function panePendingWorktreePaths(
   panes: readonly Pick<Pane, "id" | "cwd">[],
   options: { worktreesRoot?: string; registryPath?: string } = {}
-): Promise<Set<string>> {
+): Promise<Map<string, string>> {
   const root = resolve(options.worktreesRoot ?? WORKTREES_ROOT);
   const inside = (path: string | null | undefined): string | null => {
     if (!path) return null;
@@ -309,13 +284,13 @@ export async function panePendingWorktrees(
   const cache = new Map<string, Promise<boolean>>();
   const check = (path: string) => {
     let pending = cache.get(path);
-    if (!pending) { pending = worktreeHasPendingDeliverables(path).catch(() => false); cache.set(path, pending); }
+    if (!pending) { pending = worktreeHasPendingDeliverables(path).catch(() => true); cache.set(path, pending); }
     return pending;
   };
-  const pending = new Set<string>();
+  const pending = new Map<string, string>();
   await Promise.all([...byPane.entries()].map(async ([paneId, paths]) => {
     for (const path of paths) {
-      if (await check(path)) { pending.add(paneId); return; }
+      if (await check(path)) { pending.set(paneId, path); return; }
     }
   }));
   return pending;
@@ -341,10 +316,7 @@ export interface StandingOrdersDeps {
   marks: NousPlanMarksRepository;
   settings(owner: string): Promise<NousSettings>;
   lowToken?(owner: string): Promise<boolean>;
-  /**
-   * B (plan clipboard:ZWJJdBgHm64Z): the spend mode and the pools the Provider advice says to avoid. In LOW a stalled plan is still
-   * nudged unless its pane runs on an avoided pool; CRITICAL skips the nudges. Without it `lowToken` decides as before.
-   */
+  /** Spend mode and the pools to avoid (plan ZWJJdBgHm64Z): LOW nudges unless the pane's pool is avoided, CRITICAL skips nudges. */
   spend?(owner: string): Promise<{ mode: "NORMAL" | "LOW" | "CRITICAL"; avoid: string[]; refused?: string[] }>;
   /** C and D (plan clipboard:ZWJJdBgHm64Z): the open requests for the sweep, the operator's zone, and the In progress count to keep. */
   requests?: {
@@ -370,15 +342,14 @@ export interface StandingOrdersDeps {
   /** The plans parked now, open and closed (operator 13/11 nous_msg:4080b166): their NOUS and AGENT conditions are Nous's to do. */
   parked?(owner: string): Promise<ClipboardItem[]>;
   lastAnswer?(pane: Pane): Promise<string | null>;
-  /** Plan clipboard:u78xLyqRp6kD: the id of a Space Memory save made since `since` whose provenance names this pane (space-memory-save stamps SPACE_PANE_ID), null when none. */
+  /** The id of a Space Memory save since `since` whose provenance names this pane, or null (plan u78xLyqRp6kD). */
   paneSaves?(paneId: string, since: string, names?: { pane: string; room: string }): Promise<string | null>;
-  /** The answer of the pane's own COMPLETED save turn that ended at or after `since` ("" when silent), null when none ran (last-answer.ts createPaneSaveTurn). */
+  /** The answer of the pane's own completed save turn ended at or after `since` ("" when silent), null when none ran. */
   saveTurn?(pane: Pane, since: string): Promise<string | null>;
-  /**
-   * Plan clipboard:qH5emwVaV6yO step 10: closes a finished pane whose memory save Space verified (space_close_pane's close and needs-you
-   * guard); true when it closed. Without it Nous gets the "close it now" line, one Opus STANDING turn per pane.
-   */
+  /** Closes a finished pane whose save Space verified; without it each close costs Nous a STANDING turn (plan qH5emwVaV6yO). */
   closePane?(owner: string, roomId: string, paneId: string): Promise<boolean>;
+  /** Plan clipboard:CTVaL1V3kAFM step 8: whether the pane's turn runs now, read right before closePane (the tick's snapshot is older). */
+  paneWorking?(pane: Pane): Promise<boolean>;
   /** Space's own Space Memory save for a pane that cannot run one (its pool has no room); the memory id. */
   saveMemory?(owner: string, title: string, body: string): Promise<string>;
   /** The pane's newest own work report (space_close_pane's open-work guard reads the same one); null when none. */
@@ -476,12 +447,9 @@ export const NOUS_FINISHED_KEY = "finished:";
 export const SWEEP_CLEAN_TTL_MS = 24 * 60 * MINUTE;
 /** A clean mark; with `pane` it is instead a sweep handed to that pane at `at` and not settled yet (kept so an API restart does not lose it). */
 export interface CleanSweepMark { at: number; head: string | null; pane?: string }
-/** A sweep that stopped on its provider (Gemini 503/429, usage limit, «όριο», «σταμάτησε λόγω») or names a merge-queue ticket did not prove its area clean. */
+/** A sweep that stopped on its provider or names a merge-queue ticket did not prove its area clean. */
 const SWEEP_NOT_CLEAN = /\b(?:503|429|unavailable|rate[ -]?limit(?:ed)?|usage limit|quota (?:exceeded|exhausted)|resource[ _]?exhausted|overloaded|no accounts?)\b|q-\d{8}-|όριο|σταμάτησε λόγω/i;
-/**
- * 26/11 (1,062 no-ticket sweep DONEs since 22/11: 16 clean ones missed the old wording list, e.g. «sweep clean on dev», «is clean on dev»):
- * a sweep's DONE without a ticket is clean unless it names a provider error or limit.
- */
+/** A sweep's DONE without a ticket is clean unless it names a provider error or limit. */
 export const isCleanSweepReport = (report: Pick<PaneReport, "status" | "summary" | "ticket">): boolean =>
   report.status === "DONE" && !report.ticket && !SWEEP_NOT_CLEAN.test(report.summary);
 
@@ -508,16 +476,18 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
   const now = deps.now ?? Date.now;
   const running = new Set<string>();
   const lastTick = new Map<string, number>();
-  /**
-   * The proof a pane saved since its first ask `askedAt`: its Space Memory save, its reports, or its own completed save turn; null when none shows yet.
-   * 27/11 (Copilots/Finn saved 07:45 on the first ask, was asked again 08:29 and slept): a save after the first ask counts, unless the pane began
-   * new work after it and before the latest ask `lastAsk` (a prompt, or a STARTED report, which survives an API restart unlike lastPromptAt);
-   * the window so never starts later than the latest ask, as before.
-   */
-  const savedSince = async (owner: string, paneId: string, askedAt: string, pane?: Pane, lastAsk = askedAt, room?: string): Promise<string | null> => {
+  /** The one reading of "the save covers the pane's last work" for the tick, the close and the save guards (plan CTVaL1V3kAFM step 3). */
+  const askAt = (row: NousPaneCloseout) => Date.parse(row.retriedAt ?? row.requestedAt);
+  const standing = (row: NousPaneCloseout | null | undefined) => row && row.state !== "CLOSED" && lastPromptAt(row.paneId) <= askAt(row) ? row : undefined;
+  const covers = (row: NousPaneCloseout | null | undefined, since: string | null) =>
+    Boolean(row && standing(row)?.state === "VERIFIED" && (since === null || Date.parse(row.updatedAt) >= Date.parse(since)));
+  /** Proof the pane saved since its first ask (memory save, report or save turn), unless it began new work before the latest ask; null when none. */
+  const savedSince = async (owner: string, paneId: string, askedAt: string, pane?: Pane, lastAsk = askedAt, room?: string, unasked = false): Promise<string | null> => {
     const reports = await deps.reportsSince(owner, paneId, askedAt).catch(() => []);
-    const work = [lastPromptAt(paneId), ...reports.filter((report) => report.status === "STARTED").map((report) => Date.parse(report.at))];
-    const since = new Date(Math.max(Date.parse(askedAt), ...work.filter((at) => at < Date.parse(lastAsk)))).toISOString();
+    // shortcut: an own save followed by work that filed no started or progress report still counts; read the pane's turn ends too if one turns up.
+    const work = unasked ? reports.filter((report) => report.status === "STARTED" || report.status === "PROGRESS").map((report) => Date.parse(report.at))
+      : [lastPromptAt(paneId), ...reports.filter((report) => report.status === "STARTED").map((report) => Date.parse(report.at))].filter((at) => at < Date.parse(lastAsk));
+    const since = new Date(Math.max(Date.parse(askedAt), ...work)).toISOString();
     const stamped = deps.paneSaves ? await deps.paneSaves(paneId, since, pane && room ? { pane: paneLabel(pane), room } : undefined).catch(() => null) : null;
     if (stamped) return stamped;
     const answer = pane && deps.lastAnswer && reports.some((report) => report.at >= since) ? await deps.lastAnswer(pane).catch(() => null) : null;
@@ -527,20 +497,19 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     const turn = await deps.saveTurn(pane, since).catch(() => null);
     return turn === null ? null : MEMORY_ID.exec(turn)?.[0] ?? "saved";
   };
-  /**
-   * Plan clipboard:u78xLyqRp6kD (27/11: 79 closes refused "save not verified" in 3 days, Iris refused 16 s after its save): verifies a finished
-   * pane's save now instead of on the next tick. A pane never asked counts too when it saved on its own after its last prompt.
-   */
+  /** Verifies a finished pane's save now instead of next tick; an unasked pane counts when it saved after its last prompt (plan u78xLyqRp6kD). */
   const verifyNow = async (owner: string, input: BoardPaneInput, row: NousPaneCloseout | undefined, since: string | null): Promise<NousPaneCloseout | undefined> => {
-    if (!savesToMemory(input.pane) || input.state === "working" || input.state === "waiting" || since === null || row?.state === "VERIFIED") return row;
-    const live = row && row.state !== "CLOSED" && (!row.closedAt || row.closedAt < since) ? row : undefined;
-    // A save counts only after the ask and after the pane's last work prompt (an old save never covers new work).
-    const from = Math.max(live ? Date.parse(live.requestedAt) : -Infinity, lastPromptAt(input.pane.id));
-    if (!Number.isFinite(from)) return row;
-    const id = await savedSince(owner, input.pane.id, new Date(from).toISOString(), input.pane, live?.retriedAt ?? undefined, input.room.name);
+    if (!savesToMemory(input.pane) || input.state === "working" || input.state === "waiting" || since === null) return row;
+    const asked = standing(row);
+    if (covers(asked, since)) return row;
+    // An open ask is verified from the ask; otherwise the pane's own save counts from its last work prompt, or from when it finished.
+    const unasked = !asked || asked.state === "VERIFIED";
+    const prompted = lastPromptAt(input.pane.id);
+    const from = !unasked ? Date.parse(asked.requestedAt) : asked || !Number.isFinite(prompted) ? Date.parse(since) : prompted;
+    const id = await savedSince(owner, input.pane.id, new Date(from).toISOString(), input.pane, unasked ? undefined : asked.retriedAt ?? undefined, input.room.name, unasked);
     if (!id) return row;
     const stamp = new Date(now()).toISOString();
-    const next: NousPaneCloseout = live ? { ...live, state: "VERIFIED", verifiedMemoryId: id, reason: null, updatedAt: stamp }
+    const next: NousPaneCloseout = asked ? { ...asked, state: "VERIFIED", verifiedMemoryId: id, reason: null, updatedAt: stamp }
       : { paneId: input.pane.id, roomId: input.room.id, state: "VERIFIED", requestedAt: stamp, retriedAt: null, verifiedMemoryId: id, closedAt: null, reason: null, updatedAt: stamp };
     await deps.closeouts.save(owner, next);
     return next;
@@ -548,11 +517,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
   const lastRound = new Map<string, number>();
   /** R13-9: the pendings slot ("YYYY-MM-DD HH:MM" local) each owner's list was last handled for. */
   const pendingsSlot = new Map<string, string>();
-  /**
-   * R13-9 (goal ab5f85bd, Nous 29/10 13:15 BKK: the 3-hour pendings list was a chain of follow-ups a lost turn broke): at each of the
-   * operator's pendings times, in their day (never in quiet hours), a STANDING turn of its own lists what waits for them, so Nous writes
-   * ONE list; nothing waiting, or a list posted under 3 hours ago, brings none.
-   */
+  /** At each pendings time in the operator's day, one STANDING turn lists what waits for them; nothing waiting or a list under 3 h old brings none (goal ab5f85bd). */
   async function pendingsTurn(owner: string, hours: string[], at: number, map: PlanMap | null): Promise<void> {
     const { zone, quiet } = await deps.pendings!.clock(owner);
     if (quiet) return;
@@ -587,6 +552,8 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
   const dispatched = new Map<string, string>();
   /** owner + backlog piece key → the pane Space handed it to (the push's free-pane hand-out). */
   const given = new Map<string, string>();
+  // shortcut: read at the standing tick (tickMinutes, at once after a pane's report), so a question asked or answered shows up to one tick late; read it per Load minute if that lag shows.
+  const parkedBy = new Map<string, ReadonlySet<string>>();
   let givenLoaded = false;
   /** owner + sweep key → when it was last handed out: the least recently swept area goes first. */
   const sweptAt = new Map<string, number>();
@@ -615,11 +582,9 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     if (local.hour < hour || settled.get(owner) === local.day) return null;
     const since = new Date(at - NOUS_REVIEW_WINDOW_MS).toISOString();
     const facts = await deps.review!.facts(owner, since);
-    // R10-19 (29/10 local day: the REVIEW failed at 22:38 UTC during the Space Gateway outage and nothing asked again): a REVIEW that
-    // ended FAILED or STOPPED is no review; the next tick asks again, at most until 3 such rows that day. A review that ran is the day's.
+    // A FAILED or STOPPED REVIEW is no review: the next tick asks again, at most 3 such rows a day.
     const today = facts.filter((turn) => turn.reason === "REVIEW" && localDayHour(Date.parse(turn.startedAt), zone).day === local.day);
-    // R11-7 (Nous 29/10): a TIMEOUT counts as the day's review only when it wrote its findings (queue.md or a note); else it is retried once
-    // like a failed one, under the same 3-a-day cap.
+    // A TIMEOUT counts as the day's review only when it wrote findings; else it is retried under the same cap.
     const wrote = async (turn: NousTurnFacts) => deps.review!.turnWrote ? await deps.review!.turnWrote(owner, turn.turnId).catch(() => true)
       : ["space_note", "space_files_write"].some((name) => (turn.tools[name]?.calls ?? 0) > (turn.tools[name]?.failed ?? 0));
     const bareTimeouts: NousTurnFacts[] = [];
@@ -659,12 +624,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     return result;
   }
 
-  /**
-   * C (plan clipboard:ZWJJdBgHm64Z; 31/10 22:19 BKK his Requests tab read 35 In progress while 3 of 24 panes worked, and one operator turn
-   * closed 11 of 19 at once, already finished): by day, every 30 minutes, the open requests come in the standing turn, each with its
-   * pane's state, newest report and the evidence it is finished; every one not visibly moving (its pane not working, or evidence it is
-   * done) is a hold-A item. Nothing open, nothing. D: the In progress count is kept at the operator's 09:00 and 21:00 for the REVIEW.
-   */
+  /** By day every 30 min the open requests come with their pane's state and evidence; any not visibly moving is a hold-A item (plan ZWJJdBgHm64Z). */
   // 17/11 REVIEW (16/11: a follow-up rewritten ×22 while it waited on the operator until 09:07 BKK): what an open dated follow-up holds is no push item.
   const heldBy = async (owner: string) => {
     const holds = deps.datedHolds ? await deps.datedHolds(owner).catch(() => new Set<string>()) : new Set<string>();
@@ -703,14 +663,14 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       ...rows.map(({ line }) => line)].join("\n") };
   }
 
+  function sampleSince(snapshot: Awaited<ReturnType<StandingOrdersDeps["collect"]>> | null, paneId: string): string | null {
+    for (const { sample } of snapshot?.rooms ?? []) { const detail = sample?.details[paneId]; if (detail) return detail.since ?? null; }
+    return null;
+  }
   function closeoutContext(snapshot: Awaited<ReturnType<StandingOrdersDeps["collect"]>>, orders: NousSettings["standingOrders"], at: number, rows: ReadonlyMap<string, NousPaneCloseout>): CloseoutContext {
-    const since = (paneId: string) => { for (const { sample } of snapshot.rooms) { const detail = sample?.details[paneId]; if (detail) return detail.since ?? null; } return null; };
+    const since = (paneId: string) => sampleSince(snapshot, paneId);
     // The save request's own text is typed just before its row is stamped: only a prompt after it is new work.
-    const promptedAt = (paneId: string) => {
-      const row = rows.get(paneId);
-      const last = lastPromptAt(paneId);
-      return row && row.state !== "CLOSED" && last <= Date.parse(row.retriedAt ?? row.requestedAt) ? -Infinity : last;
-    };
+    const promptedAt = (paneId: string) => standing(rows.get(paneId)) ? -Infinity : lastPromptAt(paneId);
     return { since, tasks: snapshot.tasks, executions: snapshot.executions, summaries: snapshot.summaries, now: at, finishedAfterMs: orders.finishedAfterMinutes * MINUTE, closeOperatorPanes: orders.closeOperatorPanes, plans: snapshot.plans, operatorPromptedLast, operatorPane: (pane) => operatorPaneReason(pane, at), promptedAt,
       ...(snapshot.browsers !== undefined ? { browsers: snapshot.browsers } : {}), ...(snapshot.usedAt ? { usedAt: snapshot.usedAt } : {}), ...(snapshot.scheduled !== undefined ? { scheduled: snapshot.scheduled } : {}),
       ...(snapshot.prompts !== undefined ? { prompts: snapshot.prompts } : {}),
@@ -725,6 +685,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     const panes = boardPanes(snapshot, { showClosed: false });
     const rows = new Map((await deps.closeouts.list(owner)).map((row) => [row.paneId, row]));
     const ctx = closeoutContext(snapshot, orders, at, rows);
+    parkedBy.set(owner, new Set(panes.filter((input) => parkedPane(input, ctx)).map((input) => input.pane.id)));
     // A listed pane's browser with many tabs: the finished ones close (browser hygiene); a pane without a CLI closes them with itself.
     const planNote = (input: BoardPaneInput) => { const what = planWaitsFor(input, ctx)
       ?? (input.plan && input.plan.progressPercentage < 100 && !openPlanStep(input.plan) && input.plan.steps.some((step) => step.status === "BLOCKED") ? "what its BLOCKED steps name" : null); return what ? ` · plan step waits for ${what}: its task or you reopen the pane when the work continues` : ""; };
@@ -734,6 +695,8 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     };
     const save = async (row: NousPaneCloseout) => { rows.set(row.paneId, row); await deps.closeouts.save(owner, row); };
     const stamp = new Date(at).toISOString();
+    // Space's own close reads the pane again first: a new prompt or running turn keeps it for the next tick (plan CTVaL1V3kAFM step 8).
+    const changed = async (input: BoardPaneInput): Promise<boolean> => lastPromptAt(input.pane.id) >= at || (await deps.paneWorking?.(input.pane).catch(() => true) ?? false);
 
     // Rows in flight: a pane that is gone was closed elsewhere; a save asked long enough ago is verified from the pane's reports.
     for (const row of [...rows.values()]) {
@@ -744,7 +707,8 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
         if (snapshot.rooms.some(({ room, sample }) => room.id === row.roomId && !sample)) continue;
         await save({ ...row, state: "CLOSED", closedAt: stamp, reason: "closed elsewhere", updatedAt: stamp }); continue;
       }
-      if (input.state === "working" || input.state === "waiting" || row.state === "VERIFIED") continue;
+      // An ask a later work prompt voided is not verified: a save from before that prompt would close the pane on unsaved work.
+      if (input.state === "working" || input.state === "waiting" || row.state === "VERIFIED" || !standing(row)) continue;
       const askedAt = row.retriedAt ?? row.requestedAt;
       if (at - Date.parse(askedAt) < SETTLE_MS) continue;
       const id = await savedSince(owner, row.paneId, row.requestedAt, input.pane, askedAt, input.room.name);
@@ -764,7 +728,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       if (closeoutSkipReason(input, ctx) !== "card-check") continue;
       const cards = input.notifications.map((card) => `"${card.title}" [${card.id}] since ${dayHhmm(card.updatedAt)}`).join(", ");
       list(input, `card:${input.notifications.map((card) => `${card.id}:${card.updatedAt}`).join(",")}`, `- ${where(input)} · ${input.state} ${durationText(at - Date.parse(closeoutSince(input, ctx)!))} · your card ${cards} still open`
-        + " → read the pane (space_pane_reports); nothing left for the operator: resolve it (space_resolve_notification); still theirs: space_pane_checked WAITING_OPERATOR with nextCheckInMinutes", cardLines);
+        + ` → ${CLOSEOUT_NEXT["card-check"]}`, cardLines);
     }
     const poolOf = (paneId: string | null) => {
       for (const { sample } of snapshot.rooms) { const pane = sample?.data.find((entry) => entry.id === paneId); if (pane) {
@@ -783,22 +747,24 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
         const paneSince = closeoutSince(input, ctx);
         if (skip && skip !== "fresh" && skip !== "board-check") continue;
         // Plan clipboard:u78xLyqRp6kD: a finished pane that saved on its own since its last prompt is not asked to save again.
-        const row = skip === null && (!stored || stored.state === "CLOSED") ? await verifyNow(owner, input, stored, paneSince) : stored;
+        const asked = standing(stored);
+        const row = skip === null && (!asked || asked.state === "VERIFIED") ? await verifyNow(owner, input, stored, paneSince) : stored;
         if (row) rows.set(row.paneId, row);
-        const inFlight = row && row.state !== "CLOSED";
+        // In flight: an open ask, or a save that covers the pane's last work; a save or an ask the pane worked past asks a new one below.
+        const live = standing(row);
+        const inFlight = live && (live.state !== "VERIFIED" || covers(live, paneSince)) ? live : undefined;
         const idle = `${input.state} ${durationText(at - Date.parse(paneSince!))}${tabs(input)}`;
-        // Token audit 21/11 (47 refused closes in 3 days, Dana 8x, Andy 10x): a pane whose newest own report is not done or failed has
-        // open work, and space_close_pane refuses it; its line asks for the act that passes, and Space closes no such pane itself.
+        // A pane whose newest report is not done/failed has open work: its line asks for the act that passes, and Space never closes it itself.
         const last = savesToMemory(input.pane) && (skip !== "fresh" || inFlight) && deps.lastWorkReport ? await deps.lastWorkReport(owner, input.pane.id).catch(() => null) : null;
-        if (last && last.status !== "DONE" && last.status !== "FAILED") {
+        if (last && workOpen(last, input.report, paneSince, at)) {
           list(input, `open:${last.at}`, `- ${where(input)} · ${idle} · last reported ${last.status.toLowerCase()} at ${hhmm(last.at)} ("${last.summary.replace(/\s+/g, " ")}"), no done or failed report since: `
-            + "its work is open, so no save or close (space_close_pane refuses it) → send its next step (space_send_to_pane), or record its wait (space_pane_checked WAITING_OPERATOR, WAITING_DATE or BLOCKED with nextCheckInMinutes)");
+            + `its work is open, so no save or close until it reports done or failed, or sits unmoved ${STALE_WAIT_MS / MINUTE} min after a waiting, needs-decision or blocked report or its turn's end`
+            + " → send its next step (space_send_to_pane), or record its wait (space_pane_checked WAITING_OPERATOR, WAITING_DATE or BLOCKED with nextCheckInMinutes)");
           continue;
         }
-        // 2026-11-26 REVIEW (19 idle panes past 60 min; Gemini panes refuse prompts): a finished CLI pane on a pool with no room cannot run its
-        // own save, so Space saves its reports to Space Memory and closes it instead of asking it a save it cannot answer.
+        // A finished CLI pane on a pool with no room cannot save, so Space saves its reports to Space Memory and closes it.
         const pool = poolOf(input.pane.id);
-        if (!skip && input.pane.mode === "TERMINAL" && pool && spend?.refused?.includes(pool) && row?.state !== "VERIFIED" && deps.saveMemory && deps.closePane
+        if (!skip && input.pane.mode === "TERMINAL" && pool && spend?.refused?.includes(pool) && inFlight?.state !== "VERIFIED" && deps.saveMemory && deps.closePane
           && (!row?.closedAt || row.closedAt < paneSince!)) {
           const reports = await deps.reportsSince(owner, input.pane.id, "").catch(() => []);
           const body = [`Room "${input.room.name}" pane ${paneLabel(input.pane)} (${input.pane.title}) finished; its ${pool} pool had no room, so Space saved this and closed it.`,
@@ -807,7 +773,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
           if (id) {
             const base: NousPaneCloseout = { paneId: input.pane.id, roomId: input.room.id, state: "VERIFIED", requestedAt: stamp, retriedAt: null, verifiedMemoryId: id, closedAt: null, reason: null, updatedAt: stamp };
             await save(base);
-            if (await deps.closePane(owner, input.room.id, input.pane.id).catch(() => false)) {
+            if (!(await changed(input)) && await deps.closePane(owner, input.room.id, input.pane.id).catch(() => false)) {
               await save({ ...base, state: "CLOSED", closedAt: stamp, reason: `saved and closed by Space: its ${pool} pool had no room` });
               listed.delete(`${owner}\u0000${input.pane.id}`);
             }
@@ -815,18 +781,17 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
           }
         }
         if (inFlight) {
-          // Step 10: a save verified after the pane last worked, nothing else keeping it: Space closes it, no turn (~800k input each, 6/11).
-          // 27/11 (panes left open since 26/11): a board wait Nous re-checked and saved is finished like the rest.
-          const closable = row.state === "VERIFIED" && (skip === null || skip === "fresh" || skip === "board-check") && Date.parse(row.updatedAt) >= Date.parse(paneSince!);
-          if (closable && deps.closePane && await deps.closePane(owner, input.room.id, input.pane.id).catch(() => false)) {
-            await save({ ...row, state: "CLOSED", closedAt: stamp, reason: "closed by Space after its memory save", updatedAt: stamp });
+          // A save verified after the pane last worked, nothing else keeping it: Space closes it without a Nous turn.
+          if (inFlight.state === "VERIFIED" && deps.closePane && await changed(input)) continue;
+          if (inFlight.state === "VERIFIED" && deps.closePane && await deps.closePane(owner, input.room.id, input.pane.id).catch(() => false)) {
+            await save({ ...inFlight, state: "CLOSED", closedAt: stamp, reason: "closed by Space after its memory save", updatedAt: stamp });
             listed.delete(`${owner}\u0000${input.pane.id}`);
-          } else if (row.state === "VERIFIED") list(input, `verified:${row.verifiedMemoryId}`, `- ${where(input)} · ${idle} · save asked ${hhmm(row.requestedAt)}, verified ${row.verifiedMemoryId} → close it now (space_close_pane)`);
+          } else if (inFlight.state === "VERIFIED") list(input, `verified:${inFlight.verifiedMemoryId}`, `- ${where(input)} · ${idle} · save asked ${hhmm(inFlight.requestedAt)}, verified ${inFlight.verifiedMemoryId} → close it now (space_close_pane)`);
           else {
-            const askedAt = row.retriedAt ?? row.requestedAt;
+            const askedAt = inFlight.retriedAt ?? inFlight.requestedAt;
             const waited = at - Date.parse(askedAt);
             if (waited >= NOUS_SAVE_WAIT_MS) list(input, `decide:${askedAt}`, `- ${where(input)} · ${idle} · save asked ${hhmm(askedAt)}, not verified after ${Math.round(waited / MINUTE)} min → read its reports (space_pane_reports); `
-              + `${row.state === "SAVE_REQUESTED" ? `ask once more with exactly "${NOUS_SAVE_RETRY_TEXT}"` : "if the save is there, close it (space_close_pane)"}, or record KEEP_OPEN with the reason and the next check`);
+              + `${inFlight.state === "SAVE_REQUESTED" ? `ask once more with exactly "${NOUS_SAVE_RETRY_TEXT}"` : `asked twice and space_close_pane refuses it unverified: its work finished, ${NOUS_SAVE_YOURSELF} (space_close_pane)`}, or record KEEP_OPEN with the reason and the next check`);
           }
         } else if (skip === "board-check" && (!row || !row.closedAt || row.closedAt < paneSince!)) {
           const board = latestSummary(input.pane.id, snapshot.summaries)!;
@@ -837,30 +802,31 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
           list(input, "close", `- ${where(input)} · ${closeKind(input.pane)} · unused ${durationText(at - Date.parse(paneSince!))}${tabs(input)}${task ? ` · task "${task.title}": Space reopens the pane when it runs` : ""}`
             + ` · no CLI, nothing to save → close it (space_close_pane)${lookFirst(input.pane)}; still in use: space_pane_checked KEEP_OPEN with the reason and nextCheckInMinutes`);
         } else if (!skip && (!row || !row.closedAt || row.closedAt < paneSince!)) {
-          list(input, "ask", `- ${where(input)} · ${idle}${input.pane.mode === "TERMINAL" ? "" : ` · ${input.pane.mode} pane: close it only when its copilot has nothing scheduled`}`
-            + `${task ? ` · task "${task.title}": Space reopens the pane when it runs` : ""}${planNote(input)} · save not asked yet → send it exactly "${NOUS_SAVE_TEXT}" (space_send_to_pane, when now)`);
+          // Step 3: a save, or an ask, from before the pane's last work covers nothing: the line asks a new save, never "close it now".
+          const older = !row || row.state === "CLOSED" ? null
+            : row.state === "VERIFIED" ? `worked after its save ${row.verifiedMemoryId} (${hhmm(row.updatedAt)})` : `worked after its save was asked (${hhmm(row.retriedAt ?? row.requestedAt)})`;
+          list(input, older ? `stale:${row!.updatedAt}` : "ask", `- ${where(input)} · ${idle}${input.pane.mode === "TERMINAL" ? "" : ` · ${input.pane.mode} pane: close it only when its copilot has nothing scheduled`}`
+            + `${task ? ` · task "${task.title}": Space reopens the pane when it runs` : ""}${planNote(input)} · ${older ? `${older}, not saved since` : "save not asked yet"} → send it exactly "${NOUS_SAVE_TEXT}" (space_send_to_pane, when now)`);
         }
       }
     }
 
     // Stalled plans: one nudge per plan per stalled window; PAUSED or OFF leave the mark, so the next tick tries again.
     const map = deps.planMap ? await deps.planMap(owner, snapshot.plans).catch((error) => { warn({ err: error, owner }, "Nous plan map failed."); return null; }) : null;
-    // B (plan clipboard:ZWJJdBgHm64Z; 31/10 from 22:18 BKK LOW stopped every plan while Claude Max still had 79 % of its week): only
-    // CRITICAL (or LOW without the advice to tell pools apart) skips the nudges; LOW leaves out only plans whose pane runs on an avoided pool.
+    // Only CRITICAL (or LOW without pool advice) skips the nudges; LOW leaves out plans whose pane runs on an avoided pool.
     const nudging = !conserving || spend?.mode === "LOW";
     const activity = !nudging ? [] : await nousPlanActivity({ owner, plans: snapshot.plans, samples: snapshot.rooms, marks: deps.marks, reports: snapshot.reports, executions: snapshot.executions,
       ...(map ? { held: (planId: string) => stalledHold(map, planId), hardHold: map.holds.some((hold) => HARD_HOLDS.has(hold.kind)) } : {}), stalledHours: orders.stalledAfterHours, now: new Date(at) })
       .catch((error) => { warn({ err: error, owner }, "Nous plan activity failed."); return []; });
     const paneOf = (planId: string) => snapshot.plans.find((plan) => plan.id === planId)?.paneId ?? null;
     const avoided = (planId: string) => spend?.mode === "LOW" && spend.avoid.includes(poolOf(paneOf(planId)) ?? "\u0000");
-    // Operator 28/11 (nous_msg:d2faedf0): a pane whose pool has no room refuses its own work (noRoomGuard), so its plan or request goes to a free pane with room.
+    // A pane whose pool has no room refuses work, so its plan or request goes to a free pane with room (nous_msg:d2faedf0).
     const noRoom = (paneId: string | null | undefined) => Boolean(paneId && spend?.refused?.includes(poolOf(paneId) ?? "\u0000"));
     const due = activity.filter((item) => item.stalled && (!item.lastNudgedAt || at - Date.parse(item.lastNudgedAt) >= Math.max(orders.stalledAfterHours * 3_600_000, UNCHANGED_MS)) && !avoided(item.planId));
     // Hold A: each stalled plan is an item the turn must act on (Space does not take its NOTHING_NEW while one has no act).
     const planItems: NousTurnItem[] = due.map((item) => ({ key: `plan:${item.planId}`, kind: "PLAN", plan: item.planId, ...(paneOf(item.planId) ? { pane: paneOf(item.planId)! } : {}),
       ...(item.pane ? { paneName: item.pane.label } : {}), line: `Stalled plan [${item.planId}] "${item.title.replace(/\s+/g, " ")}" ${item.percent}%, unchanged ${durationText(item.hours * 3_600_000)}: one concrete action now (a next step to its pane, or its wait recorded).` }));
-    // Parked plans (operator 13/11 nous_msg:4080b166): one whose NOUS or AGENT condition is still open and that has not moved for the stalled
-    // window is a hold-A item: do the condition, or record it MET with its evidence (space_plan_update condition). Space checks the rest.
+    // A parked plan whose NOUS/AGENT condition is open and stalled is a hold-A item: do it or record it MET (nous_msg:4080b166).
     const stalledMs = Math.max(orders.stalledAfterHours * 3_600_000, UNCHANGED_MS);
     const parkedDue = (nudging && deps.parked ? await deps.parked(owner).catch((error) => { warn({ err: error, owner }, "Nous parked plans failed."); return []; }) : [])
       .filter(planIsParked).filter((plan) => !due.some((item) => item.planId === plan.id)).flatMap((plan) => {
@@ -887,10 +853,9 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     if (deps.pendings && orders.pendingsHours.length) {
       await pendingsTurn(owner, orders.pendingsHours, at, map).catch((error) => warn({ err: error, owner }, "Nous pendings list failed."));
     }
-    // R44-3: a recurring agent task with no pane and no room only reminds (the scheduler told Nous once); listed whenever a turn runs, never a reason for one.
+    // A recurring agent task with no pane or room only reminds: listed when a turn runs, never a reason for one.
     const paneless = snapshot.tasks.filter((task) => task.source === "AGENT" && task.schedule && task.schedule.recurrence.kind !== "ONCE" && !task.paneId && !task.roomId);
-    // The rule is in the INBOX turn prompt.
-    // Plan clipboard:CDbnZ7FSj-ww item 7: `soon` flushes the batch now, so the done/failed report reaches Nous within a minute as one turn with this line.
+    // `soon` flushes the batch so a done/failed report reaches Nous within a minute (plan CDbnZ7FSj-ww item 7).
     for (const line of lines) await deps.notice?.(owner, `${NOUS_FINISHED_KEY}${line.paneId}`, `Finished pane ${line.text.replace(/^- /, "")}`, undefined, true);
     // Goal 5acd171d (22/11: ~27 sweeps/day, ~85k tokens each): a sweep with no item (every request working or held) is swept, never a turn of its own.
     if (sweep && !sweep.items.length) { lastSweep.set(owner, at); sweptState.set(owner, { state: sweep.state, at }); }
@@ -907,8 +872,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       if (turn === "STARTED" || turn === "QUEUED") for (const entry of stuck) lastStuck.set(`${owner}\u0000${entry.paneId}`, at);
       if (turn === "STARTED" || turn === "QUEUED") for (const { plan } of parkedDue) lastParked.set(`${owner}\u0000${plan.id}`, at);
       if ((turn === "STARTED" || turn === "QUEUED") && due.length) await deps.marks.nudged(owner, due.map((item) => item.planId), new Date(at)).catch((error) => warn({ err: error, owner }, "Nous plan nudge mark failed."));
-      // A turn that did not start (paused, off) must not count as a listing.
-      // (The inbox keeps the finished lines whatever the turn: only the panes listed in this turn are listed again.)
+      // A turn that did not start is no listing; the inbox lists again only the panes this turn listed.
       if (turn !== "STARTED" && turn !== "QUEUED") for (const input of panes) {
         const entry = listed.get(`${owner}\u0000${input.pane.id}`);
         if (entry?.at === at && !lines.some((line) => line.paneId === input.pane.id)) listed.delete(`${owner}\u0000${input.pane.id}`);
@@ -921,24 +885,12 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       const line = await deps.paneRound(owner, snapshot.rooms).catch(() => null);
       if (line) await deps.notice(owner, "pane-round", line);
     }
-    // Push (operator 3/11 23:11 BKK «τρέξε τα πάντα … να πιέζει τα πάντα στο 90% συνεχόμενα»; until then one line an hour, 10 plans sat "Not on a
-    // pane" for hours): every tick (10 min) while utilization stays under 90 %, the server is not OVERLOADED and CLI panes have room
-    // (`utilizationLow`), one line carries every piece of runnable work as an item, so Space refuses NOTHING_NEW until each is dispatched or its
-    // wait recorded: plans not on a pane, plans whose pane is idle or done (R57: before they stall, 4/11 REVIEW 60 % with 14 such panes), open
-    // requests whose pane is done 30+ minutes (a closed or gone one is request-done's own line).
-    // 13/11 (operator 09:12 BKK «γιατι δεν πιεζεις τα πραγματα»): a CLI pane that finished since the last push with a plan step to run or a task
-    // whose run ended is pushed at once (`soon` runs this tick within a minute of its report), not at the next 10-minute push.
+    // Push: while utilization is under 90 %, calm and CLI panes have room, one line carries every runnable item until dispatched or its wait recorded; a newly finished pane is pushed at once.
     const pushedAt = lastUtilization.get(owner) ?? 0;
     const finishedTasks = snapshot.tasks.filter((task) => task.paneId && !task.schedule?.nextRunAt && (task.status === "RUNNING" || Boolean(task.schedule?.lastRunAt)))
       .flatMap((task) => { const input = panes.find((entry) => entry.pane.id === task.paneId); return input && savesToMemory(input.pane) && (input.state === "done" || input.state === "idle") && !questionOpen(input, ctx) ? [{ task, input }] : []; });
     const finishedSince = (since: string | null | undefined) => Boolean(since) && Date.parse(since!) > pushedAt;
-    // 13/11 23:03 BKK (operator «δωσε σε agent να το διορθωσει»): at 22:41 BKK seven CLI panes finished with no plan step or task of their own and
-    // none got work until the 10-minute push. A CLI pane done or idle since the last push that holds no plan is free capacity: the push goes at once
-    // (a pane with a plan is pushed by its ready step above, or waits on its BLOCKED steps).
-    // Score row 19 (14/11 14:54 "Dana is closed and did not reopen"): a pane whose closeout is in flight or that closed after it last finished
-    // (Space may close it above, in this tick) gets no work from the push lists.
-    // 22/11 04:30Z (12 CLI panes not working, no free-pane list: Jack and Hugo asked to save at 04:21/04:22 and left open): a closeout is in
-    // flight only until a new prompt reaches the pane or its save stays unverified past NOUS_SAVE_WAIT_MS; then the open pane is capacity again.
+    // A CLI pane done or idle since the last push with no plan is free capacity; one closing (until a new prompt or its save wait expires) gets no work.
     const closing = (paneId: string | null) => {
       const row = paneId ? rows.get(paneId) : undefined;
       if (row && row.state !== "CLOSED") return (ctx.promptedAt?.(paneId!) ?? -Infinity) === -Infinity && at - Date.parse(row.retriedAt ?? row.requestedAt) < NOUS_SAVE_WAIT_MS;
@@ -946,11 +898,10 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       const since = input ? closeoutSince(input, ctx) : null;
       return Boolean(row?.closedAt && (!since || row.closedAt >= since));
     };
-    // 23/11 (operator «εμφανιζει errors»): the free-pane hand-out takes plain CLI panes only; a copilot pane (Design, Video, ...) refused goal pieces as Failed requests.
+    // The free-pane hand-out takes plain CLI panes only; copilot panes refused goal pieces.
     const freed = panes.filter((input) => input.pane.mode === "TERMINAL" && savesToMemory(input.pane) && (input.state === "done" || input.state === "idle") && finishedSince(closeoutSince(input, ctx))
       && !snapshot.plans.some((plan) => plan.paneId === input.pane.id) && !closing(input.pane.id));
-    // 2026-11-28 REVIEW (27/11: 427 INBOX turns, $112 against $42; Dino·Bob's mail triage finished 63 times): a pane's finish makes the push urgent once per
-    // PUSH_MS; a pane that finishes again sooner rides the 10-minute push, so no pane drives more than one INBOX turn in 10 minutes.
+    // A pane's finish makes the push urgent at most once per PUSH_MS, so no pane drives more than one INBOX turn in 10 minutes.
     const finishers = [...freed.map((input) => input.pane.id), ...activity.filter((item) => item.ready && !avoided(item.planId) && finishedSince(item.pane?.since)).map((item) => paneOf(item.planId) ?? item.planId)]
       .filter((id) => at - (urgentAt.get(`${owner}\u0000${id}`) ?? -Infinity) >= PUSH_MS);
     const newlyFinished = finishers.length > 0;
@@ -968,9 +919,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
           + `: ${item.pane && !noRoom(paneOf(item.planId)) ? `send it to ${item.pane.label} now (space_send_to_pane naming the plan)` : `${item.pane ? `${item.pane.label}'s pool has no room now; ` : ""}open a pane for it now at the plan's minimum model (space_open_panes) and send it "Implement the following plan. Plan ID: ${item.planId}"`}, or mark the steps that wait BLOCKED.` });
       const held = await heldBy(owner);
       const unpaned = runnable.filter((item) => (!item.pane || noRoom(paneOf(item.planId))) && !held(item.planId)).map(planItem);
-      // 13/11 (operator: utilization at 80 % until morning; memory 60ca649d: under LOW the push waited up to an hour behind the inbox cap, then
-      // needed a Nous turn): a ready plan with no recorded wait gets its next step from Space at once, each step once per pane (one that
-      // ends with the same step still open stays with Nous). `line` is the gate: under target, calm, no limit, not CRITICAL, its pool not avoided.
+      // A ready plan with no recorded wait gets its next step from Space at once, once per pane; `line` is the gate (under target, calm, not CRITICAL, pool not avoided).
       const sent: Array<(typeof runnable)[number]> = [];
       for (const item of runnable) {
         const paneId = paneOf(item.planId);
@@ -990,8 +939,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       const openRequests = line && deps.requests ? await deps.requests.open(owner).catch(() => [] as SweepRequest[]) : [];
       const requests = openRequests
         .filter((request) => request.paneState !== "working" && at - Date.parse(request.paneSince ?? request.openedAt) >= PUSH_REQUEST_IDLE_MS && !held(request.messageId, request.plan)
-          // 21/11 REVIEW (521 INBOX turns/24h, 54+ on one closed pane, again after each promote): a request whose pane is closed or gone is request-done's
-          // one durable "lost its pane" line (reopen, reassign or Done; once per pane, paneGone), never also a push item every 10 minutes.
+          // A request whose pane is closed or gone is request-done's own "lost its pane" line, never also a push item.
           && !(request.pane && !request.paneName));
       const requestItems: NousTurnItem[] = requests.map((request) => ({ key: `request:${request.key}`, kind: "REQUEST", shape: requestShape(request), requestKey: request.key, ...(request.messageId ? { messageId: request.messageId } : {}),
         ...(request.plan ? { plan: request.plan } : {}), ...(request.pane ? { pane: request.pane } : {}), ...(request.paneName ? { paneName: request.paneName } : {}),
@@ -1000,41 +948,30 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
           + `${request.pane && noRoom(request.pane) ? " · its pane's pool has no room now" : ""}`
           + `: finished → Done (space_request_done); else send its next step to a pane naming it (a new pane when its own is gone${request.pane && noRoom(request.pane) ? " or its pool has no room: a free pane with room" : ""}).` }));
       const section = (title: string, items: NousTurnItem[]) => items.length ? [`${title}:`, ...items.map((item) => `- ${item.line}`)] : [];
-      // 21/11 (operator 10:40 BKK «Σου ζήτησα να τρέξεις load 90%»; 12 panes finished side steps in 5-20 min and none got work): every free CLI pane
-      // is an item on every push, not a text line only for the panes freed since the last one, until it gets work, its wait is recorded, or it closes.
+      // Every free CLI pane is an item on every push until it gets work, records its wait or closes.
       const shut = [...(spend?.mode === "LOW" ? spend.avoid : []), ...(spend?.refused ?? [])];
       const handOutSkip = (input: BoardPaneInput) => { const reason = closeoutSkipReason(input, ctx);
         if ((reason !== "awaits-operator" && reason !== "operator-pane") || ctx.now - Date.parse(closeoutSince(input, ctx) ?? "") < OPERATOR_TURN_GRACE_MS) return reason;
         // The operator's-pane guard (nous_msg:63896af5) relaxes here as above for the panes they prompted; a fresh pane they opened stays theirs.
         return closeoutSkipReason(input, { ...ctx, operatorPromptedLast: () => false, operatorPane: (pane) => operatorPaneReason(pane, ctx.now, true) }); };
       const freeInputs = !line ? [] : panes.filter((input) => input.pane.mode === "TERMINAL" && savesToMemory(input.pane) && (input.state === "done" || input.state === "idle") && !taskPanes.has(input.pane.id)
-        // 21/11 10:55Z (load 36 %, 3 of 21 working, one free item): a pane whose own plan cannot run, or whose board reads a wait on a date
-        // or a third party, or that only holds Nous's own card, is idle capacity for other work all the same. A pane whose question is open
-        // is not (operator 23/11, questionOpen; it supersedes 21/11 12:48Z «Ακόμα 34% γιατί;;», which gave panes behind their own card new work).
-        // 28/11 (112 push turns with no free-pane section, 3 of 23 requests shown): a request whose wait is recorded no longer holds its pane back.
+        // A pane whose own plan cannot run, whose board waits on a date or third party, or that holds only Nous's card is free capacity; one with an open question is not.
         && !openRequests.some((item) => item.pane === input.pane.id && !held(item.messageId, item.plan)) && !work.some((item) => paneOf(item.planId) === input.pane.id) && !questionOpen(input, ctx)
-        // 2026-11-25 REVIEW: handOutSkip passes "card-check"/"waiting-operator", which closeoutSkipReason returns before its task, managed and
-        // worktree checks, so a task-bound pane behind a card got hand-outs; its own blocked plan still leaves it free capacity (21/11 10:55Z).
+        // A task-bound pane behind a card gets no hand-out; its own blocked plan still leaves it free capacity.
         && !paneBoundToWork(input.pane.id, { tasks: snapshot.tasks, executions: snapshot.executions, pendingWorktrees: snapshot.pendingWorktrees })
-        // 21/11 (nous_msg:694ff0a9, Alex/Finn idle Opus skipped): the operator typed there last, but once its answer asks nothing and his turn's grace
-        // has passed it is free capacity; its other reasons still count.
+        // The operator's pane is free capacity once its answer asks nothing and their turn's grace has passed.
         && [null, "fresh", "board-waits", "board-check", "card-check", "waiting-operator"].includes(handOutSkip(input)) && !closing(input.pane.id)
         // 21/11 04:18Z: three free Codex panes were listed while the send guard refused Codex new work, so the turn could not act on them.
         && !shut.includes(poolOf(input.pane.id) ?? "\u0000"));
-      // 21/11 22:26 BKK (operator «load 90% τωρα και να το κρατησεις εως το πρωι»; 31 % while free panes were only listed for Nous): Space hands
-      // each free CLI pane one piece of runnable work itself, a plan with no pane first (a pane in its room first), then a daily-improvement fix
-      // (code: Opus or Fable; Antigravity Gemini 4 Neon when Claude has no room, operator 22/11 nous_msg:719620b3a7bb46fd8d85f717). Each piece goes to one pane.
+      // Space hands each free CLI pane one runnable piece itself: an unpaned plan first (same room first), then a daily-improvement fix on a code model (nous_msg:719620b3).
       const strong = (model: string | null | undefined) => /opus|fable/i.test(model ?? "") || (shut.includes("claude") && /gemini-\d+-neon/i.test(model ?? ""));
-      // Operator 18/11 (nous_msg:d52165794bee «αυστηρα δεν θα βαζεις κανενα flash Μοντελο να αλλαζει κώδικα!!», 08/11 32d5cdf7, correction c9c457f2):
-      // plans, goals and sweeps lead to code changes, so a Flash pane gets none of them; it stays listed for Nous with that rule.
+      // A Flash pane never gets plans, goals or sweeps, since they change code (operator nous_msg:d5216579).
       const flash = (model: string | null | undefined) => /flash/i.test(model ?? "");
-      // DEV3D-046: a plan's minimum on any code model (Neon set while Claude was out, Astra) stays a code piece; strong() reads panes and drops Neon once Claude has room.
+      // A plan with a minimum on any code model stays a code piece; strong() drops Neon once Claude has room (DEV3D-046).
       const codePlan = (model: string | null | undefined) => strong(model) || /astra|gemini-\d+-neon/i.test(model ?? "");
-      // A plan or goal whose pane closed goes back to the hand-out; a backlog line stays given (panes cannot mark queue.md, Nous does from their report).
-      // 23/11 (queue line 1191 panes.move went to Jack, then Emma twice, across the 08:38/11:43/12:51Z promotes; Nous never marked it): backlog
-      // hand-outs persist through givenStore, so a restart hands a line to no second pane.
+      // A plan or goal whose pane closed goes back to the hand-out; backlog lines persist through givenStore so a restart gives none twice.
       // shortcut: a goal stays with the pane that got it until that pane closes; re-hand it on a timer if done panes sit holding goals.
-      // A sweep area is held only while its pane works on it, so the sweeps cycle and never run out.
+      // A sweep area is held only while its pane works on it, so sweeps cycle.
       const holds = (key: string) => { const paneId = given.get(`${owner}\u0000${key}`);
         return Boolean(paneId && (key.startsWith("sweep:") ? panes.some((input) => input.pane.id === paneId && input.state === "working")
           : !/^(plan|goal):/.test(key) || panes.some((input) => input.pane.id === paneId))); };
@@ -1060,8 +997,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
         for (const [ownerKey, paneId] of [...given.entries()]) {
           if (!ownerKey.startsWith(ownerPrefix)) continue;
           const sentAt = sweptAt.get(ownerKey) ?? 0;
-          // A sweep is settled only by its DONE/FAILED (25/11: 2 min or a late TURN_END of the pane's previous turn dropped it before its DONE, so a
-          // clean area went unmarked and was swept again), or once its pane closed or 24 h passed.
+          // A sweep is settled only by its DONE/FAILED, its pane closing, or 24 h.
           if (!panes.some((entry) => entry.pane.id === paneId) || at - sentAt >= SWEEP_CLEAN_TTL_MS) { given.delete(ownerKey); cleanDirty = true; continue; }
           if (panes.some((entry) => entry.pane.id === paneId && entry.state === "working")) continue;
           const since = new Date(sentAt).toISOString();
@@ -1116,17 +1052,14 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       let sweepOpened = false;
       for (const piece of pieces) {
         const sweeping = piece.key.startsWith("sweep:");
-        // 22/11 05:42Z (load 75-81 %): goal 5acd171d went to Opus Alex/Bob while Gemini Dino/Jack sat free, then the strong-only sweep left Dino/Jack
-        // with nothing. A piece any model can take goes to a non-strong pane first, so strong panes stay for the strong pieces.
-        // A sweep goes only to a sweep pane, and a sweep pane takes only sweeps (operator 24/11, NOUS_SWEEP_PANE_TITLE).
-        // 24/11 19:27 BKK (Claude 7-day pools near 100 %, Gemini with room): a sweep pane on Neon counts as strong even while Claude has room.
+        // A piece any model can take goes to a non-strong pane first; sweeps go only to sweep panes and sweep panes take only sweeps.
         const fits = open.filter((input) => sweepPane(input.pane) === sweeping
           && (!sweeping || !paneBoundToWork(input.pane.id, { tasks: snapshot.tasks, plans: snapshot.plans, executions: snapshot.executions, requests: openRequests, pendingWorktrees: snapshot.pendingWorktrees }))
           && !flash(input.model)
           && (!piece.strong || strong(input.model) || (sweeping && /gemini-\d+-neon/i.test(input.model ?? ""))))
           .sort((left, right) => piece.strong ? 0 : Number(strong(left.model)) - Number(strong(right.model)));
         let input = fits.find((entry) => entry.room.id === piece.roomId) ?? fits[0];
-        // No free sweep pane: Space opens one (Antigravity Gemini 4 Neon, operator 22/11 rule); one per push so the next push reads its load, never while Gemini is shut.
+        // No free sweep pane: Space opens one (Gemini Neon), one per push, never while Gemini is shut.
         if (!input && sweeping && !sweepOpened && deps.openSweepPane && !shut.includes("gemini")) {
           sweepOpened = true;
           const fresh = await deps.openSweepPane(owner).catch(() => null);
@@ -1165,26 +1098,21 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
         ...(sent.length ? [`Space sent the next step itself (nothing to send): ${sent.map((item) => `${item.pane!.label} [${item.planId}] ${item.openStep}`).join("; ")}`] : []),
         ...(handed.length ? [`Space handed free panes work itself (nothing to send): ${handed.map(({ input, key }) => `${where(input)} ← ${key}`).join("; ")}`] : []),
         ...section("Tasks whose run ended on a finished pane", taskItems), ...section("Open requests whose pane is done 30+ min", requestItems)].join("\n") : null;
-      // Hold A: idle capacity is an item too: the turn that carries this line starts parallel work or records what blocks it. 13/11: words alone no
-      // longer pass any item of it (turn-items.ts `always`): 121 of 224 pushes got an answer in words and no tool call.
-      // A Utilization wait on a dated follow-up: the line comes only with work of its own, and Utilization itself is no item until it fires.
+      // Hold A: idle capacity is an item; words alone pass no item of it (turn-items.ts `always`).
       const quiet = held("utilization");
       if (text && (!quiet || unpanedLeft.length + idle.length + taskItems.length + requestItems.length + freeItems.length > 0)) {
         lastUtilization.set(owner, at);
         // Every CLI pane not working is capacity to fill: the item asks a dispatch for each (or helpers, or the block recorded), not one.
         const notWorking = panes.filter((input) => savesToMemory(input.pane) && input.state !== "working" && !closing(input.pane.id));
         const need = notWorking.filter((input) => !shut.includes(poolOf(input.pane.id) ?? "\u0000")).length;
-        // 2026-11-26 REVIEW (9 % while every pool was out of quota): when every CLI pane not working is on a pool with no room, quota is the
-        // cause: the line says so and Utilization is no item, so it is no act-needed miss until a pool has room (its other items still are).
+        // When every idle CLI pane is on a pool with no room, quota is the cause and Utilization is no item.
         const quotaOut = notWorking.length > 0 && need === 0;
         const pools = [...new Set(notWorking.map((input) => poolOf(input.pane.id) ?? "unknown"))].join(", ");
         const shown = quotaOut ? `Cause: quota. Every CLI pane not working runs on a pool out of room (${pools}): nothing to dispatch to them until a pool has room; no act needed for this line.\n${text.replace(" and no pool is at its limit", "")}` : text;
-        // Goal 5acd171d (22/11 02:42-03:32Z: 13 of 17 INBOX lines carried it): its line lists the free panes and requests, which are items of
-        // their own, so a left push re-arms only when the runnable work it counts changes.
+        // A left push re-arms only when the runnable work it counts changes (goal 5acd171d).
         const runnable = /Runnable: [^.]*\./.exec(line!)?.[0];
         const utilization: NousTurnItem = { key: "utilization", kind: "UTILIZATION", ...(runnable ? { shape: runnable } : {}), line: need > 1 ? `${text}\n${need} CLI panes are not working: this item moves by ${need} dispatches (a pane each), helpers, or what blocks the rest recorded (space_nous_followup add naming utilization); "save to memory" is no dispatch.` : text, ...(need > 1 ? { need } : {}) };
-        // Goal 5acd171d (23/11: 135 of 633 INBOX turns in 24 h were a finished pane's urgent push after Space had handed out its work itself, with
-        // no pane, plan or task left for Nous): urgent only while Nous has one of those to act on; else the line rides the inbox batch.
+        // Urgent only while Nous has a pane, plan or task to act on; else the line rides the inbox batch (goal 5acd171d).
         const forNous = freeItems.length + unpanedLeft.length + idle.length + taskItems.length > 0;
         if (newlyFinished && forNous) {
           for (const [key, when] of urgentAt) if (at - when >= PUSH_MS) urgentAt.delete(key);
@@ -1218,6 +1146,8 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     },
     /** A pane reported done (or ended its turn): this owner's next minute tick runs at once instead of after `tickMinutes`. */
     soon(owner: string): void { lastTick.delete(owner); },
+    /** The owner's panes parked at the last tick (parkedPane): Load counts those not working apart. */
+    parked: (owner: string): ReadonlySet<string> => parkedBy.get(owner) ?? new Set(),
     /** One owner now (tests, and the API's startup tick). */
     async tickOwner(owner: string): Promise<StandingTickResult> {
       const settings = await deps.settings(owner);
@@ -1225,12 +1155,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
       lastTick.set(owner, now());
       return tickOwner(owner, settings);
     },
-    /**
-     * R43-1 (R42-4: 12 space_open_panes refused "Room … is capped at 16" in 48 h, Alex and Bruno full of finished idle panes): a room's open
-     * panes, oldest finished first, each with its save state and whether it may close now: a finished pane (`closeoutSkipReason` null: never a
-     * working pane, the Mail Copilot, one with an open card or decision, a KEEP_OPEN check, a task due within the hour, an OPERATOR_TEST pane
-     * while "Close your own panes too" is off) with nothing to save, or whose memory save was verified after it last worked.
-     */
+    /** A room's open panes, oldest finished first, with save state and whether each may close now (R43-1). */
     async roomCloseouts(owner: string, roomId: string): Promise<RoomCloseout[]> {
       const at = now();
       const settings = await deps.settings(owner);
@@ -1243,54 +1168,57 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
         const passes = skip === null || skip === "fresh" || skip === "board-check";
         const row = passes || (skip && SAVED_PASSES.has(skip)) ? await verifyNow(owner, input, rows.get(input.pane.id), since) : rows.get(input.pane.id);
         const live = row && row.state !== "CLOSED" ? row : null;
-        const verified = live?.state === "VERIFIED" && since !== null && Date.parse(live.updatedAt) >= Date.parse(since);
-        // 28/11 Dino/Cody, Copilots/Oscar: the save saveRepeats calls "saved already … close it" (no prompt since) closes past these skips too.
-        const saved = savesToMemory(input.pane) && live?.state === "VERIFIED" && lastPromptAt(input.pane.id) <= Date.parse(live.updatedAt) && (since === null || Date.parse(live.updatedAt) >= Date.parse(since));
+        // 28/11 Dino/Cody, Copilots/Oscar: the save saveRepeats calls "saved already … close it" closes past the SAVED_PASSES skips too (step 3: one reading).
+        const verified = savesToMemory(input.pane) && covers(live, since);
         const save = !savesToMemory(input.pane) ? "nothing to save" : verified ? `save verified ${live!.verifiedMemoryId}`
-          : live ? `save asked ${hhmm(live.retriedAt ?? live.requestedAt)}, not verified` : "save not asked";
+          : live?.state === "VERIFIED" ? `save ${live.verifiedMemoryId ?? "verified"} of ${hhmm(live.updatedAt)} predates its last work, not verified since`
+          : live ? `save asked ${hhmm(live.retriedAt ?? live.requestedAt)}${standing(live) ? ", not verified" : " predates its last work, not asked since"}` : "save not asked";
         return { pane: input.pane, state: input.state, since, idleMinutes: since ? Math.max(0, Math.round((at - Date.parse(since)) / MINUTE)) : null, save,
-          closable: passes ? !savesToMemory(input.pane) || verified : SAVED_PASSES.has(skip!) && saved, skip };
+          closable: passes ? !savesToMemory(input.pane) || verified : SAVED_PASSES.has(skip!) && verified, skip };
       }))).sort((left, right) => (left.since ?? "\uffff").localeCompare(right.since ?? "\uffff"));
     },
-    /**
-     * 21/11 14:00-15:08Z (load 13-19 %: Andy and Jack got "save to memory" ×5, Emma ×4; 25 saves against 9 work sends): with no new work typed
-     * since, a verified save is not asked again, nor an unverified one before NOUS_SAVE_WAIT_MS or a third time. Returns each such pane's refusal line.
-     */
+    /** With no new work since, a verified save is not asked again, nor an unverified one before NOUS_SAVE_WAIT_MS or a third time; returns each pane's refusal line. */
     async saveRepeats(owner: string, paneIds: readonly string[]): Promise<Map<string, string>> {
       const at = now();
       const rows = new Map((await deps.closeouts.list(owner)).map((row) => [row.paneId, row]));
       const repeats = new Map<string, string>();
+      let snapshot: Promise<Awaited<ReturnType<StandingOrdersDeps["collect"]>> | null> | undefined;
       for (const paneId of paneIds) {
-        let row = rows.get(paneId);
-        if (!row || row.state === "CLOSED") continue;
+        // New work typed since the ask frees the pane for a new one.
+        let row = standing(rows.get(paneId));
+        if (!row) continue;
         // Plan clipboard:u78xLyqRp6kD: a save that shows now counts now, not on the next tick.
-        if (row.state !== "VERIFIED" && lastPromptAt(paneId) <= Date.parse(row.retriedAt ?? row.requestedAt)) {
+        if (row.state !== "VERIFIED") {
           const id = await savedSince(owner, paneId, row.requestedAt, undefined, row.retriedAt ?? row.requestedAt);
           if (id) { row = { ...row, state: "VERIFIED", verifiedMemoryId: id, reason: null, updatedAt: new Date(now()).toISOString() }; await deps.closeouts.save(owner, row); }
         }
         // 21/11 15:06 BKK screenshot (Dana: "save to memory" ×6 after its 3 saves): a verified save is not asked again either; only new work earns a new one.
         if (row.state === "VERIFIED") {
-          if (lastPromptAt(paneId) <= Date.parse(row.updatedAt)) repeats.set(paneId, `saved already (${row.verifiedMemoryId ?? "verified"}, ${hhmm(row.updatedAt)}): close it (space_close_pane) or give it its next work`);
+          // Work after the save earns a new save, as roomCloseouts; an unread state keeps the old refusal.
+          if (covers(row, sampleSince(await (snapshot ??= deps.collect(owner).catch(() => null)), paneId))) repeats.set(paneId, `saved already (${row.verifiedMemoryId ?? "verified"}, ${hhmm(row.updatedAt)}): close it (space_close_pane) or give it its next work`);
           continue;
         }
-        const askedAt = Date.parse(row.retriedAt ?? row.requestedAt);
-        if (lastPromptAt(paneId) > askedAt) continue;
-        if (row.state === "SAVE_RETRIED") repeats.set(paneId, `asked twice already (last ${hhmm(row.retriedAt!)}) and Space sees no save yet (no Space Memory save naming the pane, no report with a memory id, no finished save turn), so space_close_pane refuses it: read the pane (space_pane_reports); still busy or stuck: space_pane_checked KEEP_OPEN with the reason; its save failed: send it its next step`);
+        const askedAt = askAt(row);
+        if (row.state === "SAVE_RETRIED") repeats.set(paneId, `asked twice already (last ${hhmm(row.retriedAt!)}) and Space sees no save yet (no Space Memory save naming the pane, no report with a memory id, no finished save turn), so space_close_pane refuses it: read the pane (space_pane_reports); still busy or stuck: space_pane_checked KEEP_OPEN with the reason; its save failed: send it its next step; finished and it cannot save: ${NOUS_SAVE_YOURSELF}`);
         else if (at - askedAt < NOUS_SAVE_WAIT_MS) repeats.set(paneId, `asked ${hhmm(row.requestedAt)}, Space verifies it from the pane's Space Memory save, reports or save turn; ask once more only after ${Math.round(NOUS_SAVE_WAIT_MS / MINUTE)} min unverified (the board lists it then)`);
       }
       return repeats;
     },
-    /** Panes whose save is verified with no prompt typed since: their next work starts a fresh session (tools.ts space_send_to_pane). */
+    /** Panes whose save covers their last work (`covers`): their next work starts a fresh session (tools.ts space_send_to_pane). */
     async savedUnprompted(owner: string, paneIds: readonly string[]): Promise<Set<string>> {
       const rows = new Map((await deps.closeouts.list(owner)).map((row) => [row.paneId, row]));
-      return new Set(paneIds.filter((paneId) => { const row = rows.get(paneId); return row?.state === "VERIFIED" && lastPromptAt(paneId) <= Date.parse(row.updatedAt); }));
+      const verified = paneIds.filter((paneId) => standing(rows.get(paneId))?.state === "VERIFIED");
+      // A pane that worked past its save keeps its session: the work is not in memory yet. The states are read only when a verified save stands.
+      const snapshot = verified.length ? await deps.collect(owner).catch(() => null) : null;
+      return new Set(verified.filter((paneId) => covers(rows.get(paneId), sampleSince(snapshot, paneId))));
     },
     /** From Nous's tool calls (tools.ts): "save to memory" sent to panes, and panes closed. */
     async saveRequested(owner: string, roomId: string, paneIds: string[]): Promise<void> {
       const stamp = new Date(now()).toISOString();
       const rows = new Map((await deps.closeouts.list(owner)).map((row) => [row.paneId, row]));
       for (const paneId of paneIds) {
-        const row = rows.get(paneId);
+        // An ask a later work prompt voided starts over: its new save is a first ask, not "asked twice".
+        const row = standing(rows.get(paneId));
         const next: NousPaneCloseout = row && row.state === "SAVE_REQUESTED"
           ? { ...row, state: "SAVE_RETRIED", retriedAt: stamp, updatedAt: stamp }
           : { paneId, roomId, state: "SAVE_REQUESTED", requestedAt: stamp, retriedAt: null, verifiedMemoryId: null, closedAt: null, reason: null, updatedAt: stamp };

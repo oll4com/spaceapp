@@ -365,13 +365,13 @@ export function createPaneReports(deps: PaneReportsDeps) {
         const target = input.target ?? (page ? needsYouTargetSchema.safeParse(`url:${page}`).data : undefined);
         // Goal 7365014c (Nous 13/11): a hands card for a page asks whether to start now, never "when will you"; the ask itself stays in the body.
         const hands = !given.length && /^(?:url|tab):/.test(target ?? "");
-        // 2026-11-25 REVIEW: predict "Go now" on a "Start now?" card only when a live browser surface proves the page is open and unstarted;
-        // otherwise the page may be done already or need a re-check (ledger 24/11 «ελενξε το ξανα»): predict "Check again".
+        // 2026-11-25 REVIEW: an unverified page also offers "Check again" (it may be done already, ledger 24/11 «ελενξε το ξανα»); still
+        // predict "Go now": the operator answered it on both unverified cards of 28/11 and on ~21 of 25 Start now? cards since 13/11 (goal 7365014c).
         const verifiedLive = hands && Boolean(deps.pageLive)
           ? await deps.pageLive!(owner, pane, target, `${summary}\n${needs ?? ""}`).catch(() => false)
           : false;
         const options = given.length ? given : hands ? [NEEDS_YOU_GO_NOW, ...(verifiedLive ? [] : [NEEDS_YOU_CHECK_AGAIN]), NEEDS_YOU_LATER_TODAY] : [NEEDS_YOU_GO_NOW, "Failed", "Need links/steps"];
-        const recommended = given.length ? (input.recommended ? cleanText(input.recommended, 80) : null) : hands && !verifiedLive ? NEEDS_YOU_CHECK_AGAIN : NEEDS_YOU_GO_NOW;
+        const recommended = given.length ? (input.recommended ? cleanText(input.recommended, 80) : null) : NEEDS_YOU_GO_NOW;
         const question = hands ? NEEDS_YOU_START_NOW : askQuestion(needs ?? summary);
         // The same target asked again within 24 h of its alert is the open card refreshed, not a new ask: no second alert, counted once.
         const open = target ? await deps.openCard?.(owner, agentNeedsYouKey(pane.id)).catch(() => null) : null;

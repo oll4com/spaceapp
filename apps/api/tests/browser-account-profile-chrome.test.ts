@@ -39,7 +39,12 @@ describe.skipIf(missingBrowser)('full profile persistence in real Chrome', () =>
   const room = store.createRoom({ name: 'Isolated Chrome storage', initialPaneCount: 0 }, 'trace', user.id);
   const panes = Array.from({ length: 3 }, (_, i) => store.createPane({ roomId: room.id, title: `Fixture ${i}`, mode: 'BROWSER' }));
   const config = () => getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: 'true', SPACE_BROWSER_SESSIONS_PROFILE_ROOT: root, SPACE_ARTIFACT_ROOT: root, SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN: origin, SPACE_BROWSER_SESSIONS_AUDIO_ENABLED: 'false', SPACE_BROWSER_SESSIONS_XVFB_ENABLED: 'true' });
-  const start = (index: number, path: string, accountId = account.id) => manager.startOrRestore({ pane: panes[index]!, googleAccount: { ownerUserId: user.id, accountId }, targetUrl: origin + path, includeInitialFrame: false, traceId: 'trace' });
+  const launch = (index: number, path: string, accountId: string) => manager.startOrRestore({ pane: panes[index]!, googleAccount: { ownerUserId: user.id, accountId }, targetUrl: origin + path, includeInitialFrame: false, traceId: 'trace' });
+  // A loaded CI runner once kept Chrome past the 20 s DevTools wait (release run 46112244327); a failed launch stops its Chrome, so launch once more.
+  const start = (index: number, path: string, accountId = account.id) => launch(index, path, accountId).catch((error: unknown) => {
+    if (!String(error).includes('Timed out waiting for Chrome DevTools endpoint')) throw error;
+    return launch(index, path, accountId);
+  });
   async function text(index: number) { return (await manager.action(panes[index]!, { type: 'extract_text' }, 'trace')).text; }
   beforeAll(async () => { temp = await mkdtempShort('t-'); vi.stubEnv('TMPDIR', temp); root = await mkdtemp(join(tmpdir(), 'chrome-test-')); await new Promise<void>(r => server.listen(0, '127.0.0.1', r)); origin = `http://127.0.0.1:${(server.address() as {port:number}).port}`; manager = createBrowserSessionManager({ store, config: config() }); }, 30000);
   afterAll(async () => { await manager?.closeAll(); await new Promise<void>(r=>server.close(()=>r())); if(root) await rm(root,{ recursive:true,force:true }); if(temp) await rm(temp,{ recursive:true,force:true }); vi.unstubAllEnvs(); },30000);
@@ -64,7 +69,7 @@ describe.skipIf(missingBrowser)('full profile persistence in real Chrome', () =>
     await expect.poll(()=>text(1)).toContain('"local":"retained"');
     expect(await text(1)).toContain('"idb":"retained"');
     expect(await text(1)).toContain('"cookie":true');
-  },60000);
+  },120000);
 });
 
 // Same file as the profile test: real-Chrome tests share one process, so their Xvfb displays never collide.

@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "SPACE_DEV_LOGIN=true SPACE_SESSION_SECRET=dev-only-change-me tsx watch src/server.ts",
     "start": "node dist/server.js",
+    "build:cell-runner": "esbuild src/computer/cell-runner-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/space-cell-runner.mjs \"--banner:js=// space-cell-runner $(git rev-parse --short=10 HEAD) built $(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
     "build:vault-broker": "esbuild src/vault-broker-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/space-vault-broker.mjs \"--banner:js=// space-vault-broker $(git rev-parse --short=10 HEAD) built $(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
     "build": "tsc -p tsconfig.json && cp src/databases/sqlite-worker.py dist/databases/sqlite-worker.py && chmod +x dist/databases/sqlite-worker.py",
     "check": "tsc -p tsconfig.json --noEmit",

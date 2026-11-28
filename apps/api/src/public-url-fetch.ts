@@ -48,7 +48,7 @@ export interface PublicUrlFetchOptions {
   allowAddress?: (address: string) => boolean;
 }
 
-async function publicTarget(url: URL, resolver: Resolver, allowAddress: (address: string) => boolean) {
+export async function publicTarget(url: URL, resolver: Resolver, allowAddress: (address: string) => boolean) {
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new PublicUrlRefusedError("Only HTTP and HTTPS URLs are supported.");
   if (url.username || url.password) throw new PublicUrlRefusedError("URLs with credentials are not fetched.");
   const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");

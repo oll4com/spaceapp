@@ -174,6 +174,8 @@ export const EL: Record<string, string> = {
   "The inbox could not be loaded. Try again.": "Τα εισερχόμενα δεν φόρτωσαν. Δοκίμασε ξανά.",
   // «Εισερχόμενα» v2 (NousInbox.tsx, plan clipboard:aE7U1J_gU9OV)
   "Closed": "Κλειστά", "Request": "Αίτημα", "Asked": "Ερώτηση", "Progress": "Πρόοδος", "Nous note": "Σημείωση του Nous", "Reopened": "Ξανάνοιξε",
+  "Newest first": "Νεότερα πρώτα", "Oldest first": "Παλαιότερα πρώτα", "Latest update": "Πιο πρόσφατη ενημέρωση",
+  "No update longest": "Χωρίς ενημέρωση περισσότερο", "updated": "ενημέρωση", "Sort": "Ταξινόμηση",
   "Seen it": "Το είδα", "Seen all": "Τα είδα όλα", "All requests": "Όλα τα αιτήματα", "Inbox tabs": "Καρτέλες εισερχομένων",
   "No request in progress": "Κανένα αίτημα σε εξέλιξη", "Alerts from copilots and the system ({count})": "Ειδοποιήσεις από copilots και σύστημα ({count})",
   "No thread matches": "Κανένα νήμα δεν ταιριάζει", "The thread could not be loaded.": "Το νήμα δεν φόρτωσε.", "That did not work. Try again.": "Δεν έγινε. Δοκίμασε ξανά.",

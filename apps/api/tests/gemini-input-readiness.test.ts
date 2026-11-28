@@ -37,3 +37,12 @@ it("rejects control input when Gemini never opens its composer", async () => {
     { runtimeId: "cli:gemini", inputReady: false, closed: false, startupOutput: "Signing in...", controlOutput: "" });
   await expect(manager.ensurePaneControlReady({} as never, "proof")).rejects.toThrow("no input was sent");
 });
+
+// 28/11 Nous Cloud box (Bob): Gemini's composer opens only after its trust question is answered, so an answer never waits for it.
+it("lets an answer to the question on screen through before Gemini's composer opens", async () => {
+  const manager = new CliTerminalManager({ config: {}, hostClient: {}, store: {}, startupReadyTimeoutMs: 5_000 } as never);
+  const managed = { runtimeId: "cli:gemini", inputReady: false, closed: false, startupOutput: "Do you trust this folder?", controlOutput: "" };
+  const wait = (manager as unknown as { waitForInputReady(m: unknown, w: unknown): Promise<void> }).waitForInputReady.bind(manager);
+  await expect(wait(managed, "question")).resolves.toBeUndefined();
+  expect(managed.inputReady).toBe(false);
+});

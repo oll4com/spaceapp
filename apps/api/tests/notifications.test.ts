@@ -232,6 +232,21 @@ describe("Space notifications", () => {
     expect(await service.get("user:1", newer.id)).toMatchObject({ status: "OPEN" });
   });
 
+  it("request 1feac683: a carry of Room Agent cards only, raised before carry left them out, closes on the next pass; an agent's carried ask stays", async () => {
+    const repository = new InMemorySpaceNotificationsRepository();
+    const service = createNotificationService({ repository, eventBus: new SpaceEventBus(), userSettings: async () => ({ notifications: null }) as never,
+      recordRoomEvent: async (input) => eventSchema.parse({ ...input, id: makeSpaceId("event"), workflowId: null, createdAt: new Date().toISOString() }) });
+    const card = { ownerUserId: "user:1", roomId: null, paneId: null, source: "NOUS" as const, kind: "NEEDS_HANDS", severity: "ATTENTION" as const, link: {}, telegram: null };
+    const screen = await service.raise({ ...card, title: "Andy needs sign-in", body: "", dedupeKey: "nous:closed-pane:pane:a",
+      payload: { carried: [{ id: "notification:x", paneId: "pane:a", dedupeKey: "room-agent-event:room_agent_event:e1" }] } });
+    const ask = await service.raise({ ...card, title: "Kate needs you", body: "Accept the MCC invite", dedupeKey: "nous:closed-pane:pane:b",
+      payload: { carried: [{ id: "notification:y", paneId: "pane:b", dedupeKey: "agent:needs-you:pane:b" }] } });
+    // The pass runs on each new Nous card (and once at start), so it already closed.
+    expect(await service.dropCarriedDuplicates("user:1")).toBe(0);
+    expect(await service.get("user:1", screen.id)).toMatchObject({ status: "RESOLVED", payload: { resolvedReason: "its pane was closed" } });
+    expect(await service.get("user:1", ask.id)).toMatchObject({ status: "OPEN" });
+  });
+
   it("pushes an appointment reminder as a calendar alert: its own channel, the appointment as the title, the join link and «Μπες»", async () => {
     atBangkokMidday();
     const repository = new InMemorySpaceNotificationsRepository(undefined, true);

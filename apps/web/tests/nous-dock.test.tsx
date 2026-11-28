@@ -1280,7 +1280,7 @@ describe("Nous dock", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Not now" }));
     await waitFor(() => expect(calls.find((call) => call.url === "/api/nous/decisions/nous_decision%3Aabcdef123456/answer")?.body).toEqual({ answer: "DECLINE" }));
     const done = screen.getByRole("article", { name: "Delete the old proof rooms?" });
-    expect(within(done).getByText(`Approved ${formatUserTime(answered.answeredAt)} · Deleted 3 rooms.`)).toBeTruthy();
+    expect(within(done).getByText(`Approved ${formatUserTime(answered.answeredAt, { withDate: true })} · Deleted 3 rooms.`)).toBeTruthy();
     // No answer buttons any more: only the feedback toggle.
     expect(within(done).getAllByRole("button").map((button) => button.textContent)).toEqual(["You could have decided this"]);
   });

@@ -32,6 +32,9 @@ const ruleDiffers = z.string().trim().min(3).max(200).optional()
 const triedStored = z.string().trim().min(3).max(200).optional()
   .describe("A sign-in item at a site where the Vault holds a login or Space signed in before (R66): the stored method the pane tried and why it failed (shown on the card).");
 const askFields = {
+  // 2026-11-28 REVIEW (Loom card 4e5047eb answered «ποια ειναι η Loom τι αφορά;;»): a choice names what it is about before it asks.
+  about: z.string().trim().min(10).max(200).optional().describe("Required with options (not hands work): what this is, in one line for an operator who has never heard of it, "
+    + "e.g. \"Loom: Atlassian's screen-recording service, billed to your Gmail since March; no Space feature uses it\". The card shows it first."),
   question: z.string().trim().min(1).max(300).optional().describe("The ONE question the operator answers from the card, in English (their answer reaches you as their message about this pane)."),
   options: z.array(z.string().trim().min(1).max(80)).min(1).max(6).optional().describe("The answers to pick from, at most 6."),
   recommended: z.string().trim().min(1).max(80).optional().describe("Your recommendation: one of the options; required whenever you give options."),
@@ -373,7 +376,7 @@ const gateNotes = (items: GateNoted[]) => items.flatMap((item) => [
 ].filter(Boolean).map((note) => items.length > 1 ? `${item.text}: ${note}` : note));
 /** The notes and `since` of a card's items, so a changed one still updates the card. */
 const noteKey = (items: unknown) => JSON.stringify((Array.isArray(items) ? items as Array<Record<string, unknown>> : []).map((item) => [item.since, item.ruleDiffers, item.triedStored, item.answersSource]));
-const bodyOf = (items: NotifyOperatorArgs["items"]) => items.map((item) => `• ${item.text}${(item.steps ?? []).map((step, index) => `\n  ${index + 1}. ${step}`).join("")}`).join("\n");
+const bodyOf = (items: NotifyOperatorArgs["items"]) => items.map((item) => `• ${item.about ? `${item.about}\n  ` : ""}${item.text}${(item.steps ?? []).map((step, index) => `\n  ${index + 1}. ${step}`).join("")}`).join("\n");
 /** R20-asks-2: what only the operator's hands do (a sign-in, a code, a payment set-up, an install), which needs the page's link (13/11: no steps). */
 /** R24-2: a payment-method result card (its options report a state) and a `checked` line that says what the billing page showed. */
 const PAYMENT_WORDS = /\b(?:card|payment method|payment|billing)\b/i;
@@ -562,6 +565,10 @@ export function createNousPaneNotices(deps: NousPaneNoticesDeps) {
         && !artifactIdsIn(`${item.text} ${item.question ?? ""}`).length);
       if (unattached) return { ok: false, refused: true, display: "Attach the files it names", result: `"${unattached.text.slice(0, 120)}" names files in Agent Files `
         + "but carries none: give the item `files` with each one's artifact:<id> (space_files_list artifacts), so the card shows them. Nothing raised." };
+      const unexplained = args.items.find((item) => item.options?.length && !item.about && !item.code && !item.target && !HANDS_WORK.test(`${item.text} ${item.question ?? ""}`));
+      if (unexplained) return { ok: false, refused: true, display: "Say what this is", result: `"${(unexplained.question ?? unexplained.text).slice(0, 120)}": a choice `
+        + "gives `about`, one line saying what this is for an operator who has never heard of it (the service, the order, the release, and why it reached them), "
+        + "so they answer it instead of asking back (2026-11-28 REVIEW: Loom, the server order). Nothing raised." };
       const planless = !pane && !args.plan ? args.items.find((item) => item.options?.length) : undefined;
       if (planless) return { ok: false, refused: true, display: "Name the plan the question comes from", result: `"${(planless.question ?? planless.text).slice(0, 120)}": `
         + "a question with options on a card with no pane names its `plan` (clipboard:<id>), so the operator can open why it is asked; a choice that is a decision "

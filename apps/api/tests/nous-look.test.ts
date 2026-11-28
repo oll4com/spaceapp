@@ -57,6 +57,16 @@ describe("space_look", () => {
     await app.close();
   });
 
+  it("looks at a public URL without a pane (Response time 28/11: the UI Done screenshot no pane could give)", async () => {
+    const urlLook = vi.fn(async () => ({ png, url: "https://oll4.com/c/5TFZkUtN?lang=el" }));
+    const { nous, action } = tools({ urlLook });
+    const looked = await nous.execute("space_look", { url: "https://oll4.com/c/5TFZkUtN?lang=el" }, ctx);
+    expect(looked).toMatchObject({ ok: true, display: "Looked at https://oll4.com/c/5TFZkUtN?lang=el" });
+    expect(looked.images).toEqual([{ data: png.toString("base64"), mimeType: "image/png" }]);
+    expect(urlLook).toHaveBeenCalledWith("https://oll4.com/c/5TFZkUtN?lang=el");
+    expect(action).not.toHaveBeenCalled();
+  });
+
   it("keeps the Vault fence: a page a fill holds gives no image, not even masked", async () => {
     const { nous, action } = tools({}, true);
     const held = await nous.execute("space_look", { room: "Main", pane: "Marketing" }, ctx);

@@ -1,4 +1,5 @@
 import type { MailCampaignsService } from "../mail-campaigns/service.js";
+import { cellTurnBackend, type CellTurnDeps } from "../computer/cell-turn.js";
 import { sentryReleaseLines, sentryReleasesDeployedSince, sentryToken } from "../sentry-api.js";
 import { marketingStaleHeld } from "./copilot-actions.js";
 import { renderTokenReview } from "./token-review.js";
@@ -14,6 +15,7 @@ import { createNousRequests } from "./requests.js";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { browserHostStaleToldStore, createBrowserHostStaleWatch, onBrowserHostInternalError, paneSchemasChangedAt } from "../browser-host-errors.js";
+import { createUrlLook } from "./url-look.js";
 import { onCodexTurnInterrupted } from "../codex-rollout-diagnostics.js";
 import { onNeedsYouEnded, type NotificationService } from "../notifications/service.js";
 import { createCodePageOpen, createNeedsYouBrowserPages, createNeedsYouPlaceReads, createNeedsYouPlaces } from "../needs-you-browser-page.js";
@@ -31,7 +33,7 @@ import {
   appointmentHoursRule, ownerAppointmentHours, type Room
 } from "@space/contracts";
 import type { LiveHistoryRepository, NousNote, RailAnswerBy } from "@space/db";
-import { InMemoryNousGoalsRepository, PostgresNousGoalsRepository, InMemoryNousProgramsRepository, PostgresNousProgramsRepository, InMemoryNousPaneSummariesRepository, PostgresNousPaneSummariesRepository, InMemoryNousAwayRepository, InMemoryPaneReportsRepository, PostgresNousAwayRepository, PostgresPaneReportsRepository, InMemoryNousFollowupsRepository, InMemoryNousPaneChecksRepository, InMemoryNousPaneCloseoutsRepository, InMemoryNousPlanMarksRepository, InMemoryNousRepository, PostgresNousFollowupsRepository, PostgresNousPaneChecksRepository, PostgresNousPaneCloseoutsRepository, PostgresNousPlanMarksRepository, PostgresNousRepository, PostgresSpaceStore, type ControlRepository, type NousRepository, type PaneReport, type RoomAgentMonitorRepository } from "@space/db";
+import { InMemoryNousGoalsRepository, PostgresNousGoalsRepository, InMemoryNousProgramsRepository, PostgresNousProgramsRepository, InMemoryNousPaneSummariesRepository, PostgresNousPaneSummariesRepository, InMemoryNousAwayRepository, InMemoryPaneReportsRepository, PostgresNousAwayRepository, PostgresPaneReportsRepository, InMemoryNousFollowupsRepository, InMemoryNousPaneChecksRepository, InMemoryNousPaneCloseoutsRepository, InMemoryNousPlanMarksRepository, InMemoryNousRepository, PostgresNousFollowupsRepository, PostgresNousPaneChecksRepository, PostgresNousPaneCloseoutsRepository, PostgresNousPlanMarksRepository, PostgresNousRepository, PostgresSpaceStore, InMemoryNousChangesRepository, PostgresNousChangesRepository, type ControlRepository, type NousRepository, type PaneReport, type RoomAgentMonitorRepository } from "@space/db";
 import { createNousFollowups, readTicket, ticketMergedOnMain } from "./followups.js";
 import { localDayHour, operatorAsksByDay, type NousDeferral } from "./daily-review.js";
 import { createNousGoals, goalScorePoints } from "./goals.js";
@@ -47,12 +49,12 @@ import { predictionAccuracy } from "./predictions.js";
 import { browserCensus } from "../browser-census-routes.js";
 import type { NousOpsDeps } from "./ops-views.js";
 import { NOUS_TOKEN_NOTE_PREFIX, nousLosingWeeks, type NousLostRow } from "./lost-tokens.js";
-import { createNousTokenMonitor, type NousHeldMode, type NousProviderRoom, nousPoolUtilization, nousProviderRooms, nousProviderRoomText, nousTokenModel, poolBackAt, readNousTokens, renderNousTokens, renderNousTokenSummary } from "./tokens.js";
+import { createNousTokenMonitor, type NousHeldMode, type NousProviderRoom, nousIdlePools, nousPoolUtilization, nousProviderRooms, nousProviderRoomText, nousTokenModel, poolBackAt, readNousTokens, renderNousTokens, renderNousTokenSummary } from "./tokens.js";
 import type { VaultModule } from "../vault/wiring.js";
 import { nousPlanActivity, renderNousPlanActivity } from "./stalled-plans.js";
 import { buildPlanMap, createPlanHoldsMonitor, HARD_HOLDS, planMapParts, renderParkedPlans, renderPlanMap, planHoldText, stalledHold, type PlanMap } from "./plan-map.js";
 import { createParkedPlans, parkedSince } from "./parked-plans.js";
-import { createStandingOrders, createSweepGit, NOUS_SWEEP_PANE_TITLE, panePendingWorktrees, type CleanSweepMark, type CloseoutBrowser, type NousStandingOrders } from "./standing-orders.js";
+import { createStandingOrders, createSweepGit, NOUS_SWEEP_PANE_TITLE, panePendingWorktreePaths, panePendingWorktrees, type CleanSweepMark, type CloseoutBrowser, type NousStandingOrders } from "./standing-orders.js";
 import { vaultFencedTargets } from "../vault/fence-hooks.js";
 import { createCanonicalSpaceMemoryBridge, makeSpaceId, SpaceNotFoundError, type CanonicalMemoryBridge, type SpaceEventBus, type SpaceStore } from "@space/runtime";
 import { cookieName, verifySession } from "../auth.js";
@@ -110,13 +112,14 @@ import type { NousSelectedModel } from "./model-choice.js";
 import { createNousProviderCatalog } from "./providers.js";
 import { classifySpaceFailure, createSpaceRouter, SpaceRouteError, type SpaceAttempt, type SpaceRouter } from "./space-provider.js";
 import { createNousSubagents, NOUS_HELPER_SLOTS_SCALE, type NousSubagentDeps } from "./subagents.js";
+import { createNousChanges } from "./rsi/changes.js";
 import { createNousLoad, goalPieces, registerNousLoadRoute, registryOpen, renderNousUtilization, renderUtilizationLow, upgradeQueueOpen, upgradeQueueOpenLines, utilizationPushOn } from "./utilization.js";
 import { cachedTokenUsage, registerTokenUsageRoute, tokenUsageBreakdown, tokenUsageWorldLines } from "./token-usage.js";
 import { createNousScore, nousScoreErrors, goalProgressDays, nousScoreLine, NOUS_SCORE_RESET_NOTE, NOUS_SCORE_PERIOD_DAYS, parseScoreReset, registerNousScoreRoutes } from "./score.js";
 import { approvalStates } from "./approvals.js";
 import type { HealthCollectorSample } from "../system-health-collector.js";
 import { accountHold, botCheckHold, cardEntryStepsHold, FAILED_ANSWER, failedRepeatHold, vpnRouteHold, phoneSliderHold, physicalAskHold, vaultReadBackHold, workingSigninHold, confirmedControlBatch, createNousTools, failedFirst, NOUS_MEMORY_PAGE, nousToolDefinitions, pendingNousBriefOf, type CopilotBriefEvent, type NousCopilotDeps, type NousCopilotItem, type NousToolDeps } from "./tools.js";
-import { createNousFiles, NOUS_OWN_LINK, reviewDraftFile } from "./files.js";
+import { createNousFiles, NOUS_FILES_ROOT, NOUS_OWN_LINK, reviewDraftFile } from "./files.js";
 import { createFileMentions, type FileMentions } from "./file-mentions.js";
 import { unknownRefs } from "./named-refs.js";
 import { createNousSharedFiles, registerNousSharedFileRoutes } from "./shared-files.js";
@@ -160,6 +163,11 @@ import { createPaneReports, endAlreadyReported, PANE_HEARTBEAT_MS, paneReportLin
 export const NOUS_GOAL_WORLD_NOTE = "This goal turn sees its goal, the operator's rules and the plan map only. Rooms, panes, notifications, decisions, tasks, release trains and your notes: call space_world when the goal needs them.";
 
 /** DEV3D-007: the one room filter of Nous's reads (archived, CLI recovery and "Keep Nous out" rooms stay out); every list goes through it. */
+/** Starts `job` unless one for `key` still runs, and never waits for it: a read never stalls on a write it only triggers. */
+export function backgroundOnce(running: Map<string, Promise<void>>, key: string, job: () => unknown, onError: (error: unknown) => void): void {
+  if (running.has(key)) return;
+  running.set(key, Promise.resolve().then(job).then(() => undefined, onError).finally(() => running.delete(key)));
+}
 export const nousSeesRoom = (room: Pick<Room, "archivedAt" | "kind" | "nousExcluded">) => !room.archivedAt && room.kind !== "CLI_RECOVERY" && !room.nousExcluded;
 export function nousLiveCounts(entries: Array<{ sample: DashboardAgentsSample | null; room?: { kind?: string } }>): NonNullable<NousOverview["live"]> {
   const agents = { running: 0, waiting: 0, idle: 0, total: 0 };
@@ -177,9 +185,9 @@ export function nousLiveCounts(entries: Array<{ sample: DashboardAgentsSample | 
 }
 
 const SETTINGS_CACHE_MS = 15_000;
-/** An operator turn waits at most this long for a room's panes, then shows the room as unread (Score 13/11: three first answers waited 97-577 s on one stuck room read). */
+/** An operator turn waits at most this long for a room's panes, then shows the room as unread, so one stuck room read never holds the first answer. */
 const NOUS_OPERATOR_ACTIVITY_WAIT_MS = 10_000;
-/** R65 (goal ee5a573e β): a lesson about asking the operator what Space already held (3/11: lessons-1103-predict-from-known-rules, lessons-predict-prerequisite). */
+/** R65: a lesson about asking the operator what Space already held. */
 const NOUS_ASK_LAST_LESSON = /predict-from-known|prerequisite|could have (?:found|decided|known)|ask[- ]last|ee5a573e|already (?:held|had|knew|answered)|before (?:you )?ask|θα μπορούσες να το βρεις|ρωτ[άα]ς πριν/i;
 /** A page of each list in space_copilot_state (paging, not a cap: `offset` reads the older rows). */
 const COPILOT_STATE_PAGE = 50;
@@ -193,7 +201,7 @@ export const nousLessonEmbedder = (config: SpaceApiConfig) => config.memoryEmbed
 export interface NousWiringOptions {
   /** Space Memory's embeddings (bge-m3 through Space Gateway): Nous's lessons are recalled with them (31/10); absent, by keywords alone. */
   memoryEmbedding?: ((texts: string[], purpose: "document" | "query") => Promise<number[][]>) | undefined;
-  config: { databaseUrl?: string | null; installRoot?: string; instance: string; spaceMemoryIndexPath?: string; spaceMemoryMonthlyPath?: string; spaceMemoryLockPath?: string; browserEvidenceArtifactRoot?: string;
+  config: { databaseUrl?: string | null; installRoot?: string; instance: string; spaceMemoryIndexPath?: string; spaceMemoryMonthlyPath?: string; spaceMemoryLockPath?: string; browserEvidenceArtifactRoot?: string; browserEvidenceEnabled?: boolean; browserEvidenceChromePath?: string;
     /** A public install (plan clipboard:1NF6u6gcCwtj): turns run in its CLI container, whose MCP calls come back to cliApiBaseUrl. */
     publicDistribution?: boolean; multiUserEnabled?: boolean; cliEnabled?: boolean; cliHostSocketPath?: string; cliApiBaseUrl?: string | null; cliWorkspaceRoot?: string;
     /** A Nous Cloud box's Space Gateway entry and its per-account key file (plan clipboard:yw_pvUb_616N): set, Nous runs on Auto with no provider text. */
@@ -217,6 +225,8 @@ export interface NousWiringOptions {
   /** The merge queues' reports (space_queue_status and the plan map's holds); by default the stable and dev queue roots. */
   queues?: () => Promise<Array<{ name: string; report: DeployQueueReport | null }>>;
   auth: { sessionSecret: string };
+  /** Nous Computer's headless hub (server.ts, nousComputerFromEnv): every turn runs in the owner's tenant cell (computer/cell-turn.ts). */
+  computer?: { deps: CellTurnDeps; cellProven(tenantId: string, proof: string | string[] | undefined): boolean } | undefined;
   store: SpaceStore;
   routeOptions: Record<string, unknown>;
   parseBody<TSchema extends z.ZodTypeAny>(schema: TSchema, body: unknown): z.infer<TSchema>;
@@ -308,11 +318,7 @@ const NOUS_CLOUD_FREE_RESERVE_MS = 5 * 60_000;
 const NOUS_CLOUD_PROBE_MS = 10_000;
 const NOUS_GATEWAY_UNREACHABLE_STEP = "The Space Gateway did not answer.";
 
-/**
- * Every Nous turn and helper runs as headless Claude Code through Space Gateway (operator order 2026-10-24), on the Claude Max
- * subscription accounts only: the API key never serves Claude Code (operator rule 2026-10-27). Account failover stays in the gateway
- * so a turn is not replayed after it has already used tools. Dev never uses stable's worker socket.
- */
+/** Nous turns and helpers run as headless Claude Code via Space Gateway on Claude Max accounts only, never the API key; failover stays in the gateway so a tool-using turn is not replayed; dev never uses stable's socket. */
 export async function runOnWorker(body: Record<string, unknown>, signal: AbortSignal,
   onText?: NousTurnTextListener, spans = workerCallSpans()): Promise<NousRunResult> {
   // OBS-006: with OTLP export on, the turn's worker call is a CLIENT span and the worker's span its child (traceparent in the body).
@@ -346,8 +352,8 @@ export const NOUS_SHELL_NOTE = "You have a shell tool as the operator's CLI user
   + "exactly \"space-queue promote\" with space_send_to_pane, which Space refuses for a pane whose provider is on avoid, so check that such a pane "
   + "exists before you promise a promote or its time.";
 
-/** Appended on a self-hosted install, where NOUS_PUBLIC_HIDDEN takes those tools away (clean-install lab 23/11: the first reply promised web research and releases). */
-/** Token audit 26/11 (goal 5acd171d): on Gemini a Nous turn took ~17 model requests of ~100k context with one tool call each (Claude ~4), so Gemini routes get this note. */
+/** Appended on a self-hosted install, where NOUS_PUBLIC_HIDDEN takes those tools away, so the reply never promises tools it lacks. */
+/** Gemini routes get this note: there a Nous turn makes many more model requests than on Claude, with one tool call each (goal 5acd171d). */
 export const NOUS_GEMINI_BATCH_NOTE = "Each model request re-reads this whole context: when several tool calls do not depend on each other's results, "
   + "make them all in the same reply instead of one per reply.";
 export const NOUS_PUBLIC_NOTE = "This is a self-hosted SpaceApp install: it has no web search, no source repository, merge queue or release trains, no Space Gateway "
@@ -379,7 +385,7 @@ export const NOUS_CONNECT_CLAUDE = "Connect Claude Code to use Nous: sign in to 
 export const NOUS_UPDATE_CLI = "This install's CLI container cannot run Nous yet: update SpaceApp (npx --yes run-spaceapp@latest update).";
 export const NOUS_FREE_MODEL_NOTE = "(Answered on OpenCode's free model, the one the Getting Started pane uses. For a stronger Nous, connect Claude Code: sign in to Claude Code under the CLI providers, or add an Anthropic API key with credentials set claude.)";
 const CLAUDE_READY_CACHE_MS = 60_000;
-// Nous Cloud (operator 27/11, plan clipboard:yw_pvUb_616N step 4): every backend refused; no quota, provider or socket text reaches the chat, and the turn retries.
+// Every Nous Cloud backend refused: no quota, provider or socket text reaches the chat, and the turn retries (plan clipboard:yw_pvUb_616N).
 export const NOUS_CLOUD_BUSY = "Every model is busy right now; Nous tries again in a minute.";
 
 /** A Nous Cloud box's own Space Gateway key, read each turn so a rotation by the provisioner applies at once; null elsewhere. */
@@ -389,18 +395,15 @@ async function nousCloudGateway(config: NousWiringOptions["config"]) {
   return apiKey ? { baseUrl: config.nousCloudGatewayUrl, apiKey } : null;
 }
 
-/**
- * Where Nous's turns run (plan clipboard:1NF6u6gcCwtj): stable's worker through Space Gateway; on a public install the CLI
- * container's Claude Code on the owner's own Claude login, with no Space Gateway (operator decision 2026-10-27, B+C3); nowhere
- * on dev. `unavailable` says why no turn can run now (null when one can), for the dock and before every turn.
- */
+/** Where Nous's turns run: stable's worker via Space Gateway; on a public install the CLI container's Claude Code on the owner's login, no Gateway; never on dev. `unavailable` says why no turn can run (null when one can). */
 /** The public install's CLI container (cli-auth-transfer.ts), or null elsewhere. */
 function publicHost(config: NousWiringOptions["config"]) {
   return config.publicDistribution && config.cliHostSocketPath ? createPublicCredentialHost({ publicDistribution: true, cliEnabled: config.cliEnabled === true, cliHostSocketPath: config.cliHostSocketPath }) : null;
 }
 
-export function nousTurnBackend(options: Pick<NousWiringOptions, "runner" | "config">): { run: NousTurnBackend | null; unavailable(): Promise<string | null> } {
+export function nousTurnBackend(options: Pick<NousWiringOptions, "runner" | "config" | "computer"> & Partial<Pick<NousWiringOptions, "auth">>): { run: NousTurnBackend | null; unavailable(): Promise<string | null> } {
   if (options.runner) return { run: null, unavailable: async () => null };
+  if (options.computer && options.auth) return { run: cellTurnBackend(options.computer.deps, options.auth.sessionSecret), unavailable: async () => null };
   if (!options.config.publicDistribution) {
     return options.config.instance === "stable" ? { run: (body, signal, onText) => runOnWorker(body, signal, onText), unavailable: async () => null } : { run: null, unavailable: async () => NOUS_STABLE_ONLY };
   }
@@ -411,8 +414,7 @@ export function nousTurnBackend(options: Pick<NousWiringOptions, "runner" | "con
     if (!ready || Date.now() - ready.at > CLAUDE_READY_CACHE_MS) ready = { at: Date.now(), ok: await host.status(CLAUDE_CLI_WRAPPER).then((status) => status === "READY", () => false) };
     return ready.ok;
   };
-  // Nous Cloud is always Auto: Claude Code when signed in, then the box's Space Gateway key (model auto, the key's own models and providers),
-  // then OpenCode's free model. A refusal or failure moves to the next before anything is shown; only a step limit or the turn's stop ends it.
+  // Nous Cloud is always Auto: Claude Code if signed in, then the box's Space Gateway key, then OpenCode's free model; a refusal moves on before anything shows, only a step limit or stop ends it.
   const cloudTurn: NousTurnBackend = async (body, signal, onText, onModel) => {
     const deadline = Date.now() + body.timeoutMs;
     const tools = { system: body.system, prompt: body.prompt, maxTurns: body.maxTurns, shell: body.shell === true, stream: Boolean(onText), mcpUrl: body.mcpUrl, mcpToken: body.mcpToken };
@@ -459,8 +461,7 @@ export function nousTurnBackend(options: Pick<NousWiringOptions, "runner" | "con
       const turnSignal = AbortSignal.any([signal, AbortSignal.timeout(body.timeoutMs)]);
       const tools = { system: body.system, prompt: body.prompt, maxTurns: body.maxTurns, shell: body.shell === true, stream: Boolean(onText), mcpUrl: body.mcpUrl, mcpToken: body.mcpToken };
       if (!await claudeReady()) {
-        // Nous 13/11 (goal 401b115b): with no Claude signed in, the Getting Started OpenCode pane's free model answers, and the answer suggests Claude.
-        // 1.2.3 lab 20/11: an interim answer (space_reply_now) took the picked Claude model's label; the CLI container picks the Zen model.
+        // With no Claude signed in, the Getting Started OpenCode pane's free model answers and suggests Claude; the CLI container picks the Zen model, so an interim answer never wears the Claude label (goal 401b115b).
         onModel?.("opencode");
         const result = await host.openCodeAgentTools(tools, turnSignal, onText).catch((error: unknown) => {
           if (error instanceof Error && error.message.includes("FAILED bad-request")) { noOpenCode = true; throw new NousUnavailableError(NOUS_CONNECT_CLAUDE); }
@@ -500,7 +501,7 @@ export const NOUS_STEP_LIMIT = /turn limit|max(?:imum)?[ _-]?turns/i;
 export const NOUS_BROKER_TRANSIENT = /\bBROKER_(?:FAILED|TIMEOUT)\b/;
 /** Waits before each retry of the same route on a transient broker failure, before the router fails over or the turn fails. */
 export const NOUS_BROKER_RETRY_MS = [2_000, 5_000];
-/** Response time 18/11 #1-2 (33 min: opencode-claude Opus "Waiting for the selected VPN connection" six times): a route out of room or down, not the turn's fault. */
+/** A route out of room or down (e.g. waiting for a VPN connection) is not the turn's fault. */
 const OUT_OF_ROOM = new Set<string>(["quota", "throttle", "unavailable"]);
 
 export function turnRunner(options: NousWiringOptions, backend: ReturnType<typeof nousTurnBackend>, pick: ModelPicker, shellOn: (owner: string) => Promise<boolean>,
@@ -508,8 +509,7 @@ export function turnRunner(options: NousWiringOptions, backend: ReturnType<typeo
   return async ({ owner, turnId, reason, modelChoice, system, prompt, onText, onModel, onAttempt, acted }, signal) => {
     const unavailable = await backend.unavailable();
     if (unavailable || !backend.run) throw new NousUnavailableError(unavailable ?? NOUS_STABLE_ONLY);
-    // R54-a (3/11 05:51, 05:54 and 07:07 UTC: operator turns held on "No active Claude subscription account" while Codex and Antigravity had room):
-    // an operator's or decision turn whose direct provider refuses for quota or account runs once on the Space provider's auto order.
+    // An operator's or decision turn whose direct provider refuses for quota or account runs once on the Space provider's auto order, where other providers may have room (R54-a).
     const operatorTurn = reason === "OPERATOR" || reason === "DECISION";
     let picked: NousSelectedModel | null = null;
     let refused: string | null = null;
@@ -542,17 +542,13 @@ export function turnRunner(options: NousWiringOptions, backend: ReturnType<typeo
         }
       }
     };
-    // The turn's attempts in order, route failovers and step-limit continuations alike (each lists what the earlier ones did); a direct
-    // provider's first run is attempt 1 without a step of its own.
+    // The turn's attempts in order, route failovers and step-limit continuations alike, each listing what earlier ones did; a direct provider's first run is attempt 1 without its own step.
     let step = picked && picked.provider !== "space" ? 1 : 0;
     const nextAttempt = async (label: string, after: string | null) => {
       if (step > 0) onText?.({ start: true });
       return await onAttempt?.({ index: step++, label, after }) ?? "";
     };
-    // R54-a (3/11 10:01 UTC: an operator turn on gpt-6-astra stopped at Codex's step limit, and its messages started over a minute later): an
-    // operator's or decision turn that used its steps goes on once, the same turn and MCP token, with what it already did. A direct model
-    // stays on its route; an auto model goes on on the first route with room now (6/11 10:00 UTC: a turn begun on Gemini while Claude Max
-    // was out went on there for 10 minutes after Claude had room again, nous_msg:743223a1).
+    // An operator's or decision turn that used its steps goes on once with the same turn, MCP token and what it did; a direct model stays on its route, an auto model takes the first route with room now (R54-a).
     let continued: SpaceAttempt | null = null;
     const run = async (route: Route, label: string, extra = "", first?: () => Promise<SpaceAttempt | null>) => {
       const prefix = (route.provider === "gemini" && /flash/i.test(route.model)) ? "gemini-flash"
@@ -568,11 +564,7 @@ export function turnRunner(options: NousWiringOptions, backend: ReturnType<typeo
       const next = continued ? { provider: continued.provider, model: continued.model, effort: continued.effort, fallbackModel: null } : route;
       return once({ ...next, prompt: withEarlierAttempts(prompt, await nextAttempt(`${continued ? routeLabel(continued) : label}, continued after its step limit`, result.text)) });
     };
-    // A turn that acted moves to the next route too when its route's pool refused (quota, throttle, outage; a refused key or the turn's own
-    // failure still ends it): Kate E-3's stop (3/11) made 5 of 12 Daily Nous turn errors 11-14/11 (Codex's usage limit after a tool), and the
-    // service then ran the work again in a new turn with no guard. The same turn and MCP token on every route, and a repeated call answered
-    // from its earlier result, guard it.
-    // No free or granted pool on any Nous turn (operator rule 13/11 14:38 BKK): the choice never sets `free`.
+    // A turn that acted also fails over when its pool refused (quota, throttle, outage; not a refused key or its own failure), guarded by the same turn, MCP token and repeat-call answers; never a free pool.
     const viaSpace = async (asked: { model: string; effort: string }) => {
       if (!space) throw new NousUnavailableError("The Space provider does not run on this installation.");
       const choice = { ...asked, noRoom: picked?.noRoom, lastResort: operatorTurn };
@@ -594,8 +586,7 @@ export function turnRunner(options: NousWiringOptions, backend: ReturnType<typeo
         throw error;
       }
     }
-    // 13/11 09:34 UTC: Claude Code's quota stop comes back thrown (the launcher's exit code), not as an error result, and the operator's
-    // turn waited on the quota hold while Codex had room: a thrown refusal fails over the same.
+    // Claude Code's quota stop comes back thrown (the launcher's exit code), not as an error result, so a thrown refusal fails over the same way.
     const direct = await run({ provider: provider ?? "claude", model, effort, fallbackModel: fallbackModel ?? null }, `${nousModelLabel(model)}${effortSuffix(effort)}`)
       .catch((error: unknown) => error instanceof Error ? error : new Error(String(error)));
     const failure = direct instanceof Error ? direct.message : direct.isError ? direct.text : null;
@@ -692,11 +683,7 @@ const heldText = (state: { minutes: number; met: string | null } | null | undefi
   ? `; target already met: ${state.met} (the copilot supersedes it on its next pass; do not bring it to the operator)` : ""}. `;
 const oneLine = (text: string, max = Infinity) => { const flat = text.replace(/\s+/g, " ").trim(); return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat; };
 
-/**
- * Where Nous's file tools read and its own folder is. A single-user self-hosted install mounts the panes' workspace volume in core too
- * (SPACE_CLI_WORKSPACE_ROOT): Nous reads the panes' files there and keeps its own folder where they read it. With accounts on, each
- * user's CLI container has a volume core does not mount, so nothing widens: the defaults stay.
- */
+/** Nous's file-tool root and own folder: a single-user self-hosted install mounts the panes' workspace (SPACE_CLI_WORKSPACE_ROOT) in core too; with accounts on, core does not mount it, so the defaults stay. */
 export function nousFilesRoots(config: NousWiringOptions["config"], artifactRoot: string): { root: string | null; ownRoot: string } {
   const shared = config.publicDistribution === true && !config.multiUserEnabled ? config.cliWorkspaceRoot ?? null : null;
   return { root: shared, ownRoot: shared ? join(shared, NOUS_OWN_LINK) : join(dirname(artifactRoot), "nous-workspace") };
@@ -951,6 +938,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   setOperatorActivityReader(async (owner) => (await repository.listOperatorMessages(owner, { limit: 20 })).find((message) => message.meta.person === true)?.createdAt ?? null);
   // When each open plan's percentage last changed (plan clipboard:8s0ZNiO3q5ZT S4).
   const planMarks = databaseUrl ? PostgresNousPlanMarksRepository.fromConnectionString(databaseUrl) : new InMemoryNousPlanMarksRepository();
+  const changesRepository = databaseUrl ? PostgresNousChangesRepository.fromConnectionString(databaseUrl) : new InMemoryNousChangesRepository();
   // Pane watch (plan clipboard:MAongwnxq9Ro): when Nous last checked each pane, so it never forgets one.
   const paneChecks = databaseUrl ? PostgresNousPaneChecksRepository.fromConnectionString(databaseUrl) : new InMemoryNousPaneChecksRepository();
   const paneWatch = createNousPaneWatch({ repository: paneChecks });
@@ -961,7 +949,8 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     turnFacts: (owner, since) => repository.listTurnFacts(owner, since),
     timeZone: async (owner) => ownerWorkingTimeZone(await store.getUserSettings(owner)), ...(options.readyCliRuntimes ? { readyRuntimes: options.readyCliRuntimes } : {}),
     // Score first (operator 5/11 12:32 BKK): the newest Score's points per plan and goal, so the goal costing the most goes first.
-    scorePoints: (owner) => { const latest = score.cached(owner); return latest ? goalScorePoints(latest) : null; } });
+    scorePoints: (owner) => { const latest = score.cached(owner); return latest ? goalScorePoints(latest) : null; },
+    ticketOnStable: async (id) => { const ticket = await readTicket(id); return ticket ? ticketOnStable(ticket) : ticketMergedOnMain(id, SPACE_INSTALL_ROOT); } });
   // Away mode (plan clipboard:B7eTUHTJYg3X): the operator's away sessions and what Nous did meanwhile.
   const awayRepository = databaseUrl ? PostgresNousAwayRepository.fromConnectionString(databaseUrl) : new InMemoryNousAwayRepository();
   // Operator 2/11 13:15 BKK: a card a CLI pane raises about a page opens the browser pane holding it (needs-you-browser-page.ts).
@@ -972,8 +961,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     const card = { text: `${input.kind}\n${input.title}\n${input.body}`, target: input.link?.target ?? null,
       checked: Array.isArray(input.payload?.checked) ? input.payload.checked as string[] : [],
       code: Array.isArray(input.payload?.items) && (input.payload.items as Array<{ code?: unknown }>).some((item) => item?.code === true) };
-    // Plan clipboard:1NF6u6gcCwtj step 23: a sign-in, bot-check or handoff card waits until something shows the site's account.
-    // null: no list (no Vault, or agent access off), which cannot be told.
+    // A sign-in, bot-check or handoff card waits until something shows the site's account; null means no list (no Vault or agent access off), which cannot be told apart (plan clipboard:1NF6u6gcCwtj).
     const vaultItems = async (owner: string, site: string) => {
       if (!options.vault) return null;
       const listed = await options.vault.agent.call({ owner, paneId: "nous", roomId: "", path: "list", body: { site }, traceId: "account-hold" }) as { items?: Array<{ fields?: string[]; card?: string }> };
@@ -1012,8 +1000,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       agentCards: (owner, paneId) => allNotifications(options.notifications.list, owner, { status: "ALL", source: "AGENT", kind: "NEEDS_YOU", paneId }),
       vaultCards: async (owner) => (await vaultItems(owner, ""))?.filter((item) => item.card).length ?? null }, input);
     if (notNeeded) return notNeeded;
-    // 7/11 Oracle: a sign-in the Vault holds waits for the agent's fill and masked readout.
-    // nous_msg:fe72e061: no reset or recovery card while the stored sign-in works (the operator's order in `checked` overrides).
+    // A sign-in the Vault holds waits for the agent's fill and masked readout; no reset or recovery card while the stored sign-in works, unless the operator's order in `checked` overrides (nous_msg:fe72e061).
     const working = await workingSigninHold(siteSigninsFor(store), input.ownerUserId, card,
       async (site) => (await vaultItems(input.ownerUserId, site))?.some((item) => item.fields?.includes("OTP")) ?? null);
     if (working) return working;
@@ -1063,8 +1050,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       void Promise.resolve(store.noteTaskRunReport(owner, report)).catch((error) => app.log.warn({ err: error }, "A task run could not take a pane report."));
       // A pane's report counts as a check of it (pane watch, plan clipboard:MAongwnxq9Ro): reporting panes are not overdue.
       void paneWatch.read(owner, report.roomId, report.paneId).catch(() => undefined);
-      // Operator 28/10 14:59 BKK: a pane that finished comes to Nous at once (the standing orders run within a minute), and a done
-      // report ends an OK_WORKING verdict that no longer holds.
+      // A pane that finished comes to Nous at once (standing orders run within a minute), and a done report ends an OK_WORKING verdict that no longer holds.
       if (report.status === "DONE" || report.status === "FAILED" || report.status === "TURN_END") late.standing?.soon(owner);
       if (report.status === "DONE" || report.status === "FAILED") void paneWatch.clearWorking(owner, report.roomId, report.paneId).catch(() => undefined);
       if (report.source === "AGENT") void reportNotice(owner, report).catch((error) => app.log.warn({ err: error }, "Nous could not take a pane report."));
@@ -1079,8 +1065,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   // Billing is a local monthly report, cached a minute rather than re-aggregated on every world re-read.
   let tokenBudget: { expires: number; value: Awaited<ReturnType<typeof readNousTokens>>["budget"] } | null = null;
   const tokenHours = new Map<string, { expires: number; value: Awaited<ReturnType<typeof readNousTokens>>["lastHour"] }>();
-  // What each subscription week left unused at its reset in the last `days` (operator 5/11 «μην χάνετε ούτε ένα token»): one Gateway read of
-  // the Score's longest range every 10 minutes serves the Tokens line and the REVIEW (7 days) and the Score (each range).
+  // What each subscription week left unused at its reset in the last `days`: one Gateway read of the Score's longest range every 10 minutes serves the Tokens line, the REVIEW and the Score.
   let lostRows: { expires: number; value: Promise<NousLostRow[] | null> } | null = null;
   const readLost = (days = 7): Promise<NousLostRow[] | null> => {
     const lostTokens = options.config.publicDistribution ? undefined : options.ops?.gatewayAdmin?.lostTokens;
@@ -1094,8 +1079,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     }
     return lostRows.value.then((rows) => rows && rows.filter((row) => Date.parse(row.resetAt) >= Date.now() - days * 86_400_000));
   };
-  // The mode in force with its hysteresis and the losing weeks Nous was told of, kept across API restarts (a deploy restarts the API) in Nous's
-  // own notes, out of its world.
+  // The mode in force with its hysteresis and the losing weeks Nous was told of, kept in Nous's own notes (out of its world) so they survive API restarts.
   const heldNote = `${NOUS_TOKEN_NOTE_PREFIX}held`;
   const toldNote = `${NOUS_TOKEN_NOTE_PREFIX}told`;
   const noteJson = async (owner: string, key: string): Promise<unknown> => {
@@ -1168,8 +1152,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     }
   });
   const tokens = (owner: string) => tokenMonitor.read(owner);
-  // Pace cap emergency (operator 6/11 11:31 BKK, 7/11 19:24 BKK): Nous opens Space Gateway's pace cap for some panes or all background work. Only the
-  // instance that sends the gateway its list (job gateway-priority-panes, stable) tells the gateway; dev keeps the note to itself.
+  // Pace cap emergency: Nous opens Space Gateway's pace cap for some panes or all background work; only the instance that sends the gateway its list (stable) tells it, dev keeps the note to itself.
   const paceCapEmergency = createPaceCapEmergency({ notes: repository, push: () => options.priorityPanesJob ? pushPriorityPanes() : Promise.resolve() });
   const providerHost = publicHost(options.config);
   // Space Gateway's status names its provider order and the Claude API key's budget pace; read at most every 15 seconds.
@@ -1227,13 +1210,12 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   const serverLoad = options.health ? createServerLoad({ health: options.health, hostSwap, paneRoots: paneRootsFrom(store, options.sessionPids ?? (async () => new Map())) }) : null;
   // Rooms the operator switched "Nous off" (rooms dock, 22/11) stay out of everything Nous reads and every tool it acts with.
   const liveRooms = async (owner: string) => (await store.listRooms(owner)).filter(nousSeesRoom);
-  // W46 audit: the monitor events of the owner's rooms since `since`, rooms deleted since included (a deleted room took its waits with it
-  // and unblocking read none of the week's ~188); rooms Nous does not see (nousSeesRoom) stay out.
+  // The owner's rooms' monitor events since `since`, deleted rooms included (a deleted room takes its waits with it); rooms Nous does not see (nousSeesRoom) stay out.
   const ownerWaitEvents = async (owner: string, since: string) => {
     const hidden = new Set((await store.listRooms(owner)).filter((room) => !nousSeesRoom(room)).map((room) => room.id));
     return (await options.monitorEvents!.listOwnerEvents(owner, since)).filter((event) => !hidden.has(event.roomId));
   };
-  // Token usage by process and provider (operator 5/11 17:26 BKK, plan clipboard:qH5emwVaV6yO): the dock's Quotas view, Nous's world and space_token_usage.
+  // Token usage by process and provider for the dock's Quotas view, Nous's world and space_token_usage (plan clipboard:qH5emwVaV6yO).
   const projectUsage = options.config.publicDistribution ? undefined : options.ops?.gatewayAdmin?.projectUsage;
   // The workbench's web (plan clipboard:GZNzxm7FNwjM); a quota refusal waits for the Codex pool's return, and the world names it meanwhile.
   const web = createNousWeb({ search: searchWebThroughGateway, fallbackSearch: searchWebThroughPool, ...(options.ops?.gatewayAdmin
@@ -1247,7 +1229,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       return { room: room?.name ?? null, title: pane.paneName ?? pane.title, mode: pane.mode };
     }, apiKeys: async () => (await options.ops!.gatewayAdmin!.listApiKeys()).data }, owner, period, ownerWorkingTimeZone(await store.getUserSettings(owner)), Date.now(), provider) : undefined;
   const tokenUsage = tokenUsageRead ? cachedTokenUsage(tokenUsageRead) : undefined;
-  // The world reads it every turn: read again once five minutes old, while the turn takes the last answer, so only the first turn waits on two weeks of request logs.
+  // The world reads it every turn: refreshed once five minutes old while the turn takes the last answer, so only the first turn waits on two weeks of request logs.
   const tokenUsageForWorld = tokenUsageRead ? cachedTokenUsage(tokenUsageRead, 300_000, undefined, true) : undefined;
   const tokenUsageWorld = tokenUsageForWorld ? async (owner: string) => {
     const [day, week] = await Promise.all([tokenUsageForWorld(owner, "day"), tokenUsageForWorld(owner, "week")]);
@@ -1276,17 +1258,19 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     if (server?.level === "OVERLOADED") holds.push({ kind: "OVERLOADED", text: `The server is OVERLOADED (${server.reasons.join(", ")}, past 90%): new work waits until the host's swap is back under it.`, since: null });
     return holds;
   }
+  const worldWrites = new Map<string, Promise<void>>();
   /** The plan map of the owner's open plans; one inbox line per hold or overdue transition while Nous runs here. */
   async function planMapOf(owner: string, plans: ClipboardItem[], given: { executions?: ManagedPlanExecution[]; server?: NousLoadState | null } = {}): Promise<PlanMap> {
     const executions = given.executions ?? await Promise.resolve(store.planExecutions.listActive()).catch(() => []);
     const server = given.server !== undefined ? given.server : serverLoad ? await serverLoad.read().catch(() => null) : null;
     const [holds, latest, planReports] = await Promise.all([collectGlobalHolds(owner, executions, server), summaries.latest(owner).catch(() => ({ any: [] })), paneReports.latestPlans(owner).catch(() => [])]);
     const map = buildPlanMap({ plans, executions, summaries: latest.any, reports: planReports, holds, now: new Date() });
-    // Every turn that reads the plans (standing, goal, inbox) and the Score find each plan waiting on the operator with its Needs you item.
-    await Promise.resolve().then(() => planNeedsYou.sync(owner)).catch((error) => warn(error, "Plan Needs you sync failed."));
+    // Turns reading the plans and the Score find each plan waiting on the operator with its Needs you item; the world never waits on these writes (the minutely sync catches up), one sync per owner at a time.
+    backgroundOnce(worldWrites, owner, () => planNeedsYou.sync(owner), (error) => warn(error, "Plan Needs you sync failed."));
     if (options.autonomous && (await settings(owner).catch(() => null))?.enabled) {
       const zone = ownerWorkingTimeZone(await Promise.resolve(store.getUserSettings(owner)).catch(() => null));
-      for (const item of holdsMonitor.observe(owner, map, zone)) await late.service?.notice(owner, item.key, item.line).catch(() => undefined);
+      const items = holdsMonitor.observe(owner, map, zone);
+      void (async () => { for (const item of items) await late.service?.notice(owner, item.key, item.line).catch(() => undefined); })();
     }
     return map;
   }
@@ -1367,8 +1351,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     const queued = panes.size ? await queuedOf(owner) : new Map<string, QueuedText>();
     return { requests, now, words: (id) => words.get(id) ?? null, pane: (id) => panes.get(id) ?? null, queued: (id) => queued.get(id) ?? null };
   }
-  // Operator 31/10 10:47 BKK «Πάντα θα παίρνει νεο agent … το πολύ 3 λεπτά!!»: one urgent line per request whose text waits behind a busy pane.
-  // Operator 16/11 05:42Z «δεν θα περιμενει ποτε!!! αμεσως νεο pane»: Space moves the text itself, through Nous's own tools (their pool, cap and send rules).
+  // One urgent line per request whose text waits behind a busy pane; Space never waits but moves the text to a new pane itself, through Nous's own tools (their pool, cap and send rules).
   const requestWaitAlerts = createRequestWaitAlerts({ notice: (owner, key, line, items) => service.notice(owner, key, line, undefined, { soonMs: 5_000, items }),
     waits: async (owner) => { const notes = await repository.listNotes(owner); return openRequestsOf(notes).length ? requestWaits(owner, notes) : null; },
     async move(owner, request, schedule) {
@@ -1401,8 +1384,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   async function world(owner: string, reason?: NousTurnReason | "HELPER", modelChoice?: NousSelectedModel, lean = false, query = ""): Promise<{ text: string; overview: NousOverview; sections: PromptPart[] }> {
     // Every turn keeps the lesson index current in the background (a new or changed lesson gets its vector; nothing to do is cheap).
     void lessons.sync(owner);
-    // The milliseconds from the start at which each read or step ended, logged when the world takes 1 s or more (`nous_world.steps`, as the
-    // pane board's `nous_board.steps`; stable 14/11: GET /api/nous/overview 1-2.7 s once a minute with the main thread free).
+    // Milliseconds from the start at which each read or step ended, logged when the world takes 1 s or more (`nous_world.steps`, like the pane board's `nous_board.steps`).
     const startedAt = performance.now();
     const steps: Record<string, number> = {};
     const mark = (name: string) => { steps[name] = Math.round(performance.now() - startedAt); };
@@ -1418,8 +1400,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
         const read = options.readActivity(room.id);
         return { room, sample: await (reason === "OPERATOR" ? within(read, NOUS_OPERATOR_ACTIVITY_WAIT_MS) : read).catch(() => null) };
       }))),
-      // A needs-you card the operator opened (READ) still waits on them (operator 16/11 21:55 BKK).
-      // Speed audit 21/11: push aboveInfo and excludeSource into SQL so thousands of INFO mail rows stay unread.
+      // A needs-you card the operator opened (READ) still waits on them; aboveInfo and excludeSource filter in SQL so thousands of INFO mail rows stay unread.
       timed("notifications", allNotifications(options.notifications.list, owner, { status: "WAITING", aboveInfo: true, excludeSource: "NOUS" }).then((items) => items.filter(waitsOnOperator))),
       timed("plans", allPages((page) => store.listClipboardItems(owner, { source: "PLAN", unfinished: true, page, pageSize: 100 }))),
       timed("tasksOpen", allPages((page) => store.listTaskItems(owner, { status: "OPEN", page, pageSize: 100 }))),
@@ -1544,8 +1525,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     const emergency = await paceCapEmergency.active(owner).catch(() => null);
     const tokenText = renderNousTokenSummary(tokenState, zone, Date.now(), allowed ? { settings: allowed, reason, choice: modelChoice } : undefined)
       + (emergency ? `\n${paceCapEmergencyText(emergency, zone)}` : "");
-    // R20-tok-4 (token audit 31/10: 343 GOAL turns a day, each with the whole world): a goal turn reads its goal (the turn's own text),
-    // the operator's rules and the plan map; space_world brings the rest when the goal needs it.
+    // R20-tok-4: a goal turn reads its goal, the operator's rules and the plan map, not the whole world; space_world brings the rest when the goal needs it.
     const lead: PromptPart[] = [{ name: "Tokens", text: tokenText, rank: null }, { name: "Operator's time", text: clock ?? "", rank: null }];
     if (lean) {
       const sections: PromptPart[] = [...lead, { name: "Operator facts and rules", text: operatorFacts, rank: 9, readWith: "space_memory_recall {\"query\": …} finds any of them by its words" },
@@ -1558,7 +1538,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     const peersText = renderPeers(await instanceLinksFor(store)?.peers(owner).catch(() => []) ?? []);
     logSteps();
     const sections: PromptPart[] = [...lead, { name: "Shared Nous memory", text: sharedText, rank: 3, readWith: "space_shared_memory_read" }, ...worldSections,
-      // Token audit 22/11 (goal 5acd171d): parked plans are Standing orders work; an inbox turn keeps the ones about its lines (10,700 characters a turn, rarely matched).
+      // Parked plans are Standing orders work; an inbox turn keeps only those about its lines, which rarely match (goal 5acd171d).
       { name: "Parked plans", text: parkedText, rank: 6, entries: reason === "INBOX" }, { name: "Your cards for the operator", text: cards, rank: 8 }, { name: "Muted rooms", text: mutedText, rank: 4 },
       { name: "Linked SpaceApps", text: peersText, rank: 5, entries: true, readWith: "space_instances lists them; space_remote reads one now" }];
     return { text: [tokenText, clock, sharedText, text, peersText].filter(Boolean).join("\n\n"), overview, sections };
@@ -1568,8 +1548,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   async function executeAction(decision: NousDecision): Promise<string> {
     const action = decision.action!;
     const owner = decision.ownerUserId;
-    // Queue item 27 (27/10 Temu/Will): an approved send answering a mail thread holds itself when a reply went out there after it was asked.
-    // A Needs you card's copilot decision (decideCopilot) carries no refs (29/10: every Approve failed on this line).
+    // An approved send answering a mail thread holds itself when a reply went out there after it was asked; a Needs you card's copilot decision (decideCopilot) carries no refs (queue item 27).
     const thread = decision.refs?.mailThread;
     if (decision.category === "EXTERNAL" && thread && options.copilots.mail) {
       const [reply] = await options.copilots.mail.threadReplies(owner, thread.account, thread.threadId, decision.createdAt).catch(() => []);
@@ -1594,8 +1573,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
           reopened = `Reopened ${paneLabel(pane)}; `;
         }
         const outcome = await options.roomTools.execute("send_to_pane", { panes: [pane.id], text: action.text }, ctx);
-        // R11-2 (3) (REVIEW 29/10: decision 7902c56e FAILED "CLI already has an active turn"): a pane mid-turn, or just reopened, gets the
-        // approved text at its next empty prompt through the held queue (3 tries), never a failed decision.
+        // R11-2: a pane mid-turn or just reopened gets the approved text at its next empty prompt through the held queue (3 tries), never a failed decision.
         const busy = reopened !== "" || /active turn|not (?:confirmed )?ready for input|is (?:busy|running|working)|still running/i.test(`${outcome.result ?? ""} ${outcome.display ?? ""}`);
         if (!outcome.ok && busy && held) {
           await held.hold(owner, { roomId: room.id, roomName: room.name, paneId: pane.id, paneName: paneLabel(pane) }, action.text);
@@ -1632,7 +1610,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     const pane = action.paneId ? await Promise.resolve().then(() => store.getPane(action.paneId!)).catch(() => null) : null;
     if (pane && ownerOf(await store.getRoom(pane.roomId)) !== owner) throw new Error("That pane is not in one of your rooms.");
     const note = action.note ? { note: action.note } : {};
-    // A Needs you click is the operator's answer, already its own NEEDS_YOU ledger row; a Nous decision's (approved or by allowance) is in the ledger as Nous's.
+    // A Needs you click is the operator's answer, already its own NEEDS_YOU ledger row; a Nous decision (approved or by allowance) is in the ledger as Nous's.
     const by: RailAnswerBy = decision.id.startsWith("needs-you:") ? "card" : "nous";
     switch (`${action.copilot}:${action.item}`) {
       case "MAIL:REVIEW": {
@@ -1776,8 +1754,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       await planNeedsYou.sync(owner, operatorWait(plan) ? [] : [plan.id]);
     },
     notice: (owner, key, line, onDone, noticeOptions) => late.service!.notice(owner, key, line, onDone, noticeOptions ?? {}), ticketSummary: async (id) => (await readTicket(id))?.summary ?? null,
-    // Operator 31/10 10:17 BKK: an open PENDING request comes back when its pane reports done or failed, or its ticket is live on stable.
-  // `since` is the latest send naming the request (else its opening): a reused pane's unrelated done no longer re-nudges it (decision 38050).
+    // An open PENDING request comes back when its pane reports done or failed or its ticket is live on stable; `since` is the latest send naming it (else its opening), so a reused pane's unrelated done won't re-nudge it.
     paneFinished: async (owner, paneId, since) => {
       const report = (await paneReports.list(owner, paneId, 10)).find((entry) => entry.at >= since && (entry.status === "DONE" || entry.status === "FAILED"));
       return report ? `${paneId} reported ${report.status.toLowerCase()} ${report.at.slice(11, 16)} UTC: ${report.summary}` : null;
@@ -1833,9 +1810,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   const mailContext = options.copilots.mail ? createNousMailContext({ threads: (owner, query) => options.copilots.mail!.threads(owner, null, query),
     thread: (owner, account, threadId) => options.copilots.mail!.thread(owner, null, account, threadId),
     accounts: async (owner) => (await options.copilots.mail!.accounts(owner, null)).map((account) => account.email) }) : null;
-  // 5/11 Bruno/Bob: a held model change sent to a busy pane was only scheduled after its turn (PENDING read as delivered), then failed unseen.
-  // 13/11 Felix/Iris: a model change already in force waited behind a busy pane forever (the wait below keeps it, uncounted); it is dropped
-  // and the stored effort set to the real one.
+  // A held model change to a busy pane waits for real delivery (PENDING is not delivered); one already in force is dropped and the stored effort set to the real one, instead of waiting forever.
   const heldModelReady = async (paneId: string, model: HeldModel) => {
     try {
       const pane = await store.getPane(paneId);
@@ -1872,7 +1847,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   const artifactRoot = options.config.browserEvidenceArtifactRoot ?? `${SPACE_INSTALL_ROOT}/var/artifacts`;
   const roots = nousFilesRoots(options.config, artifactRoot);
   const ownRoot = options.ownRoot ?? roots.ownRoot;
-  // 22/11: the quality registry's unfixed findings are runnable code work; the API runs from its checkout (cwd = repo root), an install without docs/ has none.
+  // The quality registry's unfixed findings are runnable code work, read from the checkout (the API's cwd is the repo root), so an install without docs/ has none.
   const openFindings = async () => registryOpen(await readFile(join(process.cwd(), "docs", "quality", "review-findings.json"), "utf8").catch(() => ""));
   const filesRoot = options.filesRoot ?? roots.root;
   const files = createNousFiles({ ...(filesRoot ? { root: filesRoot } : {}), artifactRoot, ownRoot, rooms: liveRooms,
@@ -1897,11 +1872,16 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     zone: async (owner) => ownerWorkingTimeZone(await store.getUserSettings(owner)),
     async ownerParts(owner) {
       const [token, rooms, saved] = await Promise.all([tokens(owner), liveRooms(owner), settings(owner)]);
-      const live = nousLiveCounts(await Promise.all(rooms.map(async (room) => ({ room, sample: await options.readActivity(room.id).catch(() => null) }))));
+      const samples = await Promise.all(rooms.map(async (room) => ({ room, sample: await options.readActivity(room.id).catch(() => null) })));
+      const live = nousLiveCounts(samples);
+      // Operator 28/11: the parked panes (standing-orders.ts parkedPane) counted the same way; those not working leave Load's denominator.
+      const held = late.standing?.parked(owner);
+      const parked = held?.size ? nousLiveCounts(samples.map(({ room, sample }) => ({ room, sample: sample && { ...sample, data: sample.data.filter((pane) => held.has(pane.id)) } }))).agents : null;
       const noRoom = token.max && token.max.total > 0 && token.max.withRoom === 0 ? `no ${token.provider ?? "claude"} account of Nous has room` : null;
       return { target: { percent: saved.lowSpend.loadTargets[token.mode], mode: token.mode },
-        tokens: token.accounts === null ? null : { ...nousPoolUtilization(token.accounts, Date.now()), noRoom },
-        panes: { working: live.agents.running, open: live.agents.total }, helpers: { live: subagents.liveCount(owner), max: options.config.publicDistribution ? 1 : NOUS_HELPER_SLOTS_SCALE } };
+        tokens: token.accounts === null ? null : { ...nousPoolUtilization(token.accounts, Date.now()), noRoom, idle: nousIdlePools(new Set(samples.filter(({ room }) => room.kind !== "AGENT_PROOF")
+          .flatMap(({ sample }) => (sample?.data ?? []).filter((pane) => !pane.isClosed && pane.mode === "TERMINAL").map((pane) => pane.terminalRuntimeId ?? ""))), token.accounts, Date.now()) },
+        panes: { working: live.agents.running, open: live.agents.total, parked: parked ? parked.total - parked.running : 0 }, helpers: { live: subagents.liveCount(owner), max: options.config.publicDistribution ? 1 : NOUS_HELPER_SLOTS_SCALE } };
     },
     liveHelpers: (owner) => subagents.liveCount(owner),
     warn: (error) => app.log.warn({ err: error }, "Nous load sample failed.") });
@@ -1915,13 +1895,12 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       scheduled: await scheduledPanes(store).catch(() => new Set<string>()) }) : [];
     const reaped = await Promise.resolve(store.listAuditEventsSince?.({ actions: [BROWSER_REAPED_ACTION], since: new Date(since).toISOString() }) ?? []).catch(() => []);
     return { idle: idle.map((browser) => ({ id: browser.paneId, title: browser.title, idleSince: browser.idleSince })),
-      // Each open pane's live browser: null while in use (an agent, a lease), else its last use; one kept for a task, a handoff or a sign-in waits,
-      // so its pane is idle from that use (operator 13/11 09:48 BKK: waiting gives no exemption).
+      // Each open pane's live browser: null while in use (an agent, a lease), else its last use; one kept for a task, handoff or sign-in still makes its pane idle from that use: waiting gives no exemption.
       live: new Map(census?.sessions.filter((row) => row.paneClosed === false).map((row) => [row.paneId,
         browserInUse(row) ? null : new Date(browserLastUse(row, (paneId) => agents?.usedAt(paneId) ?? null)).toISOString()] as const) ?? []),
       reaped: reaped.filter((event) => event.metadata.ownerUserId === owner).map((event) => ({ id: event.targetId, title: String(event.metadata.title ?? event.targetId), at: event.createdAt })) };
   };
-  /** Score's "Approved but not done" (operator 5/11 20:36 and 20:44 BKK: no tokens, no Gmail reads; goal 84ba917a): copilot items and the mail store, only when the snapshot runs. */
+  /** Score's "Approved but not done": copilot items and the mail store, only when the snapshot runs, with no tokens and no Gmail reads (goal 84ba917a). */
   const approvalsOf = async (owner: string, decisions: NousDecision[], since: number) => approvalStates(owner, decisions, since, options.copilots,
     ownerWorkingTimeZone(await store.getUserSettings(owner)));
   const score = createNousScore({ repository, owners: async () => {
@@ -1972,7 +1951,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
           .then((items) => items.filter((task) => task.paneId && task.schedule?.recurrence.kind === "DAILY")),
         nousRequests.since(owner, new Date(since).toISOString()),
         programs.list(owner),
-        // The other big projects (operator 4/11 nous_msg:c9ec2d1a): the Job applications and Crypto pages' own reads, the Freelance Copilot's wins and proposals.
+        // The other big projects: the Job applications and Crypto pages' own reads, and the Freelance Copilot's wins and proposals (nous_msg:c9ec2d1a).
         options.copilots.job ? options.copilots.job.report(owner).catch(() => null) : null,
         readCryptoReport(owner === NOUS_PROGRAMS_IMPORT_OWNER ? NOUS_CRYPTO_DIR : null).catch(() => null),
         options.copilots.freelance ? Promise.all([options.copilots.freelance.listLeads(owner, { status: ["WON"] }), options.copilots.freelance.listMessages(owner, { status: ["SENT"] })])
@@ -1999,8 +1978,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       const average = utilization?.averages.today.value ?? utilization?.averages.hour.value ?? utilization?.overall ?? null;
       const reset = parseScoreReset(notes.find((note) => note.key === NOUS_SCORE_RESET_NOTE)?.text);
       const { live, ...browsers } = browserState;
-      // Each range's errors cut at its own first hour (the first day of 24 h is only its last hours).
-      // Speed audit 21/11: build scoreMessages once and yield between windows so 3x compute never stalls the event loop.
+      // Each range's errors cut at its own first hour; scoreMessages is built once and windows yield, so computing every range never stalls the event loop.
       const scoreMessages = messages.map((message) => ({ id: message.messageId, text: message.text, at: message.createdAt }));
       const resetAt = reset ? Date.parse(reset.at) : undefined;
       const errorsOf = (windowDays: number) => nousScoreErrors({ now, timeZone: zone, facts, decisions, lessons: notes, messages: scoreMessages, windowDays, ...(resetAt !== undefined ? { resetAt } : {}) });
@@ -2024,8 +2002,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
           ...[cryptoProject(crypto, now)].filter((entry) => entry !== null),
           ...(freelance?.proposals.length ? [{ name: "Freelance", succeeded: freelance.won, tried: freelance.proposals.length, what: "proposals won a contract",
             since: firstDay(freelance.proposals.map((message) => message.sentAt ?? message.createdAt)) }] : [])],
-        // Idle (operator 13/11 09:48 BKK): every pane not in a turn and with no browser in use: done, idle, waiting on the operator or a date, a CLI
-        // not running, a non-CLI pane. A CLI pane whose state could not be read counts only from a finished report (it may be in a turn).
+        // Idle: every pane not in a turn with no browser in use (done, idle, waiting, CLI not running, non-CLI); a CLI pane whose state could not be read counts only from a finished report, as it may be in a turn.
         panes: panes.map((pane) => {
           const sample = samples.find(({ room }) => room.id === pane.roomId)?.sample;
           const state = sample?.activity[pane.id];
@@ -2067,8 +2044,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
         completedPlans: plans.filter((plan) => plan.isCompleted && !planIsParked(plan)).map((plan) => ({ id: plan.id, title: plan.title ?? plan.text.slice(0, 80), at: plan.lastProgressAt ?? plan.lastUsedAt })),
         // Not done counts as open (operator 6/11 nous_msg:2c610048), once per message.
         requests: await (async (open) => [...open.map((request) => ({ id: request.messageId, summary: request.summary, openedAt: request.openedAt })),
-          // Every Not done, whatever its age (operator 27/11 nous_msg:583c7629: a stuck one costs more each day, no 7-day cutoff); the same in every range.
-          // The Requests tab's whole Not done list (one cached derive), not the 30-day messages read above.
+          // Every Not done whatever its age, since a stuck one costs more each day, in every range: the Requests tab's whole Not done list (one cached derive), not the 30-day messages read (nous_msg:583c7629).
           ...(await nousRequests.page(owner, { status: "NOT_DONE", limit: Number.MAX_SAFE_INTEGER })).requests.filter((message) => !open.some((request) => request.messageId === message.messageId))
             .map((message) => ({ id: message.messageId, summary: message.text.slice(0, 300) || "Files only", openedAt: message.createdAt }))])(openRequestsOf(notes)),
         done: done.map((record) => ({ id: record.id, title: record.title, at: record.createdAt })),
@@ -2085,7 +2061,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   const operatorUpdates = createOperatorUpdates({ notifications: options.notifications, language: async (owner) => agentLanguageOf(await store.getUserSettings(owner)),
     notice: async (owner, key, line) => { await late.service?.notice(owner, key, line); } });
   const programs = createNousPrograms({ repository: programsRepository, updates: operatorUpdates, warn: (error, message) => app.log.warn({ err: error }, message),
-    // Operator 9/11 20:59 BKK: the journal and the file's last revision live next to the file; dev cannot write there (ReadWritePaths) and keeps them in memory.
+    // The journal and the file's last revision live next to the file; dev cannot write there (ReadWritePaths) and keeps them in memory.
     ...(options.config.instance === "stable" ? { journalDir: process.env.SPACE_NOUS_PROGRAMS_DIR || NOUS_PROGRAMS_IMPORT_DIR } : {}),
     kept: async (owner, key, text) => {
       await options.notifications.raise({ ownerUserId: owner, roomId: null, paneId: null, source: "NOUS", kind: "PROGRAMS_FILE_KEPT", severity: "ATTENTION",
@@ -2172,6 +2148,8 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     handoffOpen: (paneId: string) => handoffActive(store, paneId),
     codePageOpen: createCodePageOpen({ store, ...(options.browserAgents ? { agents: options.browserAgents } : {}) }),
     paneLastWorkReport: lastWorkReport,
+    pendingWorktreePaths: (panes) => panePendingWorktreePaths(panes),
+    paneSince: async (roomId: string, paneId: string) => (await options.readActivity(roomId)).details[paneId]?.since ?? null,
     briefsWaiting: (paneId: string) => { const waiting = briefWatch.waiting(paneId); return waiting ? briefsWaitingText(waiting) : null; },
     stuckPane: (paneId: string) => stuckPanes.get(paneId)?.line ?? null,
     cliSessionPane: async (sessionId: string) => (await Promise.resolve(store.getPaneCliSession(sessionId)))?.paneId ?? null,
@@ -2195,6 +2173,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     ...(options.ops ? { ops: options.ops } : {}),
     ...(options.vault ? { vault: options.vault, vaultProtection: options.vault.protection } : {}),
     ...(options.browser ? { browser: options.browser } : {}),
+    ...(options.config.browserEvidenceEnabled && options.config.browserEvidenceChromePath ? { urlLook: createUrlLook({ chromePath: options.config.browserEvidenceChromePath }) } : {}),
     lastScreenshot: async (paneId) => (await store.listArtifactsPage({ paneId, kind: "SCREENSHOT", page: 1, pageSize: 1, sortOrder: "desc" })).data[0] ?? null,
     world: async (owner, reason, modelChoice, section) => { const read = await world(owner, reason, modelChoice); return section ? promptSection(read.sections, section) : read.text; },
     rooms: liveRooms,
@@ -2211,8 +2190,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
         const map = input.waitsOn !== undefined || input.parked !== undefined;
         const before = map ? await Promise.resolve().then(() => store.getClipboardItem(owner, id)).catch(() => null) : null;
         const plan = await store.updateClipboardItemProgress(owner, id, input);
-        // Operator 13/11 23:56 BKK: a plan set to wait on the operator gets its Needs you item in the same call; one that did not wait before
-        // is a reopened wait, asked again even if the operator answered the same words earlier (14/11 00:41 BKK).
+        // A plan set to wait on the operator gets its Needs you item in the same call; a newly started wait is asked again even if the operator answered the same words before.
         if (map) await planNeedsYou.sync(owner, before && !operatorWait(before) ? [id] : []).catch((error) => warn(error, "Plan Needs you sync failed."));
         return plan;
       }
@@ -2394,8 +2372,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
         });
       }
     },
-    // "May publish after a green lab proof": the live train and its lab proof.
-    // R16-1 "May run guarded host restarts": the preconditions a restart waits for, read from the queues, the browser census and the panes.
+    // "May publish after a green lab proof" reads the live train and its lab proof; "May run guarded host restarts" (R16-1) reads a restart's preconditions from the queues, browser census and panes.
     mayRestartHosts: {
       async facts(owner: string, host: "BROWSER_HOST" | "PANE_HOST") {
         const stableIdle = stableQueueIdle(await queues().catch(() => null));
@@ -2428,8 +2405,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     sendTexts: async (owner, refs) => (await files.decisionFiles(owner, refs)).map((file) => file.error || file.truncated || file.binary ? null : file.text),
     timeZone: async (owner) => ownerWorkingTimeZone(await store.getUserSettings(owner)),
     language: async (owner) => agentLanguageOf(await store.getUserSettings(owner)),
-    // The operator's message recalls what Space Memory holds about it (2026-10-24) with the light scan of the two newest monthly files
-    // (text cached a minute), never the full reader: its cold parse holds the API's event loop for 14 s.
+    // The operator's message recalls what Space Memory holds via a light scan of the two newest monthly files (cached a minute), never the full reader, whose cold parse blocks the event loop.
     ...(memoryMonthly ? { recall: async (query: string) => recallEntries(await monthlyText(), query) } : {}),
     lessons,
     // Plan clipboard:7L5KyWp3kQsP step 1: every card held for Nous and not yet answered, pinned in each turn (one Nous put on its own card is forwarded).
@@ -2462,8 +2438,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     : options.config.publicDistribution || options.config.instance !== "stable" ? null : async ({ model, prompt, traceId }, signal) => runCliMove({
       runtimeId: "cli:claude", model, effort: null, claudeProfile: CLAUDE_GATEWAY_PROFILE, prompt, signal, traceId }));
   async function boardSnapshot(owner: string): Promise<PaneBoardSnapshot> {
-    // The milliseconds each read took, logged when the snapshot takes 1 s or more (`nous_board.steps`; stable 4/11: GET /api/nous/pane-board
-    // p50 0.6 s, p95 2.6 s, with the main thread free, so one of these reads waits).
+    // Milliseconds each read took, logged when the snapshot takes 1 s or more (`nous_board.steps`), to find which read waits while the main thread is free.
     const startedAt = performance.now();
     const steps: Record<string, number> = {};
     const timed = <T>(name: string, read: Promise<T>) => read.finally(() => { steps[name] = Math.round(performance.now() - startedAt); });
@@ -2471,8 +2446,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     const [samples, reports, notifications, decisions, copilotItems, plans, checks, tasks] = await Promise.all([
       timed("activity", Promise.all(rooms.map(async (room) => ({ room, sample: await options.readActivity(room.id).catch(() => null) })))),
       timed("reports", paneReports.latest(owner).catch(() => [])),
-      // READ cards still wait for the operator: every OPEN and READ one (until 31/10 the newest 200 of every status) a pane's line shows: on a pane,
-      // above INFO. Until 14/11 every waiting record was read (stable: 7,440 rows in 38 pages, 18 MB, every ~28 s: 75% of all notification rows read) for 20.
+      // READ cards still wait for the operator: only the OPEN and READ cards a pane's line shows (on a pane, above INFO) are read, never every waiting record.
       timed("notifications", allNotifications(options.notifications.list, owner, { status: "WAITING", onPane: true, aboveInfo: true }).catch(() => [])),
       // A decision an allowance holds runs by itself: it waits on no pane's operator (31/10 17:00 BKK).
       timed("decisions", repository.listDecisions(owner, { statuses: ["OPEN"] }).then((open) => open.filter((decision) => !nousDecisionRunsWhen(decision)))),
@@ -2511,11 +2485,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     publish: (_owner, roomId, paneId) => publishBoard(roomId, paneId),
     log: { warn: (details, message) => app.log.warn(details, message) }
   });
-  /**
-   * The live pane browsers of these panes for the standing orders (operator 27/10: every pane type closes once finished): tabs, who
-   * holds each (a control lease, a handoff, a Vault fence) and when it last moved, from the API's own records like the browser census
-   * (no Browser Host call). A lease or handoff read that fails counts as held; a list that cannot be read is null (no browser pane listed).
-   */
+  /** These panes' live browsers for the standing orders (every pane type closes once finished): tabs, holder and last move from the API's own records, no Browser Host call; a failed holder read counts as held. */
   async function closeoutBrowsers(paneIds: ReadonlySet<string>): Promise<Map<string, CloseoutBrowser> | null> {
     const sessions = await Promise.resolve(store.listActivePaneBrowserSessions()).then((list) => list.filter((session) => paneIds.has(session.paneId))).catch(() => null);
     if (!sessions) return null;
@@ -2546,8 +2516,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     spend: async (owner) => {
       const state = await tokens(owner);
       const rooms = nousProviderRooms(state.accounts, state.api ?? null, Date.now());
-      // refused: the pools noRoomGuard (tools.ts) refuses new work in any mode, so a free pane there gets no push item (a pace-cap emergency is not read here).
-      // Avoided under LOW: the same, never a week ahead of its pace (operator 21/11 20:00 BKK, nous_msg:eedece6d: only a spent pool has no room).
+      // refused: pools where noRoomGuard (tools.ts) refuses new work in any mode, so a free pane there gets no push item; avoided under LOW: never a week ahead of its pace (nous_msg:eedece6d).
       const refused = [...noRoomPools(rooms), ...noBalancePools(rooms)].map((room) => room.key);
       return { mode: state.mode, avoid: state.mode === "NORMAL" ? [] : refused, refused };
     },
@@ -2600,6 +2569,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     ...(options.activeSessionPids ? { saveTurn: createPaneSaveTurn({ store, activeSessionPids: options.activeSessionPids }) } : {}),
     // Plan clipboard:qH5emwVaV6yO step 10: the close space_close_pane makes, behind its needs-you guard.
     lastWorkReport,
+    paneWorking: async (pane) => (await options.inspectPane(pane)).state === "RUNNING",
     closePane: async (owner, roomId, paneId) => {
       if ((await allNotifications(options.notifications.list, owner, { status: "NEEDS_YOU", paneId })).length) return false;
       const requestId = `nous:standing-close:${Date.now()}:${paneId}`;
@@ -2636,7 +2606,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       dbFailures: async (owner, since) => (await repository.listMessages(owner, 3_000, 3_000)).filter((message) => message.kind === "TOOL" && message.status === "FAILED"
         && message.meta.name === "space_db_query" && message.createdAt >= since && typeof message.meta.dbCode === "string")
         .map((message) => ({ dbCode: String(message.meta.dbCode), dbGuess: typeof message.meta.dbGuess === "string" ? message.meta.dbGuess : null })),
-      // R22-5: the deferrals of the reviewed turns, whole (their DONE tool rows carry meta.deferral); turns that began up to 2 h before still wrote rows after it.
+      // R22-5: the reviewed turns' deferrals, whole (their DONE tool rows carry meta.deferral), including turns begun up to 2 h before that still wrote rows after it.
       deferrals: async (owner, since) => (await repository.listTurnTools(owner, (await repository.listTurnFacts(owner, new Date(Date.parse(since) - 2 * 3_600_000).toISOString())).map((turn) => turn.turnId),
         ["space_plan_update", "space_goal_update", "space_nous_followup"], since)).flatMap((message) => message.meta.deferral && typeof message.meta.deferral === "object"
         ? [{ ...(message.meta.deferral as Omit<NousDeferral, "at">), at: message.createdAt }] : []),
@@ -2683,7 +2653,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     },
     away: async (owner) => (await away.current(owner).catch(() => null)) !== null,
     ...(serverLoad ? { serverLine: async () => renderServerLoad(await serverLoad.read()).split("\n")[0] ?? null } : {}),
-    // Load (plan clipboard:f4SH36t3fJ6c step 3): idle capacity for 10 minutes (operator 31/10 17:22 BKK) while work waits, on a CALM server with tokens to spare.
+    // Load: idle capacity for 10 minutes while work waits, on a CALM server with tokens to spare (plan clipboard:f4SH36t3fJ6c).
     async utilizationLow(owner, plans, freed) {
       const summary = await load.summary(owner);
       if (!summary || !utilizationPushOn(summary, (await tokens(owner)).mode, freed)) return null;
@@ -2706,8 +2676,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     backlog: async (owner) => upgradeQueueOpenLines(await readFile(join(ownRoot, "upgrades", "queue.md"), "utf8").catch(() => "")).reverse()
       .map((line) => ({ key: `upgrade:${line.slice(7).split("; evidence:")[0]!.trim()}`, text: "Daily-improvement fix from Nous's queue (nous/upgrades/queue.md, OPEN; newest first). "
         + `Check on dev whether it is still open; if so fix the root cause in your own worktree from dev with a test, submit to the dev merge queue and report the ticket with space-progress done; when done, or when it is already fixed or not a code change, mark the line yourself by adding " [DONE <date> <ticket or commit>]" at its end in nous/upgrades/queue.md and report with space-progress done. The line: ${line.slice(2)}` }))
-      // 22/11 (operator nous_msg:0e499daa, 3 of 12 CLI panes working with every plan parked and the queue empty): the registry's unfixed findings too.
-      // 22/11 04:02-04:20Z: the ledger's path made every finding one send-guard key (Hugo's held the rest); named without it, `given` keeps each finding to one pane.
+      // Idle panes also get the registry's unfixed findings, each named without the ledger's path so `given` keeps each finding to one pane rather than one send-guard key for all (nous_msg:0e499daa).
       .concat((await openFindings()).map(({ id, severity }) => ({ key: `registry:${id}`, text: `Quality-registry finding ${id} (${severity}) in the quality registry (review-findings.json under docs/quality) `
         + `(resolution open or partial). Read its observation and disposition, re-check it on origin/dev; if code can finish it, fix it in your own worktree from dev with a test, `
         + `set its resolution to "fixed" with the commit as evidence, submit to the dev merge queue and report the ticket with space-progress done; if it waits on an operator `
@@ -2715,8 +2684,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       .concat(goalPieces(await goalsRepository.list(owner, { statuses: ["ACTIVE"] }).catch(() => []))),
     dispatch: async (owner, roomId, paneId, text) => (await tools.execute("space_send_to_pane", { room: roomId, panes: [paneId], text, when: "after_turn" },
       { owner, turnId: "standing-dispatch", callId: makeSpaceId("call"), traceId: makeSpaceId("trace") })).ok,
-    // Operator 24/11 (memory 258fedce): a sweep never goes to a pane with its own task; Space opens a dedicated pane in the room with the most free slots,
-    // on Antigravity Gemini 4 Neon (24/11 19:27 BKK: Claude pools near 7-day 100 %, Gemini with room; operator 22/11 Neon is the code model then).
+    // A sweep never goes to a pane with its own task; Space opens a dedicated pane in the room with the most free slots, on Antigravity Gemini 4 Neon, the code model while Claude pools are near full.
     openSweepPane: async (owner) => {
       const run = (tool: string, args: Record<string, unknown>) => tools.execute(tool, args, { owner, turnId: "standing-sweep-pane", callId: makeSpaceId("call"), traceId: makeSpaceId("trace") });
       const rooms = await Promise.all((await liveRooms(owner)).filter((room) => room.kind !== "AGENT_PROOF")
@@ -2746,18 +2714,10 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   const holdsCopilotQuestions = async (owner: string) => await active(owner) && (await settings(owner)).copilotQuestionsNousFirst;
   // On here: events queue in the inbox also while the model is paused (the flush waits the pause out); until 2026-10-21 they were dropped.
   const enabled = async (owner: string) => options.autonomous && (await settings(owner).catch(() => null))?.enabled === true;
-  /**
-   * Operator 2/11 15:08 BKK («να μην φτανει σε εμενα το aprove … ΑΠΟ ΤΗΝ ΣΤΙΓΜΉ ΠΟΥ ΕΙΝΣΑΙ ενεργοποιημενο!! αλλιως φυσικα να ζηταει απο εμενα»): the one
-   * predicate every surface reads. While Nous is on ("Work on my behalf", a paused model included: it decides once it runs) with "May send to
-   * third parties", the approvals that allowance covers (isNousApproval) are Nous's alone; otherwise the operator's as before.
-   */
+  /** The one predicate every surface reads: while Nous is on (a paused model included) with "May send to third parties", the approvals that allowance covers (isNousApproval) are Nous's alone; else the operator's. */
   const coversApproval = async (owner: string) => await enabled(owner) && (await settings(owner).catch(() => null))?.maySend === true;
   /** An agent's report that changes the picture (not plain progress) is one inbox line per pane; agents' test rooms stay out. */
-  /**
-   * Token audit 3/11 (nous_msg:a36e0477): on 3/11 72 INBOX turns carried only a done report and 19 only a start. A start, and a done report with no
-   * plan or ticket, ride with the next real turn (routine): the standing orders' close-out turn (`standing.soon` on DONE) and the open requests'
-   * "looks finished" line already act on a finished pane, and its world line shows the report. FAILED, waits, plan steps and tickets still wake Nous.
-   */
+  /** A start, or a done report with no plan or ticket, rides with the next real turn, as standing orders and open requests already act on a finished pane; FAILED, waits, plan steps and tickets still wake Nous. */
   const routineReport = (report: PaneReport) => report.status === "STARTED" || (report.status === "DONE" && !report.planId && !report.ticket);
   async function reportNotice(owner: string, report: PaneReport): Promise<void> {
     if (!options.autonomous || (report.status === "PROGRESS" && !report.ticket)) return;
@@ -2833,10 +2793,11 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   let followupTick: ReturnType<typeof setInterval> | null = null;
   let heldTimer: ReturnType<typeof setInterval> | null = null;
   let parkedTimer: ReturnType<typeof setInterval> | null = null;
+  let changesTimer: ReturnType<typeof setInterval> | null = null;
   let boardTimer: ReturnType<typeof setInterval> | null = null;
   let priorityPanesTimer: ReturnType<typeof setInterval> | null = null;
   let offOperatorLine: (() => void) | null = null;
-  /** Operator rule 31/10, his requests never wait: Space Gateway's pace cap never holds a pane on an open operator request (the gateway lets a list lapse after 5 minutes). */
+  /** Operator requests never wait: Space Gateway's pace cap never holds a pane on an open operator request (the gateway lets a list lapse after 5 minutes). */
   /** The panes Space Gateway's pace cap must not hold now: those of open operator requests, and Nous's pace cap emergency in force. */
   const operatorTurnsAlive = new Map<string, number>();
   /** The panes among `paneIds` working now (their rooms' activity samples). */
@@ -2879,9 +2840,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   app.addHook("onReady", async () => {
     for (const user of await store.listUsersWithRoomCounts?.() ?? []) await sharedMemory.ready(user.id);
     (paneBeat = setInterval(() => void paneHeartbeats().catch((error) => warn(error, "Pane heartbeats failed.")), 60_000)).unref?.();
-    // The data panes' program files, imported when they change (dev too, so its pages show them).
-    // The measured Used of the programs Space spends outside the Gateway's logs (Azure, Murf), laid on after each import (program-meters.ts).
-    // SPACE_PROGRAM_METERS=off: the API tests' (tests/support/isolate-programs.ts), never a provider call from a test app.
+    // Data panes' program files are imported on change (dev too), then program-meters.ts lays on the measured Used of programs spent outside the Gateway's logs; SPACE_PROGRAM_METERS=off keeps tests off providers.
     const layMeters = process.env.SPACE_PROGRAM_METERS === "off" ? async () => undefined
       : createProgramMeters({ importUsage: (document) => programs.importUsage(NOUS_PROGRAMS_IMPORT_OWNER, document), warn });
     const importPrograms = () => void programs.importFiles(NOUS_PROGRAMS_IMPORT_OWNER).then(layMeters).catch((error) => warn(error, "Programs import failed."));
@@ -2918,8 +2877,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     if (quotaHandover) (quotaHandoverTimer = setInterval(() => void quotaHandover.tick().catch((error) => warn(error, "Quota handover failed.")), 60_000)).unref?.();
     (briefTimer = setInterval(() => void briefWatch.tick().catch((error) => warn(error, "Copilot brief watch failed.")), 60_000)).unref?.();
     for (const owner of new Set((await store.listRooms()).map(ownerOf))) await service.resume(owner).catch(() => false);
-    // Standing orders (operator orders 2026-10-21) replace the 30-minute heartbeat: a first tick soon after the start (a restart used
-    // to wait 30 minutes), then every minute, each owner on its own interval; the pane round and the Away round keep their 30 minutes.
+    // Standing orders replace the 30-minute heartbeat: a first tick soon after start, then every minute, each owner on its own interval; the pane round and the Away round keep their 30 minutes.
     telegram?.start();
     const standingTick = () => void standing.tick().catch((error) => app.log.warn({ err: error }, "Nous standing orders failed."));
     // The goal loop (2026-10-27) resumes with the first standing tick after a restart: a due goal starts its turn then.
@@ -2952,7 +2910,8 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
         rewake: (item) => service.notice(item.ownerUserId, `notification:${item.dedupeKey ?? item.id}`,
           `${heldUnderAllowance(item) ? "Woken again: this approval still waits for your decision (\"May send\" is on, so it never goes to the operator)."
             : "Woken again: this copilot question's hour for you ran out before you acted on it; it reaches the operator only after this turn."} ${heldCardLine(item)}`,
-          undefined, { soonMs: 5_000, items: [heldQuestionItem(item)] }),
+          // Operator yes 28/11 (audit needs-decision 62392): folds into the inbox batch, no 5 s run of its own.
+          undefined, { items: [heldQuestionItem(item)] }),
         // 2/11: an agent's needs-you held for Nous goes on after its hour like a copilot's card.
         sources: [...Object.entries(COPILOT_SOURCE_OF).filter(([key]) => options.copilots[key as keyof typeof COPILOT_SOURCE_OF]).map(([, source]) => source), "AGENT"],
         openItemIds: async (owner) => new Set((await copilots.items(owner)).map((item) => item.id)),
@@ -2979,8 +2938,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
         }
         // The goal log is class B: rows older than 30 days go, once an hour.
         if (Date.now() - goalsPrunedAt >= 3_600_000) { goalsPrunedAt = Date.now(); await goals.prune(new Date(Date.now() - 30 * 86_400_000).toISOString()); }
-        // R11-3 (28/10: the ledger had 43 rows while the day's answers were 48): the operator's own answers in the copilot rails join the
-        // decision ledger every 10 minutes (ref = the rail event's id, so none is appended twice).
+        // R11-3: the operator's own answers in the copilot rails join the decision ledger every 10 minutes, keyed by the rail event's id so none is appended twice.
         if (nousDb && Date.now() - railLedgerAt >= 10 * 60_000) {
           railLedgerAt = Date.now();
           for (const owner of new Set([...(await store.listRooms()).map(ownerOf), "user:operator"])) {
@@ -3008,11 +2966,16 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       for (const owner of new Set([...(await store.listRooms()).map(ownerOf), "user:operator"])) await parkedPlans.check(owner).catch((error) => app.log.warn({ err: error, owner }, "Nous parked plan check failed."));
     })().catch((error) => app.log.warn({ err: error }, "Nous parked plan check failed."));
     (parkedTimer = setInterval(parkedTick, 10 * 60_000)).unref?.();
+    // RSI change ledger (plan clipboard:CCIzkVBIbPpG step 1): queue.md is the operator's, so its rows are too.
+    const changes = createNousChanges({ repository: changesRepository, queueText: () => readFile(join(ownRoot, "upgrades", "queue.md"), "utf8").catch(() => ""),
+      onStable: async (id) => { const ticket = await readTicket(id); return ticket ? ticketOnStable(ticket) : ticketMergedOnMain(id, SPACE_INSTALL_ROOT); },
+      turnFacts: (owner, since) => repository.listTurnFacts(owner, since) });
+    const changesTick = () => void changes.tick("user:operator").catch((error) => app.log.warn({ err: error }, "Nous change ledger failed."));
+    changesTick();
+    (changesTimer = setInterval(changesTick, 3_600_000)).unref?.();
     if (held) (heldTimer = setInterval(() => void held.tick().catch((error) => app.log.warn({ err: error }, "Nous held dispatch failed.")), 60_000)).unref?.();
   });
-  // Round 9 item 4: a pane whose browser the Browser Host failed outright says so on its board line (an AUTO BLOCKED report, once
-  // per pane every 30 minutes), and a host older than the pane contracts is named to Nous once per host start.
-  // R11-5: one inbox line per outage naming the panes whose model went unavailable.
+  // A pane whose browser the Browser Host failed says so on its board line (AUTO BLOCKED, once per pane per 30 min); a host older than the pane contracts is named once per host start; one inbox line per model outage.
   const stopModelUnavailable = onModelUnavailable((owner, line) => void service.notice(owner, "model-unavailable", line).catch(() => undefined));
   app.addHook("onClose", async () => stopModelUnavailable());
   const hostErrorNoted = new Map<string, number>();
@@ -3029,8 +2992,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     await paneReports.note(room, pane, "BLOCKED", `Browser: the Browser Host failed this pane's browser (${event.code}${event.issue ? `: ${event.issue}` : ""}); `
       + (event.stale ? "a resident host older than the pane contracts needs the operator's guarded restart." : "the host is not older than the pane contracts, so a restart will not help; the message names the cause."));
   })().catch((error) => app.log.warn({ err: error, paneId: event.paneId }, "Nous could not note a Browser Host error.")));
-  // R9-12 (operator 28/10 15:33 BKK «παλι χαθηκε το needs you»): an agent's needs-you or Nous's pane card that ends without the
-  // operator's answer or acknowledgement comes back to Nous at once, so a lost ask is raised again in the same turn.
+  // R9-12: an agent's needs-you or Nous's pane card that ends without the operator's answer or acknowledgement comes back to Nous at once, so a lost ask is raised again in the same turn.
   const stopAskEnded = onNeedsYouEnded(({ record, reason }) => void (async () => {
     const ask = record.payload?.ask as { question?: unknown } | undefined;
     const question = typeof ask?.question === "string" ? ask.question : record.body.split("\n").find((line) => line.trim()) ?? "";
@@ -3088,6 +3050,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     if (followupTick) clearInterval(followupTick);
     if (heldTimer) clearInterval(heldTimer);
     if (parkedTimer) clearInterval(parkedTimer);
+    if (changesTimer) clearInterval(changesTimer);
     if (boardTimer) clearInterval(boardTimer);
     if (priorityPanesTimer) clearInterval(priorityPanesTimer);
     offOperatorLine?.();
@@ -3100,6 +3063,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     await closeouts.dispose();
     await nousDb?.dispose();
     await planMarks.dispose();
+    await changesRepository.dispose();
     await paneChecks.dispose();
     await awayRepository.dispose();
     await paneReportsRepository.dispose();
@@ -3138,13 +3102,15 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     const latest = score.cached(owner);
     return latest ? nousScoreLine(latest) : null;
   }
-  const attachments = registerNousAttachments(app, { config: options.config, routeOptions: options.routeOptions, owner: (request) => nousOwner(options, request), parseQuery: options.parseQuery });
+  // A chat file a pane needs (a ZIP to unzip) goes to Nous's own folder, which panes read at <files root>/nous.
+  const attachments = registerNousAttachments(app, { config: options.config, routeOptions: options.routeOptions, owner: (request) => nousOwner(options, request), parseQuery: options.parseQuery,
+    share: { dir: join(ownRoot, "attachments"), shown: `${filesRoot ?? NOUS_FILES_ROOT}/${NOUS_OWN_LINK}/attachments` } });
   // space_db_query's description carries the live columns of the tables Nous reads most, so its first query names them right.
   const listTools = async () => {
     const columns = await nousDb?.columns() ?? "";
     return columns ? definitions.map((tool) => tool.name === "space_db_query" ? { ...tool, description: `${tool.description} ${columns}` } : tool) : definitions;
   };
-  registerNousMcpRoute(app, { secret: options.auth.sessionSecret, service, tools: listTools, routeOptions: options.routeOptions, attachments, subagents });
+  registerNousMcpRoute(app, { secret: options.auth.sessionSecret, service, tools: listTools, routeOptions: options.routeOptions, attachments, subagents, ...(options.computer ? { cellProven: options.computer.cellProven } : {}) });
   registerNousLoadRoute(app, { load, routeOptions: options.routeOptions, owner: (request) => nousOwner(options, request), parseQuery: options.parseQuery });
   registerTokenUsageRoute(app, { read: tokenUsage, routeOptions: options.routeOptions, owner: (request) => nousOwner(options, request), parseQuery: options.parseQuery });
   registerNousScoreRoutes(app, { score, routeOptions: options.routeOptions, owner: (request) => nousOwner(options, request), parseQuery: options.parseQuery });
@@ -3268,7 +3234,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     inbox: (owner, key, line) => service.notice(owner, key, line),
     unblockPlan: (owner, planId) => unblockPlanWait(store, owner, planId),
     planWait: (owner, record) => planNeedsYou.waitOf(owner, record),
-    // 2026-11-28 REVIEW (Andy, Bob, Finn 27/11): the operator's answer on a pane's card is the answer to its open question, so the open-question guard lets it through.
+    // The operator's answer on a pane's card answers its open question, so the open-question guard lets it through.
     sendToPane: (owner, room, pane, text) => tools.execute("space_send_to_pane", { room: room.id, panes: [pane.id], text },
       { owner, turnId: "needs-you", callId: makeSpaceId("call"), traceId: makeSpaceId("trace"), answering: true }),
     typeCode: async (_owner, _room, pane, text) => options.pressKeys
@@ -3290,8 +3256,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     const card = await options.notifications.get(owner, id);
     if (!card) throw new SpaceNotFoundError("That notification does not exist.");
     const found = await needsYouPlace(card);
-    // nous_msg:c2e18abc (26/11): a card whose page is gone with no address to open has nothing left to act on, so it stops offering Go
-    // (as closedBrowserBoundCards in browser-handoff.ts; its asker hears the ask ended and asks again with a new page).
+    // A card whose page is gone with no address to open stops offering Go (like closedBrowserBoundCards); its asker hears the ask ended and asks again with a new page (nous_msg:c2e18abc).
     if (found.page && !found.place && (card.status === "OPEN" || card.status === "READ")) {
       await options.notifications.setStatus(owner, card.id, "RESOLVED", { resolvedReason: "its page is no longer open" }, "its page is no longer open")
         .catch((error: unknown) => app.log.warn({ err: error }, "A needs-you card whose page is gone could not be resolved."));
@@ -3316,8 +3281,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     const { path } = options.parseBody(z.object({ path: z.string().trim().min(1).max(2000) }).strict(), request.body ?? {});
     return { artifact: await fileMentions.publish(owner, path) };
   });
-  // Operator 22/11 («όλοι οι agents πρέπει να έχουν πρόσβαση στη βάση»): every agent reads the database through Nous's own read-only
-  // space_db_query (`space-admin-action db-query`), never with database credentials. ADMIN only: it reads every account's rows.
+  // Every agent reads the database through Nous's read-only space_db_query (`space-admin-action db-query`), never with credentials; ADMIN only, since it reads every account's rows.
   app.post("/api/nous/db/query", options.routeOptions, async (request) => {
     await nousOwner(options, request);
     if (request.user?.role !== "ADMIN") throw Object.assign(new Error("Database reads are for administrators."), { statusCode: 403 });
@@ -3400,8 +3364,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     notification(item) {
       if (!options.autonomous || item.source === "ROOM_AGENT" || item.source === "NOUS" || item.severity === "INFO") return;
       void (async () => {
-        // Plan clipboard:7L5KyWp3kQsP: a held card carries what its copilot's memory (queue item 34) and Space Memory hold about it (step 2, kept
-        // on the card for every later turn), and its line carries its hold A item (R37-1 reviews keep their decision acts) and runs at once.
+        // A held card carries what its copilot's memory and Space Memory hold about it, kept for later turns, and its line carries its hold A item and runs at once (plan clipboard:7L5KyWp3kQsP).
         if (item.payload?.heldForNous) {
           const memory = await heldQuestionRecall(item, { ...(nousDb ? { copilot: (query: string) => nousDb.memories(item.ownerUserId, query) } : {}),
             ...(memoryMonthly ? { space: monthlyText } : {}) });
@@ -3415,7 +3378,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       })().catch((error) => warn(error, "Nous could not take a notification."));
     },
     async handles(event) {
-      // A CLI's "Question for you" (kind QUESTION): the autopilot escalates it, Nous answers it from its inbox line within 10 minutes, then it is the operator's.
+      // A CLI's "Question for you" (kind QUESTION): the autopilot escalates it; Nous answers from its inbox line within 10 minutes, then it is the operator's.
       return event.kind !== "STUCK" && event.kind !== "QUESTION" && await active(await roomOwner(event.roomId)).catch(() => false);
     },
     standingOrders: standing

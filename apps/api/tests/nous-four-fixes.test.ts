@@ -197,7 +197,7 @@ describe("Four SpaceApp fixes", () => {
       expect(res.display).toMatch(/not ready to close/i);
     });
 
-    it.each([["board-check", true], ["fresh", true], ["keep-open", false]])("27/11: save to memory with closeout skip %s passes: %s", async (skip, passes) => {
+    it.each([["board-check", true], ["fresh", true], ["keep-open", true], ["pending-deliverables", false]])("27/11, 28/11 (Nous's own keep-open mark passes): save to memory with closeout skip %s passes: %s", async (skip, passes) => {
       const roomTool = vi.fn(async () => ({ ok: true, result: "sent" }));
       const tools = makeTools({
         listPanes: async () => [targetPane],
@@ -207,7 +207,7 @@ describe("Four SpaceApp fixes", () => {
       });
       const res = await tools.execute("space_send_to_pane", { room: "room:dev", panes: ["Worker"], text: "save to memory" }, context as never);
       expect(res.ok).toBe(passes);
-      if (!passes) expect(res.result).toMatch(/kept open \(keep-open\)/);
+      if (!passes) expect(res.result).toMatch(/kept open \(pending-deliverables: .*have the pane commit and deliver them \(space_send_to_pane\)\)/);
       expect(roomTool.mock.calls.length > 0).toBe(passes);
     });
 

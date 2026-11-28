@@ -9,6 +9,8 @@ import { cardTextMatched } from "../src/nous/predictions.js";
 import { createNousTools, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
 
 // One card per pane for what only the operator's hands can do (plan clipboard:8FfXWclYUfOH).
+/** 2026-11-28 REVIEW: a choice says what it is (`about`). */
+const ABOUT = "A choice the operator has met before (test)";
 const owner = "user:operator";
 const room = { id: "room:freelance01", name: "Freelance", kind: "WORKSPACE", ownerUserId: owner, archivedAt: null } as unknown as Room;
 const pane = (id: string, paneName: string) => ({ id, roomId: room.id, paneName, title: paneName, mode: "TERMINAL", isClosed: false }) as unknown as Pane;
@@ -45,7 +47,7 @@ describe("Nous's cards to the operator", () => {
     const vague = await notices.notify(owner, room, null, { plan: "clipboard:S6PyXKwpBrit", title: "Partner Advantage case", items: [{ text: "EXTERNAL decision: submit the case", question: "Submit it?" }] });
     expect(vague).toMatchObject({ ok: false, refused: true, display: "A plan card asks with its options" });
     expect((await notices.notify(owner, room, null, { plan: "clipboard:S6PyXKwpBrit", title: "Partner Advantage case",
-      items: [{ text: "Submit the Partner Advantage case", question: "Θα το στείλει ο Hugo;", options: ["Approve", "Reject"], recommended: "Approve" }] })).ok).toBe(true);
+      items: [{ text: "Submit the Partner Advantage case", question: "Θα το στείλει ο Hugo;", about: ABOUT, options: ["Approve", "Reject"], recommended: "Approve" }] })).ok).toBe(true);
     const card = (await f.service.list(owner, { status: "OPEN", source: "NOUS", limit: 5 }))[0]!;
     expect([card.paneId, card.link]).toEqual([null, { roomId: room.id, paneId: andy.id }]);
   });
@@ -53,12 +55,24 @@ describe("Nous's cards to the operator", () => {
   it("operator 27/11 (card 279efb10): files said to be in Agent Files are attached, and a choice with no pane names its plan", async () => {
     const { notices } = fixture();
     const item = { text: "Order the KVM server. Legal drafts terms-2026-11-27 are in Agent Files for you to read.", question: "Which server do you order?",
-      options: ["Hetzner AX102", "Scaleway EM-B230E"], recommended: "Hetzner AX102" };
+      about: ABOUT, options: ["Hetzner AX102", "Scaleway EM-B230E"], recommended: "Hetzner AX102" };
     const ask = (extra: Record<string, unknown>, it: Record<string, unknown> = item) => notices.notify(owner, room, null, { room: "Freelance", title: "Server order", checked: ["Dana's report: the order is an operator step"], items: [it], ...extra });
     expect(await ask({ plan: "clipboard:plan0001abcd" })).toMatchObject({ ok: false, refused: true, display: "Attach the files it names" });
     const plain = { ...item, text: "Order the KVM server for the alpha cells." };
     expect(await ask({}, plain)).toMatchObject({ ok: false, refused: true, display: "Name the plan the question comes from" });
     expect((await ask({ plan: "clipboard:plan0001abcd" }, plain)).ok).toBe(true);
+  });
+
+  it("2026-11-28 REVIEW (Loom card 4e5047eb answered «ποια ειναι η Loom;»): a choice says in one line what it is, shown first on the card", async () => {
+    const f = fixture();
+    const item = { text: "Atlassian Loom (your Gmail): final payment notice, USD 24/month.", question: "Do you want to keep paying for Loom?", options: ["Keep", "Cancel"], recommended: "Cancel" };
+    const ask = (it: Record<string, unknown>) => f.notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Loom payment", checked: ["Mail: final notice"], items: [it as typeof item] });
+    expect(await ask(item)).toMatchObject({ ok: false, refused: true, display: "Say what this is" });
+    // Hands work (a sign-in) needs no such line.
+    expect((await f.notices.notify(owner, room, bob, { room: "Freelance", pane: "Bob", title: "Sign in", items: [{ text: "Sign in to Upwork https://upwork.com/login", question: "Signed in?", options: ["Go now"], recommended: "Go now" }] })).ok).toBe(true);
+    expect((await ask({ ...item, about: "Loom: Atlassian's screen-recording service, billed to your Gmail card; no Space feature uses it" })).ok).toBe(true);
+    const card = (await f.service.list(owner, { status: "OPEN", source: "NOUS", limit: 5 })).find((one) => one.paneId === andy.id)!;
+    expect(card.body.startsWith("• Loom: Atlassian's screen-recording service, billed to your Gmail card; no Space feature uses it\n  Atlassian Loom")).toBe(true);
   });
 
   it("closedSince: the pane cards raised since a time that are closed now (13/11 REVIEW, one subject on 3 cards)", async () => {
@@ -154,7 +168,7 @@ describe("Nous's cards to the operator", () => {
 
   it("asks its first item's question with the options and Nous's recommendation; a changed question alerts again (plan clipboard:5AQvaoSR-IZa)", async () => {
     const f = fixture();
-    const items = [{ text: "Pick the Upwork profile" }, { text: "Which profile should Andy use?", question: "Which profile should Andy use?", options: ["Agency", "Freelancer"], recommended: "Freelancer" }];
+    const items = [{ text: "Pick the Upwork profile" }, { text: "Which profile should Andy use?", question: "Which profile should Andy use?", about: ABOUT, options: ["Agency", "Freelancer"], recommended: "Freelancer" }];
     await f.notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Upwork needs you", items });
     const [card] = await f.service.list(owner, { status: "ALL", limit: 50 });
     expect(card!.payload.ask).toEqual({ question: "Which profile should Andy use?", options: ["Agency", "Freelancer"], recommended: "Freelancer", answer: { kind: "NOUS" } });
@@ -163,7 +177,7 @@ describe("Nous's cards to the operator", () => {
     expect(changed.display).toContain("Updated");
     expect((await f.service.list(owner, { status: "ALL", limit: 50 }))[0]!.payload.ask).toMatchObject({ recommended: "Agency" });
     // R12-11: options with no recommended one among them raise nothing.
-    expect(await f.notices.notify(owner, room, bob, { room: "Freelance", pane: "Bob", title: "Plan", items: [{ text: "Choose the plan", question: "Plan chosen?", options: ["Yes"], recommended: "No" }] }))
+    expect(await f.notices.notify(owner, room, bob, { room: "Freelance", pane: "Bob", title: "Plan", items: [{ text: "Choose the plan", question: "Plan chosen?", about: ABOUT, options: ["Yes"], recommended: "No" }] }))
       .toMatchObject({ ok: false, display: "Asked without a recommended option", result: expect.stringContaining("Every decision carries a prediction") });
     expect((await f.service.list(owner, { status: "ALL", limit: 50 })).find((item) => item.paneId === bob.id)).toBeUndefined();
   });
@@ -178,7 +192,7 @@ describe("Nous's cards to the operator", () => {
     const notices = createNousPaneNotices({ notifications: service, operatorRules: async () => rules });
     const checked = ["Space Memory: the operator's video rule"];
     await notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Andy asks", checked,
-      items: [{ text: "The Acme application offers an optional intro video.", question: "Record the optional video for the application?", options: ["Record", "Skip"], recommended: "Record" }] });
+      items: [{ text: "The Acme application offers an optional intro video.", question: "Record the optional video for the application?", about: ABOUT, options: ["Record", "Skip"], recommended: "Record" }] });
     const card = (await service.list(owner, { status: "OPEN", limit: 5 }))[0]!;
     expect(card.payload.ask).toMatchObject({ recommended: "Skip" });
     expect(card.body).toContain('(Recommended "Skip" by your rule [space_memory:rule0001] "Job applications: optional videos".)');
@@ -197,7 +211,7 @@ describe("Nous's cards to the operator", () => {
     expect(ruleRecommendation({ question: "Never asked before: is the Contra profile done?", options: ["Done", "Need help"] }, misfires)).toBeNull();
     // A rule that agrees with Nous's own recommendation adds nothing to the card.
     await notices.notify(owner, room, bob, { room: "Freelance", pane: "Bob", title: "Bob asks again", checked,
-      items: [{ text: "Another optional video.", question: "Record the optional video for the application?", options: ["Record", "Skip"], recommended: "Skip" }] });
+      items: [{ text: "Another optional video.", question: "Record the optional video for the application?", about: ABOUT, options: ["Record", "Skip"], recommended: "Skip" }] });
     const agreed = (await service.list(owner, { status: "OPEN", limit: 5 })).find((item) => item.paneId === bob.id)!;
     expect(agreed.payload.ask).toMatchObject({ recommended: "Skip" });
     expect(agreed.body).not.toContain("by your rule");
@@ -214,7 +228,7 @@ describe("Nous's cards to the operator", () => {
     const notices = createNousPaneNotices({ notifications: service, ledger: async () => rows });
     const checked = ["The ledger: the operator skipped the last two"];
     await notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Andy asks", checked,
-      items: [{ text: "Videos again.", question: "Watch the 4 videos for the application?", options: ["Watch", "Skip"], recommended: "Watch" }] });
+      items: [{ text: "Videos again.", question: "Watch the 4 videos for the application?", about: ABOUT, options: ["Watch", "Skip"], recommended: "Watch" }] });
     const card = (await service.list(owner, { status: "OPEN", limit: 5 }))[0]!;
     expect(card.payload.ask).toMatchObject({ recommended: "Skip" });
     expect(card.body).toContain('(Recommended "Skip" by your last 2 answers.)');
@@ -231,7 +245,7 @@ describe("Nous's cards to the operator", () => {
     const ruled = createNousPaneNotices({ notifications: service, ledger: async () => rows,
       operatorRules: async () => [{ id: "space_memory:rule0003", title: "Videos", body: "Optional videos for applications: Watch them." }] });
     await ruled.notify(owner, room, bob, { room: "Freelance", pane: "Bob", title: "Bob asks", checked,
-      items: [{ text: "Videos.", question: "Watch the optional videos for the application?", options: ["Watch", "Skip"], recommended: "Skip" }] });
+      items: [{ text: "Videos.", question: "Watch the optional videos for the application?", about: ABOUT, options: ["Watch", "Skip"], recommended: "Skip" }] });
     expect((await service.list(owner, { status: "OPEN", limit: 5 })).find((item) => item.paneId === bob.id)!.payload.ask).toMatchObject({ recommended: "Watch" });
   });
 
@@ -246,7 +260,7 @@ describe("Nous's cards to the operator", () => {
     const notices = createNousPaneNotices({ notifications: service, ledger: async () => rows });
     const checked = ["Settings: two of the four switches are still off", "Browser Host: idle since 02:00"];
     const ask = (question: string, since?: string) => notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Allowances", checked,
-      items: [{ text: "The allowance switches.", question, options: ["Yes", "No"], recommended: "Yes", ...(since ? { since } : {}) }] });
+      items: [{ text: "The allowance switches.", question, about: ABOUT, options: ["Yes", "No"], recommended: "Yes", ...(since ? { since } : {}) }] });
     // W45 step 2: a hold (REFUSED), worded as final for this item.
     expect(await ask("Turn on the allowance switches in Settings now?")).toMatchObject({ ok: false, refused: true, display: "The operator already answered this",
       result: expect.stringContaining('"Yes". Nothing raised. Do not call it again with this item; state the server\'s fact instead of asking them to confirm it') });
@@ -370,7 +384,7 @@ describe("Nous's cards to the operator", () => {
   it("operator nous_msg:4b36b80e: a hands item joining the pane's card with its page leads it, its own Go now on top; every item's steps stay in the body", async () => {
     const { service, notices } = fixture();
     const finn = { ...bob, mode: "BROWSER" } as Pane;
-    const older = { text: "Pick the Upwork profile", question: "Which profile should Finn use?", options: ["Agency", "Freelancer"], recommended: "Freelancer",
+    const older = { text: "Pick the Upwork profile", question: "Which profile should Finn use?", about: ABOUT, options: ["Agency", "Freelancer"], recommended: "Freelancer",
       target: "url:https://www.upwork.com/freelancers/settings" };
     const login = { text: "LOGIN: Google sign-in for the job site", question: "Sign in to google.com", target: "tab:page-google",
       steps: ["Open https://accounts.google.com in Finn's browser", "Sign in as ntheogr@gmail.com"] };
@@ -379,7 +393,7 @@ describe("Nous's cards to the operator", () => {
     const [card] = await service.list(owner, { status: "WAITING", limit: 5 });
     expect(card!.link.target).toBe("tab:page-google");
     expect(card!.payload.ask).toEqual({ question: "Sign in to google.com", options: ["Go now", "Failed", "Need links/steps"], recommended: "Go now", answer: { kind: "NOUS" } });
-    expect(card!.body).toBe("• Pick the Upwork profile\n• LOGIN: Google sign-in for the job site\n  1. Open https://accounts.google.com in Finn's browser\n  2. Sign in as ntheogr@gmail.com");
+    expect(card!.body).toBe(`• ${ABOUT}\n  Pick the Upwork profile\n• LOGIN: Google sign-in for the job site\n  1. Open https://accounts.google.com in Finn's browser\n  2. Sign in as ntheogr@gmail.com`);
   });
 
   it("brief 20261103 (goal 7365014c): every item without options stores Go now (recommended), so its answer is scored; a card raised before is not alerted again", async () => {
@@ -394,7 +408,7 @@ describe("Nous's cards to the operator", () => {
     expect(cardTextMatched(card.payload.ask as never, "Failed")).toBe(false);
     // A real question on a later item stays the card's question.
     await f.notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Andy needs you", items: [{ text: "Accept the Contra offer for oll4" },
-      { text: "Rate", question: "Which rate do we bid?", options: ["$60/h", "$80/h"], recommended: "$80/h" }] });
+      { text: "Rate", question: "Which rate do we bid?", about: ABOUT, options: ["$60/h", "$80/h"], recommended: "$80/h" }] });
     expect((await cardOf()).payload.ask).toMatchObject({ question: "Which rate do we bid?", recommended: "$80/h" });
     // A card raised before the change (no options stored) sent again with the same list changes nothing and alerts no one.
     const legacy = fixture();
@@ -562,14 +576,14 @@ describe("Nous's cards to the operator", () => {
       { source: "NEEDS_YOU:NOUS", title: "Which?", predicted: "Later", answer: "Now", match: false, at: new Date().toISOString(), ref: null }];
     const notices = createNousPaneNotices({ notifications: fixture().service, ledger: async () => rows as never });
     const ask = (checked: string[]) => notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Update", checked,
-      items: [{ text: "SpaceApp 0.2.13 waits for the phones", question: "Send 0.2.13 to the phones?", options: ["Yes", "No"], recommended: "Yes" }] });
+      items: [{ text: "SpaceApp 0.2.13 waits for the phones", question: "Send 0.2.13 to the phones?", about: ABOUT, options: ["Yes", "No"], recommended: "Yes" }] });
     expect(await ask(["Andy's report: the release built"])).toMatchObject({ ok: false, refused: true, display: "Show what proves it first",
       result: '"Send 0.2.13 to the phones?" recommends "Yes": add to `checked` the source that shows its prerequisite and what it showed, naming the same thing '
         + '(e.g. "app Updates: lists 0.2.13"), then raise the card. Your cards recommending Done or Yes went as recommended 1 of 2 times in 90 days. Nothing raised.' });
     expect((await ask(["The app's Updates page: lists 0.2.13"])).ok).toBe(true);
     // R74 (4/11 Meridial: «Το έκανα» recommended with nothing checked): the same in Greek.
     const greek = await notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Meridial", checked: ["Andy's report: invite mail arrived"],
-      items: [{ text: "Meridial WeCP assessments", question: "Έκανες τα τεστ WeCP του Meridial από τον υπολογιστή σου;", options: ["Το έκανα", "Όχι ακόμα"], recommended: "Το έκανα" }] });
+      items: [{ text: "Meridial WeCP assessments", question: "Έκανες τα τεστ WeCP του Meridial από τον υπολογιστή σου;", about: ABOUT, options: ["Το έκανα", "Όχι ακόμα"], recommended: "Το έκανα" }] });
     expect(greek).toMatchObject({ ok: false, refused: true, display: "Show what proves it first" });
   });
 
@@ -578,7 +592,7 @@ describe("Nous's cards to the operator", () => {
     let at = Date.parse("2026-11-01T08:00:00.000Z");
     const notices = createNousPaneNotices({ notifications: fixture().service, now: () => at });
     const ask = (checked: string[], question = "Card shows (masked) on Backblaze billing?") => notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Andy needs you", checked,
-      items: [{ text: "Add the company card on Backblaze", steps: ["Open https://secure.backblaze.com/billing.htm", "Add the card ending 4242"], question, options: ["Card added", "Could not"], recommended: "Card added" }] });
+      items: [{ text: "Add the company card on Backblaze", steps: ["Open https://secure.backblaze.com/billing.htm", "Add the card ending 4242"], question, about: ABOUT, options: ["Card added", "Could not"], recommended: "Card added" }] });
     expect(await ask(["Andy's report: the charge waits"])).toMatchObject({ ok: false, refused: true, display: "Look at the billing page first",
       result: expect.stringContaining("have the pane look at it (space_look, browser content)") });
     // What the page showed raises it at once; the same question again within the hour is Nous's call and goes through.
@@ -588,7 +602,7 @@ describe("Nous's cards to the operator", () => {
     expect((await ask(["Andy's report: still waiting"])).ok).toBe(false);
     // Other cards are untouched, and an operator rule never recommends the options Space adds to a hands card.
     expect((await notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Andy needs you", checked: ["Mercor mail of 27/10: the offer waits"],
-      items: [{ text: "Mercor offer", question: "Accepted the Mercor Generalist offer?", options: ["Accepted", "Not for me"], recommended: "Accepted" }] })).ok).toBe(true);
+      items: [{ text: "Mercor offer", question: "Accepted the Mercor Generalist offer?", about: ABOUT, options: ["Accepted", "Not for me"], recommended: "Accepted" }] })).ok).toBe(true);
     expect(ruleRecommendation({ question: "X Premium payment failed: what did you do?", options: ["Updated the card", "Let it lapse", "Failed", "Need links/steps"] },
       [{ id: "mem:x", title: "X Premium payment", body: "When an X Premium payment failed, the copilot reports it." }])).toBeNull();
   });
@@ -597,7 +611,7 @@ describe("Nous's cards to the operator", () => {
     const f = fixture();
     const notices = createNousPaneNotices({ notifications: f.service, artifactOpens: async (_owner, id) => id === "artifact:icon00001" });
     const card = (option: string) => notices.notify(owner, room, andy, { room: "Freelance", pane: "Andy", title: "Andy needs you", checked: ["Design pane: two icons delivered"],
-      items: [{ text: "Pick the app icon", question: "Which icon?", options: [option, "Keep the old one"], recommended: option }] });
+      items: [{ text: "Pick the app icon", question: "Which icon?", about: ABOUT, options: [option, "Keep the old one"], recommended: option }] });
     expect(await card("New artifact:nope00001")).toMatchObject({ ok: false, refused: true, display: "A named artifact does not open",
       result: expect.stringContaining("artifact:nope00001 is no artifact of your rooms") });
     expect(await f.service.list(owner, { status: "ALL", limit: 50 })).toHaveLength(0);

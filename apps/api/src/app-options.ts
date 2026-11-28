@@ -10,6 +10,7 @@ import type {
 } from "@space/db";
 import type { FcmSender } from "./notifications/fcm.js";
 import type { NousRunner } from "./nous/service.js";
+import type { NousWiringOptions } from "./nous/wiring.js";
 import type { PaneSummaryRunner } from "./nous/pane-board.js";
 import type { MailboxFactory } from "./job-apply/mailbox.js";
 import type { JobApplyGoogleAccess, JobApplyService } from "./job-apply/service.js";
@@ -107,6 +108,7 @@ import type { WorkflowTaskFault } from "./trace-workflow-faults.js";
 import type { DecisionsService } from "./decisions-service.js";
 import type { FirstSetupAppOptions } from "./setup-wiring.js";
 import type { AccountLifecycle } from "./computer/accounts.js";
+import type { TenantAiKeys } from "./computer/ai-key.js";
 
 export interface CreateAppOptions extends FirstSetupAppOptions, CliAccountProfileCommandOptions {
   /** Where the API log goes instead of stdout (tests read it). */
@@ -116,6 +118,8 @@ export interface CreateAppOptions extends FirstSetupAppOptions, CliAccountProfil
   decisionsService?: DecisionsService;
   /** Nous Computer (K4): the account routes, registered only headless; none until the cell driver and gateway client exist (steps 12, 20). */
   accountLifecycle?: AccountLifecycle;
+  /** K5 connect AI: the account's own model key, with the account routes (computer/ai-key.ts). */
+  accountAiKeys?: TenantAiKeys | undefined;
   store?: SpaceStore;
   t3CodeServiceController?: T3CodeServiceController;
   agentFileDocxNormalizer?: AgentFileDocxNormalizer;
@@ -139,6 +143,8 @@ export interface CreateAppOptions extends FirstSetupAppOptions, CliAccountProfil
   /** Room Agent conversation model; tests inject a scripted stream. */
   roomAgentChatModel?: RoomAgentChatModel;
   nousRunner?: NousRunner;
+  /** Nous Computer's headless hub: Nous turns run in the owner's tenant cell (server.ts gives it with SPACE_CELLS_* set). */
+  nousComputer?: NousWiringOptions["computer"];
   /** The Vault broker's root reinstall a Nous decision runs (tests). */
   vaultBrokerReinstall?: () => Promise<string>;
   /** The pane board's summary model (nous/pane-board.ts); tests inject one, the live instance uses stable's worker. */

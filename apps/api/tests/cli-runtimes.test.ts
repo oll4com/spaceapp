@@ -3190,7 +3190,7 @@ describe("Space API CLI runtimes", () => {
       }
       expect(buildCliEnvironment(getApiConfig({ SPACE_CLI_COMMAND_PATH: "/opt/spaceapp/bin" }),
         { runtimeId: "cli:gemini", modelId: "claude:fable", reasoningEffort: "high" }).SPACE_CLAUDE_MODEL).toBeUndefined();
-      // Light copilot panes (plan clipboard:VypZ4sl7NR04 M5) compact at 120k; TERMINAL (operator 21/11), app, security and other panes keep 160k.
+      // Light copilot panes (plan clipboard:VypZ4sl7NR04 M5) compact at 120k; TERMINAL (operator 21/11, 28/11: user-protected, docs/agents/claude-compact-window.md), app, security and other panes keep the launcher's 400k.
       const compactWindow = (runtimeId: string, paneMode: Pane["mode"] | null) => buildCliEnvironment(
         getApiConfig({ SPACE_CLI_COMMAND_PATH: "/opt/spaceapp/bin" }), { runtimeId, paneMode }).SPACE_CLAUDE_COMPACT_WINDOW;
       expect(compactWindow("cli:claude", "MAIL_COPILOT")).toBe("120000");

@@ -13,6 +13,7 @@ import {
   extractReferencedPlanId,
   parseTaskSummary,
   noteNousPrompt,
+  isNousPrompt,
   titleSummaryPrompt,
   titlePromptMaxBytes,
   type TaskTitleContext,
@@ -821,6 +822,14 @@ describe("summarized task title lines", () => {
     await f.service.tick();
     expect(f.store.getPane(f.pane.id).taskMetadata?.topics?.map((topic) => topic.fromNous ?? false)).toEqual([false, true]);
     await f.service.close();
+  });
+
+  it("never marks an operator line that only contains a short or partial Nous prompt", () => {
+    noteNousPrompt("pane:words", "yes");
+    noteNousPrompt("pane:words", "Fix the login");
+    expect(isNousPrompt("pane:words", "Yesterday's build broke, fix it")).toBe(false);
+    expect(isNousPrompt("pane:words", "Fix the loginform styles")).toBe(false);
+    expect(isNousPrompt("pane:words", "<system-reminder>x</system-reminder> Fix the login!")).toBe(true);
   });
 
   it("routes an attached screenshot of this pane to a vision model and never reads another pane's upload", async () => {

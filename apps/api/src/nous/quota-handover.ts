@@ -5,6 +5,7 @@ import type { ControlRepository } from "@space/db";
 import { quotaGroupForModel } from "@space/gateway";
 import { longQuotaWait, waitsForQuota } from "../agents-dashboard.js";
 import type { DashboardAgentsSample } from "../room-routes.js";
+import { operatorWorkHold } from "../queue-operator-grants.js";
 import { paneLabel } from "./digest.js";
 import { nousProviderAdvice, type NousProviderRoom } from "./tokens.js";
 
@@ -179,7 +180,9 @@ export function createQuotaHandover(deps: QuotaHandoverDeps) {
     const close = () => deps.execute(owner, "space_close_pane", { room: room.id, panes: [pane.id] });
     // Reuse a pane of the target's CLI at its prompt with no task (not one this pass already gave a task); else open one in the same room.
     const idle = sample.data.find((entry) => !entry.isClosed && !taken.has(entry.id) && entry.mode === "TERMINAL" && entry.terminalRuntimeId === target.runtimeId
-      && sample.details[entry.id]?.status === "idle" && !sample.details[entry.id]?.reason);
+      && sample.details[entry.id]?.status === "idle" && !sample.details[entry.id]?.reason
+      // Decision A (plan clipboard:CTVaL1V3kAFM): the send refuses the operator's pane inside their turn's grace, so the task goes to another or a new pane.
+      && !operatorWorkHold(entry.id, false, sample.details[entry.id]?.since ?? null, now()));
     let to = idle ?? null;
     if (!to) {
       const open = async () => {

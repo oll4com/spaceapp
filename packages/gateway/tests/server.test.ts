@@ -133,6 +133,10 @@ describe("gateway server", () => {
     const handedOff = await internal.app.inject({ method: "POST", url: "/v1/messages", payload: {},
       headers: { authorization: `Bearer ${plainKey}`, "x-space-gateway-route": "CLAUDE_API_KEY", "x-space-internal-token": "internal-secret" } });
     expect(handedOff.json().error.code).toBe("no_accounts");
+    // Its model list goes through the same hand-off, so /pools/space auto can pick the route (review 28/11).
+    const models = await internal.app.inject({ url: "/v1/models",
+      headers: { authorization: `Bearer ${plainKey}`, "anthropic-version": "2023-06-01", "x-space-gateway-route": "CLAUDE_API_KEY", "x-space-internal-token": "internal-secret" } });
+    expect(models.statusCode).not.toBe(403);
     // An empty list keeps every provider.
     repository.keys[0]!.allowedProviders = [];
     const open = createGatewayServer({ repository, version: "test", credentialKeyPresent: () => false });

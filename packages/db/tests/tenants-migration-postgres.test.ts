@@ -108,7 +108,7 @@ describe.skipIf(unavailable !== null)(`Tenants M0-M6 0359-0409${unavailable ? ` 
       client.release();
     }
     const secured = await pool.query("SELECT count(*)::int AS n FROM pg_class WHERE relrowsecurity AND relnamespace = current_schema()::regnamespace");
-    expect(secured.rows[0].n).toBe(236); // 0412 added mail_campaign_web_copies
+    expect(secured.rows[0].n).toBe(237); // 0423 added nous_changes
   });
 
   it("0409: the channel tables' provider tenant is kept as provider_tenant_id, and they get our tenant_id like every TENANT table", async () => {

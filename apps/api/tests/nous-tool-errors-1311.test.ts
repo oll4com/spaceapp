@@ -184,6 +184,12 @@ describe("Daily Nous errors 13/11 night: the next 48 h of failed calls", () => {
     const answered = await tools({ roomTool }).execute("space_answer_pane", { room: "Felix", pane: "Andy", answer: "1" }, ctx);
     expect(answered).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("(state EXITED)") });
   });
+
+  it("holds an answer to a pane the idle sweep slept between the read and the answer (Daily Nous errors 28/11 03:38Z, Bruno/Hugo)", async () => {
+    const roomTool = vi.fn(async () => { throw new Error("CLI session cli_session:kzcTyAd2PPt7 is not active."); });
+    const answered = await tools({ roomTool }).execute("space_answer_pane", { room: "Felix", pane: "Andy", answer: "1" }, ctx);
+    expect(answered).toMatchObject({ ok: false, refused: true, result: expect.stringMatching(/^Andy's CLI stopped \(asleep or exited\) before the answer landed, so nothing was typed\./) });
+  });
 });
 
 describe("Daily Nous errors 13/11 late: an answer that did nothing and names what is open", () => {

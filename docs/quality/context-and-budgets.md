@@ -158,7 +158,9 @@ Codex compaction proof.
   Freelance, Job, Monitoring) at 120k since 20/11, Design and Video since 21/11 (plan clipboard:nsWKwUFhUFWA slice 2) (`SPACE_CLAUDE_COMPACT_WINDOW` from
   `buildCliEnvironment`, read by `deploy/claude-vscode-parity`; plan clipboard:VypZ4sl7NR04 M5), TERMINAL panes stay at 160k
   (120k from 21/11 00:06Z, plan clipboard:ipO4c7J656Ed step 4, was reverted the same day by the operator: with a ~27k base it
-  compacted at ~88k, a coding pane 2 minutes after it started, for a 94 s compaction). The window is read at launch: a running session keeps its old one until it restarts.
+  compacted at ~88k, a coding pane 2 minutes after it started, for a 94 s compaction). Since 28/11 TERMINAL and every other pane the
+  API names no window for compact at 400k again, user-protected (`docs/agents/claude-compact-window.md`): 160k fired at ~127k,
+  42 s into a fresh pane's first turn. The window is read at launch: a running session keeps its old one until it restarts.
   Claude panes started in the repo (`/opt/spaceapp`, a worktree) read `.claude/settings.json` (Claude Code reads it from the
   session's folder, never a copilot's managed one): the copilot-only, design, video, `claude-api` and `dataviz` skills are listed
   by name only and the two deprecated aliases are left out (still `/name`-invocable), 26,464 → 19,172 listing characters per

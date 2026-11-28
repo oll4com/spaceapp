@@ -1,7 +1,9 @@
 import { initNodeSentry, flushSentry } from "@space/contracts/sentry-node";
 import { assertDevInstanceIsolated } from "@space/contracts";
 import { hideNestedCodexSkills } from "./agent-tools.js";
+import { createSpacePgPool } from "@space/db";
 import { createApp } from "./app.js";
+import { CELLS_TICK_MS, nousComputerFromEnv } from "./computer/provisioning.js";
 import { getApiConfig } from "./config.js";
 import { reportEventLoopLoad } from "./event-loop-report.js";
 import { sampleApiMemory } from "./memory-sampler.js";
@@ -16,14 +18,24 @@ startExecHelper();
 initNodeSentry("api");
 const config = getApiConfig(process.env);
 const setup = await loadOwnerSetupBootstrap(process.env);
+// Nous Computer (plan clipboard:ZGz1LnD51ELH step 7): cells and the account lifecycle exist only headless, with SPACE_CELLS_* set.
+const computer = config.headless && config.databaseUrl ? nousComputerFromEnv(process.env, createSpacePgPool(config.databaseUrl)) : null;
 const app = await createApp({
   config,
   setup,
   agentToolsOptions: {
     rootWriterCommand: config.agentToolsWriterCommand
   },
-  resumeChessTournament: config.instanceJobs["chess-tournament-resume"]
+  resumeChessTournament: config.instanceJobs["chess-tournament-resume"],
+  accountLifecycle: computer?.lifecycle,
+  accountAiKeys: computer?.aiKeys,
+  nousComputer: computer?.turns
 });
+if (computer) {
+  setInterval(() => void computer.cells.tick().then(({ errors }) => {
+    for (const { tenantId, error } of errors) app.log.warn({ err: error, tenantId }, "Nous Computer cell tick failed for a tenant; retried next tick.");
+  }, (error: unknown) => app.log.warn({ err: error }, "Nous Computer cell tick failed; retried next tick.")), CELLS_TICK_MS).unref();
+}
 
 installProcessGuards({ log: app.log, shutdown: async () => { await flushSentry(); await app.close(); } });
 if (process.env.SPACE_DATABASE_POOL_MAX) {

@@ -6,7 +6,7 @@ import { InMemoryNousPaneCloseoutsRepository, InMemoryNousPlanMarksRepository } 
 import type { DashboardAgentsSample } from "../src/room-routes.js";
 import { createStandingOrders, isCleanSweepReport, NOUS_SWEEP_PANE_TITLE, SWEEP_CLEAN_TTL_MS, type CleanSweepMark, type StandingOrdersDeps } from "../src/nous/standing-orders.js";
 import { itemActed, type NousTurnItem } from "../src/nous/turn-items.js";
-import { sweepAreaTouched, sweepPieces } from "../src/nous/utilization.js";
+import { goalPieces, sweepAreaTouched, sweepPieces } from "../src/nous/utilization.js";
 import { sendWorkKeys } from "../src/nous/tools.js";
 import { noteOperatorPromoteLine } from "../src/queue-operator-grants.js";
 import { noteSpacePrompt } from "../src/space-prompts.js";
@@ -365,6 +365,32 @@ describe("Load push (13/11)", () => {
     f.advance(10 * MIN);
     await f.orders.tickOwner(owner);
     expect(dispatch.mock.calls.at(-1)).toEqual([owner, room.id, andy.id, "Work on goal g1"]);
+  });
+
+  // 28/11 (goal 401b115b, waiting on PROMOTE: five panes in 2 h, four reported "no step"): a waiting goal's key names its wait, so a closed pane does not free it.
+  it("hands a waiting goal to one pane per wait: not again after that pane closes, again once the wait changes", async () => {
+    const dispatch = vi.fn<NonNullable<StandingOrdersDeps["dispatch"]>>(async () => true);
+    const idle = { state: "idle", since: iso(T0 - 20 * MIN) };
+    const goal = { id: "nous_goal:g1", priority: 1, status: "ACTIVE", text: "Goal", planIds: [], waitsOn: { kind: "PROMOTE", what: "batch 1", until: null } };
+    const f = fixture([{ pane: cody, ...idle, modelId: "claude-sonnet-5-5" }], [], [], { dispatch, backlog: async () => goalPieces([goal as never]) });
+    f.advance(10 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    f.panes.splice(0, 1, { pane: andy, ...idle, modelId: "claude-opus-5-5" });
+    f.advance(10 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    goal.waitsOn.what = "batch 2";
+    f.advance(10 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(dispatch.mock.calls.at(-1)![2]).toBe(andy.id);
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    // A DATE moved with the same words is a new wait too (goals.ts compares the whole waitsOn).
+    (goal.waitsOn as { until: string | null }).until = "2026-11-30T00:00:00.000Z";
+    f.panes.splice(0, 1, { pane: cody, ...idle, modelId: "claude-opus-5-5" });
+    f.advance(10 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(dispatch).toHaveBeenCalledTimes(3);
   });
 
   // 23/11 13:09 BKK (operator «εμφανιζει errors δες γιατι!!»): goal pieces went to the Design pane, which failed each as "not a graphic request".

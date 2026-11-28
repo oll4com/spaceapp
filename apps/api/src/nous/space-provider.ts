@@ -134,6 +134,10 @@ export function refusalResetAt(message: string, now: number): number | null {
 // Without a reset in the refusal, a pool refusal is probed again after 5 minutes (the Gateway's cached quota may be stale), a throttle or outage after 1.
 const QUOTA_PROBE_MS = 5 * 60_000;
 const TRANSIENT_MS = 60_000;
+// A route the worker stopped for silence (apps/worker/src/nous-turn.ts NOUS_FIRST_REPLY_MS, 5 min) cost a turn 5 minutes to find out: after 1 minute's
+// rest each next turn paid it again (Response time 27-28/11: 10 such stops, 22:06/22:22/22:31Z one outage), so it rests three times that.
+const SILENT_MS = 15 * 60_000;
+const SILENT = /sent no reply within/i;
 
 /** A route that refused: what, why, and when it is expected back. */
 export class SpaceRouteError extends Error {
@@ -166,7 +170,7 @@ export function createSpaceRouter(deps: { routes(): Promise<SpaceRoute[]>; now?:
     const kind = classifySpaceFailure(text);
     const reset = refusalResetAt(text, now());
     if (kind === "quota" || kind === "throttle" || kind === "unavailable") {
-      cooling.set(attempt.route, { until: kind === "quota" ? Math.min(reset ?? Infinity, now() + QUOTA_PROBE_MS) : reset ?? now() + TRANSIENT_MS, kind, reason: text, quotaKey: route?.quota?.key });
+      cooling.set(attempt.route, { until: kind === "quota" ? Math.min(reset ?? Infinity, now() + QUOTA_PROBE_MS) : reset ?? now() + (SILENT.test(text) ? SILENT_MS : TRANSIENT_MS), kind, reason: text, quotaKey: route?.quota?.key });
     }
     return { route: attempt.route, name: attempt.name, model: attempt.model, kind, reason: text, resetAt: reset === null ? null : new Date(reset).toISOString() };
   }
@@ -204,6 +208,15 @@ export function createSpaceRouter(deps: { routes(): Promise<SpaceRoute[]>; now?:
           if (choice.lastResort) { deferred.add(attempt); plan.attempts.push(attempt); continue; }
           failures.push({ route: attempt.route, name: attempt.name, model: attempt.model, kind: "skipped", reason: `cooling down after: ${clip(cool.reason, 200)}`, resetAt: new Date(cool.until).toISOString() });
           continue;
+        }
+        // Operator 28/11 (nous_msg:38c0d3c3): a failover reads room now, not at the turn's start (Claude's 5-minute silence aged Codex's state);
+        // order and models stay; an unreadable state never takes room away.
+        if (last && !plan.explicit && attempt.route !== last.route) {
+          const live = (await deps.routes().catch(() => null))?.find((route) => route.route === attempt.route);
+          if (live && !live.available) {
+            failures.push({ route: attempt.route, name: attempt.name, model: attempt.model, kind: "skipped", reason: live.reason ?? "No room now.", resetAt: live.resetAt ?? null });
+            continue;
+          }
         }
         const extra = await hooks.onAttempt?.(attempt, index, last) ?? "";
         let result: T;

@@ -30,6 +30,14 @@ const TAB_EMPTY: Record<InboxTabChoice, string> = { NEEDS: "Nothing waits for yo
 const WHERE_LABELS = { stable: "Stable", dev: "Dev", "no code": "No code" } as const;
 /** The tab he chose, kept on this device (nous-ui-state); null: the first tab with something. NousDock writes it for a toast, pop-up or push. */
 export const INBOX_TAB_KEY = "inbox.tab";
+/** Operator 28/11: every tab's cards sort by when he sent them or by their last news; «No update longest» shows what is stuck. Kept per user (nous-ui-state). */
+const INBOX_SORTS = { NEWEST: "Newest first", OLDEST: "Oldest first", UPDATED: "Latest update", QUIET: "No update longest" } as const;
+type InboxSort = keyof typeof INBOX_SORTS;
+const isInboxSort = (value: unknown): value is InboxSort => typeof value === "string" && value in INBOX_SORTS;
+const byInboxSort: Record<InboxSort, (left: InboxThreadView, right: InboxThreadView) => number> = {
+  NEWEST: (left, right) => right.createdAt.localeCompare(left.createdAt), OLDEST: (left, right) => left.createdAt.localeCompare(right.createdAt),
+  UPDATED: (left, right) => right.lastEventAt.localeCompare(left.lastEventAt), QUIET: (left, right) => left.lastEventAt.localeCompare(right.lastEventAt)
+};
 export const isInboxTabChoice = (value: unknown): value is InboxTabChoice | null => value === null || INBOX_TABS.includes(value as InboxTabChoice);
 export const inboxGroupOf = (thread: InboxThreadView): Group =>
   thread.closedAt ? "closed" : thread.waitingFor === "OPERATOR" ? "operator" : thread.unseen && !thread.openRequest ? "new" : "working";
@@ -139,7 +147,9 @@ export function InboxThreadCard({ thread, sources, onChanged }: { thread: InboxT
         {/* `now` names the latest ask for the operator, which the card shows below it (plan LkwKdOOh2mXK step 7). */}
         {thread.now && !asks.length ? <span className="inbox-thread-now">{thread.now}</span> : null}
         <span className="inbox-thread-meta">
-          <time dateTime={thread.lastEventAt}>{formatUserTime(thread.lastEventAt, { withDate: true })}</time>
+          {/* Operator 28/11: when it was sent, then its latest news when later. */}
+          <time dateTime={thread.createdAt}>{formatUserTime(thread.createdAt, { withDate: true })}</time>
+          {thread.lastEventAt !== thread.createdAt ? <> · {t("updated")} <time dateTime={thread.lastEventAt}>{formatUserTime(thread.lastEventAt, { withDate: true })}</time></> : null}
           {thread.refs.requestStatus && !thread.closedAt ? ` · ${t(STATUS_LABELS[thread.refs.requestStatus])}` : ""}
           {thread.progress !== null ? ` · ${thread.progress}%` : ""}
           {thread.refs.where ? ` · ${t(WHERE_LABELS[thread.refs.where])}` : ""}
@@ -230,6 +240,7 @@ export function NousInbox({ active, sources, focus, trailing, queue }: {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [doneBusy, setDoneBusy] = useState(false);
   const [chosen, setChosen] = useNousUiState<InboxTabChoice | null>(INBOX_TAB_KEY, null, isInboxTabChoice);
+  const [sort, setSort] = useNousUiState<InboxSort>("inbox.sort", "NEWEST", isInboxSort);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const reload = useCallback(() => setRevision((value) => value + 1), []);
   useEffect(() => { const timer = window.setTimeout(() => setAsked(query.trim()), 250); return () => window.clearTimeout(timer); }, [query]);
@@ -290,7 +301,8 @@ export function NousInbox({ active, sources, focus, trailing, queue }: {
     <DockButton className="nous-inbox-done-all" disabled={doneBusy} busy={doneBusy} onClick={() => void seenAll(ids)}>{t("Seen all")}</DockButton>
   </div> : null;
   const cardSources: InboxCardSources = { ...sources, panes, openCard: { id: openCard, set: setOpenCard } };
-  const cards = (list: InboxThreadView[]) => list.map((thread) => <InboxThreadCard key={thread.id} thread={thread} sources={cardSources} onChanged={reload} />);
+  // A search keeps its relevance order; every tab sorts by the chosen order (the Archive over the pages loaded so far).
+  const cards = (list: InboxThreadView[]) => (asked ? list : [...list].sort(byInboxSort[sort])).map((thread) => <InboxThreadCard key={thread.id} thread={thread} sources={cardSources} onChanged={reload} />);
   const empty = (title: string) => <DockState kind="empty" icon={Bell} title={t(title)} />;
   const shown = inTab(tab);
   return (
@@ -299,6 +311,9 @@ export function NousInbox({ active, sources, focus, trailing, queue }: {
       <DockSearch value={query} onChange={setQuery} label={t("Search the inbox")} placeholder={t("Search every thread")} />
       {!asked ? <DockChips className="nous-inbox-tabs" label={t("Inbox tabs")} value={tab} onChange={setChosen}
         options={INBOX_TABS.map((id) => ({ id, label: t(TAB_LABELS[id]), ...(countOf(id) ? { count: countOf(id) } : {}), ...(id === "NEEDS" ? { tone: "attention" as const } : {}) }))} /> : null}
+      {!asked ? <select className="dock-kit-select nous-inbox-sort" aria-label={t("Sort")} value={sort} onChange={(event) => setSort(event.currentTarget.value as InboxSort)}>
+        {Object.entries(INBOX_SORTS).map(([id, label]) => <option key={id} value={id}>{t(label)}</option>)}
+      </select> : null}
       {error ? <div><p role="alert">{t(error)}</p><DockButton onClick={reload}>{t("Retry")}</DockButton></div> : null}
       {!page && !error ? <DockState kind="loading" title={t("Loading the inbox")} /> : null}
       {/* shortcut: a tab's cards unmount when another tab shows, so an answer typed and not sent is lost on a tab switch; keep the tabs mounted if the operator asks. */}

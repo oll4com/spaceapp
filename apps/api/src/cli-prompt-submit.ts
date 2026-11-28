@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { SpaceConflictError } from "@space/runtime";
 import type { CliTerminalManager } from "./cli-terminal.js";
+import { nousMemoryOnly } from "./nous/save-request.js";
 import { noteSpacePrompt } from "./space-prompts.js";
 import { roomAnswerInput, roomComposerEmpty, roomComposerHolds, roomComposerNotReady, roomComposerShowsOnly } from "./room-terminal-screen.js";
 
@@ -15,7 +16,7 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * composer of a CLI this input starts again: a paste that reaches a booting Claude Code stays a draft (stable 2026-10-22/23).
  */
 export async function submitCliPrompt(terminal: PromptTerminal, sessionId: string, text: string, traceId: string, key: string,
-  options: { waitForComposer?: boolean; gapMs?: number; delayMs?: number; assertCurrent?: () => Promise<unknown>; onlyWhenReady?: boolean;
+  options: { waitForComposer?: boolean | "question"; gapMs?: number; delayMs?: number; assertCurrent?: () => Promise<unknown>; onlyWhenReady?: boolean;
     /** OBS-006: the request that typed this text (an HTTP caller's; else traceId, the server's own); a typed prompt starts no native turn to carry it. */
     requestId?: string; paneId?: string; signal?: AbortSignal } = {}): Promise<void> {
   const screen = await terminal.observeRoomScreenUndimmed(sessionId);
@@ -30,7 +31,8 @@ export async function submitCliPrompt(terminal: PromptTerminal, sessionId: strin
   const asked = options.requestId ?? traceId;
   const requestId = /^[\x21-\x7e]{1,120}$/.test(asked) ? asked : undefined;
   rememberSpaceTyped(sessionId, text, Date.now(), requestId);
-  if (options.paneId) noteSpacePrompt(options.paneId);
+  // A text that only asks for a memory save is no work prompt: held and typed after its ask was recorded, it must not read as new work since the ask.
+  if (options.paneId && !nousMemoryOnly(text)) noteSpacePrompt(options.paneId);
   const sinceMs = Date.now();
   await terminal.sendInput(sessionId, roomAnswerInput(text, true), traceId, null, `${key}:prompt`, options.waitForComposer ?? true, options.signal);
   // Logged once the text reached the CLI: before, a composer wait that failed still read as typed (7/11 Bruno/Kate).

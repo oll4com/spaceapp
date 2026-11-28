@@ -97,6 +97,7 @@ export * from "./council-repository.js";
 export * from "./nous-repository.js";
 export * from "./nous-followups-repository.js";
 export * from "./nous-plan-marks-repository.js";
+export * from "./nous-changes-repository.js";
 export * from "./nous-pane-checks-repository.js";
 export * from "./nous-pane-closeouts-repository.js";
 export * from "./nous-goals-repository.js";

@@ -748,7 +748,8 @@ describe("Nous Done", () => {
       f.clock.now += 60_000;
       expect(await call({ reopen: { messageId: a.id, note: "short" } })).toMatchObject({ ok: false });
       expect(await call({ reopen: { messageId: a.id, note: "Το Vault δεν ανοίγει ακόμα στο stable" }, close: [{ messageId: b.id, outcome: "DROPPED", note: drop }] })).toMatchObject({ ok: false });
-      expect(await call({ reopen: { messageId: a.id, note: "Το Vault δεν ανοίγει ακόμα στο stable" } })).toMatchObject({ ok: true, display: expect.stringMatching(/^Reopened /) });
+      // Daily Nous errors 28/11 06:34Z: the 8-character short id the world writes reopens the one message it names.
+      expect(await call({ reopen: { messageId: a.id.slice(0, "nous_msg:".length + 8), note: "Το Vault δεν ανοίγει ακόμα στο stable" } })).toMatchObject({ ok: true, display: expect.stringMatching(/^Reopened /) });
       expect(await call({ reopen: { messageId: a.id, note: "Το Vault δεν ανοίγει ακόμα στο stable" } })).toMatchObject({ ok: false, result: expect.stringContaining("already open") });
       expect(await call({ reopen: { messageId: "nous_msg:nowhere00001", note: "Το Vault δεν ανοίγει ακόμα στο stable" } })).toMatchObject({ ok: false, result: expect.stringContaining("no such operator message") });
       expect(["IN_PROGRESS", "NOT_DONE"]).toContain(await status(a.id));

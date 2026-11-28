@@ -91,7 +91,7 @@ async function waitForProcessExit(process: ChildProcessWithoutNullStreams, timeo
   ).catch(() => undefined);
 }
 
-async function stopChromeBestEffort(process: ChildProcessWithoutNullStreams): Promise<void> {
+export async function stopChromeBestEffort(process: ChildProcessWithoutNullStreams): Promise<void> {
   if (process.exitCode === null && process.signalCode === null) {
     process.kill("SIGTERM");
     await waitForProcessExit(process, 1_000);
@@ -161,7 +161,7 @@ export function buildBrowserEvidenceTargetUrl(origin: string): string {
   return assertInternalEvidenceTarget(new URL("/", origin).toString(), origin);
 }
 
-class CdpClient {
+export class CdpClient {
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
   private readonly listeners = new Set<(event: CdpEvent) => void>();
@@ -250,7 +250,7 @@ class CdpClient {
   }
 }
 
-async function waitForChromeWebSocket(process: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<string> {
+export async function waitForChromeWebSocket(process: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<string> {
   return withTimeout(
     new Promise<string>((resolve, reject) => {
       let stderr = "";

@@ -332,6 +332,20 @@ export function nousPoolUtilization(accounts: GatewayAccount[] | null, now: numb
   return { claude: of("CLAUDE"), codex: of("CODEX"), gemini: of("ANTIGRAVITY") };
 }
 
+/** A Gateway account used within this long is live traffic on its pool (nousIdlePools). */
+export const NOUS_POOL_LIVE_MS = 10 * 60_000;
+const POOL_SOURCES = { claude: ["cli:claude", "CLAUDE"], codex: ["cli:codex", "CODEX"], gemini: ["cli:gemini", "ANTIGRAVITY"] } as const;
+export type NousPoolKey = keyof typeof POOL_SOURCES;
+/**
+ * Operator 28/11 nous_msg:3903b4b3 («δεν τρέχει ούτε codex ούτε antrigravity»): a pool with no open pane of its CLI and no Gateway use in
+ * NOUS_POOL_LIVE_MS is idle; the Load tab shows it so and leaves it out of the Tokens mean.
+ * shortcut: Antigravity use of its Claude·GPT group also wakes Gemini; split by request model if that misleads.
+ */
+export function nousIdlePools(runtimes: ReadonlySet<string>, accounts: GatewayAccount[] | null, now: number): NousPoolKey[] {
+  return (Object.keys(POOL_SOURCES) as NousPoolKey[]).filter((pool) => !runtimes.has(POOL_SOURCES[pool][0]) && !(accounts ?? []).some((account) =>
+    account.provider === POOL_SOURCES[pool][1] && account.lastUsedAt !== null && now - Date.parse(account.lastUsedAt) < NOUS_POOL_LIVE_MS));
+}
+
 /** Only existing database samples and the profile provider's peek. Monthly aggregation is cached by the caller. */
 export async function readNousTokens(input: Omit<NousTokenInput, "accounts" | "now"> & { admin?: Pick<GatewayAdminService, "listAccounts"> & Partial<Pick<GatewayAdminService, "getSettings" | "anthropicBilling">>; includeBudget?: boolean; now?: number }): Promise<NousTokens> {
   const now = input.now ?? Date.now();

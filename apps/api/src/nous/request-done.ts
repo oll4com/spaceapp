@@ -9,6 +9,7 @@ import { firstClaim, waitsOnOperatorClaim } from "./pane-watch.js";
 import type { NousTurnItem } from "./turn-items.js";
 import { emitMakeEvent } from "../make-webhooks.js";
 import { compareSemver } from "../app-version.js";
+import { byShortId } from "./short-id.js";
 
 /** Internal provenance and delivery receipts survive conversation clearing, notification pruning and API restarts. */
 export const REQUEST_DONE_NOTE_PREFIX = "request-done:";
@@ -96,7 +97,7 @@ const UI_WORK = /\b(?:pages?|views?|screens?|site|website|landing|layout|ui)\b|�
 const UI_PROOF = /screen ?shot|space_look|space_authenticated_ui_proof|\.(?:png|jpe?g|webp)\b|στιγμιότυπ/iu;
 export const uiProofMissing = (work: string, proof: string): boolean => UI_WORK.test(work) && !UI_PROOF.test(proof);
 export const UI_PROOF_HINT = "The request is UI work (a page, a view, a site): verified names the screenshot or space_look of the real page you took this turn "
-  + "and what it showed (e.g. \"space_look https://…: the product page shows …\"). Take one now, then record it.";
+  + "and what it showed (e.g. \"space_look https://…: the product page shows …\"). Take one now (space_look {url} opens the live page without a pane), then record it.";
 
 // Operator 26/11 (nous_msg:3055345176be403e8e2b169f): notification:91b298a0 reached Done at 05:39 UTC while its draft held "[CONFIRM month/year]" and
 // its summary said «Μένει να συμπληρώσεις … και να τη στείλεις από το Upwork»; the operator found it only by chance. Unfinished work is a Needs you, never Done.
@@ -439,10 +440,13 @@ export function createNousRequestDone(deps: {
   }
 
   /** space_open_requests reopen, unlocked: callers hold the owner's lock. */
-  async function reopenMessage(owner: string, messageId: string, note: string): Promise<{ ok: boolean; line: string }> {
+  async function reopenMessage(owner: string, ref: string, note: string): Promise<{ ok: boolean; line: string }> {
+    // Daily Nous errors 28/11 06:34Z: "nous_msg:01b4bfae", the short id requests go by, read as no such message; one match is that message.
+    const found = deps.requestStatus ? [...(await deps.requestStatus(owner, [ref])).keys()] : [ref];
+    const messageId = found.includes(ref) ? ref : byShortId(found.map((id) => ({ id })), ref)?.id;
+    if (!messageId) return { ok: false, line: `${ref}: no such operator message, nothing reopened` };
     const notes = await deps.notes.listNotes(owner);
     if (openRequestsOf(notes).some((entry) => entry.messageId === messageId)) return { ok: false, line: `${messageId}: already open, nothing reopened` };
-    if (deps.requestStatus && !(await deps.requestStatus(owner, [messageId])).has(messageId)) return { ok: false, line: `${messageId}: no such operator message, nothing reopened` };
     const at = new Date(now()).toISOString();
     const reason = clipWords(note, 300);
     const closes = closedRequestsOf(notes).filter((entry) => entry.messageId === messageId);

@@ -39,8 +39,9 @@ const MOVED = "hit its Claude usage limit; Space moved it to Space Gateway on th
  * repo-pane skill trim reached only panes launched after them; copilots still compacted at ~128k (plan clipboard:ipO4c7J656Ed daily 21/11).
  * 21/11 16:08Z: TERMINAL panes back to 160k (operator: a coding pane compacted 2 minutes after it started).
  * 21/11 17:35Z: Design and Video panes compact at 120k too (plan clipboard:nsWKwUFhUFWA slice 2).
+ * 28/11 04:10Z: coding panes compact at 400k (operator: 160k compacted a fresh pane 42 s into its first turn; docs/agents/claude-compact-window.md).
  */
-export const CLAUDE_LAUNCH_ENV_SINCE = "2026-11-21T17:35:11Z";
+export const CLAUDE_LAUNCH_ENV_SINCE = "2026-11-28T04:10:30Z";
 
 export type ClaudeLimitOutcome = "MOVED" | "STAYS" | "NOT_CONTINUED";
 

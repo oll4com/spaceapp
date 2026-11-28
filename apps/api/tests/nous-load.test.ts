@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { GatewayAccount } from "@space/contracts";
 import { InMemoryNousRepository } from "@space/db";
 import type { HealthCollectorSample } from "../src/system-health-collector.js";
-import { nousPoolUtilization } from "../src/nous/tokens.js";
+import { nousIdlePools, nousPoolUtilization, type NousPoolKey } from "../src/nous/tokens.js";
 import { createNousLoad, goalPieces, localDay, nousUtilization, parsePsi, registerNousLoadRoute, registryOpen, renderNousUtilization, renderUtilizationLow, upgradeQueueOpen, upgradeQueueOpenLines, utilizationPushOn, type NousOwnerParts, type NousUtilizationInput } from "../src/nous/utilization.js";
 
 const GiB = 1024 ** 3;
@@ -22,6 +22,14 @@ describe("nousUtilization", () => {
     expect(result.limit).toBeNull();
     expect(Object.fromEntries(result.parts.map((part) => [part.key, part.percent]))).toEqual({ cpu: 40, memory: 50, load: 25, pressure: 10, tokens: 50, panes: 50, helpers: 20 });
     expect(result.parts.find((part) => part.key === "panes")?.detail).toBe("3 of 6 working");
+  });
+
+  it("operator 28/11: parked panes leave the share's denominator and are named; with every open pane parked the part has no data", () => {
+    // 28/11 11:42 BKK: 8 of 18 working with 7 parked read 44 % and could not pass 61 %.
+    const result = nousUtilization(server({ panes: { working: 8, open: 18, parked: 7 } }));
+    expect(result.overall).toBe(72.7);
+    expect(result.parts.find((part) => part.key === "panes")?.detail).toBe("8 of 11 working, 7 parked");
+    expect(nousUtilization(server({ panes: { working: 0, open: 3, parked: 3 } })).parts.find((part) => part.key === "panes")).toMatchObject({ percent: null, detail: "0 of 0 working, 3 parked" });
   });
 
   it("leaves parts without data out: no CLI pane open reads 0, whatever the server does", () => {
@@ -90,7 +98,19 @@ describe("nousUtilization", () => {
     expect(nousPoolUtilization([antigravity("a", "ACTIVE", 20), antigravity("b", "ACTIVE", 60), antigravity("c", "PAUSED", 100)], at)).toEqual({ claude: null, codex: null, gemini: 40 });
     const tokens = nousUtilization({ cpuPercent: null, load5: 0, cores: 0, memTotalBytes: null, memAvailableBytes: null, swapPercent: null, psi: { cpu: null, memory: null, io: null },
       tokens: { claude: 100, codex: 100, gemini: 40, noRoom: null }, panes: null, helpers: null }).parts.find((part) => part.key === "tokens");
-    expect(tokens).toMatchObject({ percent: 80, detail: "Claude Max 100% · Codex 100% · Gemini 40%" });
+    expect(tokens).toMatchObject({ percent: 80, detail: "quota used: Claude Max 100% · Codex 100% · Gemini 40%" });
+  });
+
+  it("shows a pool with no open pane and no live Gateway use as idle, outside the Tokens mean (operator 28/11 nous_msg:3903b4b3)", () => {
+    const at = Date.parse("2026-11-28T07:40:00Z");
+    const used = (provider: GatewayAccount["provider"], minutesAgo: number) => ({ provider, lastUsedAt: new Date(at - minutesAgo * 60_000).toISOString() }) as GatewayAccount;
+    // 28/11 14:39 BKK: only Claude panes open; Antigravity last used hours ago; Codex used a minute ago through the Gateway.
+    expect(nousIdlePools(new Set(["cli:claude"]), [used("ANTIGRAVITY", 360), used("CODEX", 1)], at)).toEqual(["gemini"]);
+    expect(nousIdlePools(new Set(["cli:claude", "cli:gemini"]), [used("CODEX", 30)], at)).toEqual(["codex"]);
+    const tokens = (idle: NousPoolKey[]) => nousUtilization({ cpuPercent: null, load5: 0, cores: 0, memTotalBytes: null, memAvailableBytes: null, swapPercent: null,
+      psi: { cpu: null, memory: null, io: null }, tokens: { claude: 40, codex: 20, gemini: 99, noRoom: null, idle }, panes: null, helpers: null }).parts.find((part) => part.key === "tokens");
+    expect(tokens(["gemini"])).toMatchObject({ percent: 30, detail: "quota used: Claude Max 40% · Codex 20% · Gemini idle (quota 99% used)" });
+    expect(tokens([])).toMatchObject({ percent: 53, detail: "quota used: Claude Max 40% · Codex 20% · Gemini 99%" });
   });
 
   it("closes an OPEN queue line when a later DONE line cites it with 'was OPEN'", () => {
@@ -265,7 +285,7 @@ describe("the Load monitor", () => {
     const goal = (id: string, priority: number, status: string, extra: object = {}) => ({ id, priority, status, text: `Goal ${id}`, planIds: [], waitsOn: null, ...extra }) as never;
     const pieces = goalPieces([goal("nous_goal:b", 2, "ACTIVE", { waitsOn: { kind: "THIRD_PARTY", what: "Linkwise approval", until: null }, planIds: ["clipboard:p1"] }),
       goal("nous_goal:a", 1, "ACTIVE"), goal("nous_goal:c", 3, "PAUSED")]);
-    expect(pieces.map((piece) => [piece.key, piece.strong])).toEqual([["goal:nous_goal:a", false], ["goal:nous_goal:b", false]]);
+    expect(pieces.map((piece) => [piece.key, piece.strong])).toEqual([["goal:nous_goal:a", false], ["goal-wait:nous_goal:b:THIRD_PARTY:Linkwise approval:", false]]);
     expect(pieces[1]!.text).toContain("«Goal nous_goal:b» (its plans: clipboard:p1). It waits on THIRD_PARTY: Linkwise approval; that wait stays with Nous.");
     // No day before today in the store yet: nothing for the REVIEW.
     expect(await load.reviewLine(owner)).toBeNull();

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Pane, Room } from "@space/contracts";
-import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
+import { createNousTools, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
+import { CLOSEOUT_NEXT, type CloseoutSkip } from "../src/nous/save-request.js";
 import type { NousProviderRoom } from "../src/nous/tokens.js";
 import { dashboardScreenState } from "../src/agents-dashboard.js";
 
@@ -120,8 +121,17 @@ describe("open work close guard", () => {
     const f = tools({ quotaWaits: async () => [], paneLastWorkReport: async (_o: string, id: string) => work[id] ?? null, paneLastReport: async (_o: string, id: string) => newest[id] ?? null });
     expect(await f.tools.execute("space_close_pane", { room: "Felix", panes: ["Andy"] }, ctx)).toMatchObject({ ok: true });
     expect(await f.tools.execute("space_close_pane", { room: "Felix", panes: ["Bob"] }, ctx)).toMatchObject({ refused: true, result: expect.stringContaining("Bob last reported progress") });
-    work["pane:andy0001"] = { status: "NEEDS_DECISION", at: ago(120), summary: "pick one" };
+    work["pane:andy0001"] = { status: "NEEDS_DECISION", at: ago(10), summary: "pick one" };
+    newest["pane:andy0001"] = { status: "NEEDS_DECISION", source: "AGENT", at: ago(10), summary: "pick one" };
     expect(await f.tools.execute("space_close_pane", { room: "Felix", panes: ["Andy"] }, ctx)).toMatchObject({ refused: true, result: expect.stringContaining("Andy last reported needs_decision") });
+    // Operator 28/11 nous_msg:57f3908d: the same report idle 30+ min with nothing open for the operator is finished.
+    work["pane:andy0001"] = { status: "NEEDS_DECISION", at: ago(120), summary: "pick one" };
+    newest["pane:andy0001"] = { status: "NEEDS_DECISION", source: "AGENT", at: ago(120), summary: "pick one" };
+    expect(await f.tools.execute("space_close_pane", { room: "Felix", panes: ["Andy"] }, ctx)).toMatchObject({ ok: true });
+    // Plan clipboard:CTVaL1V3kAFM step 2: the tick's clock: the pane's state moved 10 min ago, so the old report still holds it.
+    const moved = tools({ quotaWaits: async () => [], paneLastWorkReport: async (_o: string, id: string) => work[id] ?? null, paneLastReport: async (_o: string, id: string) => newest[id] ?? null,
+      paneSince: async () => ago(10) });
+    expect(await moved.tools.execute("space_close_pane", { room: "Felix", panes: ["Andy"] }, ctx)).toMatchObject({ refused: true, result: expect.stringContaining("Andy last reported needs_decision") });
   });
 });
 
@@ -134,10 +144,10 @@ describe("finished + save-verified close guard", () => {
     const f = tools({ quotaWaits: async () => [], closeouts });
     for (const force of [false, true]) {
       expect(await f.tools.execute("space_close_pane", { room: "Felix", panes: ["Bob", "Andy"], force }, ctx)).toMatchObject({ ok: false, refused: true,
-        result: expect.stringMatching(/Bob: save not asked; Andy: kept open \(busy\)\. Nothing was closed/) });
+        result: expect.stringMatching(/Bob: save not asked; Andy: kept open \(busy: .*\)\. Nothing was closed/) });
     }
     expect(await f.tools.execute("space_execute", { room: "Felix", actions: [{ kind: "pane", operation: "close", target: { paneIds: ["pane:bob00001", "pane:andy0001"] }, force: true }] }, ctx))
-      .toMatchObject({ refused: true, result: expect.stringContaining("Bob: save not asked; Andy: kept open (busy)") });
+      .toMatchObject({ refused: true, result: expect.stringContaining("Bob: save not asked; Andy: kept open (busy: ") });
     expect(f.roomTool).not.toHaveBeenCalled();
     // Plan clipboard:u78xLyqRp6kD: a board-check or fresh pane is refused for its save, never "kept open (board-check)"; keep-open says what clears it.
     const named = tools({ quotaWaits: async () => [], closeouts: { ...closeouts, roomCloseouts: async () => [closeout(pane("pane:bob00001", "Bob"), "done", "save asked 10:00 UTC, not verified", "board-check", false),
@@ -146,10 +156,14 @@ describe("finished + save-verified close guard", () => {
       result: expect.stringContaining("Bob: save asked 10:00 UTC, not verified; Andy: kept open (keep-open: your space_pane_checked holds it until its next check; a verified save with no prompt since, or an OK_WORKING/NEEDS_ACTION verdict, clears it)") });
     // Operator 28/11 00:52 BKK: a pane whose provider has no room cannot save, so it is not held for one; a Claude pane with room still is.
     const room = (key: string, nowLeft: number) => ({ key, name: key, provider: null, accounts: 1, nowLeft, atReset: null, pace: null }) as unknown as NousProviderRoom;
-    const mixed = tools({ quotaWaits: async () => [], closeouts, providerRooms: async () => [room("codex", 0), room("claude", 60)],
+    const bobSave = vi.fn(async () => ({ id: "memory:2" }));
+    const mixed = tools({ quotaWaits: async () => [], closeouts, providerRooms: async () => [room("codex", 0), room("claude", 60)], memory: { recall: async () => [], save: bobSave } as never,
       listPanes: async () => [pane("pane:bob00001", "Bob"), { ...pane("pane:andy0001", "Andy"), terminalRuntimeId: "cli:claude" } as Pane] });
     expect(await mixed.tools.execute("space_close_pane", { room: "Felix", panes: ["Bob"] }, ctx)).toMatchObject({ ok: true });
-    expect(await mixed.tools.execute("space_close_pane", { room: "Felix", panes: ["Andy"], force: true }, ctx)).toMatchObject({ refused: true, result: expect.stringContaining("Andy: kept open (busy)") });
+    // Plan clipboard:CTVaL1V3kAFM step 4: Space saves its newest report before that close.
+    expect(bobSave).toHaveBeenCalledWith(expect.objectContaining({ scope: "ROOM", roomId: felix.id, provenance: "nous:pane-close:pane:bob00001",
+      body: "Bob (pane:bob00001) closed with no room on its provider; it had finished and could not save to memory itself\nIt sent no report." }), expect.any(String));
+    expect(await mixed.tools.execute("space_close_pane", { room: "Felix", panes: ["Andy"], force: true }, ctx)).toMatchObject({ refused: true, result: expect.stringContaining("Andy: kept open (busy: ") });
     // The operator's own close order with force passes the save and quota holds through either tool; force alone does not (above).
     const ordered = { ...ctx, turn: { reason: "OPERATOR", operatorMessage: { id: "nous_msg:1", person: true, content: "give their work to Claude and close those Antigravity panes" } } } as never;
     const orderedTools = tools({ closeouts, quotaWaits: async () => [{ paneId: "pane:bob00001", label: "Bob", since, resetsAt: "2026-11-14T14:00:00.000Z" }] });
@@ -188,5 +202,72 @@ describe("finished + save-verified close guard", () => {
     expect(roomy.roomTool).not.toHaveBeenCalled();
     // The Gateway's 503 for an Antigravity pool with no account is a usage-limit stop the quota guard holds.
     expect(dashboardScreenState("⚠ UNAVAILABLE (code 503): No Antigravity account in Space Gateway can serve this model right now. Error ID: x\n> ").reason).toBe("Usage limit");
+  });
+
+  it("plan clipboard:CTVaL1V3kAFM step 4: a pane on a pool with no room passes only the save check, force or not, through either tool", async () => {
+    const bob = pane("pane:bob00001", "Bob");
+    const save = vi.fn(async () => ({ id: "memory:1" }));
+    const noRoom = (state: string, skip: string | null, extra: Partial<NousToolDeps> = {}) => tools({ quotaWaits: async () => [], memory: { recall: async () => [], save } as never,
+      providerRooms: async () => [{ key: "codex", name: "Codex", provider: null, accounts: 1, nowLeft: 0, atReset: null, pace: null } as unknown as NousProviderRoom],
+      closeouts: { saveRequested: vi.fn(async () => {}), closed: vi.fn(async () => {}), roomCloseouts: async () => [{ pane: bob, state, since, idleMinutes: 5, save: "save not asked", closable: false, skip }] }, ...extra });
+    const viaExecute = (dryRun?: boolean) => ({ room: "Felix", actions: [{ kind: "pane", operation: "close", target: { paneIds: [bob.id] }, force: true, ...(dryRun ? { dryRun } : {}) }] });
+    // Mid-turn, with uncommitted or unmerged work in its worktree, or with open work: refused like any pane (each closed unsaved before).
+    const open = { paneLastWorkReport: async () => ({ status: "PROGRESS", at: new Date(Date.now() - 300_000).toISOString(), summary: "half done" }) };
+    for (const [held, text] of [[noRoom("working", "busy"), "Bob: kept open (busy: "], [noRoom("done", "pending-deliverables"), "Bob: kept open (pending-deliverables: "],
+      [noRoom("idle", null, open), "Bob last reported progress"]] as const) {
+      expect(await held.tools.execute("space_close_pane", { room: "Felix", panes: ["Bob"], force: true }, ctx)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining(text) });
+      expect(await held.tools.execute("space_execute", viaExecute(), ctx)).toMatchObject({ refused: true, result: expect.stringContaining(text) });
+      expect(held.roomTool).not.toHaveBeenCalled();
+    }
+    expect(save).not.toHaveBeenCalled();
+    // Finished with nothing keeping it: Space Control closes it too, on its newest report saved first; a dry run saves nothing.
+    const order: string[] = [];
+    const done = noRoom("done", null, { paneLastWorkReport: async () => ({ status: "DONE", at: since, summary: "Fix shipped" }) });
+    save.mockImplementation(async () => { order.push("save"); return { id: "memory:1" }; });
+    done.roomTool.mockImplementation(async (name: string) => { order.push(name); return { ok: true, display: `ran ${name}`, result: "[]" }; });
+    await done.tools.execute("space_execute", viaExecute(true), ctx);
+    expect(save).not.toHaveBeenCalled();
+    expect(await done.tools.execute("space_execute", viaExecute(), ctx)).not.toMatchObject({ refused: true });
+    expect(order.slice(-2)).toEqual(["save", "space_control"]);
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ provenance: `nous:pane-close:${bob.id}`, body: expect.stringMatching(/could not save to memory itself\nNewest report \(DONE, .*\): Fix shipped$/) }), expect.any(String));
+    // Space Memory down: nothing closes unsaved.
+    const down = noRoom("done", null, { memory: null });
+    expect(await down.tools.execute("space_close_pane", { room: "Felix", panes: ["Bob"] }, ctx)).toMatchObject({ ok: false, refused: true, result: expect.stringContaining("could not be saved") });
+    expect(down.roomTool).not.toHaveBeenCalled();
+    // The note of a `moved` close names the worktree the pane leaves with uncommitted or unmerged work.
+    const moved = noRoom("waiting", "busy", { quotaWaits: async () => [{ paneId: bob.id, label: "Bob", since, resetsAt: null }], pendingWorktreePaths: async () => new Map([[bob.id, "/opt/spaceapp/var/worktrees/space/wt-bob"]]) });
+    expect(await moved.tools.execute("space_close_pane", { room: "Felix", panes: ["Bob"], moved: "Andy" }, ctx)).toMatchObject({ ok: true });
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ body: "Bob (pane:bob00001) closed with no room on its provider; its work moved to: Andy\nIt sent no report.\nIts worktree holds uncommitted or unmerged work: /opt/spaceapp/var/worktrees/space/wt-bob" }), expect.any(String));
+  });
+});
+
+/** Plan clipboard:CTVaL1V3kAFM step 9: a refusal read "kept open (plan-open)" and named no way on. */
+describe("every reason a pane is kept open names its next step", () => {
+  const bob = pane("pane:bob00001", "Bob");
+  const reasons = Object.keys(CLOSEOUT_NEXT) as CloseoutSkip[];
+
+  it("the step is a tool Nous has, or a clear wait", () => {
+    const names = new Set(nousToolDefinitions({ copilots: true }).map((tool) => tool.name));
+    expect(reasons).toHaveLength(19);
+    for (const reason of reasons) {
+      const named = CLOSEOUT_NEXT[reason].match(/space_[a-z_]+/g) ?? [];
+      for (const name of named) expect(names.has(name), `${reason}: ${name}`).toBe(true);
+      if (!named.length) expect(CLOSEOUT_NEXT[reason], reason).toMatch(/wait for the (operator|turn|holder|post)|try again later/);
+    }
+  });
+
+  it("the close and the save refusals print it; a reason whose step is the save lets the save through", async () => {
+    for (const reason of reasons) {
+      const f = tools({ quotaWaits: async () => [], closeouts: { saveRequested: vi.fn(async () => {}), closed: vi.fn(async () => {}),
+        roomCloseouts: async () => [{ pane: bob, state: "done", since, idleMinutes: 40, save: "save not asked", closable: false, skip: reason }] } });
+      const savePasses = reason === "fresh" || reason === "board-check";
+      expect(await f.tools.execute("space_close_pane", { room: "Felix", panes: ["Bob"], force: true }, ctx), reason).toMatchObject({ refused: true,
+        result: expect.stringContaining(savePasses ? "Bob: save not asked" : `Bob: kept open (${reason}: ${CLOSEOUT_NEXT[reason]})`) });
+      const save = await f.tools.execute("space_send_to_pane", { room: "Felix", panes: ["Bob"], text: "save to memory" }, ctx);
+      // Nous's own keep-open mark does not hold its later save (operator 28/11).
+      if (savePasses || reason === "keep-open") expect(save, reason).toMatchObject({ ok: true });
+      else expect(save, reason).toMatchObject({ refused: true, result: expect.stringContaining(`Bob is kept open (${reason}: ${CLOSEOUT_NEXT[reason]})`) });
+      expect(f.roomTool.mock.calls.length > 0, reason).toBe(savePasses || reason === "keep-open");
+    }
   });
 });

@@ -19,7 +19,7 @@ async function fixture(channels = [{ grantSubject: "google-sub", externalAccount
   const repository = new InMemoryStreamingRepository();
   const adapter = {
     provider: "YOUTUBE", authorizationUrl: () => "https://accounts.google.com",
-    exchangeCode: async () => { throw Error("unused"); }, revoke: async () => undefined,
+    exchangeCode: async () => { throw Error("unused"); }, revoke: vi.fn(async () => undefined),
     refreshToken: async () => { throw Error("unused"); },
     discoverAccounts: vi.fn(async () => channels), collectMetrics: async () => ({})
   } as unknown as StreamingProviderAdapter;
@@ -48,6 +48,16 @@ describe("Streaming uses the Google sign-in grant when it has none of its own (2
 
     await writeFile(credentials.clientPath("YOUTUBE"), JSON.stringify({ clientId: "own-client", clientSecret: "own-secret", redirectUri: "https://space.test/cb" }), { mode: 0o600 });
     expect(await credentials.clientFor("YOUTUBE", "streaming-credential:other")).toMatchObject({ clientId: "own-client" });
+  });
+
+  it("disconnecting the borrowed grant deletes it here but never revokes the sign-in's token at Google (Gmail and Calendar keep working)", async () => {
+    const { credentials, repository, adapter, service } = await fixture();
+    await service.importYouTubeGrant({ token, client: loginClient });
+    const [authorization] = await repository.listAuthorizations();
+    await service.disconnectAuthorization(authorization!.id);
+    expect(adapter.revoke).not.toHaveBeenCalled();
+    expect(await repository.listAuthorizations()).toEqual([]);
+    expect(await credentials.hasGrantClient(authorization!.credentialRef)).toBe(false);
   });
 
   it("never replaces an active Streaming connection and skips a Google account with no channel", async () => {

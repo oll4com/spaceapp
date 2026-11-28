@@ -169,8 +169,13 @@ export function createPlanNeedsYou(deps: PlanNeedsYouDeps) {
       // Operator 16/11 21:55 BKK: every other unanswered needs-you card of the pane (a copilot's question, a review) moves too, opened (READ) or not;
       // one Nous still holds stays with Nous. They close once moved (below), so a second PANE_CLOSED finds none.
       // shortcut: a moved card with no dedupeKey stays open beside its copy (counted twice, never lost); resolve by id if one shows up.
-      const others = (await allNotifications(notifications.list, owner, { status: "WAITING", paneId }))
+      const waiting = (await allNotifications(notifications.list, owner, { status: "WAITING", paneId }))
         .filter((card) => live(card) && needsYou(card) && !heldForNous(card) && !cards.some((own) => own.id === card.id) && !ownKeys.includes(card.dedupeKey ?? ""));
+      // Request 1feac683 (28/11 "Andy needs sign-in", a deleted room's CLI, carried and open for hours): a Room Agent card reads the pane's own CLI, so it ends with the pane.
+      for (const key of new Set(waiting.filter((card) => card.source === "ROOM_AGENT").map((card) => card.dedupeKey).filter((key): key is string => Boolean(key)))) {
+        await notifications.resolve(owner, key, "its pane was closed");
+      }
+      const others = waiting.filter((card) => card.source !== "ROOM_AGENT");
       cards.push(...others);
       if (!cards.length) return 0;
       const plans = (await deps.plans(owner)).filter(planOpen);

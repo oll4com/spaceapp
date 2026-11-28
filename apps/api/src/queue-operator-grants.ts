@@ -6,7 +6,7 @@ import type { CliBridgeClaims } from "./mail-copilot/agent-routes.js";
 import { withoutNegatedRelease } from "./nous/guardrails.js";
 import type { Pane } from "@space/contracts";
 import { isCliPane } from "./pane-guards.js";
-import { lastSpacePromptAt } from "./space-prompts.js";
+import { lastSpacePromptAt, onSpacePrompt, spacePromptAt } from "./space-prompts.js";
 
 /**
  * Grants for the merge queue's operator-only commands (hardening plan clipboard:sFj1wGEY473i step 5): `space-queue
@@ -16,6 +16,8 @@ import { lastSpacePromptAt } from "./space-prompts.js";
  * promote dev to stable" allowance, an Away PROMOTE grant, or the operator typing "promote" into the pane themselves
  * (operator request 2026-10-21). That pane fetches its grant once, within 30 minutes. Held grants and promote lines survive
  * API restarts in a state file (a promote's own stable deploy restarts the API; 2026-10-21 lost the operator's grant that way).
+ * So do the prompt marks (who prompted each pane, and when; 28/11 plan clipboard:CTVaL1V3kAFM step 1): a restart made the
+ * operator's own pane read as nobody's, and a pane Nous had prompted read as never prompted.
  */
 export const queueOperatorGrantPath = "/api/cli/queue-operator-grant";
 const keyLabel = "space-queue-operator-grant/v1";
@@ -42,6 +44,7 @@ export function configureQueueOperatorGrants(sessionSecret: string, file: string
   signingSecret = sessionSecret;
   stateFile = file;
   loadState();
+  onSpacePrompt(() => saveState(Date.now()));
 }
 
 // Each held grant in the file carries a MAC, so a written-in entry holds nothing.
@@ -51,11 +54,15 @@ const heldMac = (paneId: string, held: Held) => createHmac("sha256", createHmac(
 function loadState(): void {
   if (!stateFile || !signingSecret) return;
   try {
-    const saved = JSON.parse(readFileSync(stateFile, "utf8")) as { pending: [string, Held & { mac?: string }][]; lines: [string, PromoteLine][] };
+    const saved = JSON.parse(readFileSync(stateFile, "utf8")) as { pending: [string, Held & { mac?: string }][]; lines: [string, PromoteLine][]; marks?: PromptMarks };
     for (const [paneId, { mac, ...held }] of saved.pending) if (mac === heldMac(paneId, held)) pending.set(paneId, held);
     for (const [paneId, line] of saved.lines) {
       if (typeof line.at === "number" && (line.usedAt === null || typeof line.usedAt === "number")) promoteLines.set(paneId, line);
     }
+    // A file written before 28/11 has no marks.
+    for (const [paneId, at] of saved.marks?.space ?? []) if (Number.isFinite(at)) spacePromptAt.set(paneId, at);
+    for (const [paneId, at] of saved.marks?.operator ?? []) if (Number.isFinite(at)) operatorLineAt.set(paneId, at);
+    for (const paneId of saved.marks?.first ?? []) operatorFirst.add(paneId);
   } catch { /* no file yet, or unreadable: nothing held */ }
 }
 
@@ -63,7 +70,8 @@ function saveState(nowMs: number): void {
   if (!stateFile || !signingSecret) return;
   const held = [...pending].filter(([, entry]) => entry.until >= nowMs).map(([paneId, entry]) => [paneId, { ...entry, mac: heldMac(paneId, entry) }]);
   try {
-    writeFileSync(`${stateFile}.${process.pid}.tmp`, `${JSON.stringify({ pending: held, lines: [...promoteLines] })}\n`, { mode: 0o600 });
+    const marks: PromptMarks = { space: [...spacePromptAt], operator: [...operatorLineAt], first: [...operatorFirst] };
+    writeFileSync(`${stateFile}.${process.pid}.tmp`, `${JSON.stringify({ pending: held, lines: [...promoteLines], marks })}\n`, { mode: 0o600 });
     renameSync(`${stateFile}.${process.pid}.tmp`, stateFile);
   } catch (error) {
     process.stderr.write(`queue-operator-grants: held grants were not saved (${(error as Error).message}); they last until the API restarts.\n`);
@@ -147,15 +155,16 @@ export const OPERATOR_TURN_GRACE_MS = 5 * 60_000;
 const operatorLineAt = new Map<string, number>();
 // Panes whose first prompt was the operator's line, before any of Space's (operatorPaneReason).
 const operatorFirst = new Set<string>();
+// The prompt marks as the state file keeps them: Space's last prompt and the operator's last line per pane, and `operatorFirst`.
+// shortcut: a deleted pane's marks stay (about 60 bytes each; 522 pane rows on 28/11), drop them on pane delete if the file passes a megabyte.
+type PromptMarks = { space: [string, number][]; operator: [string, number][]; first: string[] };
 const operatorLineListeners = new Set<() => void>();
 function noteOperatorLine(paneId: string, nowMs: number): void {
   // Only a pane's first line in a minute pushes the list again (each Enter would otherwise).
   const fresh = nowMs - (operatorLineAt.get(paneId) ?? -Infinity) >= 60_000;
   if (lastSpacePromptAt(paneId) === -Infinity) operatorFirst.add(paneId);
-  if (operatorFirst.size > 1000) operatorFirst.delete(operatorFirst.values().next().value!);
-  operatorLineAt.delete(paneId);
   operatorLineAt.set(paneId, nowMs);
-  if (operatorLineAt.size > 1000) operatorLineAt.delete(operatorLineAt.keys().next().value!);
+  saveState(nowMs);
   if (fresh) for (const listener of operatorLineListeners) listener();
 }
 // Operator 8/11 20:08 BKK: who prompted each pane last (Space's prompts: space-prompts.ts).
@@ -163,19 +172,32 @@ function noteOperatorLine(paneId: string, nowMs: number): void {
 export const operatorPromptedLast = (paneId: string): boolean => (operatorLineAt.get(paneId) ?? -Infinity) > lastSpacePromptAt(paneId);
 /** The panes the operator in person sent a line to within OPERATOR_TURN_GRACE_MS: no Space Link acts on them (mobile/channel.ts dispatch). */
 export const operatorHeldPanes = (nowMs = Date.now()): string[] => [...operatorLineAt].filter(([, at]) => nowMs - at < OPERATOR_TURN_GRACE_MS).map(([paneId]) => paneId);
-/** When this pane last got a prompt from anyone (the operator in person or Space), -Infinity when none since the API started. */
+/** When this pane last got a prompt from anyone (the operator in person or Space), -Infinity when it never got one. */
 export const lastPromptAt = (paneId: string): number => Math.max(operatorLineAt.get(paneId) ?? -Infinity, lastSpacePromptAt(paneId));
+/** The reasons that rest on the operator's own prompt (operatorPaneReason, operatorWorkHold). */
+export const operatorPromptReason = (paneId: string): string | null =>
+  operatorPromptedLast(paneId) ? "the operator prompted it last" : operatorFirst.has(paneId) ? "the operator gave it its first prompt" : null;
+/**
+ * Plan clipboard:CTVaL1V3kAFM decision A (operator 28/11: Nous's work went into the operator's own pane with no guard): why this pane takes no
+ * work from Nous now, null when it may. Only a pane they prompted (one they only opened takes work, as a pane Nous just opened must), while its
+ * turn runs and OPERATOR_TURN_GRACE_MS after it settled or they last typed there. Then it is free capacity again, as the load hand-out reads it
+ * (their rule of 21/11, nous_msg:694ff0a9), so the board lists no pane the send refuses.
+ */
+export function operatorWorkHold(paneId: string, working: boolean, since: string | null, nowMs = Date.now()): string | null {
+  const why = operatorPromptReason(paneId);
+  const settled = Math.max(Date.parse(since ?? "") || -Infinity, operatorLineAt.get(paneId) ?? -Infinity);
+  return why && (working || nowMs - settled < OPERATOR_TURN_GRACE_MS) ? why : null;
+}
 /** A CLI pane Space never prompted is the operator's this long after it opened (operatorPaneReason). */
 export const OPERATOR_FRESH_PANE_MS = 30 * 60_000;
 /**
  * Operator 21/11 23:27 BKK nous_msg:63896af5 («σταματα ν αμου κλεινεις πραθυρα antigravity που δουλευω εγω στο room dino»: Dino/Finn closed 75 s after
  * the operator opened it, at "Needs input"): why this pane is the operator's own and never Nous's to close or list as finished, null when it is not.
- * shortcut: the prompt marks live in the API's memory, so after a restart only the fresh-pane rule holds; persist them if an operator's pane is closed again.
  */
 export function operatorPaneReason(pane: Pick<Pane, "id" | "mode" | "createdAt">, nowMs = Date.now(), afterOperatorGrace = false): string | null {
   // afterOperatorGrace: the load hand-out (nous_msg:694ff0a9) may give work to a pane the operator prompted once their turn's grace passed.
-  if (!afterOperatorGrace && operatorPromptedLast(pane.id)) return "the operator prompted it last";
-  if (!afterOperatorGrace && operatorFirst.has(pane.id)) return "the operator gave it its first prompt";
+  const prompted = afterOperatorGrace ? null : operatorPromptReason(pane.id);
+  if (prompted) return prompted;
   const age = nowMs - Date.parse(pane.createdAt);
   if (isCliPane(pane) && lastSpacePromptAt(pane.id) === -Infinity && age < OPERATOR_FRESH_PANE_MS) return `opened ${Math.max(0, Math.round(age / 60_000))} min ago and Space never prompted it`;
   return null;

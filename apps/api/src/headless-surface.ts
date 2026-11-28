@@ -19,6 +19,8 @@ export const HEADLESS_ROUTES: Readonly<Record<string, HeadlessRule>> = {
   "POST /api/nous/goals/reorder": true, "POST /api/nous/decisions/:id/answer": true, "POST /api/nous/decisions/:id/feedback": true,
   "POST /api/nous/away": true, "PATCH /api/nous/goals/:id": true, "DELETE /api/nous/goals/:id": true, "PATCH /api/nous/settings": true,
   "DELETE /api/nous/messages": true, "DELETE /api/nous/attachments/:id": true, "DELETE /api/nous/shared-files/:shareId": true,
+  // nous turn MCP: a cell's turn calls it through its relay with the turn's token (mcp.ts cellProven); GET only answers 405
+  "POST /api/cli/nous/mcp": true, "GET /api/cli/nous/mcp": true,
   // notifications
   "GET /api/notifications": true, "GET /api/notifications/pending": true, "GET /api/notifications/:id": true,
   "POST /api/notifications/:id/answer": true, "POST /api/notifications/:id/read": true, "POST /api/notifications/:id/ack": true,
@@ -30,6 +32,7 @@ export const HEADLESS_ROUTES: Readonly<Record<string, HeadlessRule>> = {
   "GET /api/artifacts/:id/preview": true, "GET /api/artifacts/:id/file": true, "GET /api/artifacts/:id/metadata": true,
   // account (K4), mobile-channel
   "GET /api/account": true, "DELETE /api/account": true, "POST /api/account/deletion/cancel": true,
+  "GET /api/account/ai": true, "PUT /api/account/ai": true, "DELETE /api/account/ai": true,
   "GET /api/mobile/channel": true
 };
 

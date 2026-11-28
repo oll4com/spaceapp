@@ -196,3 +196,37 @@ describe("Nous › «Εισερχόμενα» v2 in four tabs (plans clipboard:a
     await waitFor(() => expect(screen.getByLabelText("opened").textContent).toBe("1"));
   });
 });
+
+describe("Every tab: sent time and sort (operator 28/11)", () => {
+  it("shows when each request was sent and its latest update, and sorts by the chosen order, kept", async () => {
+    const request = (id: string, createdAt: string, lastEventAt: string) => thread(id, { waitingFor: "NOUS", openRequest: true, tab: "REQUESTS", createdAt, lastEventAt });
+    const a = request("a", "2026-11-15T08:00:00.000Z", "2026-11-15T12:00:00.000Z");
+    const b = request("b", "2026-11-15T09:00:00.000Z", "2026-11-15T09:00:00.000Z");
+    const c = request("c", "2026-11-15T10:00:00.000Z", "2026-11-15T11:00:00.000Z");
+    apiMock.inbox.mockResolvedValue({ ...page, threads: [a, c, b], summary: { ...page.summary, tabs: { needs: 0, done: 0, updates: 0, requests: 3 } } });
+    const view = render(<Harness />);
+    await screen.findByRole("article", { name: "a" });
+    expect(titles()).toEqual(["c", "b", "a"]);
+    const meta = (id: string) => screen.getByRole("article", { name: id }).querySelector(".inbox-thread-meta")!;
+    expect([...meta("a").querySelectorAll("time")].map((time) => time.getAttribute("dateTime"))).toEqual([a.createdAt, a.lastEventAt]);
+    expect(meta("b").querySelectorAll("time")).toHaveLength(1);
+    const sort = screen.getByRole("combobox", { name: "Sort" });
+    for (const [value, order] of [["OLDEST", ["a", "b", "c"]], ["UPDATED", ["a", "c", "b"]], ["QUIET", ["b", "c", "a"]]] as const) {
+      fireEvent.change(sort, { target: { value } });
+      expect(titles()).toEqual(order);
+    }
+    view.unmount();
+    render(<Harness />);
+    await screen.findByRole("article", { name: "a" });
+    expect(titles()).toEqual(["b", "c", "a"]);
+    // Every tab sorts by the same choice: Done here.
+    view.unmount(); cleanup();
+    const d = (id: string, createdAt: string) => thread(id, { unseen: true, tab: "DONE", news: "REPORT", createdAt, lastEventAt: createdAt });
+    apiMock.inbox.mockResolvedValue({ ...page, threads: [d("x", "2026-11-15T08:00:00.000Z"), d("y", "2026-11-15T09:00:00.000Z")], summary: { ...page.summary, tabs: { needs: 0, done: 2, updates: 0, requests: 0 } } });
+    render(<Harness />);
+    await screen.findByRole("article", { name: "x" });
+    expect(titles()).toEqual(["x", "y"]);
+    fireEvent.change(screen.getByRole("combobox", { name: "Sort" }), { target: { value: "NEWEST" } });
+    expect(titles()).toEqual(["y", "x"]);
+  });
+});

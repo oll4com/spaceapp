@@ -25,11 +25,12 @@ export function registerNousAttachments(app: FastifyInstance, deps: {
   parseQuery<TSchema extends z.ZodTypeAny>(schema: TSchema, query: unknown): z.infer<TSchema>;
   repository?: NousAttachmentRepository;
   readerWorkerPath?: string;
+  share?: { dir: string; shown: string };
 }): NousAttachments {
   const root = deps.config.browserEvidenceArtifactRoot || process.env.SPACE_ARTIFACT_ROOT || `${SPACE_INSTALL_ROOT}/var/artifacts`;
   const repository = deps.repository
     ?? (deps.config.databaseUrl ? PostgresNousAttachmentRepository.fromConnectionString(deps.config.databaseUrl) : new InMemoryNousAttachmentRepository());
-  const attachments = createNousAttachments({ repository, root, readerWorkerPath: deps.readerWorkerPath });
+  const attachments = createNousAttachments({ repository, root, readerWorkerPath: deps.readerWorkerPath, ...(deps.share ? { share: deps.share } : {}) });
   const { routeOptions, parseQuery } = deps;
 
   app.post("/api/nous/attachments", routeOptions, async (request, reply) => {

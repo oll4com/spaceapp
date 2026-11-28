@@ -216,11 +216,14 @@ describe("Corrections 24/11 + 27/11: a freeze on a plan is the operator's alone"
     expect(waits.result).toMatchObject({ ok: false, refused: true });
     // A Nous-cited message that is not the operator's own does not count.
     expect((await run({ park, order: "nous_msg:nous0001" }, [{ id: "nous_msg:nous0001", ownerUserId: owner, kind: "ANSWER", meta: {} }])).result).toMatchObject({ refused: true });
+    // The operator's own message that says nothing about holding the plan is not its order (review 28/11).
+    expect((await run({ park, order: "nous_msg:op000002" }, [{ id: "nous_msg:op000002", ownerUserId: owner, kind: "OPERATOR", content: "ok", meta: { person: true } }])).result).toMatchObject({ refused: true });
   });
 
   it("lets the operator's own freeze, an OPERATOR ask and a UI-freeze bug through", async () => {
     const order = "nous_msg:op000001";
-    expect((await run({ executionStatus: "COMPLETED", park, order }, [{ id: order, ownerUserId: owner, kind: "OPERATOR", meta: { person: true } }])).update).toHaveBeenCalled();
+    expect((await run({ executionStatus: "COMPLETED", park, order }, [{ id: order, ownerUserId: owner, kind: "OPERATOR", content: "Hold coupons go-live until after the 2/12 freeze", meta: { person: true } }])).update).toHaveBeenCalled();
+    expect((await run({ executionStatus: "COMPLETED", park, order }, [{ id: order, ownerUserId: owner, kind: "OPERATOR", content: "πάγωσέ το μέχρι τις 3/12", meta: { person: true } }])).update).toHaveBeenCalled();
     expect((await run({ waitsOn: { kind: "OPERATOR", what: "Go live during the 2/12 freeze or after it?" } })).result).not.toMatchObject({ result: expect.stringContaining("is not their order") });
     expect((await run({ park: { reason: "Πάγωμα 1-2 s στο Windows app: waits on the WebGL fix ticket", conditions: [{ who: "PROMOTE", what: "the fix reaches stable" }] }, executionStatus: "COMPLETED" })).update).toHaveBeenCalled();
   });

@@ -5565,6 +5565,207 @@
       "evidence": "packages/db/src/vault-repository.ts:626-631",
       "disposition": "OPEN 2026-11-27: follows the operator's 23/11 rule as written; adding grants to what holds a Vault changes that rule, so it waits for the operator.",
       "resolution": "product-decision"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-27..28 (goal e803a663, 2026-11-28)",
+      "reviewedShas": {
+        "source": "e5a5d21f85"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "id": "REV1128-001",
+      "severity": "P2",
+      "observation": "Disconnecting a YouTube authorization in Streaming that importYouTubeGrant took from the Space Google sign-in sent the sign-in's own refresh token to oauth2.googleapis.com/revoke, which ends the whole grant for that client: the admin's Gmail and Calendar in Connected accounts then failed with invalid_grant, unannounced.",
+      "observationSource": "Independent review pass (163f60f0b9); verified by reading streaming-service.ts disconnectAuthorization and dot-services-wiring.ts onGrant.",
+      "affected": [
+        "apps/api/src/streaming-service.ts:519"
+      ],
+      "reproduction": "cd apps/api && npx vitest run tests/streaming-google-grant.test.ts: the borrowed grant is deleted locally and revoke is never called.",
+      "evidence": "apps/api/tests/streaming-google-grant.test.ts",
+      "disposition": "FIXED 2026-11-28: a grant with its own <ref>:client (StreamingCredentialStore.hasGrantClient; unreadable counts as present) is deleted here only; Streaming's own grants are still revoked.",
+      "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-27..28 (goal e803a663, 2026-11-28)",
+      "reviewedShas": {
+        "source": "e5a5d21f85"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "id": "REV1128-002",
+      "severity": "P2",
+      "observation": "requestProvider mapped /v1/models to claude or codex and ignored the loopback CLAUDE_API_KEY hand-off, while /pools/space probes CLAUDE_OPENCODE's model list through that hand-off: a key limited to claude_opencode got 403 on the probe, auto skipped the route and ended in space_routes_exhausted.",
+      "observationSource": "Independent review pass (9ff3c1d850); verified by a mutation run of the new assertion.",
+      "affected": [
+        "packages/gateway/src/policy.ts:83"
+      ],
+      "reproduction": "cd packages/gateway && npx vitest run tests/server.test.ts: the handed-off /v1/models call of a ['codex','claude_opencode'] key is not 403 (fails on the old line).",
+      "evidence": "packages/gateway/tests/server.test.ts",
+      "disposition": "FIXED 2026-11-28: /v1/models on the hand-off is claude_opencode, as /v1/messages already was.",
+      "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-27..28 (goal e803a663, 2026-11-28)",
+      "reviewedShas": {
+        "source": "e5a5d21f85"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "id": "REV1128-003",
+      "severity": "P2",
+      "observation": "space_plan_update's freeze guard (7f1f343480) accepted any operator message as order: memorySource only proves the message is the operator's, so a freeze a pane wrote into memory could still park a plan by citing an unrelated 'ok', the incident the guard was added for.",
+      "observationSource": "Independent review pass (7f1f343480); verified by reading tools.ts and the guard's test.",
+      "affected": [
+        "apps/api/src/nous/tools.ts:5073"
+      ],
+      "reproduction": "cd apps/api && npx vitest run tests/nous-tool-errors-1120.test.ts: an operator 'ok' as order is held; 'Hold ... until after the 2/12 freeze' and 'πάγωσέ το μέχρι τις 3/12' pass.",
+      "evidence": "apps/api/tests/nous-tool-errors-1120.test.ts",
+      "disposition": "FIXED 2026-11-28: the cited message must itself hold work back (PLAN_HOLD_ORDER: freeze, pause, hold, stop, wait, until/after, a date, Greek forms), worded loosely so the operator's own words count.",
+      "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-27..28 (goal e803a663, 2026-11-28)",
+      "reviewedShas": {
+        "source": "e5a5d21f85"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "status": "confirmed",
+      "id": "REV1128-004",
+      "severity": "P3",
+      "observation": "isNousPrompt matched a raw substring of any prompt Nous typed in the last 24 h, including 'yes' or 'go': an operator line such as \"Yesterday's build broke, fix it\" on that pane was shown as sent by Nous.",
+      "observationSource": "Independent review pass (08a32c188f); verified by reading task-title-service.ts.",
+      "affected": [
+        "apps/api/src/task-title-service.ts:158"
+      ],
+      "reproduction": "cd apps/api && npx vitest run tests/task-title-service.test.ts: short and partial Nous prompts mark no operator line; a wrapped full prompt still does.",
+      "evidence": "apps/api/tests/task-title-service.test.ts",
+      "disposition": "FIXED 2026-11-28: only substantive Nous prompts are kept (isSubstantiveTaskRequest) and they match as whole words.",
+      "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-27..28 (goal e803a663, 2026-11-28)",
+      "reviewedShas": {
+        "source": "e5a5d21f85"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": "operator: which earlier close orders a forced close may cite",
+      "status": "product-decision",
+      "id": "REV1128-005",
+      "severity": "P2",
+      "observation": "operatorOrderedCloseBy (f68bd7ab12) lets space_close_pane / space_execute with force cite any earlier operator message that contains 'close' and no negation, of any age and naming any panes, so an old 'close the Hetzner ticket' can pass the save and quota holds on an unrelated pane.",
+      "observationSource": "Independent review pass (f68bd7ab12); verified by reading tools.ts operatorOrderedCloseBy and its test.",
+      "affected": [
+        "apps/api/src/nous/tools.ts:3281"
+      ],
+      "reproduction": "Reading: closeOrder(source.content) is the only check on a cited message.",
+      "evidence": "apps/api/src/nous/tools.ts",
+      "disposition": "OPEN 2026-11-28: not changed hands-free. The order it was built for (nous_msg:50ad2dd4, 'close those Antigravity panes') names no pane, so requiring pane names would refuse it; a time window would be an unrequested limit. Proposal for the operator: a cited earlier order must name the panes, their room, or their provider (e.g. Antigravity).",
+      "resolution": "product-decision"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-28 after 39d36a0646 (goal e803a663, 2026-11-28)",
+      "reviewedShas": {
+        "source": "3b91ae03d3"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "id": "REV1128-006",
+      "status": "confirmed",
+      "severity": "P3",
+      "observation": "goalPieces (b898aee5e1) keyed a waiting goal's hand-out by kind and what only, while goals.ts counts any waitsOn change, until included, as a new wait: a DATE wait moved to a new date with the same words was never handed to a pane again",
+      "observationSource": "Independent review pass (b898aee5e1); verified by reading utilization.ts goalPieces, standing-orders.ts holds and goals.ts update.",
+      "affected": [
+        "apps/api/src/nous/utilization.ts:197"
+      ],
+      "reproduction": "nous-load-push.test.ts 'one pane per wait': moving only waitsOn.until now hands the goal out again (fails without the fix).",
+      "evidence": "apps/api/tests/nous-load-push.test.ts",
+      "disposition": "FIXED 2026-11-28: the key is goal-wait:<id>:<kind>:<what>:<until>. Not changed: a goal that returns to the exact same earlier wait is not handed out again under it (rare; the old pane's report stands).",
+      "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-28 after 39d36a0646 (goal e803a663, 2026-11-28)",
+      "reviewedShas": {
+        "source": "3b91ae03d3"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": "Nous Cloud owner: may a timed-out step fall through to the next model, which re-runs the turn's tool calls",
+      "id": "REV1128-007",
+      "status": "product-decision",
+      "severity": "P2",
+      "observation": "cloudTurn (a558d4b71c) gives each Nous Cloud step its own deadline and, when the Claude step times out, runs the whole prompt again with the same MCP tools on the Gateway or free model, so sends or cards the timed-out step already made can be repeated; before, a turn timeout ended the turn (a refusal or error already fell through the same way)",
+      "observationSource": "Independent review pass (a558d4b71c); verified by reading wiring.ts cloudTurn.",
+      "affected": [
+        "apps/api/src/nous/wiring.ts:446"
+      ],
+      "reproduction": "Reading: a step's AbortSignal.timeout(left) makes run() resolve to an error result or throw; the loop continues to the next attempt with the same prompt and mcpToken.",
+      "evidence": "apps/api/src/nous/wiring.ts",
+      "disposition": "OPEN 2026-11-28: not changed hands-free; the fall-through is the commit's intent (the free model keeps its 5-minute reserve). Options: fall through on a timeout only when the step made no tool call, or tell the next step what the earlier one already did.",
+      "resolution": "product-decision"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-28 after 39d36a0646 (goal e803a663, 2026-11-28)",
+      "reviewedShas": {
+        "source": "3b91ae03d3"
+      },
+      "verifiedSourceSha": "c3ba8bdacb",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "id": "REV1128-008",
+      "status": "confirmed",
+      "severity": "P2",
+      "observation": "A Nous Computer turn's MCP bearer token is on the guest's claude command line (cellTurnArgv --mcp-config) and the vm-agent runs every turn in the cell as the same user, so in a TEAM tenant's shared cell one member's shell turn can read another member's running turn token from /proc and call the relay as that member; P1 once team accounts with shell turns are live",
+      "observationSource": "Independent review pass (a16948e0b7); read end to end: cell-turn.ts token signing, cell-relay.ts, mcp.ts cellProven, space-vm-agent.py exec.",
+      "affected": [
+        "apps/api/src/computer/cell-host.ts:86",
+        "apps/api/src/computer/cell-host.ts:243"
+      ],
+      "reproduction": "Reading: member B's turn with shell=true runs ps -ef during member A's turn, then posts A's token to 127.0.0.1:5253/api/cli/nous/mcp; the relay finds it in the cell's turns and the hub accepts while A's turn runs.",
+      "evidence": "apps/api/src/computer/cell-host.ts",
+      "disposition": "FIXED 2026-11-28 in c3ba8bdacb: cellTurnBackend (apps/api/src/computer/cell-turn.ts) gives a turn the shell only when its tenant is PERSONAL (one user per cell), so no turn in a TEAM cell can read another member's token from /proc; test in nous-computer-cell-turn.test.ts. Not changed: the token stays on argv. stdin (the prompt) or a 0600 file would not help, because every turn runs as the guest's one user (root, space-vm-agent has no User=). Before team cells get shell turns, run each turn as its own guest user (space-vm-agent and a new cell image).",
+      "resolution": "fixed"
+    },
+    {
+      "reviewerSection": "review of dev commits 2026-11-28 after 39d36a0646 (goal e803a663, 2026-11-28)",
+      "reviewedShas": {
+        "source": "3b91ae03d3"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "id": "REV1128-009",
+      "status": "confirmed",
+      "severity": "P2",
+      "observation": "Going cold (upload) removes only snap.mem, snap.vmstate and user.ext4, and cool() sets hostId null, while destroy runs only on the current host: once cells span hosts, every earlier host keeps the tenant's uid claim, uid file and egress.log (domains and bytes reached) after the account is deleted; a crash between the wx claim and the uid file also leaves a claim nothing frees",
+      "observationSource": "Independent review pass (d56a3253f4, a060cdc77f); read upload, cool, wake, place and destroy end to end.",
+      "affected": [
+        "apps/api/src/computer/cell-host.ts:252",
+        "apps/api/src/computer/cell-host.ts:277",
+        "apps/api/src/computer/cells.ts:270"
+      ],
+      "reproduction": "nous-computer-cell-host.test.ts 'keeps nothing of a cooled cell on its host': after upload the cell directory and its uid claim are gone, another cell's claim stays, and destroy frees an orphan claim (fails without the fix).",
+      "evidence": "apps/api/tests/nous-computer-cell-host.test.ts",
+      "disposition": "FIXED 2026-11-28 in 48eb696740: upload removes the whole cell directory (uid file, egress.log and its rotations) once the snapshot is in cold storage and frees the cell's uid claims; freeUid frees every claim naming the cell, so destroy also frees a claim a crash left before the uid file. A cooled cell keeps nothing on the host it left, so destroy on its current host is enough.",
+      "resolution": "fixed"
     }
   ]
 }

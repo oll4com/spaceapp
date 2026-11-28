@@ -173,7 +173,8 @@ async function purgeTenantRows(pool: PgPoolLike, tenantId: string, at: number): 
       if (blocked.length === tables.length) throw new AccountStateError(`Tenant ${tenantId} purge is blocked by foreign keys among ${blocked.join(", ")}.`);
       tables = blocked;
     }
-    await client.query("UPDATE tenants SET deletion_finished_at = to_timestamp($2 / 1000.0) WHERE id = $1 AND status = 'DELETING'", [tenantId, at]);
+    await client.query(`UPDATE tenants SET deletion_finished_at = to_timestamp($2 / 1000.0), ai_key_sealed = NULL, ai_key_hint = NULL, ai_key_checked_at = NULL
+      WHERE id = $1 AND status = 'DELETING'`, [tenantId, at]);
     await client.query("COMMIT");
   } catch (error) {
     const rollback = await rollbackKeepingError(client, error);

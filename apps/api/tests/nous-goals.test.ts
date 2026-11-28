@@ -249,6 +249,23 @@ describe("Nous goals: /goal and the goal turn", () => {
     expect(await goals.pick(owner, at, settings)).toBeNull();
   });
 
+  it("28/11: a PROMOTE wait ends once every ticket it names is on stable and the goal is due; one ticket short, or no ticket named, it sleeps on", async () => {
+    const repository = new InMemoryNousGoalsRepository();
+    const stable = new Set<string>(["q-20261128-030434-1367"]);
+    const goals = createNousGoals({ repository, plans: async () => [], turnFacts: async () => [], timeZone: async () => "UTC", now: () => T0, ticketOnStable: async (id) => stable.has(id) });
+    const settings = settingsOf().goals;
+    const sleeping = { fingerprint: "x", unchangedTurns: 2, nextTurnAt: new Date(T0 + 60 * MIN).toISOString() };
+    const goal = await goals.create(owner, "Nous improves daily", "the operator");
+    await repository.update(owner, goal.id, { ...sleeping, waitsOn: { kind: "PROMOTE", what: "batch aa40 (q-20261128-030434-1367, q-20261128-030737-749c), then the promote", until: null } });
+    const vague = await goals.create(owner, "Token use falls", "the operator");
+    await repository.update(owner, vague.id, { ...sleeping, waitsOn: { kind: "PROMOTE", what: "dev batch aa40 deploys, then the promote", until: null } });
+    expect(await goals.pick(owner, T0, settings)).toBeNull();
+    stable.add("q-20261128-030737-749c");
+    expect((await goals.pick(owner, T0, settings))?.id).toBe(goal.id);
+    expect(await repository.get(owner, goal.id)).toMatchObject({ waitsOn: null, nextTurnAt: null, unchangedTurns: 0 });
+    expect((await repository.get(owner, vague.id))?.waitsOn?.kind).toBe("PROMOTE");
+  });
+
   it("operator 5/11 20:44 BKK: an unchanged goal gets at most 3 turns a day; a changed wait (an inbox turn read the answer) makes it due at once", async () => {
     const repository = new InMemoryNousGoalsRepository();
     let at = T0;
@@ -271,6 +288,16 @@ describe("Nous goals: /goal and the goal turn", () => {
     await goals.recordUpdate(owner, { goal: goal.id, waitsOn: { kind: "THIRD_PARTY", what: "the client's answer" } } as never, "nous_turn:inbox1");
     expect((await repository.get(owner, goal.id))!.nextTurnAt).toBeNull();
     expect((await goals.pick(owner, at, settings))?.id).toBe(goal.id);
+  });
+
+  it("Daily Nous errors 28/11 03:08Z: space_goal_update takes the 8-character short id a goal goes by in text", async () => {
+    const repository = new InMemoryNousGoalsRepository();
+    const goals = createNousGoals({ repository, plans: async () => [], turnFacts: async () => [], timeZone: async () => "UTC", now: () => T0 });
+    const goal = await goals.create(owner, "Sell the car by 31/12", "the operator");
+    const short = goal.id.slice(0, goal.id.indexOf(":") + 9);
+    expect(await goals.recordUpdate(owner, { goal: short, note: "Listed on two sites" } as never, "nous_turn:g1")).toMatchObject({ changed: ["note"] });
+    expect((await repository.get(owner, goal.id))!.note).toBe("Listed on two sites");
+    expect(await goals.recordUpdate(owner, { goal: "nous_goal:0000", note: "x" } as never, "nous_turn:g1")).toMatchObject({ problem: expect.stringMatching(/^No goal nous_goal:0000\./) });
   });
 
   it("1.2.0 lab 4/11: a goal waiting on the operator is picked again once a CLI runtime turns ready (a sign-in outside the conversation)", async () => {

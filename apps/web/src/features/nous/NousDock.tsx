@@ -1091,7 +1091,7 @@ function NousDecisionCard({ decision, onAnswer, inline = false, plan = null, rem
         </>
       ) : (
         <p className="nous-muted">{t(decision.status === "APPROVED" ? "Approved" : decision.status === "DECLINED" ? "Declined" : decision.status === "ANSWERED" ? "Answered" : "Cancelled")}
-          {decision.answeredAt ? ` ${formatUserTime(decision.answeredAt)}` : ""}
+          {decision.answeredAt ? ` ${formatUserTime(decision.answeredAt, { withDate: true })}` : ""}
           {decision.status === "ANSWERED" || (decision.status === "APPROVED" && decision.answer) ? `: ${decision.answer ?? ""}` : ""}{decision.outcome ? ` · ${decision.outcome}` : ""}</p>
       )}
       {decision.status !== "OPEN" && decision.status !== "CANCELLED" ? <NousDecisionFeedback decision={decision} /> : null}

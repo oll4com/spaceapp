@@ -1,4 +1,6 @@
 import { createSign, generateKeyPairSync } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { parseEnv } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
@@ -20,6 +22,9 @@ function google(sub: string, email: string) {
   }));
 }
 afterEach(() => vi.unstubAllGlobals());
+// The terms version the Nous Computer instance opens sign-up with, read the way the instance reads it.
+const instanceEnv = parseEnv(readFileSync(new URL("../../../deploy/nous-computer/headless.env", import.meta.url), "utf8"));
+const terms = getApiConfig({ ...instanceEnv, SPACE_DATABASE_URL: "postgres://secret-file@localhost/space", SPACE_LOG_LEVEL: "silent" }).signupTermsVersion!;
 
 describe("headless invite-gated Google sign-up", () => {
   const store = new InMemorySpaceStore();
@@ -34,7 +39,7 @@ describe("headless invite-gated Google sign-up", () => {
     auth: { sessionSecret: secret, devLogin: false, secureCookies: false, googleClientId: clientId } });
   let headless: Awaited<ReturnType<typeof createApp>>, closed: Awaited<ReturnType<typeof createApp>>, selfHosted: Awaited<ReturnType<typeof createApp>>;
   beforeAll(async () => {
-    [headless, closed, selfHosted] = await Promise.all([build({ headless: true, signupTermsVersion: "terms-1" }), build({ headless: true }), build({ headless: false })]);
+    [headless, closed, selfHosted] = await Promise.all([build({ headless: true, signupTermsVersion: terms }), build({ headless: true }), build({ headless: false })]);
   }, 60_000);
   afterAll(async () => { await Promise.all([headless?.close(), closed?.close(), selfHosted?.close()]); }, 30_000);
 
@@ -48,18 +53,20 @@ describe("headless invite-gated Google sign-up", () => {
   }
   const session = (res: { cookies: Array<{ name: string; value: string }> }) => res.cookies.find((cookie) => cookie.name === "space_session" && cookie.value);
 
+  it("opens sign-up on the instance with the approved terms version", () => expect(terms).toBe("terms-2026-11-27"));
+
   it("starts a sign-up only with the current terms and 18+, and only where sign-up is open", async () => {
     const code = async (app: typeof headless, query: string) => {
       const res = await app.inject({ method: "GET", url: `/api/auth/google/start?${query}` });
       return res.statusCode === 302 ? 302 : res.json().error?.code ?? res.json().code;
     };
-    expect(await code(headless, "signup=1&terms=terms-1&adult=1")).toBe(302);
-    expect(await code(headless, "signup=1&terms=terms-1")).toBe("SIGNUP_TERMS_REQUIRED");
+    expect(await code(headless, `signup=1&terms=${terms}&adult=1`)).toBe(302);
+    expect(await code(headless, `signup=1&terms=${terms}`)).toBe("SIGNUP_TERMS_REQUIRED");
     expect(await code(headless, "signup=1&terms=terms-0&adult=1")).toBe("SIGNUP_TERMS_REQUIRED");
     expect(await code(headless, "signup=1&adult=1")).toBe("SIGNUP_TERMS_REQUIRED");
-    expect(await code(headless, "signup=1&terms=terms-1&adult=1&reset=password")).toBe("SIGNUP_UNAVAILABLE");
-    expect(await code(closed, "signup=1&terms=terms-1&adult=1")).toBe("SIGNUP_UNAVAILABLE");
-    expect(await code(selfHosted, "signup=1&terms=terms-1&adult=1")).toBe("SIGNUP_UNAVAILABLE");
+    expect(await code(headless, `signup=1&terms=${terms}&adult=1&reset=password`)).toBe("SIGNUP_UNAVAILABLE");
+    expect(await code(closed, `signup=1&terms=${terms}&adult=1`)).toBe("SIGNUP_UNAVAILABLE");
+    expect(await code(selfHosted, `signup=1&terms=${terms}&adult=1`)).toBe("SIGNUP_UNAVAILABLE");
   });
 
   it("makes the account for an invited email, refuses others, and a plain sign-in never makes one", async () => {
@@ -68,13 +75,13 @@ describe("headless invite-gated Google sign-up", () => {
     expect(decodeURIComponent(plain.headers.location as string)).toContain("No account yet");
     expect(signUps).toHaveLength(0);
 
-    const stranger = await flow("signup=1&terms=terms-1&adult=1", "sub-stranger", "stranger@example.test");
+    const stranger = await flow(`signup=1&terms=${terms}&adult=1`, "sub-stranger", "stranger@example.test");
     expect(session(stranger)).toBeUndefined();
     expect(decodeURIComponent(stranger.headers.location as string)).toContain("by invitation");
 
-    const invited = await flow("signup=1&terms=terms-1&adult=1", "sub-new", "invited@example.test");
+    const invited = await flow(`signup=1&terms=${terms}&adult=1`, "sub-new", "invited@example.test");
     expect(session(invited)).toBeDefined();
-    expect(signUps.at(-1)).toMatchObject({ identity: { sub: "sub-new", email: "invited@example.test" }, termsVersion: "terms-1", region: "eu" });
+    expect(signUps.at(-1)).toMatchObject({ identity: { sub: "sub-new", email: "invited@example.test" }, termsVersion: "terms-2026-11-27", region: "eu" });
     // From now on it is a plain sign-in: the account exists.
     const again = await flow("", "sub-new", "invited@example.test");
     expect(session(again)).toBeDefined();

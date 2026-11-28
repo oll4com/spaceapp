@@ -180,6 +180,11 @@ export class StreamingCredentialStore {
     }
   }
 
+  /** True when the grant carries its own client (borrowed from the Space Google sign-in); an unreadable one counts as present. */
+  async hasGrantClient(credentialRef: string): Promise<boolean> {
+    return this.readCredential(grantClientRef(credentialRef)).then(() => true, (error) => (error as NodeJS.ErrnoException).code !== "ENOENT");
+  }
+
   /** Stores (or with null removes) the grant's own client beside it; see `clientFor`. */
   async writeGrantClient(credentialRef: string, client: StreamingProviderClient | null): Promise<void> {
     if (client) await this.writeCredential(grantClientRef(credentialRef), { ...client });

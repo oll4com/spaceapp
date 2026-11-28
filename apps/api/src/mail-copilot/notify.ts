@@ -1,6 +1,6 @@
 import { makeNeedsYouAsk, resolveMailCopilotPaneMetadata, type MailCopilotEvent, type NeedsYouAsk, type Pane } from "@space/contracts";
 import type { NotificationService } from "../notifications/service.js";
-import { withCheckedBlock } from "../nous/pane-notices.js";
+import { allNotifications, withCheckedBlock } from "../nous/pane-notices.js";
 
 const NEEDS_YOU = new Set(["QUESTION", "REVIEW_REQUESTED", "NEEDS_USER", "RULE_PROPOSED"]);
 const RESOLVES = new Set(["ANSWERED", "REVIEW_DECIDED", "RULE_DECIDED"]);
@@ -17,13 +17,15 @@ export function mailCopilotEventNotifies(event: MailCopilotEvent): boolean {
 }
 
 /** New mail (INFO), what the copilot waits on (ATTENTION), learned and retired rules (INFO) and their resolutions, by the pane's settings. */
-export async function notifyMailCopilotEvent(event: MailCopilotEvent, input: { roomId: string; pane: Pane; owner: string; notifications: Pick<NotificationService, "raise" | "resolve"> }): Promise<void> {
+export async function notifyMailCopilotEvent(event: MailCopilotEvent, input: { roomId: string; pane: Pane; owner: string;
+  notifications: Pick<NotificationService, "raise" | "resolve"> & Partial<Pick<NotificationService, "list">> }): Promise<void> {
   const { roomId, pane, owner, notifications } = input;
   const settings = resolveMailCopilotPaneMetadata(pane.mailCopilotMetadata).settings;
   const key = String(event.payload.questionId ?? event.payload.reviewId ?? event.payload.ruleId ?? event.id);
   const telegram = settings.notifications.telegram ? true : null;
   if (RESOLVES.has(event.type)) {
     await notifications.resolve(owner, mailCopilotNoticeKey(key));
+    if (notifications.list) await resolveAgentAsksNaming(owner, key, notifications as Pick<NotificationService, "list" | "resolve">);
     return;
   }
   if (event.type === "MAIL_RECEIVED") {
@@ -58,6 +60,19 @@ export async function notifyMailCopilotEvent(event: MailCopilotEvent, input: { r
     title: `Mail Copilot needs you (${pane.title})`, body: event.type === "NEEDS_USER" ? withCheckedBlock(event.message, mailChecked(event, pane), 2_000) : event.message,
     link: { roomId, paneId: pane.id, target: event.threadId && event.accountEmail ? `thread:${event.accountEmail}:${event.threadId}` : `event:${event.id}` },
     dedupeKey: mailCopilotNoticeKey(key), payload: { eventId: event.id, ask: mailAsk(event), ...(event.payload.operatorReads ? { operatorReads: event.payload.operatorReads } : {}) }, telegram });
+}
+
+const ITEM_IDS = /\bmail(?:rev|q):[\w-]+/g;
+/** Goal 7365014c (27/11 card 9f8d98b7: mailrev:EdsAoru7sb12 decided at 16:46, the agent's "approve it in Mail Copilot" card stayed open until the
+ *  operator marked it Failed): an agent needs-you card that asks for this item and no other closes with it. */
+async function resolveAgentAsksNaming(owner: string, key: string, notifications: Pick<NotificationService, "list" | "resolve">): Promise<void> {
+  const cards = await allNotifications(notifications.list, owner, { status: "WAITING", source: "AGENT", kind: "NEEDS_YOU" });
+  for (const card of cards) {
+    if (!card.dedupeKey?.startsWith("agent:needs-you:")) continue;
+    const ask = card.payload.ask as { question?: unknown } | undefined;
+    const ids = new Set(`${card.title}\n${card.body}\n${typeof ask?.question === "string" ? ask.question : ""}`.match(ITEM_IDS) ?? []);
+    if (ids.size === 1 && ids.has(key)) await notifications.resolve(owner, card.dedupeKey, `Mail Copilot ${key} was decided`);
+  }
 }
 
 /** Goal ee5a573e: what the copilot read before it handed a mail to the operator (its card's "Checked first:", counted by the daily REVIEW). */

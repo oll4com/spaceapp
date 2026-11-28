@@ -211,8 +211,9 @@ describe("Space auth", () => {
     const revocation = new SessionRevocationStore();
     try {
       const user = { id: "user:revokable", email: "revokable@space.test", role: "ADMIN" as const };
-      const token1 = signSessionWithTtl(user, secret, 3600);
-      const token2 = signSessionWithTtl(user, secret, 7200);
+      // Issued a second earlier: a token issued in the same millisecond as revokeUser (iatMs == epoch) is valid by design.
+      const token1 = signSessionWithTtl(user, secret, 3600, Date.now() - 1000);
+      const token2 = signSessionWithTtl(user, secret, 7200, Date.now() - 1000);
 
       expect(verifySession(token1, secret, revocation)).toMatchObject({ id: "user:revokable" });
       expect(verifySession(token2, secret, revocation)).toMatchObject({ id: "user:revokable" });

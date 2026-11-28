@@ -1,5 +1,6 @@
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { addInvites, listInvites, revokeInvite } from "../../../scripts/nous-computer-invite.mjs";
 import { loadMigrations } from "../src/migrations.js";
 import { PostgresSpaceStore } from "../src/space-store.js";
 import { disposablePostgresUnavailableReason, startDisposablePostgres, type DisposablePostgres } from "./support/disposable-postgres.js";
@@ -12,7 +13,7 @@ describe.skipIf(disposablePostgresUnavailableReason())("headless Google sign-up 
   const invite = (id: string, email: string) => pool.query(`INSERT INTO user_invites (id, token_sha256, email, role, created_by, expires_at)
     VALUES ($1, $1, $2, 'OPERATOR', 'user:operator', '2026-12-01T00:00:00Z')`, [id, email]);
   const identity = (sub: string, email: string) => ({ sub, email, name: "Synthetic", picture: "https://example.test/a.png" });
-  const signUp = (sub: string, email: string) => store.signUpWithGoogleInvite({ identity: identity(sub, email), termsVersion: "terms-2026-11", region: "eu", now });
+  const signUp = (sub: string, email: string) => store.signUpWithGoogleInvite({ identity: identity(sub, email), termsVersion: "terms-2026-11-27", region: "eu", now });
 
   beforeAll(async () => {
     server = await startDisposablePostgres("nous-signup");
@@ -32,7 +33,7 @@ describe.skipIf(disposablePostgresUnavailableReason())("headless Google sign-up 
     const user = await signUp("sub-a", "alice@signup.test");
     expect(user).toMatchObject({ email: "alice@signup.test", role: "USER", googleId: "sub-a" });
     const row = (await pool.query("SELECT u.tenant_id, u.terms_version, u.adult_confirmed_at, t.kind, t.region, t.status FROM users u JOIN tenants t ON t.id = u.tenant_id WHERE u.id = $1", [user!.id])).rows[0];
-    expect(row).toMatchObject({ terms_version: "terms-2026-11", kind: "PERSONAL", region: "eu", status: "ACTIVE" });
+    expect(row).toMatchObject({ terms_version: "terms-2026-11-27", kind: "PERSONAL", region: "eu", status: "ACTIVE" });
     expect(row.tenant_id).toMatch(/^tenant:/);
     expect(row.tenant_id).not.toBe("tenant:local");
     expect(new Date(row.adult_confirmed_at).toISOString()).toBe(now);
@@ -64,5 +65,16 @@ describe.skipIf(disposablePostgresUnavailableReason())("headless Google sign-up 
     const made = results.filter((result) => result.status === "fulfilled" && result.value);
     expect(made).toHaveLength(1);
     expect((await pool.query("SELECT count(*)::int AS n FROM users WHERE email = 'race@signup.test'")).rows[0].n).toBe(1);
+  });
+
+  it("the operator's invite command (scripts/nous-computer-invite.mjs) makes invites that Google sign-up spends", async () => {
+    const at = new Date(now);
+    const made = await addInvites(pool, ["Wave1@Signup.test", "wave1@signup.test", "owner@signup.test", "not-an-email", "wave2@signup.test"], at);
+    expect(made.map((m: { email: string; error?: string }) => m.error ?? "ok")).toEqual(["ok", "already invited", "already has an account", "not an email address", "ok"]);
+    expect((await listInvites(pool, at)).map((i: { email: string }) => i.email)).toEqual(expect.arrayContaining(["wave1@signup.test", "wave2@signup.test"]));
+    expect(await revokeInvite(pool, made[4].id, at)).toBe(true);
+    expect(await signUp("sub-wave2", "wave2@signup.test")).toBeNull();
+    expect(await signUp("sub-wave1", "wave1@signup.test")).toMatchObject({ email: "wave1@signup.test", role: "USER" });
+    expect((await listInvites(pool, at)).map((i: { email: string }) => i.email)).not.toContain("wave1@signup.test");
   });
 });

@@ -26,7 +26,7 @@ describe("Nous Done tab", () => {
     const { rerender } = render(<NousDone requests={items} onOpenPlan={onOpenPlan} onAcknowledged={changed} />);
     expect(screen.getByText("Θέλω μία καρτέλα Done")).toBeTruthy();
     expect(screen.getByText("Προστέθηκε η καρτέλα με επιβεβαίωση.")).toBeTruthy();
-    expect(screen.getByText(formatUserTime(at))).toBeTruthy();
+    expect(screen.getByText(formatUserTime(at, { withDate: true }))).toBeTruthy();
     expect(screen.getByText("Dev")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open plan" }));
     expect(onOpenPlan).toHaveBeenCalledWith("clipboard:done0001");

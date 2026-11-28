@@ -458,7 +458,7 @@ export function NeedsYouCard({ item, variant, pane, unblocks = [], open: openPro
           {item.severity === "URGENT" ? <span className="ny-urgent">{t("Urgent")}</span> : null}
           {due ? <span className={dueToday || due.overdue ? "ny-due" : undefined}><Clock aria-hidden="true" />{due.overdue ? t("Overdue") : dueToday ? t("Due today {time}", { time: formatUserTime(due.dueAt!) }) : t("Due {when}", { when: formatUserTime(due.dueAt!, { withDate: true }) })}</span> : null}
           {where ? <span className="ny-where">{where}</span> : null}
-          <span>{formatUserTime(needsYouAskedAt(item))}</span>
+          <span>{formatUserTime(needsYouAskedAt(item), { withDate: true })}</span>
         </p>
       </div>
       <div className="ny-corners">

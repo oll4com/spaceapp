@@ -236,15 +236,18 @@ export function createNotificationService(deps: NotificationServiceDeps) {
   }
   /**
    * 17/11 (cards 7454e78e and e90ddf3c, one Admin key ask twice): a closed pane's carried card that a newer Nous card asks again closes, so the
-   * newest stays. Run after a Nous card is raised, and once at start for the cards raised before.
+   * newest stays. Run after a Nous card is raised, and once at start for the cards raised before. A carry of Room Agent cards only (carried
+   * before request 1feac683 left them out: they read the closed pane's own CLI) closes too.
    */
   async function dropCarriedDuplicates(owner: string): Promise<number> {
     const open = (await everyRecord(owner, { status: "WAITING", source: "NOUS" })).filter(needsYou);
     let closed = 0;
     for (const carry of open.filter((item) => item.dedupeKey?.startsWith(CLOSED_PANE_KEY))) {
-      const newer = open.find((item) => item.id !== carry.id && item.createdAt > carry.createdAt && sameAsk(item, carry));
-      if (!newer) continue;
-      const updated = await deps.repository.setStatus(owner, carry.id, "RESOLVED", { resolvedReason: `a newer card asks the same (${newer.id})` });
+      const carried = Array.isArray(carry.payload.carried) ? carry.payload.carried as Array<{ dedupeKey?: string | null }> : [];
+      const screenOnly = carried.length > 0 && carried.every((item) => item.dedupeKey?.startsWith("room-agent-event:"));
+      const newer = screenOnly ? undefined : open.find((item) => item.id !== carry.id && item.createdAt > carry.createdAt && sameAsk(item, carry));
+      if (!screenOnly && !newer) continue;
+      const updated = await deps.repository.setStatus(owner, carry.id, "RESOLVED", { resolvedReason: newer ? `a newer card asks the same (${newer.id})` : "its pane was closed" });
       if (updated?.status !== "RESOLVED") continue;
       closed += 1;
       await publish("NOTIFICATION_UPDATED", updated);

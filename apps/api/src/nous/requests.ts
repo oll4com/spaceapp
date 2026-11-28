@@ -5,6 +5,7 @@ import type { NotificationService } from "../notifications/service.js";
 import { titleWords } from "./pane-notices.js";
 import { waitsOnOperatorClaim } from "./pane-watch.js";
 import { closedRequestsOf, OPEN_REQUEST_PREFIX, openRequestsOf, reopenedAtOf, REQUEST_DONE_NOTE_PREFIX, requestDoneReceiptKey } from "./request-done.js";
+import { byShortId } from "./short-id.js";
 
 /**
  * The Requests tab (operator 31/10 09:55 BKK, plan clipboard:2NOOFNJDUIMO): every message the operator sent Nous, newest first, with how
@@ -372,7 +373,9 @@ export function createNousRequests(deps: {
     /** These messages' status as the tab reads it, without their own open requests (request-done.ts's one-time cleanup, 31/10). */
     async statuses(owner: string, ids: string[]): Promise<Map<string, NousRequestStatus>> {
       const wanted = new Set(ids);
-      return new Map((await derive(owner, false)).filter((request) => wanted.has(request.messageId)).map((request) => [request.messageId, request.status]));
+      // A short id ("nous_msg:01b4bfae") returns every message it names under its full id; the caller keeps it only when one does.
+      return new Map((await derive(owner, false)).filter((request) => wanted.has(request.messageId) || ids.some((ref) => byShortId([{ id: request.messageId }], ref)))
+        .map((request) => [request.messageId, request.status]));
     }
   };
 }

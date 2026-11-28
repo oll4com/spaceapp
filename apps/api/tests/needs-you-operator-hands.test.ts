@@ -94,6 +94,30 @@ describe("a question only the operator's own person can answer is never held (27
     expect((await f.notifications.get(owner, idme.id))!.status).toBe("OPEN");
   });
 
+  // Operator 28/11 14:00 BKK: Dana's micro1 interview card, answered «δεν με ενδιαφέρει», could not be closed with a reason.
+  it("lets Nous close the operator's own interview card with a reason once the operator answered it, and never before", async () => {
+    const asked = new Date(Date.now() - 60_000).toISOString();
+    const card = { id: "notification:4dc6811a", ownerUserId: owner, status: "READ", kind: "NEEDS_YOU", source: "AGENT", severity: "ATTENTION", title: "Dana needs you",
+      body: "micro1: η συνέντευξη AI θέλει τη δική σου συνεδρία", paneId: pane.id, roomId: room.id, dedupeKey: `agent:needs-you:${pane.id}`, payload: {}, link: {}, createdAt: asked, updatedAt: asked };
+    const resolve = vi.fn(async () => true);
+    let messages: unknown[] = [];
+    const tools = createNousTools({ rooms: async () => [room], listPanes: async () => [pane], listConversation: async () => messages,
+      notifications: { list: async () => [card], get: async () => card, resolve } } as unknown as NousToolDeps);
+    const close = () => tools.execute("space_resolve_notification", { notification: card.id, reason: "The operator answered: not interested in micro1" }, ctx);
+    const held = await close();
+    expect(held).toMatchObject({ ok: false, refused: true });
+    expect(held.result).toContain("the operator's own interview or test");
+    const at = new Date().toISOString();
+    messages = [{ id: "nous_msg:answer01", ownerUserId: owner, turnId: null, kind: "OPERATOR", status: "DONE", content: "[Felix · Bob] My answer to \"micro1\": δεν με ενδιαφέρει",
+      meta: { person: true, refs: { paneId: pane.id } }, createdAt: at, updatedAt: at }];
+    const unexplained = await tools.execute("space_resolve_notification", { notification: card.id }, ctx);
+    expect(unexplained).toMatchObject({ ok: false, refused: true });
+    expect(unexplained.result).toContain("was answered by the operator (nous_msg:answer01)");
+    expect(resolve).not.toHaveBeenCalled();
+    expect(await close()).toMatchObject({ ok: true, display: "Closed a notification" });
+    expect(resolve).toHaveBeenCalledWith(owner, card.id, "The operator answered: not interested in micro1");
+  });
+
   it("takes an identity check as the operator's act, however the card words it (the ID.me card took 3 tries)", () => {
     expect(noQuestionRefusal(cardAsk({ title: "Crosschq identity check", body: null, payload: { items: [{ text: "Crosschq: the ID.me identity verification for the hiring check is still pending, link in the mail" }] } }))).toBeNull();
     expect(noQuestionRefusal(cardAsk({ title: "Hetzner invoice", body: null, payload: { items: [{ text: "Hetzner invoice 085001365346 arrived" }] } }))).toContain("no question and no act");

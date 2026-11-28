@@ -143,6 +143,20 @@ export const heldStepSentence = (text: string) => firstSentence(text, (plain) =>
 const KNOWN_FAULT = /(?<!\p{L})γνωστ\p{L}*\s+(?:προβλημα|σφαλμα|θεμα|ζητημα|bug)|παρακαμψ|παρακαμπτ|\bknown (?:issues?|problems?|bugs?|errors?)\b|\bwork ?arounds?\b|\bwork(?:ed|ing)? around\b/gu;
 export const knownFaultSentence = (text: string) => firstSentence(text, (plain) => saysUnnegated(plain, KNOWN_FAULT));
 /**
+ * Corrections 22/11 nous_msg:0d086294 («το Space απέρριψε τη μεταφορά» -- «αν υπάρχει πρόβλημα στον κώδικα διόρθωσέ το!!»), 27/11 766ca4f6 (cards «απορρίφθηκαν
+ * από το Space», a false rule match) and 28/11 57f3908d («το Space δεν άφησε κανένα» to close -- «διόρθωσε τον κώδικά σου!!»), lessons move-refusal-relayed,
+ * unclear-card-delay, close-guard-relayed: the first sentence saying Space or one of its guards refused an act, or null. Holds are left out (a card Space holds is told plainly).
+ */
+// Disk room ("disk space did not run out") is no actor.
+const SPACE_ACTOR = String.raw`(?:(?<!\b(?:disk|free|drive|storage|swap) )\bspace\b(?: control)?|\b(?:[\w-]+ )?guards?\b|(?<!\p{L})(?:ελεγχος|φρουρος)(?!\p{L}))`;
+const SPACE_REFUSED = new RegExp(String.raw`${SPACE_ACTOR}[^.!?;]{0,40}?(?:(?<!(?:δεν|not|never) )(?:\b(?:refus|reject)\w*|(?<!\p{L})(?:αρνηθηκ|αρνειτ|απερριψ|απορριπτ)\p{L}*)`
+  + String.raw`|\b(?:would not|wouldn't|won't|did not|didn't|does not|doesn't) (?:let|allow|accept|close|move|send|open|run|take|save|start|raise|fill)\b`
+  + String.raw`|(?<!\p{L})δεν (?:(?:με|μου|μας|το|τα|την|τον|τις|τους) )?(?:αφησε|αφηνει|επετρεψε|επιτρεπει|δεχτηκε|δεχεται)(?!\p{L}))`
+  + String.raw`|(?<!\p{L})(?:αρνειται|αρνηθηκε|απερριψε)(?!\p{L})[^.!?;]{0,12}?(?<!\p{L})(?:ο |το )${SPACE_ACTOR}`
+  + String.raw`|(?:\b(?:refused|rejected) by (?:the )?|(?<!\p{L})απορριφθηκ\p{L}*[^.!?;]{0,30}?απο (?:το |τον )?)${SPACE_ACTOR}`, "gu");
+export const spaceRefusalSentence = (text: string) => firstSentence(text, (plain) => !/[?;\u037e]$/u.test(plain) && saysUnnegated(plain, SPACE_REFUSED));
+const FIX_WORDS = /\b(?:fix|guard|code|bug|patch)|(?<!\p{L})(?:διορθ|κωδικ|φρουρ)/u;
+/**
  * Corrections 21/11 85691c61 and 22/11 37276cdc («Δεν έχεις πουσαρει καθόλου όλο το βράδυ στο 90% γιατι;;»): 20 of 121 answers 21/11 16:27Z-22/11 04:04Z
  * said no new work went to the free panes («Δεν έδωσα νέα δουλειά στα idle panes (η χρήση είναι 31% αντί για 90%)»), 14 of them in a turn that sent none.
  * The first sentence saying so, or null.
@@ -360,6 +374,16 @@ const TURN_CLAIMS = [
       + "or work around, gets its root fix sent to a pane (space_send_to_pane, space_copilot_brief, space_plan_create) in the same turn you name it.",
     hold: "Send its fix to a pane first, then call again, or drop the line.",
     check: "Send the root fix to a pane now and tell the operator who fixes it; if a pane already works on the fix, answer NOTHING_NEW." },
+  // Operator and decision turns only: 7 days of answers held 244 refusal lines in inbox turns (status relays), each check an INBOX turn; the corrections came on asks.
+  { key: "space-refusal", turns: new Set(["OPERATOR", "DECISION"]), find: spaceRefusalSentence, proof: new Set(["space_send_to_pane", "space_answer_pane", "space_execute", "space_plan_create"]),
+    proves: (act: NousTurnAct) => act.name === "space_plan_create" || FIX_WORDS.test(claimFold(JSON.stringify(act.args))),
+    says: "Space refused an act", missing: "gave the guard's fix to no pane", display: "relays a Space refusal with no fix of its guard sent",
+    rule: "A refusal is a guard to fix (corrections 22/11 0d086294 «αν υπάρχει πρόβλημα στον κώδικα διόρθωσέ το!!», 27/11 766ca4f6, 28/11 57f3908d «διόρθωσε τον κώδικά σου!!»): "
+      + "when Space refuses an act the operator wants done, find the guard in the code and send its root fix to a pane (space_send_to_pane naming the fix, space_plan_create) "
+      + "in the same turn you tell them; the refusal itself is not news for them.",
+    hold: "Send the guard's fix to a pane first, then call again, or drop the line.",
+    check: "Find the guard that refused (apps/api/src) and send its root fix to a pane now, then tell the operator who fixes it; "
+      + "if the guard enforces the operator's own rule or order as meant, or a pane already works on its fix, answer NOTHING_NEW." },
   { key: "report-promise", find: reportPromiseSentence, proof: new Set(["space_nous_followup"]), proves: (act: NousTurnAct) => act.args.op === "add",
     says: "you will tell them later", missing: "set no follow-up to bring it back", display: "promises a later update with no follow-up set",
     rule: "Promised later means a follow-up (corrections 11-12/11 e1daf3df, 7aae8ab8, bfd19d07): when you tell the operator you will report, bring or tell them something later, "
@@ -406,8 +430,9 @@ const WORK_CLAIM_CHECK = { key: "work-claim", find: workClaimSentence,
 const CHECK_KEYS: ReadonlySet<string> = new Set([...TURN_CLAIMS.map((claim) => claim.key), WORK_CLAIM_CHECK.key, "done-claim", "waits-claim", "operator-refusal"]);
 /** What this turn's interim answers (space_reply_now) told the operator. */
 const repliedText = (acts: NousTurnAct[]) => acts.flatMap((act) => act.ok && act.name === "space_reply_now" && typeof act.args.text === "string" ? [act.args.text] : []).join("\n");
-const unprovenClaim = (text: string, acts: NousTurnAct[], claims = TURN_CLAIMS) => {
+const unprovenClaim = (text: string, acts: NousTurnAct[], claims = TURN_CLAIMS, reason?: string) => {
   for (const claim of claims) {
+    if (claim.turns && !claim.turns.has(reason ?? "")) continue;
     const proofs = acts.filter((act) => act.ok && claim.proof.has(act.name) && (claim.proves?.(act) ?? true));
     const sentence = proofs.length && !claim.enough ? null : claim.find(text);
     if (sentence && !claim.enough?.(sentence, proofs)) return { ...claim, sentence };
@@ -517,6 +542,8 @@ export interface NousLimits {
   modelPauseMs: number;
   /** An operator message that came during an operator turn rides on that turn's next tool answer; one still not taken after this starts its own turn beside it. */
   deliverMs: number;
+  /** An operator turn with no reply this long after the operator wrote gets Space's own one-line acknowledgement (NOUS_ACK_TEXT). */
+  ackMs: number;
 }
 // Operator 5/11 20:44 BKK (nous_msg:ffec6f53f5674ba2a86a507b, newer than 31/10's «Τέρμα τα αυθαίρετα όρια»): inbox turns batch events instead of
 // one turn per event, so NORMAL waits 10 minutes from a batch's first line too (it was 5 s: ~360 INBOX turns a day). An urgent line (soonMs) still
@@ -530,7 +557,12 @@ const defaultLimits: NousLimits = { turnMs: 20 * 60_000, inboxDebounceMs: 10 * 6
   // 4/11 (goal 401b115b): a message that came during an operator turn waited for its end, 3-14 min (00:11-01:37 UTC); a tool call answers within
   // seconds (p50 2 s), a stuck one took 200-571 s, so a message no call took in 30 s gets its own turn. Response time 14/11: 25 of 97 such messages
   // waited the whole 30 s (the turn sat in one model step or a long tool), and a beside turn answers ~10 s after it starts, so 10 s.
-  historyMessages: 500, modelPauseMs: 10 * 60_000, deliverMs: 10_000 };
+  historyMessages: 500, modelPauseMs: 10 * 60_000, deliverMs: 10_000,
+  // Response time 28/11 (nous_msg:edcffc12, 724 s): the Claude route sent nothing for 5 min, then Codex sat 7 min in one model step with no
+  // tool call, so no tool-answer nudge could fire. A timer, not the model, makes sure the operator hears back within 20 s.
+  ackMs: 20_000 };
+/** Space's own acknowledgement when an operator turn has not replied by limits.ackMs; the model's own answer still follows. */
+const NOUS_ACK_TEXT = { en: "Got it, working on it. My answer follows shortly.", el: "Το είδα, το δουλεύω. Η απάντηση έρχεται σε λίγο." } as const;
 /** Technical bound (model context): the conversation before the turn, beside the world and the retrieved sections. */
 export const NOUS_HISTORY_MAX_CHARS = 60_000;
 /** Brief 14/11 (Response time −68: first answer within 30 s): past this since the operator wrote, an operator turn with no space_reply_now yet reads a reminder with each tool answer. */
@@ -1174,7 +1206,7 @@ export function createNousService(deps: NousServiceDeps) {
   }
   /**
    * Step 1: a held question the turn showed but no line of its own carried (an operator, goal or decision turn, a batch it came after), left
-   * without an act, wakes Nous again at once, once per card: the line carries its item, so that turn is held on it like any other.
+   * without an act, wakes Nous again with the next inbox batch, once per card: the line carries its item, so that turn is held on it like any other.
    */
   async function rewakeQuestions(owner: string, entry: OwnerRuntime, live: LiveTurn, carried: Set<string>): Promise<void> {
     const others = liveTurns(entry).filter((turn) => turn !== live);
@@ -1184,7 +1216,8 @@ export function createNousService(deps: NousServiceDeps) {
       if (!seen || seen.rewakes >= 1 || queued || others.some((turn) => turn.carried.has(item.key))) continue;
       seen.rewakes += 1;
       await api.notice(owner, item.key, `Woken again: your ${live.reason} turn showed this copilot ${item.kind === "REVIEW" ? "review" : "question"} held for you and ended without an act on it (${item.kind === "REVIEW" ? REVIEW_ACT_LINE : QUESTION_ACT_LINE}): ${item.line}`,
-        undefined, { soonMs: 5_000, items: [item] }).catch((error: unknown) => warn({ err: error, owner }, "Nous question wake failed."));
+        // Operator yes 28/11 (audit needs-decision 62392): the line folds into the inbox batch (10 min) like the Held line; no 5 s run of its own.
+        undefined, { items: [item] }).catch((error: unknown) => warn({ err: error, owner }, "Nous question wake failed."));
     }
   }
 
@@ -1219,6 +1252,7 @@ export function createNousService(deps: NousServiceDeps) {
     let retry = false;
     let failure: string | null = null;
     let run: NousRunResult | null = null;
+    let ack: ReturnType<typeof setTimeout> | null = null;
     if (reason === "INBOX") entry.turns.push(now());
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(limits.turnMs)]);
     live.signal = signal;
@@ -1241,6 +1275,15 @@ export function createNousService(deps: NousServiceDeps) {
       const alongside = beside || (reason === "OPERATOR" && operatorTurns(entry).some((other) => other !== live && other.replyTo.length > 0));
       // 381fe2d6 (14/11, 159 s): a restart cut the turn at 11 s and the rerun's minute counted from its own start at 73 s.
       if (reason === "OPERATOR") live.waitingSince = [startedAt, ...waiting.map((message) => message.createdAt)].sort()[0];
+      if (reason === "OPERATOR" && replyIds.length) {
+        ack = setTimeout(() => void (async () => {
+          if (live.waitingSince === undefined || controller.signal.aborted || !liveTurn(owner, turnId)) return;
+          const text = NOUS_ACK_TEXT[(await deps.language?.(owner).catch(() => "en")) === "el" ? "el" : "en"];
+          if (live.waitingSince === undefined || !liveTurn(owner, turnId)) return;
+          await addMessage(owner, turnId, "ANSWER", "DONE", text, { interim: true, ack: true, reason, startedAt, ...replyTo(live.replyTo) });
+        })().catch((error) => warn({ err: error, owner }, "Nous acknowledgement failed.")), Math.max(0, Date.parse(live.waitingSince!) + limits.ackMs - now()));
+        ack.unref?.();
+      }
       const goalText = extra.goal && deps.goals ? await deps.goals.turnText(owner, extra.goal) : "";
       // What this turn is about: the notes and the operator's facts it matches come whole in the world (operator 31/10: no "newest N").
       const query = reason === "OPERATOR" ? waiting.map((message) => message.content).join("\n")
@@ -1388,7 +1431,7 @@ export function createNousService(deps: NousServiceDeps) {
       // C (2/11), lessons 6-12/11: an answer saying a mail went out, a pane was told or a card comes, from a turn that did not do it, goes back to Nous to check it.
       // 20/11: only what was posted told the operator anything; a repeat withoutSaid dropped fired a check a turn and fed an urgent chain (80 INBOX turns at 08h).
       const unproven = !quiet && reason !== "GOAL" && !nothingNew(reason, result.text)
-        ? unprovenClaim(kept, live.acts) ?? unprovenClaim(`${repliedText(live.acts)}\n${kept}`, live.acts, [WORK_CLAIM_CHECK]) : null;
+        ? unprovenClaim(kept, live.acts, TURN_CLAIMS, reason) ?? unprovenClaim(`${repliedText(live.acts)}\n${kept}`, live.acts, [WORK_CLAIM_CHECK]) : null;
       if (unproven) await api.notice(owner, `${unproven.key}:${turnId}`, `Your answer told the operator ${unproven.says} ("${clip(unproven.sentence, 200)}"), and that turn ${unproven.missing}. `
         + `${unproven.rule} ${unproven.check}`, undefined, checkSoon)
         .catch((error) => warn({ err: error, owner }, `Nous ${unproven.key} line failed.`));
@@ -1493,6 +1536,7 @@ export function createNousService(deps: NousServiceDeps) {
         else entry.lastError = clip(message, 1_000);
       }
     } finally {
+      if (ack) clearTimeout(ack);
       // Daily Nous errors 15/11 (01:05Z TIMEOUT): two space_read_pane calls past their 55 s MCP answer stayed RUNNING after the turn ended, until the
       // 01:23 deploy's recover() wrote "The API restarted during this turn" on them, and the timeout was read as a restart. A late finish still writes its answer.
       for (const [id, text] of live.openTools) await deps.repository.updateMessage(owner, id, { status: "FAILED", content: `${text}: did not finish before the turn ended (${status})` })
@@ -1909,7 +1953,7 @@ export function createNousService(deps: NousServiceDeps) {
       // a Done summary is often written turns after the send, so it is held only for the mail.
       const told = name === "space_reply_now" ? args.text : name === "space_request_done" ? args.summary : null;
       // Lesson promise-without-dispatch: an operator turn's outcome calling a request SELF or HELPER while its reply says the work runs now, with nothing dispatched, is held once.
-      const claim = !helper && running && typeof told === "string" ? unprovenClaim(told, running.acts, name === "space_reply_now" ? TURN_CLAIMS : TURN_CLAIMS.slice(0, 1))
+      const claim = !helper && running && typeof told === "string" ? unprovenClaim(told, running.acts, name === "space_reply_now" ? TURN_CLAIMS : TURN_CLAIMS.slice(0, 1), running.reason)
         : !helper && running?.reason === "OPERATOR" && name === "space_nous_outcome" && !running.workHeld && !open.length && !dispatched.length && !unreported.length
           && Array.isArray(args.requests) && (args.requests as Array<{ outcome?: string }>).some((request) => request.outcome === "SELF" || request.outcome === "HELPER")
           ? unprovenClaim(repliedText(running.acts), running.acts, [WORK_CLAIM_CHECK]) : null;

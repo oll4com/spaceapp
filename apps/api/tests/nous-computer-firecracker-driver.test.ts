@@ -25,6 +25,7 @@ describe("firecracker cell driver", () => {
     keepSnapshotAndStop: async () => (hostCalls.push("keepSnapshotAndStop"), 2_147_483_648),
     waitReady: async () => void hostCalls.push("waitReady"),
     syncClock: async (_cell, epochMs) => void hostCalls.push(`syncClock:${epochMs}`),
+    turn: async () => ({ code: 0, stdout: "", stderr: "" }),
     upload: async (cell) => (hostCalls.push("upload"), { objectKey: `cells/${cellId(cell.tenantId)}` }),
     download: async () => void hostCalls.push("download"),
     exportUserData: async (tenantId) => (hostCalls.push("exportUserData"), { exportKey: `exports/${cellId(tenantId)}` }),

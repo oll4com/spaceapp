@@ -149,13 +149,14 @@ const NOUS_PROMPT_KEEP_MS = 24 * 60 * 60_000;
 const nousPrompts = new Map<string, Array<{ fingerprint: string; at: number }>>();
 export function noteNousPrompt(paneId: string, text: string, at = Date.now()): void {
   const fingerprint = taskRequestFingerprint(text);
-  if (!fingerprint) return;
+  // A "yes" or "continue" never makes a title line; kept, it would mark any later line that contains it (review 28/11).
+  if (!fingerprint || !isSubstantiveTaskRequest(text)) return;
   nousPrompts.set(paneId, [...(nousPrompts.get(paneId) ?? []).filter((entry) => at - entry.at < NOUS_PROMPT_KEEP_MS), { fingerprint, at }]);
 }
-/** The CLI may wrap a prompt (reminders, envelopes), so its request holds the text Nous sent. */
+/** The CLI may wrap a prompt (reminders, envelopes), so its request holds the text Nous sent, as whole words (fingerprints are space-separated). */
 export function isNousPrompt(paneId: string, request: string, now = Date.now()): boolean {
   const fingerprint = taskRequestFingerprint(request);
-  return Boolean(fingerprint) && (nousPrompts.get(paneId) ?? []).some((entry) => now - entry.at < NOUS_PROMPT_KEEP_MS && fingerprint.includes(entry.fingerprint));
+  return Boolean(fingerprint) && (nousPrompts.get(paneId) ?? []).some((entry) => now - entry.at < NOUS_PROMPT_KEEP_MS && ` ${fingerprint} `.includes(` ${entry.fingerprint} `));
 }
 /** Images change the request: "fix this" with another screenshot is new work. */
 export function taskRequestHash(text: string, images: readonly string[] = []) {

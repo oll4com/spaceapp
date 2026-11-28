@@ -11,6 +11,9 @@ export const CELL_VCPUS = 2;
 /** K3: the cgroup allows the guest's RAM plus 256 MiB for Firecracker itself. */
 export const CELL_MEMORY_OVERHEAD_MIB = 256;
 
+/** A cell's link, the same in every cell's own netns: the host side of tap0 runs the cell's egress proxy, the guest takes .2 at boot. */
+export const CELL_NET = Object.freeze({ hostIp: "172.16.0.1", hostMac: "06:00:ac:10:00:01", guestIp: "172.16.0.2", prefix: 30, netmask: "255.255.255.252", proxyPort: 3128 });
+
 /** jailer's --id takes [A-Za-z0-9-] up to 64 characters and a tenant id has ':', so a cell is named by a hash of its tenant. */
 export const cellId = (tenantId: string) => `c-${createHash("sha256").update(tenantId).digest("hex").slice(0, 24)}`;
 
@@ -25,6 +28,8 @@ export interface CellHostPort {
   /** Over vsock to space-vm-agent. */
   waitReady(cell: CellRef): Promise<void>;
   syncClock(cell: CellRef, epochMs: number): Promise<void>;
+  /** One Nous turn: the CLI runs in the guest, its MCP and model calls come back through the cell's relay (cell-relay.ts). */
+  turn: NonNullable<CellDriver["turn"]>;
   upload: CellDriver["upload"];
   download: CellDriver["download"];
   exportUserData: CellDriver["exportUserData"];
@@ -35,7 +40,7 @@ export interface CellHostPort {
 export function cellBootCalls(cell: CellRef, vcpus = CELL_VCPUS): Array<[path: string, body: unknown]> {
   return [
     ["/machine-config", { vcpu_count: vcpus, mem_size_mib: cell.memMib }],
-    ["/boot-source", { kernel_image_path: "vmlinux", boot_args: "console=ttyS0 reboot=k panic=1" }],
+    ["/boot-source", { kernel_image_path: "vmlinux", boot_args: `console=ttyS0 reboot=k panic=1 ip=${CELL_NET.guestIp}::${CELL_NET.hostIp}:${CELL_NET.netmask}::eth0:off` }],
     ["/drives/rootfs", { drive_id: "rootfs", path_on_host: "rootfs.ext4", is_root_device: true, is_read_only: true }],
     ["/drives/user", { drive_id: "user", path_on_host: "user.ext4", is_root_device: false, is_read_only: false }],
     ["/network-interfaces/eth0", { iface_id: "eth0", guest_mac: "06:00:AC:10:00:02", host_dev_name: "tap0" }],
@@ -77,6 +82,7 @@ export function createFirecrackerCellDriver(options: { host: CellHostPort; vcpus
       await api(cell).loadSnapshot(CELL_SNAPSHOT, true);
     },
     syncClock: (cell, epochMs) => host.syncClock(cell, epochMs),
+    turn: (cell, request, signal) => host.turn(cell, request, signal),
     waitReady: (cell) => host.waitReady(cell),
     upload: (cell) => host.upload(cell),
     download: (cell, objectKey) => host.download(cell, objectKey),

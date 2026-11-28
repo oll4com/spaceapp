@@ -4,6 +4,7 @@ import type { NewNousGoalEvent, NousGoalsRepository } from "@space/db";
 import { localDayHour } from "./daily-review.js";
 import { durationText } from "./digest.js";
 import { planMapTime } from "./plan-map.js";
+import { byShortId } from "./short-id.js";
 
 /**
  * Nous Goals (operator request 2026-10-27, plan clipboard:DR51jZJEB0j1): the operator's standing objectives, above plans
@@ -24,6 +25,8 @@ export interface NousGoalsDeps {
   readyRuntimes?: () => Promise<string[]>;
   /** The newest Score's points per plan and goal id (score.ts items); null before the first Score. */
   scorePoints?: (owner: string) => ReadonlyMap<string, number> | null;
+  /** Whether a merge-queue ticket's commit is on stable (wiring: the parked plans' own check). */
+  ticketOnStable?: (id: string) => Promise<boolean>;
   now?: () => number;
 }
 
@@ -109,8 +112,19 @@ export function createNousGoals(deps: NousGoalsDeps) {
     const next = goal.nextTurnAt ? Date.parse(goal.nextTurnAt) : 0;
     return goal.id === first?.id && settings ? Math.min(next, goal.lastWorkedAt ? Date.parse(goal.lastWorkedAt) + settings.gapSeconds * 1_000 : 0) : next;
   };
+  /**
+   * 28/11 (goal 401b115b read "waits on PROMOTE" 90 min after both its tickets reached stable: a goal waiting on others gets no turn, so nothing
+   * ever read the promote): a PROMOTE wait ends when every queue ticket it names is on stable, as a parked plan's does (parked-plans.ts), and the
+   * goal is due at once. A wait that names no whole ticket id stays Nous's to end.
+   */
+  async function endMetPromote(owner: string, goal: NousGoal): Promise<NousGoal> {
+    const tickets = goal.waitsOn?.kind === "PROMOTE" && deps.ticketOnStable ? goal.waitsOn.what.match(/\bq-\d{8}-\d{6}-[0-9a-f]{4}\b/g) ?? [] : [];
+    if (!tickets.length || !(await Promise.all(tickets.map((id) => deps.ticketOnStable!(id).catch(() => false)))).every(Boolean)) return goal;
+    await event(owner, { goalId: goal.id, kind: "WAITS", text: `Waits on nothing now: ${tickets.join(", ")} on stable (Space checked)` });
+    return await deps.repository.update(owner, goal.id, { waitsOn: null, nextTurnAt: null, unchangedTurns: 0 }) ?? goal;
+  }
   async function pick(owner: string, at = now(), settings?: NousGoalsSettings): Promise<NousGoal | null> {
-    const all = await active(owner);
+    const all = await Promise.all((await active(owner)).map((goal) => endMetPromote(owner, goal)));
     const points = deps.scorePoints?.(owner);
     const first = costliestGoal(all, points);
     const due = all.filter((goal) => dueAt(goal, first, settings) <= at)
@@ -184,7 +198,8 @@ export function createNousGoals(deps: NousGoalsDeps) {
 
     /** Nous's update from its tool: progress, criteria, linked plans, what it waits on, its note, pause/resume on the operator's order, ACHIEVED with evidence. */
     async recordUpdate(owner: string, args: NousGoalUpdateArgs, turnId: string | null): Promise<{ goal: NousGoal; changed: string[] } | { problem: string }> {
-      const before = await deps.repository.get(owner, args.goal);
+      // Daily Nous errors 28/11 03:08Z: "nous_goal:9d03b8f1", the 8-character short id goals go by in text, read as no goal; one match is that goal.
+      const before = await deps.repository.get(owner, args.goal) ?? await byShortId(await deps.repository.list(owner), args.goal);
       if (!before) return { problem: `No goal ${args.goal}. The world's "## Goals" section lists the ids.` };
       if (CLOSED.has(before.status)) return { problem: `Goal ${args.goal} is ${before.status}: only the operator reopens it (the Goals view).` };
       const patch: Parameters<NousGoalsRepository["update"]>[2] = {};

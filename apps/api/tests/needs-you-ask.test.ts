@@ -25,6 +25,15 @@ describe("Mail Copilot's needs-you questions", () => {
       .toEqual({ question: "What should Mail Copilot do with this mail?", options: ["I handled it", "Ignore it"], answer: { kind: "MAIL_FIX", account: "op@example.com", threadId: "t1" } });
   });
 
+  it("a decided review closes the agent card that asks only for it (27/11 card 9f8d98b7), not one that also asks for another review", async () => {
+    const card = (pane: string, question: string) => ({ source: "AGENT", dedupeKey: `agent:needs-you:${pane}`, title: "Andy needs you", body: "", payload: { ask: { question } } });
+    const list = vi.fn(async () => [card("pane:a", "Approve the Civo reply in Mail Copilot (review mailrev:Eds-1)"),
+      card("pane:b", "Approve mailrev:Eds-1 and mailrev:Other2"), card("pane:c", "Approve mailrev:Other2")] as never);
+    const resolve = vi.fn(async () => 1);
+    await notifyMailCopilotEvent(event("REVIEW_DECIDED", { reviewId: "mailrev:Eds-1" }), { roomId: pane.roomId, pane, owner: "user:operator", notifications: { raise: vi.fn(), resolve, list } });
+    expect(resolve.mock.calls.map((call) => (call as unknown[])[1])).toEqual(["mail-copilot:mailrev:Eds-1", "agent:needs-you:pane:a"]);
+  });
+
   it("asks Job Copilot's question with its options and its review as Approve or Decline; other events ask nothing", () => {
     expect(jobApplyNeedsYouAsk({ type: "QUESTION", message: "Needs you: Notice period?", payload: { questionId: "jobq:1", question: "Notice period?", options: ["1 month", "3 months"] } }))
       .toEqual({ ask: { question: "Notice period?", options: ["1 month", "3 months"], answer: { kind: "COPILOT_QUESTION", copilot: "JOB", questionId: "jobq:1" } } });

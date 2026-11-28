@@ -8,6 +8,7 @@ import { NOUS_LOAD_TARGET, nousLoadRangeSchema, type Pane, type NousLoad, type N
 import type { NousLoadBucket, NousRepository } from "@space/db";
 import type { HealthCollectorSample } from "../system-health-collector.js";
 import { classifyLoad, hostSwapText, type HostSwap, type HostSwapReader, type NousLoadLevel } from "./server-load.js";
+import type { NousPoolKey } from "./tokens.js";
 
 /**
  * Nous's Load (operator 31/10 13:58 BKK, plan clipboard:f4SH36t3fJ6c): the share of the server's capacity and of the token pools that Nous
@@ -22,8 +23,9 @@ export interface NousUtilizationInput {
   /** PSI "some avg10" of /proc/pressure/{cpu,memory,io}: the share of the last 10 s some task waited; null where the kernel has none. */
   psi: { cpu: number | null; memory: number | null; io: number | null };
   /** Pool use (tokens.ts nousPoolUtilization); `noRoom` names Nous's own pool when no account of it has room. */
-  tokens: { claude: number | null; codex: number | null; gemini?: number | null; noRoom: string | null } | null;
-  panes: { working: number; open: number } | null;
+  tokens: { claude: number | null; codex: number | null; gemini?: number | null; noRoom: string | null; idle?: NousPoolKey[] } | null;
+  /** `parked`: open panes not working that no one may give work (standing-orders.ts parkedPane); they leave the share's denominator. */
+  panes: { working: number; open: number; parked?: number } | null;
   helpers: { live: number; max: number } | null;
 }
 export type NousOwnerParts = Pick<NousUtilizationInput, "tokens" | "panes" | "helpers"> & {
@@ -38,6 +40,8 @@ export interface NousUtilization { overall: number; level: NousLoadLevel; limit:
  * could never be met. The other parts stay shown and keep their own holds (OVERLOADED, pool room); weight 0 keeps them out of the overall.
  * A part without data leaves the blend. A hard limit holds the overall at 100: the physical host's swap past 90% (classifyLoad) only; a pool with
  * no room shows on the Tokens part, and the push still stops on CRITICAL (utilizationPushOn).
+ * Operator 28/11 (cli_session:usezp8TOoI9X «1 προχωρησε το»; 8 of 18 working with 7 parked by rule capped Load at 61 %): the share is of the panes
+ * that may take work; a parked pane is named in the detail and stays out of the denominator.
  */
 export const NOUS_LOAD_WEIGHTS: Record<NousLoadPartKey, number> = { cpu: 0, memory: 0, load: 0, pressure: 0, tokens: 0, panes: 1, helpers: 0 };
 /**
@@ -54,9 +58,14 @@ export function nousUtilization(input: NousUtilizationInput): NousUtilization {
   const { cpuPercent: cpu, load5, cores, memTotalBytes: total, memAvailableBytes: available, swapPercent: swap, psi } = input;
   const stalls = [psi.cpu, psi.memory, psi.io].filter((value): value is number => value !== null).map((value) => value * PSI_SCALE);
   const pressure = [...stalls, ...(swap === null || psi.memory !== null ? [] : [swap / 2])];
-  const pools = [input.tokens?.claude ?? null, input.tokens?.codex ?? null, input.tokens?.gemini ?? null].filter((value): value is number => value !== null);
+  // Operator 28/11 nous_msg:3903b4b3: an idle pool (tokens.ts nousIdlePools) shows "idle" with its quota and leaves the mean.
+  const idle = new Set(input.tokens?.idle ?? []);
+  const pools = (["claude", "codex", "gemini"] as const).filter((key) => !idle.has(key)).map((key) => input.tokens?.[key] ?? null).filter((value): value is number => value !== null);
+  const pool = (key: NousPoolKey, name: string) => { const value = input.tokens?.[key] ?? null;
+    return idle.has(key) ? `${name} idle${value === null ? "" : ` (quota ${Math.round(value)}% used)`}` : `${name} ${value === null ? "?" : Math.round(value)}%`; };
   const percent = (value: number | null) => value === null || !Number.isFinite(value) ? null : round(clamp(value));
   const stall = (label: string, value: number | null) => `${label} ${value === null ? "?" : round(value)}%`;
+  const parked = input.panes?.parked ?? 0, able = (input.panes?.open ?? 0) - parked;
   const parts: NousLoadPart[] = [
     { key: "cpu", label: "CPU", percent: percent(cpu), detail: `${cores} cores` },
     { key: "memory", label: "Memory", percent: percent(total && available !== null ? 100 * (1 - available / total) : null),
@@ -65,10 +74,11 @@ export function nousUtilization(input: NousUtilizationInput): NousUtilization {
     { key: "pressure", label: "Pressure", percent: percent(pressure.length ? Math.max(...pressure) : null),
       detail: `this VM: stalls ${stall("cpu", psi.cpu)}, ${stall("memory", psi.memory)}, ${stall("io", psi.io)} · swap ${swap === null ? "?" : Math.round(swap)}%` },
     { key: "tokens", label: "Tokens", percent: percent(mean(pools)),
-      detail: input.tokens ? `Claude Max ${input.tokens.claude === null ? "?" : Math.round(input.tokens.claude)}% · Codex ${input.tokens.codex === null ? "?" : Math.round(input.tokens.codex)}%`
-        + (input.tokens.gemini == null ? "" : ` · Gemini ${Math.round(input.tokens.gemini)}%`) + (input.tokens.noRoom ? ` · ${input.tokens.noRoom}` : "") : "no Gateway sample" },
-    { key: "panes", label: "CLI panes", percent: percent(input.panes?.open ? (100 * input.panes.working) / input.panes.open : null),
-      detail: input.panes ? `${input.panes.working} of ${input.panes.open} working` : "unknown" },
+      // Operator 28/11 nous_msg:deb7545d («Gemini 99% with no Gemini pane open»): these are each pool's quota used (Load tab and world line), not activity.
+      detail: input.tokens ? `quota used: ${pool("claude", "Claude Max")} · ${pool("codex", "Codex")}`
+        + (input.tokens.gemini == null ? "" : ` · ${pool("gemini", "Gemini")}`) + (input.tokens.noRoom ? ` · ${input.tokens.noRoom}` : "") : "no Gateway sample" },
+    { key: "panes", label: "CLI panes", percent: percent(input.panes && able > 0 ? (100 * input.panes.working) / able : null),
+      detail: input.panes ? `${input.panes.working} of ${able} working${parked ? `, ${parked} parked` : ""}` : "unknown" },
     { key: "helpers", label: "Helpers", percent: percent(input.helpers?.max ? (100 * input.helpers.live) / input.helpers.max : null),
       detail: input.helpers ? `${input.helpers.live} of ${input.helpers.max} slots` : "unknown" }
   ];
@@ -137,7 +147,7 @@ export function renderUtilizationLow(summary: NousLoadSummary, waiting: { plans:
   const findings = waiting.findings ?? [];
   const goals = waiting.goals ?? 0;
   return `Utilization stayed under the ${summary.target}% target for ${Math.round(summary.underForMs / 60_000)} min (now ${Math.round(summary.overall)}%, avg today ${avgText(summary.averages.today.value)}) `
-    + `while the server is CALM and no pool is at its limit. Idle capacity: ${partText(summary)} (the overall is the CLI panes working; Tokens is each pool's 5-hour or week room in use, the tighter per account). `
+    + `while the server is CALM and no pool is at its limit. Idle capacity: ${partText(summary)} (the overall is the CLI panes working; a parked pane waits on the operator or holds a task and takes no work; Tokens is each pool's 5-hour or week room in use, the tighter per account). `
     + `Runnable: ${waiting.plans} plan${waiting.plans === 1 ? "" : "s"} with a step to run, ${waiting.requests} operator request${waiting.requests === 1 ? "" : "s"}, `
     + `${improvements.length} daily-improvement fix${improvements.length === 1 ? "" : "es"}, ${findings.length} quality-registry finding${findings.length === 1 ? "" : "s"}${goals ? `, ${goals} active goal${goals === 1 ? "" : "s"}` : ""}. Fill the idle capacity now, in parallel: hand each free CLI pane below its next piece of work `
     + `(a plan step, a request, an improvement fix or a registry finding as a code change in its own worktree) before it closes, open new panes for the rest, helpers (space_subagents) for independent reading; `
@@ -187,7 +197,10 @@ export function upgradeQueueOpenLines(text: string): string[] {
  * have a next step beside their recorded wait («όλα θα τρέχουν παράλληλα»): each is a piece for a free CLI pane (any model), in priority order.
  */
 export const goalPieces = (goals: NousGoal[]): Array<{ key: string; text: string; strong: boolean }> => goals.filter((goal) => goal.status === "ACTIVE")
-  .sort((left, right) => left.priority - right.priority).map((goal) => ({ key: `goal:${goal.id}`, strong: false,
+  .sort((left, right) => left.priority - right.priority).map((goal) => ({
+    // 28/11 (goal 401b115b waiting on PROMOTE went to five panes in 2 h, each closed after "no step"): a waiting goal is one piece per wait, back only when its wait changes
+    // (kind, what or until: goals.ts counts a moved DATE as a new wait).
+    key: goal.waitsOn ? `goal-wait:${goal.id}:${goal.waitsOn.kind}:${goal.waitsOn.what}:${goal.waitsOn.until ?? ""}` : `goal:${goal.id}`, strong: false,
     text: `Work on the operator's ACTIVE Nous goal ${goal.id}: «${goal.text}»${goal.planIds.length ? ` (its plans: ${goal.planIds.join(", ")})` : ""}`
       + `${goal.waitsOn ? `. It waits on ${goal.waitsOn.kind}: ${goal.waitsOn.what}; that wait stays with Nous` : ""}. First read what was already done for it `
       + "(space-memory-recall, its plans, the latest pane reports naming it) so you repeat nothing; then do its next concrete step that needs neither the operator "

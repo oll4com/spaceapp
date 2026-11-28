@@ -688,9 +688,10 @@ export interface CliEnvironmentContext {
   paneMode?: Pane["mode"] | null;
 }
 
-// Plan clipboard:VypZ4sl7NR04 M5 (20/11): the light copilot panes compact at 120k, others at the launcher's 160k; Design and Video
-// joined them (plan clipboard:nsWKwUFhUFWA slice 2: creative panes write no code). TERMINAL stays at 160k:
-// operator 21/11 reverted its 120k (plan clipboard:ipO4c7J656Ed step 4), which over a ~27k base compacted a coding pane 2 minutes in.
+// Plan clipboard:VypZ4sl7NR04 M5 (20/11): the light copilot panes compact at 120k, others at the launcher's 400k; Design and Video
+// joined them (plan clipboard:nsWKwUFhUFWA slice 2: creative panes write no code). USER-PROTECTED (docs/agents/claude-compact-window.md):
+// TERMINAL never joins this set. Operator 21/11 reverted its 120k (plan clipboard:ipO4c7J656Ed step 4), which compacted a coding pane
+// 2 minutes in; operator 28/11 raised the launcher's 160k to 400k after one compacted 42 s into its first turn.
 // A change here reaches running panes only when CLAUDE_LAUNCH_ENV_SINCE (claude-limit-move.ts) is bumped.
 const CLAUDE_COMPACT_120K_MODES: ReadonlySet<string> = new Set(["MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "JOB_APPLY", "MONITORING_COPILOT", "DESIGN", "VIDEO"]);
 
@@ -2552,8 +2553,9 @@ export class CliTerminalManager {
     traceId: string,
     turnMarker: string | null = null,
     inputIdempotencyKey?: string,
-    /** A prompt waits for the CLI's composer; answers, keys and commands go to whatever is on screen. */
-    waitForComposer = false,
+    /** A prompt waits for the CLI's composer; answers, keys and commands go to whatever is on screen. "question": an answer to the question on screen,
+     *  which skips Gemini's startup gate too (its composer opens only once its trust or sign-in question is answered). */
+    waitForComposer: boolean | "question" = false,
     /** Ends the composer wait of a caller that gave up (its watchdog), so it releases the pane's lock and types nothing. */
     signal?: AbortSignal
   ): Promise<{ turnMarker: string | null; markerAtMs: number }> {
@@ -3276,7 +3278,7 @@ export class CliTerminalManager {
       nativeTaskRef: nativeTaskRef ?? (boundSession.runtimeId === "cli:gemini" ? boundSession.codexThreadId : null)
     };
     let paneMode: Pane["mode"] | null = null;
-    if (session.runtimeId === "cli:claude") try { paneMode = (await this.options.store.getPane(session.paneId)).mode; } catch { /* the launcher's 160k */ }
+    if (session.runtimeId === "cli:claude") try { paneMode = (await this.options.store.getPane(session.paneId)).mode; } catch { /* the launcher's 400k */ }
     const env = buildCliEnvironment(this.options.config, {
       roomId: session.roomId,
       paneId: session.paneId,
@@ -5048,7 +5050,9 @@ export class CliTerminalManager {
     }
   }
 
-  private async waitForInputReady(managed: ManagedCliSession, waitForComposer = true, signal?: AbortSignal): Promise<void> {
+  private async waitForInputReady(managed: ManagedCliSession, waitForComposer: boolean | "question" = true, signal?: AbortSignal): Promise<void> {
+    // 28/11 Nous Cloud box (Bob, "Do you trust this folder?"): an answer waited here for the composer its own question holds back, until the 8 s watchdog.
+    if (waitForComposer === "question") return;
     if (managed.runtimeId === "cli:gemini" && !managed.inputReady) {
       const deadline = Date.now() + (this.options.startupReadyTimeoutMs ?? cliStartupReadyTimeoutMs);
       while (!managed.closed && Date.now() < deadline) {

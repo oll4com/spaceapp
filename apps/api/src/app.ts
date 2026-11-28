@@ -1857,7 +1857,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const { setupOwnerVoiceRuntime, setupVoiceCredentials } = await registerPlatformRoutes(app, { apiStartedAt, config, appVersionReader, store, appDiagnosticsService,
     browserSessionManager, workerReadinessChecker, cliTerminalManager, defaultRouteRateLimitOptions, observability, auth, userRoleCache, options, publicCredentialHost,
     setupConnections, setupConnectionCheckRuns, streamingService, sourceControlService, visibleCliRuntimeIds, agentSessionHistoryService, healthMonitor,
-    toolbarUsageProvider, antigravityUsageProvider, apiProviderAccountsProvider, installTelemetry, activityLogService, accountLifecycle: options.accountLifecycle });
+    toolbarUsageProvider, antigravityUsageProvider, apiProviderAccountsProvider, installTelemetry, activityLogService, accountLifecycle: options.accountLifecycle, accountAiKeys: options.accountAiKeys });
 
   // The workspace tool routes: demo projects, T3 Code, games, Dots and Dot Home, plugins, source control, worktrees, Harness, files, databases (workspace-routes-wiring.ts).
   const { demoProjectsService } = await registerWorkspaceRoutes(app, { store, config, auth, options, appDiagnosticsService, claudeUsageProvider, cliChatRuntimeState,

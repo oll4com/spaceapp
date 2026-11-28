@@ -56,7 +56,7 @@
     "public:export:verify": "node scripts/public-export.mjs --verify",
     "check": "npm run test:architecture && npm run build -w @space/contracts && npm run build -w @space/icons && npm run build -w @space/streaming && npm run build -w @space/opencode-control && npm run build -w @space/memory-graph && npm run build -w @space/browser-host && npm run build -w @space/cli-host && npm run build -w @space/codex-app-server && npm run build -w @space/runtime && npm run build -w @space/db && npm run build -w @space/gateway && npm run check -w @space/api && npm run check -w @space/worker && npm run check -w @space/web",
     "test": "npm run test:public",
-    "test:deploy": "node --test scripts/tests/composition-root-size.test.mjs scripts/tests/quality-known-limitations.test.mjs scripts/tests/domain-boundaries.test.mjs",
+    "test:deploy": "node --test --test-timeout=300000 --test-force-exit scripts/tests/composition-root-size.test.mjs scripts/tests/quality-known-limitations.test.mjs scripts/tests/domain-boundaries.test.mjs",
     "test:public": "node --test scripts/tests/public-suite.test.mjs && npm run build -w @space/contracts && npm run build -w @space/icons && npm run build -w @space/streaming && npm run build -w @space/opencode-control && npm run build -w @space/memory-graph && npm run build -w @space/browser-host && npm run build -w @space/cli-host && npm run build -w @space/codex-app-server && npm run build -w @space/runtime && npm run build -w @space/db && npm run build -w @space/gateway && npm test --workspaces --if-present",
     "hygiene:status": "node scripts/space-hygiene-check.mjs",
     "hygiene:preflight": "node scripts/space-hygiene-check.mjs --preflight",

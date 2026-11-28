@@ -174,6 +174,18 @@ describe("Nous's gates", () => {
     await service.idle(owner);
   });
 
+  it("2026-11-28 REVIEW (Loom, server order): a decision with no body or naming files in Agent Files without refs.files is held, nothing asked", async () => {
+    const ask = vi.fn(async (input: { title: string }) => ({ id: "nous_decision:w", status: "OPEN", title: input.title }));
+    const tools = createNousTools({ ask, rooms: async () => [{ id: "room:gates1", name: "Main" }], listPanes: async () => [] } as unknown as NousToolDeps);
+    const ctx = { owner: "user:operator", turnId: "nous_turn:w1", callId: "toolu_w", traceId: "trace:w" };
+    const decide = (body: string) => tools.execute("space_ask_operator", { category: "DIRECTION", title: "Order the KVM server?", body, recommendation: "Yes. Πρόβλεψη: ναι (70%)",
+      checked: ["Dana's report: the order is an operator step"] }, ctx);
+    expect(await decide("")).toMatchObject({ ok: false, refused: true, display: "Say what this is" });
+    expect(await decide("A bare-metal server for the alpha cells; legal drafts are in Agent Files.")).toMatchObject({ ok: false, refused: true, display: "Attach the files it names" });
+    expect(ask).not.toHaveBeenCalled();
+    expect((await decide("A bare-metal server for the alpha cells; legal drafts are artifact:abcDEF123.")).ok).toBe(true);
+  });
+
   it("refuses a decision whose files Space cannot read, so the operator never approves a text the card cannot show (R10-15)", async () => {
     // 28/10 21:31 BKK: decision 65ad0767's "what it sends" read "is private to the agent that wrote it": Kate wrote the mail 0600.
     const root = await mkdtemp(join(tmpdir(), "nous-r10-15-"));

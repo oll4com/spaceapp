@@ -279,9 +279,9 @@ export function createRoomCliControl(options: {
         // Text with Enter is a prompt; a single key ("1", "y") or text without Enter goes as keys, for menus.
         if (action.submit !== false && action.answer.length > 1) {
           await submitCliPrompt(cliTerminalManager, session.sessionId, action.answer, traceId, `${inputKey}:answer`,
-            { assertCurrent: current, paneId: pane.id, signal: abort.signal });
+            { assertCurrent: current, paneId: pane.id, signal: abort.signal, waitForComposer: "question" });
         } else {
-          if (action.answer) await cliTerminalManager.sendInput(session.sessionId, action.answer, traceId, null, `${inputKey}:answer`);
+          if (action.answer) await cliTerminalManager.sendInput(session.sessionId, action.answer, traceId, null, `${inputKey}:answer`, "question");
           if (action.submit !== false) {
             await new Promise((resolve) => setTimeout(resolve, 200));
             await current();
@@ -339,9 +339,11 @@ export function createRoomCliControl(options: {
         // The mutation goes on unlocked: its next step sees `timedOut` and stops; its unhandled rejection is expected.
         mutationPromise.catch(() => {});
         const cmdName = action.command ? `command "${action.command}"` : (action.key ? `key "${action.key}"` : action.answer !== undefined ? "answer" : "operation");
+        // 28/11 Nous Cloud box: the task title ("Hygiene sweeps (Space)") read as another pane than the "Bob" Nous answered; name it as Nous does.
+        const paneName = `${pane.paneName ? `${pane.paneName} · ` : ""}${pane.title}" (${pane.id}, ${session.runtimeId})`;
         const alertMessage = started
-          ? `Room watchdog: the ${cmdName} in pane "${pane.title}" (${session.runtimeId}) took over 8 s; it was stopped before its next step and nothing more was typed. Try it again.`
-          : `Room watchdog: the ${cmdName} for pane "${pane.title}" (${session.runtimeId}) waited 30 s behind the pane's previous command and was not typed. Try it again.`;
+          ? `Room watchdog: the ${cmdName} in pane "${paneName} took over 8 s; it was stopped before its next step and nothing more was typed. Try it again.`
+          : `Room watchdog: the ${cmdName} for pane "${paneName} waited 30 s behind the pane's previous command and was not typed. Try it again.`;
         const watchdogEvent = eventSchema.parse({
           id: makeSpaceId("event"),
           roomId: pane.roomId,

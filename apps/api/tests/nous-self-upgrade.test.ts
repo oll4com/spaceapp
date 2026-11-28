@@ -15,6 +15,7 @@ import { operatorFacts, recallEntries, renderOperatorFacts } from "../src/nous/o
 import { createNotesArchive, notesToArchive } from "../src/nous/notes-archive.js";
 import { createOperatorPaneChanges } from "../src/nous/pane-moves.js";
 import { rememberSpaceTyped } from "../src/cli-prompt-submit.js";
+import { noteSpacePrompt } from "../src/space-prompts.js";
 import { deniedPath } from "../src/nous/files.js";
 import { deferralHold } from "../src/nous/daily-review.js";
 import { historicalToolHold } from "../src/nous/tool-holds.js";
@@ -706,6 +707,31 @@ describe("U4: the top tool failures of 19/10", () => {
     expect(refused.result).toContain("Closable now (memory save verified or nothing to save): Cody (pane:cody0001, idle 90 min, save verified space_memory:aaaa), Andy (pane:andy0001, idle 40 min, nothing to save).");
     expect(refused.result).toContain("Idle or exited, close one first (a CLI pane gets \"save to memory\" before): Dana (pane:dana0001, idle 300 min, save not asked, kept: keep-open).");
     expect(refused.result).toMatch(/Rooms with free slots: Cleo \(2 free of 2\)\.$/);
+  });
+
+  it("plan clipboard:CTVaL1V3kAFM step 8: the cap's own close reads each pane again: a prompt since the list, a running turn, a task due or a quota wait keeps it", async () => {
+    const entry = (id: string, name: string, minutes: number) => ({ pane: pane(id, name), state: "idle", since: null, idleMinutes: minutes, save: "nothing to save", closable: true, skip: null });
+    const listed = [entry("pane:typ8step", "Typed", 90), entry("pane:run8step", "Runs", 80), entry("pane:tsk8step", "Tasked", 70), entry("pane:qta8step", "Quota", 60), entry("pane:fre8step", "Free", 50)];
+    const closed = vi.fn(async () => {});
+    const f = tools({ rooms: async () => [room("room:main0001", "Main")], listPanes: async () => listed.map((item) => item.pane), closeouts: { saveRequested: vi.fn(), closed,
+      // The operator's prompt lands after the list was read.
+      roomCloseouts: async () => { noteSpacePrompt("pane:typ8step", Date.now() + 1); return listed as never; } },
+      inspectPane: (async (target: Pane) => ({ state: target.id === "pane:run8step" ? "RUNNING" : "IDLE" })) as never,
+      quotaWaits: async () => [{ paneId: "pane:qta8step", label: "Quota", resetsAt: null, since: null }],
+      tasks: { list: async () => [{ id: "task:t8", title: "Daily digest", paneId: "pane:tsk8step", status: "RUNNING", schedule: null }] as never, add: vi.fn() as never, update: vi.fn() as never, rebind: vi.fn() as never } });
+    const capped = { ok: false, display: "Open panes failed", result: "Opening 1 Claude Code pane failed: Room room:main0001 is capped at 5 active panes." };
+    f.roomTool.mockResolvedValueOnce(capped);
+    const opened = await f.tools.execute("space_open_panes", { room: "Main", panes: [{ type: "claude", count: 1 }] }, ctx);
+    expect(f.roomTool.mock.calls[1]!.slice(0, 2)).toEqual(["close_pane", { panes: ["pane:fre8step"] }]);
+    expect(opened.result).toContain("Closed 1 finished pane of Main to make room (oldest finished first): Free (pane:fre8step");
+    // Two asked: only Free may close, and the refusal lists the others as kept, never as closable.
+    f.roomTool.mockClear();
+    f.roomTool.mockResolvedValueOnce(capped);
+    const refused = await f.tools.execute("space_open_panes", { room: "Main", panes: [{ type: "claude", count: 2 }] }, ctx);
+    expect(f.roomTool.mock.calls.map((call) => call[0])).toEqual(["open_panes"]);
+    expect(refused.result).toContain("Closable now (memory save verified or nothing to save): Free (pane:fre8step, idle 50 min, nothing to save).");
+    expect(refused.result).toContain("Typed (pane:typ8step, idle 90 min, nothing to save, kept: busy), Runs (pane:run8step, idle 80 min, nothing to save, kept: busy), "
+      + "Tasked (pane:tsk8step, idle 70 min, nothing to save, kept: task), Quota (pane:qta8step, idle 60 min, nothing to save, kept: busy)");
   });
 
   it("R49-1 (a): a cap refusal names the closable panes apart and every room's free slots, most free first, and which fit the open", async () => {
@@ -1898,9 +1924,10 @@ describe("U4: the top tool failures of 19/10", () => {
       expect(await setup(ask({ payload: held })).close()).toMatchObject({ refused: true, result: expect.stringContaining("has not been answered") });
     });
 
+    // 28/11 nous_msg:57f3908d: a waiting report idle 30+ min no longer holds the save (nous-close-stale-waits.test.ts), so this one is fresh.
     // 21/11 15c51d54f5: the waiting pane is skipped and recorded WAITING_OPERATOR; since 25/11 1ee88504e7 (tighten save guard) a save with no other pane is refused.
     it("C: no \"save to memory\" to a pane an unanswered Needs you item or a waiting report holds", async () => {
-      const f = tools({ paneNeeds: async () => [ask()], paneLastReport: async (_owner, paneId) => paneId === "pane:bob00001" ? { status: "WAITING", source: "AGENT", at: "2026-11-15T12:00:00.000Z", summary: "Waits for the queue" } : null });
+      const f = tools({ paneNeeds: async () => [ask()], paneLastReport: async (_owner, paneId) => paneId === "pane:bob00001" ? { status: "WAITING", source: "AGENT", at: new Date().toISOString(), summary: "Waits for the queue" } : null });
       expect(await f.tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text: "save to memory" }, ctx))
         .toMatchObject({ ok: false, refused: true, result: expect.stringContaining('1 unanswered Needs you item ("Approve the Hetzner invoice" [notification:ask00001])') });
       expect(await f.tools.execute("space_send_to_pane", { room: "Main", panes: ["Bob"], text: "save to memory" }, ctx))

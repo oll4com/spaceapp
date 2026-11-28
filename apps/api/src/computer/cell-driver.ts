@@ -1,7 +1,7 @@
 // What a cells host must do for one tenant's microVM (plan clipboard:ZGz1LnD51ELH §2.3-2.5, K3 lab
 // ~/agent-workspace/active/20261101-nous-computer/k3-lab). The orchestrator in cells.ts drives it; the fake below
 // stands in until a host with /dev/kvm runs the real one.
-// The Firecracker half is firecracker-cell-driver.ts; its host half is cell-host.ts (its own shortcut: no cell network yet).
+// The Firecracker half is firecracker-cell-driver.ts; its host half is cell-host.ts (its own shortcut: no per-cell egress bandwidth limit yet).
 
 export interface CellRef {
   tenantId: string;
@@ -30,7 +30,21 @@ export interface CellDriver {
   exportUserData(tenantId: string, where: { hostId: string | null; objectKey: string | null }): Promise<{ exportKey: string }>;
   /** Stops the VM if it runs and wipes every copy: local files and the object-storage snapshot. */
   destroy(tenantId: string, where: { hostId: string | null; objectKey: string | null }): Promise<void>;
+  /** One headless Nous turn: Claude Code in the awake cell, its MCP and model calls through the host's relay (cell-relay.ts); only drivers with a relay have it. */
+  turn?(cell: CellRef, request: CellTurnRequest, signal?: AbortSignal): Promise<CellTurnOutput>;
 }
+
+/** Where the turn's model calls go; the key stays on the cells host (the relay puts it on each call), never inside the cell. */
+export interface CellModelUpstream { baseUrl: string; apiKey: string; headers?: Record<string, string> }
+
+export interface CellTurnRequest {
+  model: string; effort: string; fallbackModel: string | null; system: string; prompt: string; maxTurns: number; timeoutMs: number; shell: boolean;
+  /** The hub's MCP endpoint and the turn's tenant-bound token (mcp.ts); the relay passes only this token's calls, to this URL. */
+  mcpUrl: string; mcpToken: string;
+  upstream: CellModelUpstream;
+}
+
+export interface CellTurnOutput { code: number | null; stdout: string; stderr: string }
 
 export type CellDriverOp = keyof CellDriver;
 

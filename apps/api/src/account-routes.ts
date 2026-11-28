@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptio
 import type { SpaceStore } from "@space/runtime";
 import { TENANT_LOCAL } from "@space/db";
 import { AccountStateError, type AccountLifecycle } from "./computer/accounts.js";
+import { AiKeyError, type TenantAiKeys } from "./computer/ai-key.js";
 import { sendApiError } from "./http-errors.js";
 import { recordAudit } from "./request-audit.js";
 
@@ -12,9 +13,11 @@ import { recordAudit } from "./request-audit.js";
 export function registerAccountRoutes(app: FastifyInstance, options: {
   store: SpaceStore;
   lifecycle: AccountLifecycle;
+  /** K5 connect AI: the account's own Anthropic key (computer/ai-key.ts); without it the /api/account/ai routes are not registered. */
+  aiKeys?: TenantAiKeys | undefined;
   routeOptions: Pick<RouteShorthandOptions, "config">;
 }) {
-  const { store, lifecycle, routeOptions } = options;
+  const { store, lifecycle, aiKeys, routeOptions } = options;
 
   /** The signed-in user's tenant; the self-hosted one tenant is never an account to delete. */
   async function tenantOf(request: FastifyRequest, reply: FastifyReply): Promise<string | null> {
@@ -25,12 +28,19 @@ export function registerAccountRoutes(app: FastifyInstance, options: {
     }
     return tenantId;
   }
-  async function act(request: FastifyRequest, reply: FastifyReply, action: string, run: (tenantId: string) => Promise<unknown>) {
+  /** The tenant, if this user may change the account: a team account is changed by its admin only, a personal one by its user. */
+  async function ownerTenant(request: FastifyRequest, reply: FastifyReply): Promise<string | null> {
     const tenantId = await tenantOf(request, reply);
+    if (!tenantId) return null;
+    if ((await lifecycle.account(tenantId)).kind !== "PERSONAL" && request.user?.role !== "ADMIN") {
+      void sendApiError(reply, 403, "ACCOUNT_ADMIN_REQUIRED", "Only the team's admin may do this.");
+      return null;
+    }
+    return tenantId;
+  }
+  async function act(request: FastifyRequest, reply: FastifyReply, action: string, run: (tenantId: string) => Promise<unknown>) {
+    const tenantId = await ownerTenant(request, reply);
     if (!tenantId) return reply;
-    const account = await lifecycle.account(tenantId);
-    // A team account is closed by its admin only; a personal one by its user.
-    if (account.kind !== "PERSONAL" && request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ACCOUNT_ADMIN_REQUIRED", "Only the team's admin may do this.");
     try {
       const result = await run(tenantId);
       await recordAudit(store, request, { action, targetType: "tenant", targetId: tenantId });
@@ -52,4 +62,31 @@ export function registerAccountRoutes(app: FastifyInstance, options: {
     }));
   app.post("/api/account/deletion/cancel", routeOptions, (request, reply) =>
     act(request, reply, "account.deletion_cancelled", (tenantId) => lifecycle.cancelDeletion(tenantId, `cancelled by ${request.user!.id}`)));
+
+  if (!aiKeys) return;
+  app.get("/api/account/ai", routeOptions, async (request, reply) => {
+    const tenantId = await tenantOf(request, reply);
+    return tenantId ? aiKeys.status(tenantId) : reply;
+  });
+  app.put("/api/account/ai", routeOptions, async (request, reply) => {
+    const apiKey = (request.body as { apiKey?: unknown } | null)?.apiKey;
+    if (typeof apiKey !== "string") return sendApiError(reply, 400, "AI_KEY_SHAPE", "Send { apiKey }.");
+    const tenantId = await ownerTenant(request, reply);
+    if (!tenantId) return reply;
+    try {
+      await aiKeys.connect(tenantId, apiKey);
+    } catch (error) {
+      if (!(error instanceof AiKeyError)) throw error;
+      return sendApiError(reply, error.code === "AI_KEY_CHECK_FAILED" ? 502 : 400, error.code, error.message);
+    }
+    await recordAudit(store, request, { action: "account.ai_key_connected", targetType: "tenant", targetId: tenantId });
+    return aiKeys.status(tenantId);
+  });
+  app.delete("/api/account/ai", routeOptions, async (request, reply) => {
+    const tenantId = await ownerTenant(request, reply);
+    if (!tenantId) return reply;
+    await aiKeys.disconnect(tenantId);
+    await recordAudit(store, request, { action: "account.ai_key_removed", targetType: "tenant", targetId: tenantId });
+    return aiKeys.status(tenantId);
+  });
 }

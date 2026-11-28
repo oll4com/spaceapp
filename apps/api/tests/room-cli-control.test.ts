@@ -8,6 +8,7 @@ const session = { sessionId: "cli:one", runtimeId: "cli:codex", purpose: "NORMAL
 function fixture(screens: string[], stored: Record<string, unknown> = pane, terminal: { queue?: () => Promise<void>; observe?: () => Promise<void>; input?: (signal?: AbortSignal) => Promise<void> } = {}) {
   let revision = 0;
   const sent: string[] = [];
+  const waits: unknown[] = [];
   const reportWatchdog = vi.fn();
   const control = createRoomCliControl({
     store: {
@@ -21,7 +22,7 @@ function fixture(screens: string[], stored: Record<string, unknown> = pane, term
       observeRoomScreen: async () => { await terminal.observe?.(); return { text: screens[Math.min(revision, screens.length - 1)]!, revision }; },
       observeRoomScreenUndimmed: async () => screens[Math.min(revision, screens.length - 1)]!,
       // sendInput(session, data, trace, marker, key, waitForComposer, signal)
-      sendInput: async (_id: string, data: string, ...rest: unknown[]) => { await terminal.input?.(rest[4] as AbortSignal | undefined); sent.push(data); revision++; }
+      sendInput: async (_id: string, data: string, ...rest: unknown[]) => { waits.push(rest[3]); await terminal.input?.(rest[4] as AbortSignal | undefined); sent.push(data); revision++; }
     } as never,
     cliRuntimeRegistryCache: { read: vi.fn() } as never,
     assertPaneCliRuntimeEnabled: async () => undefined,
@@ -33,7 +34,7 @@ function fixture(screens: string[], stored: Record<string, unknown> = pane, term
     antigravityUsageProvider: vi.fn(),
     recordClaudeNativeRef: vi.fn() as never
   });
-  return { control, sent, reportWatchdog };
+  return { control, sent, waits, reportWatchdog };
 }
 
 describe("room CLI control", () => {
@@ -104,6 +105,29 @@ describe("room CLI control", () => {
       expect(reportWatchdog.mock.calls[0]![0]).toMatchObject({ type: "ROOM_WATCHDOG_ALERT", paneId: pane.id, payload: { kind: "ROOM_FREEZE_PREVENTED", started: true, command: "/model" } });
     } finally {
       releaseRead();
+      vi.useRealTimers();
+    }
+  });
+
+  // 28/11 Nous Cloud box: Nous answered Bob's Gemini trust question; the answer waited for the composer that question holds back, and the
+  // watchdog named the task title "Hygiene sweeps (Space)", which Nous read as another pane.
+  it("types an answer without waiting for a composer, and names the pane as Nous knows it when the watchdog stops one", async () => {
+    const question = "Do you trust this folder?\n● 1. Trust folder\n  2. Don't trust";
+    const bob = { ...pane, paneName: "Bob", title: "Hygiene sweeps (Space)" };
+    const { control, waits } = fixture([question, "› "], bob);
+    await control.commandRoomCli(bob as never, { answer: "1", expectedPromptFingerprint: roomPromptFingerprint(question) } as never, "trace:one");
+    expect(waits[0]).toBe("question");
+    const long = fixture([question, question, "› "], bob, {});
+    await long.control.commandRoomCli(bob as never, { answer: "Trust it", submit: true, expectedPromptFingerprint: roomPromptFingerprint(question) } as never, "trace:two").catch(() => undefined);
+    expect(long.waits[0]).toBe("question");
+    vi.useFakeTimers();
+    try {
+      const stuck = fixture([question], bob, { input: () => new Promise<void>(() => undefined) });
+      const answer = stuck.control.commandRoomCli(bob as never, { answer: "1", expectedPromptFingerprint: roomPromptFingerprint(question) } as never, "trace:three");
+      const failed = expect(answer).rejects.toThrow('the answer in pane "Bob · Hygiene sweeps (Space)" (pane:one, cli:codex) took over 8 s');
+      await vi.advanceTimersByTimeAsync(8_000);
+      await failed;
+    } finally {
       vi.useRealTimers();
     }
   });

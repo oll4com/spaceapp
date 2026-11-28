@@ -80,7 +80,8 @@ export function requestProvider(path: string, anthropicVersion: boolean, keyOnly
   const pool = /^\/pools\/([a-z0-9_-]+)\//.exec(path)?.[1];
   if (pool) return pool;
   if (/^\/v1\/messages(?:\/|$)/.test(path)) return keyOnlyClaude ? "claude_opencode" : "claude";
-  if (path === "/v1/models") return anthropicVersion ? "claude" : "codex";
+  // /pools/space lists CLAUDE_OPENCODE's models through the same hand-off as its messages (space-pool.ts forwardHeaders).
+  if (path === "/v1/models") return keyOnlyClaude ? "claude_opencode" : anthropicVersion ? "claude" : "codex";
   if (/^\/(?:v1\/(?:responses|chat\/completions)|backend-api\/codex)(?:\/|$)/.test(path)) return "codex";
   return null;
 }

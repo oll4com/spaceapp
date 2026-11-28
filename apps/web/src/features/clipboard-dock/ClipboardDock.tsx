@@ -271,12 +271,18 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
     return () => window.removeEventListener(DATE_TIME_SETTINGS_UPDATED_EVENT, handleSettingsUpdate);
   }, []);
 
+  // The timer lives in an effect so an unmount clears it (a late setState after teardown failed the 1.2.5 release run).
+  useEffect(() => {
+    if (!copiedId) return;
+    const timer = window.setTimeout(() => setCopiedId(null), 1_500);
+    return () => window.clearTimeout(timer);
+  }, [copiedId]);
+
   async function copyItem(item: ClipboardItem) {
     try {
       if (!runtime.platform.clipboard) throw new DOMException("Clipboard access is unavailable.", "NotSupportedError");
       await runtime.platform.clipboard.writeText(item.text);
       setCopiedId(item.id);
-      window.setTimeout(() => setCopiedId((current) => (current === item.id ? null : current)), 1_500);
       await captureClipboardText({
         text: item.text,
         source: item.source === "AGENT_NOTE" ? "COPY" : item.source,

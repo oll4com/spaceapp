@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createFakeCellDriver } from "../src/computer/cell-driver.js";
 import {
   CellCapacityError,
@@ -26,6 +26,27 @@ function setup(hosts: CellHost[], delaysMs: Record<string, number> = {}) {
 const ops = (driver: ReturnType<typeof createFakeCellDriver>, op: string) => driver.calls.filter((c) => c.op === op);
 
 describe("nous computer cells", () => {
+  it("boots at most maxBooting cells at once on a host; the others wait and all come up", async () => {
+    const { driver, cells } = setup([{ id: "h1", ramMib: 65_536, maxAwake: 10, maxBooting: 2 }]);
+    let booting = 0, most = 0;
+    const gates: Array<() => void> = [];
+    const create = driver.create.bind(driver);
+    driver.create = async (cell) => {
+      most = Math.max(most, ++booting);
+      await new Promise<void>((resolve) => gates.push(resolve));
+      await create(cell);
+    };
+    const waitReady = driver.waitReady.bind(driver);
+    driver.waitReady = async (cell) => { await waitReady(cell); booting--; };
+    const all = Promise.all(["a", "b", "c", "d", "e"].map((id) => cells.ensureAwake(id)));
+    for (let i = 0; i < 5; i++) {
+      await vi.waitFor(() => expect(gates.length).toBeGreaterThan(0));
+      gates.shift()!();
+    }
+    expect((await all).map((r) => r.from)).toEqual(["NONE", "NONE", "NONE", "NONE", "NONE"]);
+    expect(most).toBe(2);
+  });
+
   it("dedups concurrent ensureAwake into one create", async () => {
     const { driver, cells } = setup([{ id: "h1", ramMib: 8192, maxAwake: 4 }]);
     const results = await Promise.all([cells.ensureAwake("t1"), cells.ensureAwake("t1"), cells.ensureAwake("t1")]);

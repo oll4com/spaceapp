@@ -518,7 +518,8 @@ export class StreamingService {
     try {
       const client = await this.options.credentialStore.clientFor(authorization.provider, authorization.credentialRef);
       const token = parseStreamingTokenSet(await this.options.credentialStore.readCredential(authorization.credentialRef));
-      await this.adapters[authorization.provider].revoke({ client, token });
+      // A grant borrowed from the Space Google sign-in shares its refresh token: revoking it at Google would end Gmail and Calendar too (review 28/11).
+      if (!await this.options.credentialStore.hasGrantClient(authorization.credentialRef)) await this.adapters[authorization.provider].revoke({ client, token });
       const accounts = (await this.options.repository.listAccounts()).filter((account) => account.authorizationId === authorization.id);
       await this.options.repository.deleteAuthorization(authorization.id);
       await this.options.credentialStore.deleteCredential(authorization.credentialRef);

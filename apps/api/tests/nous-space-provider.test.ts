@@ -181,6 +181,24 @@ describe("Space provider router", () => {
     expect(router.cooling("CLAUDE")).toBeNull();
   });
 
+  it("skips a failover route that has no room now, read live after the failure, and keeps the order (operator 28/11 nous_msg:38c0d3c3)", async () => {
+    let reads = 0;
+    // Room at the turn's start; Codex out of quota by the time Claude's 5-minute silence ends.
+    const router = createSpaceRouter({ routes: async () => reads++ === 0 ? ROUTES
+      : ROUTES.map((entry) => entry.route === "CODEX" ? { ...entry, available: false, reason: "Its Space Gateway accounts are paused or out of quota.", resetAt: "2026-11-28T06:00:00.000Z" } : entry) });
+    const call = vi.fn(async (attempt: { id: string; route: string }) => attempt.route === "CLAUDE"
+      ? { text: "Claude sent no reply within 5 minutes of the start: the route was unavailable.", isError: true } : ok(attempt));
+    const result = await router.run({ model: "auto", effort: "high" }, call);
+    expect(call.mock.calls.map(([attempt]) => attempt.route)).toEqual(["CLAUDE", "CLAUDE_OPENCODE"]);
+    expect(result.attempt.route).toBe("CLAUDE_OPENCODE");
+    expect(result.failures).toEqual([expect.objectContaining({ route: "CLAUDE", kind: "unavailable" }),
+      expect.objectContaining({ route: "CODEX", kind: "skipped", reason: "Its Space Gateway accounts are paused or out of quota.", resetAt: "2026-11-28T06:00:00.000Z" })]);
+    // A route with room now is still tried in its place.
+    reads = 0;
+    const roomy = createSpaceRouter({ routes: async () => ROUTES });
+    expect((await roomy.run({ model: "auto", effort: "high" }, call)).attempt.route).toBe("CODEX");
+  });
+
   it("fails an auto turn over in the Gateway order and reports the route that served it", async () => {
     const router = createSpaceRouter({ routes: async () => ROUTES });
     const seen: string[] = [];
@@ -300,6 +318,22 @@ describe("Space provider router", () => {
     recovered = true; time += 300_000;
     expect((await router.run({ model: "auto", effort: "high" }, call)).attempt.route).toBe("CLAUDE");
     expect(router.cooling("CLAUDE")).toBeNull();
+  });
+
+  it("rests a route stopped for silence longer than its 5-minute stop, not the 1-minute outage rest (Response time 28/11 02:07Z)", async () => {
+    let time = Date.parse("2026-11-28T02:05:01Z");
+    const router = createSpaceRouter({ now: () => time, routes: async () => ROUTES.slice(0, 2) });
+    const call = vi.fn(async (attempt: { route: string; id: string }) => attempt.route === "CLAUDE"
+      ? { text: "Claude sent no reply within 5 minutes of the start: the route was unavailable.", isError: true } : ok(attempt));
+    await router.run({ model: "auto", effort: "high" }, call);
+    time += 2 * 60_000; call.mockClear();
+    expect((await router.run({ model: "auto", effort: "high" }, call)).attempt.route).toBe("CODEX");
+    expect(call).toHaveBeenCalledTimes(1);
+    time += 14 * 60_000;
+    expect(router.cooling("CLAUDE")).toBeNull();
+    const outage = createSpaceRouter({ now: () => time, routes: async () => ROUTES.slice(0, 2) });
+    await outage.run({ model: "auto", effort: "high" }, async (attempt) => attempt.route === "CLAUDE" ? { text: "Gemini could not be reached.", isError: true } : ok(attempt));
+    expect(Date.parse(outage.cooling("CLAUDE")!.until) - time).toBe(60_000);
   });
 
   it("keeps transient backoff even when cached room changes", async () => {
